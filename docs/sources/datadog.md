@@ -156,7 +156,7 @@ A profile supplies:
 
 | Property | Purpose |
 |---|---|
-| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) is a gap in v1 — never a silent bare rename. |
+| `metric_map` | Explicit Datadog metric name → ES field overrides (string rename or rich `{target, transform?, attribute_filter?, unit_scale?}`). Prefer the source-neutral `--metric-map-file` CLI flag for operator-authored metric renames; profile-embedded `metric_map` remains available for full custom profiles. Class-2 (`transform` / `attribute_filter` / non-1 `unit_scale`) applies the target rename and emits filter, scale, and rate-transform semantics in ES|QL. |
 | `tag_map` | Datadog metric-tag → ES field name (e.g. `host` → `host.name`). Also settable via the source-neutral `--metric-map-file` (a top-level `tag_map:` block), which merges over the active profile's `tag_map` without authoring a full profile. |
 | `log_tag_map` | Optional log-only attribute map; when set, unmapped log attributes stay unchanged instead of using `tag_prefix` |
 | `metric_prefix` / `metric_suffix` | Default prefix/suffix applied to unmapped metrics after `.` → `_` conversion |
@@ -169,8 +169,9 @@ A profile supplies:
 the translator resolves `metric_map` through the shared metric-mapping core.
 Exact entries from `--metric-map-file` override entries embedded in the selected
 field profile. Class-2 entries (`transform`,
-`attribute_filter`, or non-1 `unit_scale`) record a gap and fall through without
-renaming to the declared target. If no applicable map entry exists, it converts
+`attribute_filter`, or non-1 `unit_scale`) apply the declared target and emit
+attribute filters, unit scaling, and rate-transform semantics in ES|QL. If no
+applicable map entry exists, it converts
 dots to underscores (`system.cpu.user` → `system_cpu_user`)
 and applies `metric_prefix` and `metric_suffix`.
 
@@ -186,6 +187,23 @@ and applies `metric_prefix` and `metric_suffix`.
 > renames tags/attributes too. To confirm they exist, run `--es-url
 > --preflight`. `elastic_agent` is the only built-in profile with metric-name
 > overrides, and only for common `system.*` metrics.
+
+### Agent → OTel collection switch (temporality and units)
+
+When the same logical metric moves from the Datadog Agent to an OTel collector
+(or any path that changes **temporality** or **units**), Class-1 renames alone
+are not enough:
+
+| Hazard | Symptom | Remedy via `--metric-map-file` |
+|---|---|---|
+| Cumulative vs delta / rate | Rate panels too high/low or empty after switch | `transform: to_rate` when the target is a cumulative counter; `transform: drop_rate` when the target is already a pre-rated gauge |
+| Unit scale (e.g. nanocores ↔ cores, bytes ↔ KiB) | Charts off by a constant factor | `unit_scale:` (multiply the emitted aggregate) |
+| Counter typing unknown offline | Translator cannot prove `RATE()` is safe | Run with `--es-url` so `_field_caps` can confirm `time_series_metric=counter`, or set `metric_kinds` / map transform explicitly |
+
+Preflight `target_readiness_contract.json` records `counter_expectations` for
+rate-bearing widgets when live caps are available. Panel warnings also call
+out approximate delta rates and point at `--metric-map-file` for Agent→OTel
+switches.
 
 **Translation behavior for tags:** Metric queries check `tag_map`, then apply
 `tag_prefix` (if set) or keep the original tag name. Log queries use

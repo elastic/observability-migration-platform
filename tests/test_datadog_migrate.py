@@ -793,6 +793,56 @@ class TestNormalization(unittest.TestCase):
         plan = plan_widget(nd.widgets[0])
         self.assertEqual(plan.backend, "markdown")
 
+    def test_list_stream_logs_query_string_preserves_status_filter(self):
+        """list_stream widgets use query.query_string, not query.query.
+
+        The singular ``query`` dict path (shared with distribution histograms)
+        must read ``query_string`` so Error Logs keep ``status:error`` instead
+        of collapsing to a match-all time filter.
+        """
+        raw = {
+            "title": "Redis",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "list_stream",
+                        "title": "Error Logs",
+                        "requests": [
+                            {
+                                "response_format": "event_list",
+                                "query": {
+                                    "data_source": "logs_stream",
+                                    "query_string": "source:redis $scope $host status:error",
+                                    "indexes": [],
+                                },
+                                "columns": [{"field": "content", "width": "compact"}],
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        self.assertEqual(widget.queries[0].query_type, "log")
+        self.assertEqual(
+            widget.queries[0].raw_query,
+            "source:redis $scope $host status:error",
+        )
+        self.assertIsNotNone(widget.queries[0].log_query)
+        self.assertIsNotNone(widget.queries[0].log_query.ast)
+
+        from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+        from observability_migration.adapters.source.datadog.planner import plan_widget
+        from observability_migration.adapters.source.datadog.translate import (
+            _build_log_widget_query,
+        )
+
+        plan = plan_widget(widget)
+        esql = _build_log_widget_query(widget, plan, OTEL_PROFILE)
+        self.assertIn('log.level == "error"', esql)
+        self.assertIn('service.name == "redis"', esql)
+
     def test_modern_bare_metric_query_is_parsed(self):
         raw = {
             "title": "Bare metric",
@@ -1419,6 +1469,16 @@ class TestTranslation(unittest.TestCase):
         result = self._translate_metric_widget("sum:http.requests{*}.as_rate()")
         self.assertIn("MAX(", result.esql_query)
         self.assertIn("MIN(", result.esql_query)
+
+    def test_as_rate_warning_mentions_agent_to_otel_metric_map(self):
+        result = self._translate_metric_widget("sum:http.requests{*}.as_rate()")
+        self.assertTrue(
+            any(
+                "Agent→OTel" in str(w) and "--metric-map-file" in str(w)
+                for w in (result.warnings or [])
+            ),
+            result.warnings,
+        )
 
     def test_metric_template_variable_becomes_broad_match(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:$host}", force_esql=True)
@@ -3715,6 +3775,44 @@ class TestFieldMap(unittest.TestCase):
         fields = [c["field"] for c in controls]
         self.assertEqual(fields, ["host.name", "consul_service_id"])
 
+    def test_options_list_control_strips_keyword_multifield_suffix(self):
+        # Options-list fails with "Could not locate field: *.keyword" when the
+        # control binds a multi-field child; use the parent dimension instead.
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+            _options_list_field_name,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        self.assertEqual(
+            _options_list_field_name("k8s.node.name.keyword"),
+            "k8s.node.name",
+        )
+        self.assertEqual(
+            _options_list_field_name("deployment.environment"),
+            "deployment.environment",
+        )
+
+        class _KeywordPreferringMap:
+            def map_tag(self, tag, context="metric"):
+                return {
+                    "host": "k8s.node.name.keyword",
+                    "env": "deployment.environment.keyword",
+                }[tag]
+
+        controls = _build_controls_from_template_vars(
+            [
+                TemplateVariable(name="host", tag="host", default="*", defaults=[]),
+                TemplateVariable(name="env", tag="env", default="prod", defaults=[]),
+            ],
+            "metrics-*",
+            _KeywordPreferringMap(),
+        )
+        self.assertEqual(
+            [c["field"] for c in controls],
+            ["k8s.node.name", "deployment.environment"],
+        )
+
     def test_controls_preserve_defaults_and_multi_select_intent(self):
         from observability_migration.adapters.source.datadog.generate import (
             _build_controls_from_template_vars,
@@ -3727,11 +3825,35 @@ class TestFieldMap(unittest.TestCase):
 
         controls = _build_controls_from_template_vars(tvs, "metrics-*", OTEL_PROFILE)
 
+        # env → deployment.environment is a remap, so Datadog default "prod" is
+        # not preselected (would empty panels against OTel "production").
         self.assertEqual(controls[0]["field"], "deployment.environment")
         self.assertIs(controls[0]["multiple"], True)
-        self.assertEqual(controls[0]["preselected"], ["prod", "staging"])
+        self.assertNotIn("preselected", controls[0])
         self.assertEqual(controls[1]["field"], "service.name")
         self.assertIs(controls[1]["multiple"], False)
+        self.assertNotIn("preselected", controls[1])
+
+    def test_identity_mapped_template_defaults_stay_preselected(self):
+        from observability_migration.adapters.source.datadog.field_map import FieldMapProfile
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        identity = FieldMapProfile(
+            name="identity",
+            tag_map={"env": "env", "service": "service"},
+        )
+        controls = _build_controls_from_template_vars(
+            [
+                TemplateVariable(name="env", tag="env", default="prod", defaults=["prod", "staging"]),
+                TemplateVariable(name="service", tag="service", default="checkout", defaults=[]),
+            ],
+            "metrics-*",
+            identity,
+        )
+        self.assertEqual(controls[0]["preselected"], ["prod", "staging"])
         self.assertEqual(controls[1]["preselected"], ["checkout"])
 
     def test_log_only_template_variable_uses_logs_data_view_and_log_field_mapping(self):
@@ -3792,7 +3914,9 @@ class TestFieldMap(unittest.TestCase):
             field_map=OTEL_PROFILE,
         )
 
-        self.assertEqual(dashboard_ir.controls[0].selected_options, ["prod"])
+        # Remapped env → deployment.environment drops Datadog default "prod"
+        # as a preselected filter (would empty panels against OTel values).
+        self.assertEqual(dashboard_ir.controls[0].selected_options, [])
         self.assertEqual(
             dashboard_ir.controls[0].available_options,
             ["prod", "staging"],
@@ -4190,6 +4314,41 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
         self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+
+    def test_target_readiness_contract_includes_counter_expectations_for_as_rate(self):
+        field_map = load_profile("otel")
+        metric_cap = FieldCapability(name="http_requests", type="double")
+        metric_cap.aggregatable = True
+        metric_cap.time_series_metric_kind = "counter"
+        field_map.metric_field_caps = {"http_requests": metric_cap}
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "sum:http.requests{*}.as_rate()"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="timeseries",
+            title="Reqs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                ),
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            field_map,
+        )
+
+        self.assertIn("http_requests", contract.get("counter_expectations") or {})
+        self.assertTrue(
+            contract["counter_expectations"]["http_requests"]["expected_counter"],
+        )
+        self.assertEqual(contract["totals"].get("counters_expected"), 1)
 
     def test_dashboard_pipeline_writes_target_readiness_contract(self):
         args = argparse.Namespace(

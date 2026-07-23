@@ -319,6 +319,37 @@ class MixedTimeSeriesStatsTests(unittest.TestCase):
             "MAX_OVER_TIME(node_memory_MemAvailable_bytes, 1h)",
         )
 
+    def test_wrapping_bare_sum_uses_last_over_time_not_sum_over_time(self):
+        """Cross-series SUM(gauge) must not become SUM(SUM_OVER_TIME(...)).
+
+        That rewrite inflates gauges by summing every sample in the window
+        (CPU requests/limits on kubernetes-mixin Pod boards).
+        """
+        specs = [
+            self._spec(
+                stats_expr="SUM(LAST_OVER_TIME(container.cpu.usage, 5m))",
+                alias="usage_A",
+                metric_field="container.cpu.usage",
+                group_fields=["k8s.container.name"],
+            ),
+            self._spec(
+                stats_expr="SUM(k8s.container.cpu_request)",
+                alias="requests_B",
+                metric_field="k8s.container.cpu_request",
+                group_fields=["k8s.container.name"],
+            ),
+        ]
+        normalized = promql._normalize_mixed_ts_stats_exprs(specs)
+        exprs = [s.stats_expr.strip() for s in normalized]
+        self.assertTrue(
+            any("SUM(LAST_OVER_TIME(k8s.container.cpu_request" in e for e in exprs),
+            exprs,
+        )
+        self.assertFalse(
+            any("SUM_OVER_TIME(k8s.container.cpu_request" in e for e in exprs),
+            exprs,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

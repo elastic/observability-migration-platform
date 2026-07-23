@@ -477,8 +477,8 @@ metric_map:
   # Grafana / Prometheus exact rename: v1 applies this rename.
   container_memory_working_set_bytes: container.memory.working_set
 
-  # Grafana / Prometheus Class-2: v1 records this as an explicit gap because
-  # the target needs a direction filter. It is not emitted as a silent bare rename.
+  # Grafana / Prometheus Class-2: attribute_filter, transform, and unit_scale
+  # are applied in emitted ES|QL (target rename plus filter/scale/rate semantics).
   container_network_receive_bytes_total:
     target: k8s.pod.network.io
     attribute_filter: { network.direction: receive }
@@ -486,7 +486,7 @@ metric_map:
   # Datadog exact rename: v1 applies this rename.
   system.cpu.user: system.cpu.user.pct
 
-  # Datadog Class-2: v1 records a gap because rate/unit semantics are not emitted yet.
+  # Datadog Class-2: transform/to_rate is honored when target counter kind is known.
   system.net.bytes_rcvd:
     target: system.network.in.bytes
     transform: to_rate
@@ -531,9 +531,9 @@ Expected result:
 
 - Exact entries appear in emitted ES|QL and in `dashboards/native/*.native.json`.
 - `required_target_contract.json` includes `mapped_from` for renamed fields.
-- Class-2 entries (`transform`, `attribute_filter`, or non-1 `unit_scale`) stay
-  as explicit gaps in v1. The source metric remains in the query instead of a
-  green-but-wrong target rename.
+- Class-2 entries (`transform`, `attribute_filter`, or non-1 `unit_scale`) apply
+  in emitted ES|QL: target rename plus attribute filters, unit scaling, and
+  rate transform planning when the target field kind is known.
 - For standard Kubernetes OTEL dashboards, first compare against the managed
   `[OTEL] [Metrics Kubernetes]` dashboards. If adapting a migrated board, bind
   `--data-view` / `--esql-index` to the same metrics stream those dashboards
@@ -559,11 +559,37 @@ Expected result:
 Expected result:
 
 - Exact entries apply through the same shared core as Grafana.
-- Class-2 entries remain source-name based and show a gap reason in the report.
+- Class-2 entries apply through the same shared core as Grafana; attribute
+  filters, unit scaling, and rate transforms appear in emitted ES|QL when
+  supported.
 - `target_readiness_contract.json` lists required target fields and includes
   `mapped_from` for default or explicit metric renames.
 - Custom application metrics stay unmapped/missing until the operator authors
   explicit rows or keeps collection names aligned.
+
+Scaffold a starter map from migration artifacts when you need to fill gaps:
+
+```bash
+.venv/bin/obs-migrate metric-map scaffold \
+  --artifact-dir migration_output/dashboards \
+  --output ./my-otel-metric-map.yaml
+```
+
+Reads `required_target_contract.json`, `target_readiness_contract.json`, and/or
+`migration_manifest.json` under `--artifact-dir`, collects source metric names
+that are not already mapped, and writes source-neutral YAML with empty
+`target: ""` placeholders and `provenance: scaffold`. Those entries load safely
+but resolve as unapplied gaps until each target is filled. The scaffold never
+invents target names. Prometheus recording-rule-style names (containing `:`)
+also get a scaffold hint of `transform: drop_rate` plus a header comment —
+fill `target` with the pre-rated gauge/OTel field (or recreate the rule);
+do not treat those names as exact renames to a counter.
+
+Authoring tip: start from scaffold output, fill Class-1 renames first, then add
+Class-2 fields (`attribute_filter`, `transform`, `unit_scale`, `target_index`,
+`variants`) only where the target schema needs them. Prefer
+`--metric-map-file` over embedding maps in rule packs / field profiles so the
+same file works for Grafana and Datadog.
 
 #### Advanced alternatives
 

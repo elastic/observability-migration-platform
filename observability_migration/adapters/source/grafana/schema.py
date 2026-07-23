@@ -167,6 +167,16 @@ class SchemaResolver:
     def metric_map_applied(self) -> dict[str, str]:
         return dict(self._metric_map_applied)
 
+    def resolve_metric_map_result(self, metric_name: str, source_labels=None):
+        """Return the resolved metric_map result for ``metric_name``, if any."""
+        from observability_migration.core.metric_mapping import resolve_metric_map
+
+        return resolve_metric_map(
+            metric_name,
+            getattr(self._rule_pack, "metric_map", None),
+            source_labels=source_labels,
+        )
+
     def _candidate_fields(self, label):
         candidates = []
         for source in (
@@ -539,10 +549,18 @@ class SchemaResolver:
         # When a named Prometheus plan is active, the operator-selected layout
         # wins over bare caps (e.g. OTel-shaped targets that also carry bare
         # source labels) — skip this shortcut so emit follows the plan.
+        #
+        # Skip non-filterable object parents (ECS ``service`` / ``host`` / …):
+        # field_caps lists them, but ES|QL rejects ``WHERE service == …`` with
+        # ``Unknown column [service], did you mean [service.name]?``.
         if (
             self._field_cache
             and label in self._field_cache
             and planned not in self._NAMED_PROMETHEUS_PLANS
+            and (
+                self.is_searchable_field(label)
+                or self.is_aggregatable_field(label)
+            )
         ):
             return label
         # Fleet `prometheus.remote_write` data streams store the original
@@ -766,7 +784,7 @@ class SchemaResolver:
         except Exception:
             return None
 
-    def resolve_metric_field(self, metric_name, *, prefer=None):
+    def resolve_metric_field(self, metric_name, *, prefer=None, source_labels=None):
         """Resolve a PromQL metric name to its actual stored field.
 
         For most layouts this is a passthrough (the metric name is the field
@@ -784,12 +802,19 @@ class SchemaResolver:
         so the contract layer can surface the missing field via preflight.
 
         Explicit rule-pack ``metric_map`` wins over profile/passthrough when the
-        entry is an exact (class-1) rename. Class-2 entries (transform /
-        attribute_filter) are recorded as gaps and do not silently rename.
+        entry is applied (class-1 exact or class-2 with emitter obligations).
+        Unapplied variant mismatches and other gaps are recorded explicitly.
+
+        ``source_labels`` selects among ``variants`` when the map entry uses
+        attribute-split source filters.
         """
         from observability_migration.core.metric_mapping import resolve_metric_map
 
-        mapped = resolve_metric_map(metric_name, getattr(self._rule_pack, "metric_map", None))
+        mapped = resolve_metric_map(
+            metric_name,
+            getattr(self._rule_pack, "metric_map", None),
+            source_labels=source_labels,
+        )
         if mapped is not None:
             for warning in mapped.warnings:
                 if warning not in self._metric_map_warnings:
@@ -799,7 +824,7 @@ class SchemaResolver:
             if mapped.applied:
                 self._metric_map_applied[metric_name] = mapped.target
                 return mapped.target
-            # Class-2: do not apply a bare rename; continue with source name.
+            # Unapplied mapping: continue with source name.
         # Passthrough profile: emit the source metric name verbatim, skipping
         # discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:
@@ -893,6 +918,27 @@ class SchemaResolver:
             return True
         if kind == "gauge":
             return False
+        # metric_map drop_rate targets a pre-rated / gauge equivalent (including
+        # Prometheus recording rules with no rate() AST node). Never treat those
+        # as bare counters — that selects LAST_OVER_TIME and forces sibling
+        # gauges into SUM(SUM_OVER_TIME(...)), which inflates values.
+        mapped = self.resolve_metric_map_result(metric_name)
+        if (
+            mapped is not None
+            and mapped.applied
+            and mapped.entry is not None
+            and mapped.entry.transform == "drop_rate"
+        ):
+            target = str(mapped.target or "").strip()
+            target_kind = str(self._rule_pack.metric_kinds.get(target, "")).strip().lower()
+            if target_kind == "gauge":
+                return False
+            target_cap = self.field_capability(target) if target else None
+            if getattr(target_cap, "time_series_metric_kind", "") == "gauge":
+                return False
+            # Unknown kind but explicit drop_rate: prefer gauge emit.
+            if target_kind != "counter":
+                return False
         capability = self.field_capability(metric_name)
         counter_metric = self.resolve_metric_field(metric_name, prefer="counter")
         counter_capability = (

@@ -2,7 +2,7 @@ source: sum:http.requests{*}.as_rate()
 status: warning
 backend: esql
 kibana_type: xy
-warning: rate semantics approximated with delta over observed bucket span
+warning: rate semantics approximated with delta over observed bucket span; when switching Agent→OTel collection, map counters with --metric-map-file (transform/unit_scale) so RATE() emits against the OTel counter field
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

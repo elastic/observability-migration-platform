@@ -105,8 +105,9 @@ class MetricMapFileCliTests(unittest.TestCase):
 
         self.assertEqual(field_map.metric_index, "metrics-otel-*")
         self.assertEqual(field_map.map_metric("system.cpu.user"), "from.metric_map_file")
-        self.assertEqual(field_map.map_metric("system.net.bytes_rcvd"), "system_net_bytes_rcvd")
-        self.assertTrue(field_map.metric_map_gaps())
+        self.assertEqual(field_map.map_metric("system.net.bytes_rcvd"), "system.network.in.bytes")
+        self.assertFalse(field_map.metric_map_gaps())
+        self.assertTrue(field_map.metric_map_warnings())
 
 
 if __name__ == "__main__":

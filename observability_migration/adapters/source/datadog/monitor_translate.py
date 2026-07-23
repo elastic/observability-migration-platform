@@ -37,9 +37,13 @@ from .translate import (
     _esql_identifier,
     _format_agg_expr,
     _metric_is_count_like,
+    _metric_map_agg_options,
+    _metric_map_attribute_where_clauses,
+    _metric_map_source_filter,
     _metric_scope_to_esql,
     _needs_rate,
     _resolve_agg,
+    _scope_filter_consumed_by_metric_map,
 )
 
 _METRIC_MONITOR_RE = re.compile(
@@ -220,16 +224,30 @@ def _translate_metric_monitor(
         exact_rollup=exact_rollup_supported,
     )
 
-    metric_field = _resolve_metric_field(metric_query.metric, field_map)
+    metric_field = _resolve_metric_field(metric_query.metric, field_map, source_labels=metric_query.scope_tags)
     metric_capability_issues = _metric_query_field_issues(metric_query, metric_field, field_map)
     if _metric_caps_loaded(field_map) and metric_capability_issues:
         return DatadogMonitorTranslation(warnings=metric_capability_issues)
 
     where_clauses = []
+    consumed_source_filters = _metric_map_source_filter(
+        field_map, metric_query.metric, source_labels=metric_query.scope_tags
+    )
     for scope_item in metric_query.scope:
+        if _scope_filter_consumed_by_metric_map(scope_item, consumed_source_filters):
+            continue
         clause = _metric_scope_to_esql(scope_item, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
+    where_clauses.extend(
+        _metric_map_attribute_where_clauses(
+            field_map, metric_query.metric, source_labels=metric_query.scope_tags
+        )
+    )
+    metric_cap = field_map.field_capability(metric_field, context="metric")
+    use_rate_override, unit_scale, mapped_index, map_warnings = _metric_map_agg_options(
+        field_map, metric_query, metric_cap
+    )
     exclude_null_clauses = _exclude_null_group_where_clauses(metric_query, field_map, outer_functions)
     if exclude_null_clauses is None:
         return DatadogMonitorTranslation()
@@ -237,7 +255,7 @@ def _translate_metric_monitor(
 
     if exact_rollup_supported:
         exact_rollup_query = _build_exact_rollup_metric_query(
-            metric_index=field_map.metric_index,
+            metric_index=mapped_index or field_map.metric_index,
             where_clauses=where_clauses,
             group_by=[
                 _esql_identifier(field_map.map_tag(tag, context="metric"))
@@ -249,9 +267,19 @@ def _translate_metric_monitor(
             window_seconds=window_seconds,
             comparator=comparator,
             threshold=threshold,
+            use_rate=use_rate_override,
+            unit_scale=unit_scale,
         )
         if not exact_rollup_query:
             return DatadogMonitorTranslation()
+        monitor_warnings = _metric_monitor_warnings(
+            metric_query,
+            outer_functions,
+            exact_rate=exact_rate_supported,
+            exact_rollup=exact_rollup_supported,
+            exact_default_zero=exact_default_zero_supported,
+        )
+        monitor_warnings.extend(map_warnings)
         return DatadogMonitorTranslation(
             translated_query=exact_rollup_query,
             translated_query_provenance="translated_esql",
@@ -259,13 +287,7 @@ def _translate_metric_monitor(
                 _esql_identifier(field_map.map_tag(tag, context="metric"))
                 for tag in metric_query.group_by
             ],
-            warnings=_metric_monitor_warnings(
-                metric_query,
-                outer_functions,
-                exact_rate=exact_rate_supported,
-                exact_rollup=exact_rollup_supported,
-                exact_default_zero=exact_default_zero_supported,
-            ),
+            warnings=monitor_warnings,
         )
 
     agg_expr = _metric_agg_expr(
@@ -273,6 +295,8 @@ def _translate_metric_monitor(
         metric_field,
         metric_query,
         exact_rate_window_seconds=window_seconds if exact_rate_supported else 0,
+        use_rate=use_rate_override,
+        unit_scale=unit_scale,
     )
     if not agg_expr:
         return DatadogMonitorTranslation()
@@ -280,7 +304,7 @@ def _translate_metric_monitor(
     if not agg_expr:
         return DatadogMonitorTranslation()
 
-    lines = [f"FROM {field_map.metric_index}"]
+    lines = [f"FROM {mapped_index or field_map.metric_index}"]
     if where_clauses:
         lines.append(f"| WHERE {' AND '.join(where_clauses)}")
 
@@ -291,17 +315,20 @@ def _translate_metric_monitor(
         lines.append(f"| STATS value = {agg_expr}")
     lines.append(f"| WHERE value {comparator} {threshold}")
 
+    monitor_warnings = _metric_monitor_warnings(
+        metric_query,
+        outer_functions,
+        exact_rate=exact_rate_supported,
+        exact_rollup=exact_rollup_supported,
+        exact_default_zero=exact_default_zero_supported,
+    )
+    monitor_warnings.extend(map_warnings)
+
     return DatadogMonitorTranslation(
         translated_query="\n".join(lines),
         translated_query_provenance="translated_esql",
         group_by=group_by,
-        warnings=_metric_monitor_warnings(
-            metric_query,
-            outer_functions,
-            exact_rate=exact_rate_supported,
-            exact_rollup=exact_rollup_supported,
-            exact_default_zero=exact_default_zero_supported,
-        ),
+        warnings=monitor_warnings,
     )
 
 
@@ -581,8 +608,12 @@ def _translate_log_monitor(
     )
 
 
-def _resolve_metric_field(dd_metric: str, field_map: FieldMapProfile) -> str:
-    mapped_metric = field_map.map_metric(dd_metric)
+def _resolve_metric_field(
+    dd_metric: str,
+    field_map: FieldMapProfile,
+    source_labels=None,
+) -> str:
+    mapped_metric = field_map.map_metric(dd_metric, source_labels=source_labels)
     candidates = []
     if mapped_metric:
         candidates.append(mapped_metric)
@@ -657,31 +688,48 @@ def _metric_agg_expr(
     metric_query: Any | None = None,
     *,
     exact_rate_window_seconds: int = 0,
+    use_rate: bool | None = None,
+    unit_scale: float | None = None,
 ) -> str:
     if exact_rate_window_seconds > 0:
-        return _exact_as_rate_expr(metric_field, exact_rate_window_seconds)
+        return _apply_unit_scale_expr(
+            _exact_as_rate_expr(metric_field, exact_rate_window_seconds),
+            unit_scale,
+        )
 
     if metric_query is not None and time_agg != "last":
         try:
             es_agg = _resolve_agg(time_agg, metric_field)
         except ValueError:
             return ""
-        return _format_agg_expr(es_agg, metric_field, metric_query)
+        return _format_agg_expr(
+            es_agg,
+            metric_field,
+            metric_query,
+            use_rate=use_rate,
+            unit_scale=unit_scale,
+        )
 
     field_ident = _esql_identifier(metric_field)
     if time_agg == "avg":
-        return f"AVG({field_ident})"
+        return _apply_unit_scale_expr(f"AVG({field_ident})", unit_scale)
     if time_agg == "sum":
-        return f"SUM({field_ident})"
+        return _apply_unit_scale_expr(f"SUM({field_ident})", unit_scale)
     if time_agg == "min":
-        return f"MIN({field_ident})"
+        return _apply_unit_scale_expr(f"MIN({field_ident})", unit_scale)
     if time_agg == "max":
-        return f"MAX({field_ident})"
+        return _apply_unit_scale_expr(f"MAX({field_ident})", unit_scale)
     if time_agg == "count":
-        return f"COUNT({field_ident})"
+        return _apply_unit_scale_expr(f"COUNT({field_ident})", unit_scale)
     if time_agg == "last":
-        return f"LAST({field_ident}, @timestamp)"
+        return _apply_unit_scale_expr(f"LAST({field_ident}, @timestamp)", unit_scale)
     return ""
+
+
+def _apply_unit_scale_expr(expr: str, unit_scale: float | None) -> str:
+    if not expr or unit_scale is None or unit_scale == 1.0:
+        return expr
+    return f"({expr}) * {unit_scale}"
 
 
 def _exact_as_rate_expr(metric_field: str, window_seconds: int) -> str:
@@ -832,6 +880,8 @@ def _build_exact_rollup_metric_query(
     window_seconds: int,
     comparator: str,
     threshold: float,
+    use_rate: bool | None = None,
+    unit_scale: float | None = None,
 ) -> str:
     rollup_seconds = _rollup_interval_seconds(metric_query)
     if window_seconds <= 0 or rollup_seconds <= 0:
@@ -843,7 +893,13 @@ def _build_exact_rollup_metric_query(
     if bucket_count <= 0:
         return ""
 
-    rollup_agg_expr = _metric_agg_expr(time_agg, metric_field)
+    rollup_agg_expr = _metric_agg_expr(
+        time_agg,
+        metric_field,
+        metric_query,
+        use_rate=use_rate,
+        unit_scale=unit_scale,
+    )
     if not rollup_agg_expr:
         return ""
     reducer_expr = _rollup_reducer_expr(time_agg)

@@ -1,0 +1,37 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+# Synthetic operator example for --metric-map-file (Grafana or Datadog).
+# Names are illustrative — replace with your source/target vocabulary.
+# Prefer scaffolding from a real migration artifact:
+#   obs-migrate metric-map scaffold --artifact-dir ./out/dashboards --output ./map.yaml
+
+metric_map:
+  # Class-1 exact rename
+  source.bytes_total: target.bytes
+
+  # Class-2: attribute-split + rate transform
+  source.receive_bytes:
+    target: target.network.io
+    attribute_filter:
+      network.direction: receive
+    transform: to_rate
+
+  # Class-2: pre-rated source → gauge target (drop redundant rate())
+  source.pre_rated_cpu:
+    target: target.cpu.usage
+    transform: drop_rate
+
+  # Class-2: unit scale (e.g. nanocores → cores)
+  source.cpu_nanocores:
+    target: target.cpu.usage
+    unit_scale: 1.0e-9
+
+  # Optional per-metric data stream
+  source.other_stream_metric:
+    target: target.other
+    target_index: metrics-other-*
+
+tag_map:
+  # Optional label/tag renames (same file, both sources)
+  src_env: deployment.environment

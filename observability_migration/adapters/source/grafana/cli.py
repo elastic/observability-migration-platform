@@ -1531,6 +1531,14 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
         # every panel.
         rule_pack.native_promql = False
         rule_pack.native_promql_validator = None
+        # Native path clears the default ``prometheus`` dataset filter because
+        # it is wrong for OTel / mixed streams. ES|QL must do the same when the
+        # operator did not pass ``--dataset-filter`` — otherwise OTel dashboards
+        # bind ``data_stream.dataset: prometheus`` and render empty.
+        if not getattr(args, "dataset_filter", ""):
+            profile = str(getattr(args, "field_profile", "") or "").strip().lower()
+            if profile in {"", "otel", "auto", "passthrough"}:
+                rule_pack.metrics_dataset_filter = ""
 
     # Offline runs have no cluster to probe; ES|QL named-parameter binding is a
     # stable core feature, so assume it (mirroring the native-PROMQL offline
@@ -2698,6 +2706,9 @@ def main(argv: list[str] | None = None):
 
     print("\n[6/7] Generating report...")
     field_discovery = resolver.field_resolution_summary()
+    from observability_migration.core.metric_mapping.reporting import metric_map_summary_from_tracker
+
+    metric_map_summary = metric_map_summary_from_tracker(resolver)
     report_path = base_dir / "migration_report.json"
     manifest_path = base_dir / "migration_manifest.json"
     verification_path = base_dir / "verification_packets.json"
@@ -2709,6 +2720,7 @@ def main(argv: list[str] | None = None):
         validation_records,
         verification_payload,
         field_discovery=field_discovery,
+        metric_map_summary=metric_map_summary,
     )
     save_migration_manifest(results, manifest_path)
     save_verification_packets(verification_payload, verification_path)

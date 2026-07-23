@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import NUMERIC_FIELD_TYPES
 
 from .rules import RulePackConfig
@@ -128,7 +129,7 @@ def _esql_identifier(name: str) -> str:
     return name
 
 
-def _resolve_metric_field(resolver, metric_name, *, prefer=None):
+def _resolve_metric_field(resolver, metric_name, *, prefer=None, source_labels=None):
     """Resolve a PromQL metric name to its physical target field, ES|QL-escaped.
 
     Passes through to ``resolver.resolve_metric_field`` when a resolver is
@@ -136,13 +137,232 @@ def _resolve_metric_field(resolver, metric_name, *, prefer=None):
     a resolver (offline / fallback paths) still emit the source-faithful
     field reference.  The returned field path is always safe to embed directly
     inside ES|QL STATS / WHERE expressions.
+
+    ``source_labels`` selects among metric_map ``variants`` when present.
     """
     if resolver is None or not metric_name:
         return metric_name
     resolve = getattr(resolver, "resolve_metric_field", None)
     if resolve is None:
         return _esql_field(metric_name)
-    return _esql_field(resolve(metric_name, prefer=prefer))
+    try:
+        return _esql_field(resolve(metric_name, prefer=prefer, source_labels=source_labels))
+    except TypeError:
+        # Older resolvers without source_labels.
+        return _esql_field(resolve(metric_name, prefer=prefer))
+
+
+def _frag_source_labels(frag) -> dict[str, str]:
+    """Equality matchers from a PromQL fragment, for metric_map variant selection."""
+    labels: dict[str, str] = {}
+    for matcher in getattr(frag, "matchers", None) or []:
+        if not isinstance(matcher, dict):
+            continue
+        if matcher.get("op") != "=":
+            continue
+        label = str(matcher.get("label") or "").strip()
+        value = str(matcher.get("value") or "")
+        if not label or label == "__name__":
+            continue
+        if _grafana_param_name(value) or re.search(r"\$\w", value):
+            continue
+        labels[label] = value
+    return labels
+
+
+def _resolve_frag_metric_field(frag, resolver, *, prefer=None):
+    """Resolve ``frag.metric`` with fragment equality labels for variant maps."""
+    return _resolve_metric_field(
+        resolver,
+        getattr(frag, "metric", None),
+        prefer=prefer,
+        source_labels=_frag_source_labels(frag),
+    )
+
+
+def _resolve_metric_map_result(resolver, metric_name, source_labels=None):
+    if resolver is None or not metric_name:
+        return None
+    resolve = getattr(resolver, "resolve_metric_map_result", None)
+    if resolve is None:
+        return None
+    try:
+        return resolve(metric_name, source_labels=source_labels)
+    except TypeError:
+        return resolve(metric_name)
+
+
+def _metric_map_attribute_filters(frag, resolver) -> list[str]:
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return []
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return []
+    filters: list[str] = []
+    for key, value in result.entry.attribute_filter.items():
+        field = _esql_field(key)
+        filters.append(f"{field} == {_quote_esql_string(value)}")
+    return filters
+
+
+def _metric_map_source_filter(frag, resolver) -> dict[str, str]:
+    """Source matchers consumed by the selected metric_map variant."""
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return {}
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return {}
+    return dict(result.entry.source_filter)
+
+
+def _matcher_consumed_by_metric_map(matcher, consumed: dict[str, str]) -> bool:
+    if not consumed or not isinstance(matcher, dict):
+        return False
+    if matcher.get("op") != "=":
+        return False
+    label = str(matcher.get("label") or "").strip()
+    value = str(matcher.get("value") or "")
+    return bool(label) and consumed.get(label) == value
+
+
+def _apply_unit_scale(expr, scale):
+    if scale is None or scale == 1.0:
+        return expr
+    return f"({expr}) * {scale}"
+
+
+def _metric_map_unit_scale(resolver, metric_name, source_labels=None):
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or not result.applied:
+        return None
+    return result.unit_scale
+
+
+def _metric_map_target_index(resolver, metric_name, source_labels=None) -> str:
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or not result.applied or result.entry is None:
+        return ""
+    return str(result.entry.target_index or "").strip()
+
+
+def _metric_map_unapplied_notes(resolver, metric_name, source_labels=None) -> list[str]:
+    """Panel notes when a map entry exists but was not applied (variant/scaffold gaps)."""
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or result.applied:
+        return []
+    note = str(result.gap_reason or "").strip()
+    if not note:
+        note = f"metric_map[{metric_name!r}] was not applied"
+    return [note]
+
+
+def _metric_map_target_is_counter(resolver, result) -> bool | None:
+    """Counter/gauge kind for the *mapped target* field (not the source name)."""
+    if resolver is None or result is None:
+        return None
+    target_field = str(result.target or "").strip()
+    if not target_field:
+        return None
+    if resolver.is_counter(target_field):
+        return True
+    if resolver.refutes_counter(target_field):
+        return False
+    return None
+
+
+def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
+    """Adjust rate emission per metric_map ``transform``."""
+    warnings: list[str] = []
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return esql_inner, is_counter, warnings
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return esql_inner, is_counter, warnings
+    transform = result.entry.transform
+    source_has_rate = getattr(frag, "range_func", None) in {"rate", "irate", "increase"}
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
+    # Rename-only maps onto a known gauge still must drop RATE(...); otherwise
+    # ``sum(rate(prom_counter))`` becomes ``SUM(RATE(otel.gauge))`` and ES 400s.
+    if transform == "none":
+        if source_has_rate and target_is_counter is False:
+            warnings.append(
+                f"metric_map[{metric_name!r}] targets a gauge field; "
+                "dropped source rate()/irate()/increase() to avoid RATE(gauge)"
+            )
+            return "", False, warnings
+        return esql_inner, is_counter, warnings
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=source_has_rate,
+        transform=transform,
+        target_is_counter=target_is_counter,
+    )
+    if gap_reason:
+        warnings.append(gap_reason)
+    if action == "drop_rate" and source_has_rate:
+        # Target is a gauge (or pre-rated equivalent): emit the bare field under
+        # the outer aggregate instead of LAST_OVER_TIME, which forces multi-target
+        # normalize to wrap sibling gauges as SUM(SUM_OVER_TIME(...)).
+        esql_inner = ""
+        is_counter = False
+    elif action == "to_rate" and not source_has_rate:
+        if (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+            esql_inner = "RATE"
+            is_counter = True
+    return esql_inner, is_counter, warnings
+
+
+def _apply_metric_map_to_rate_on_simple(
+    frag,
+    resolver,
+    rule_pack,
+    *,
+    source: str,
+    time_filter: str,
+    bucket_expr: str,
+    metric_field: str,
+    stats_expr: str,
+    warnings: list[str],
+):
+    """Honor ``transform: to_rate`` on non-range PromQL (simple_metric / simple_agg)."""
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if result.entry.transform != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if getattr(frag, "range_func", None) in {"rate", "irate", "increase"}:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=False,
+        transform="to_rate",
+        target_is_counter=target_is_counter,
+    )
+    if gap_reason:
+        warnings.append(gap_reason)
+    if action != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    window = str(getattr(rule_pack, "default_rate_window", None) or "5m").strip() or "5m"
+    metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
+    source = "TS"
+    time_filter = rule_pack.ts_time_filter
+    bucket_expr = rule_pack.ts_bucket
+    outer = OUTER_AGG_MAP.get(getattr(frag, "outer_agg", None) or "", "") or "SUM"
+    stats_expr = f"{outer}(RATE({metric_field}, {window}))"
+    return source, time_filter, bucket_expr, metric_field, stats_expr
 
 
 def _frag_metric_field_raw(frag, resolver):
@@ -160,8 +380,12 @@ def _frag_metric_field_raw(frag, resolver):
     resolve = getattr(resolver, "resolve_metric_field", None)
     if resolve is None:
         return metric_name
+    labels = _frag_source_labels(frag)
     try:
-        return resolve(metric_name) or metric_name
+        try:
+            return resolve(metric_name, source_labels=labels) or metric_name
+        except TypeError:
+            return resolve(metric_name) or metric_name
     except Exception:
         return metric_name
 
@@ -693,6 +917,7 @@ class MeasureSpec:
     metric_name: str = ""
     metric_field: str = ""
     warnings: list = field(default_factory=list)
+    target_index: str = ""
 
 
 @dataclass
@@ -2956,7 +3181,7 @@ def _build_stats_call(
     *, is_counter=False, resolver=None,
 ):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
-    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
+    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper()) if inner_func else ""
     # Keep the counter-safe cast on composed (join-ratio) operands: a degraded
     # increase()/rate() over an unknown-caps counter must still wrap the metric
     # in TO_DOUBLE, exactly like the standalone/measure-spec paths (PR #234).
@@ -2970,7 +3195,10 @@ def _build_stats_call(
         counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
         force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
-    inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    if esql_inner:
+        inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    else:
+        inner_expr = metric_arg
     return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
@@ -3030,14 +3258,18 @@ def _frag_filters(frag, resolver):
     """
     _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
+    consumed = _metric_map_source_filter(frag, resolver)
     filters = []
     had_vars = False
     for matcher in frag.matchers:
+        if _matcher_consumed_by_metric_map(matcher, consumed):
+            continue
         filter_expr = _matcher_to_esql(matcher, resolver, metric_field=metric_field)
         if filter_expr:
             filters.append(filter_expr)
         elif _matcher_has_dropped_variable(matcher):
             had_vars = True
+    filters.extend(_metric_map_attribute_filters(frag, resolver))
     return filters, had_vars
 
 
@@ -3047,6 +3279,7 @@ def _frag_has_incompatible_target_fields(frag, resolver):
     # clause emits and produces a false "dropped incompatible field" warning.
     _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
+    consumed = _metric_map_source_filter(frag, resolver)
     return any(
         _matcher_has_incompatible_target_field(
             m,
@@ -3054,6 +3287,7 @@ def _frag_has_incompatible_target_fields(frag, resolver):
             resolver,
         )
         for m in frag.matchers
+        if not _matcher_consumed_by_metric_map(m, consumed)
     )
 
 
@@ -3413,6 +3647,26 @@ def _matcher_alias_suffix(frag):
     return "_".join(part for part in parts if part)
 
 
+def _capability_for_gauge_ts_decision(metric_name, resolver):
+    """Field capability used for gauge ``TS`` vs ``FROM`` decisions.
+
+    Prefer the *physical* target after metric_map / profile resolve. When a
+    source name (e.g. a Prometheus recording rule) still exists in the index as
+    a counter while ``metric_map`` remaps it to an OTel gauge, consulting the
+    source capability first wrongly "disproves" TSDS-gauge and demotes the
+    whole multi-target panel to ``FROM`` (inflating SUM by sample multiplicity).
+    If the resolved target differs from the source name, only the target's
+    capability counts — an unknown target stays unknown rather than inheriting
+    the source kind.
+    """
+    if not metric_name or not resolver:
+        return None
+    resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+    if resolved and resolved != metric_name:
+        return resolver.field_capability(resolved)
+    return resolver.field_capability(metric_name)
+
+
 def _field_is_proven_tsds_gauge(metric_name, resolver):
     """Return True iff resolver proves the metric field is a TSDS gauge.
 
@@ -3423,13 +3677,7 @@ def _field_is_proven_tsds_gauge(metric_name, resolver):
     instead of ``FROM`` (which sums every per-sample doc) for the field — see
     issue #8.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -3450,13 +3698,7 @@ def _field_disproven_tsds_gauge(metric_name, resolver):
     not a disproof. This lets ``assume_tsds_gauges`` apply only when we lack evidence and
     never override evidence we do have.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -3674,7 +3916,7 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
             # Bare counter reference: use LAST_OVER_TIME to return the raw cumulative
             # value per TBUCKET window, matching PromQL instant-vector semantics.
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
@@ -3683,14 +3925,14 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             agg_arg = metric_field
             if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
@@ -3704,7 +3946,7 @@ def _build_measure_spec(
             time_filter = rule_pack.from_time_filter
             bucket_expr = rule_pack.from_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             agg_arg = metric_field
             if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
@@ -3731,9 +3973,9 @@ def _build_measure_spec(
         source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
-        gauge_metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+        gauge_metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
         if is_counter and frag.outer_agg != "count":
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
             # Bare counter aggregation: use LAST_OVER_TIME as inner function so the
             # outer aggregation operates on raw cumulative values, not rates.
             inner_expr = f"LAST_OVER_TIME({metric_field})"
@@ -3780,12 +4022,16 @@ def _build_measure_spec(
         )
         if counter_warning:
             warnings.append(counter_warning)
+        esql_inner, is_counter, map_rate_warnings = _plan_metric_map_rate_transform(
+            frag, resolver, esql_inner, is_counter
+        )
+        warnings.extend(map_rate_warnings)
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
-        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        metric_field = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
         inner_arg = _counter_safe_metric_arg(
             esql_inner,
             metric_field,
@@ -3800,7 +4046,11 @@ def _build_measure_spec(
             and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        if esql_inner:
+            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            # drop_rate → gauge: outer agg operates on the bare field.
+            inner_expr = inner_arg
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
@@ -3819,9 +4069,13 @@ def _build_measure_spec(
         )
         if counter_warning:
             warnings.append(counter_warning)
+        esql_inner, is_counter, map_rate_warnings = _plan_metric_map_rate_transform(
+            frag, resolver, esql_inner, is_counter
+        )
+        warnings.extend(map_rate_warnings)
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
-        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        metric_field = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
         inner_arg = _counter_safe_metric_arg(
             esql_inner,
             metric_field,
@@ -3836,9 +4090,11 @@ def _build_measure_spec(
             and _counter_unsafe_cast_needed(metric_field, resolver)
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-        stats_expr = _apply_outer_agg(
-            esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
-        )
+        if esql_inner:
+            inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            inner_windowed = inner_arg
+        stats_expr = _apply_outer_agg(esql_outer, inner_windowed, frag)
     elif frag.family == "nested_agg":
         raw_inner_groups = list(frag.extra.get("inner_group", []) or [])
         inner_groups = (
@@ -3896,7 +4152,7 @@ def _build_measure_spec(
             # pipeline. Resolve the metric to its physical field so a
             # metric_map / profile rename is honored there too — otherwise the
             # guard references the raw source name and empties the panel.
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
             gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
             if allow_tsds_gauge_promotion and (is_counter or gauge_uses_ts):
@@ -3929,7 +4185,7 @@ def _build_measure_spec(
         # Match the direct histogram_quantile translator: only emit PERCENTILE()
         # when target schema proves the base field is a native histogram. Unknown
         # or scalar fields fail closed so formula wrapping never hides that gap.
-        physical_metric = _resolve_metric_field(resolver, frag.metric, prefer=None)
+        physical_metric = _resolve_frag_metric_field(frag, resolver, prefer=None)
         field_type = (
             (resolver.field_type(physical_metric) if resolver else "") or ""
         ).strip().lower()
@@ -3991,6 +4247,26 @@ def _build_measure_spec(
 
     if final_alias is None:
         final_alias, eval_expr = _frag_eval_expr(alias, frag)
+    labels = _frag_source_labels(frag)
+    if frag.family in {"simple_metric", "simple_agg"}:
+        source, time_filter, bucket_expr, metric_field, stats_expr = (
+            _apply_metric_map_to_rate_on_simple(
+                frag,
+                resolver,
+                rule_pack,
+                source=source,
+                time_filter=time_filter,
+                bucket_expr=bucket_expr,
+                metric_field=metric_field,
+                stats_expr=stats_expr,
+                warnings=warnings,
+            )
+        )
+    unit_scale = _metric_map_unit_scale(resolver, frag.metric, source_labels=labels)
+    stats_expr = _apply_unit_scale(stats_expr, unit_scale)
+    for note in _metric_map_unapplied_notes(resolver, frag.metric, source_labels=labels):
+        if note not in warnings:
+            warnings.append(note)
     return MeasureSpec(
         source_type=source,
         time_filter=time_filter,
@@ -4004,6 +4280,7 @@ def _build_measure_spec(
         metric_name=frag.metric,
         metric_field=metric_field,
         warnings=warnings,
+        target_index=_metric_map_target_index(resolver, frag.metric, source_labels=labels),
     )
 
 
@@ -4137,6 +4414,27 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
     return f"{agg}(CASE({condition}, {inner}, NULL))"
 
 
+def _measure_pipeline_index(index, specs) -> str:
+    """Prefer a unanimous metric_map ``target_index`` when present."""
+    overrides = [
+        str(getattr(spec, "target_index", "") or "").strip()
+        for spec in specs or []
+        if str(getattr(spec, "target_index", "") or "").strip()
+    ]
+    unique = sorted(set(overrides))
+    if overrides and len(unique) == 1:
+        return overrides[0]
+    if len(unique) > 1:
+        note = (
+            "metric_map target_index values differ across metrics in one query "
+            f"({', '.join(unique)}); using default index {index!r}"
+        )
+        for spec in specs or []:
+            if note not in getattr(spec, "warnings", []):
+                spec.warnings.append(note)
+    return index
+
+
 def _build_shared_measure_pipeline(index, specs):
     if not _measure_specs_mergeable(specs):
         return None
@@ -4188,7 +4486,7 @@ def _build_shared_measure_pipeline(index, specs):
         source_type=base.source_type,
     )
     parts = [
-        f"{base.source_type} {index}",
+        f"{base.source_type} {_measure_pipeline_index(index, specs)}",
         f"| WHERE {base.time_filter}",
         *_build_where_lines(common_filters),
     ]
@@ -4396,7 +4694,21 @@ _OUTER_TO_TS_AGG = {
     "MAX": "MAX_OVER_TIME",
     "COUNT": "COUNT_OVER_TIME",
 }
+# When wrapping a bare cross-series aggregate into a time-series form so it can
+# share a STATS with OVER_TIME siblings, SUM must NOT become SUM_OVER_TIME —
+# that sums every sample in the window and inflates gauges (requests/limits).
+# LAST_OVER_TIME keeps one value per series per bucket, matching PromQL's
+# instant-vector sum across series.
+_OUTER_TO_SAFE_TS_INNER = {
+    "AVG": "AVG_OVER_TIME",
+    "SUM": "LAST_OVER_TIME",
+    "MIN": "MIN_OVER_TIME",
+    "MAX": "MAX_OVER_TIME",
+    "COUNT": "COUNT_OVER_TIME",
+}
 _TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+# LAST_OVER_TIME is used as the safe SUM wrap; map it back to SUM for wrapping.
+_TS_TO_OUTER_AGG.setdefault("LAST_OVER_TIME", "SUM")
 _TS_AGG_FUNC_PATTERN = r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
 
 
@@ -4479,7 +4791,7 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 )
             elif bare_regular:
                 outer = bare_regular.group(1)
-                ts_func = _OUTER_TO_TS_AGG[outer]
+                ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
                 new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
                 warning = (
                     f"Converted {outer}({metric_field}) to "
@@ -4496,10 +4808,11 @@ def _normalize_mixed_ts_stats_exprs(specs):
             if not bare_regular:
                 normalized.append(spec)
                 continue
-            ts_func = _OUTER_TO_TS_AGG[bare_regular.group(1)]
+            outer = bare_regular.group(1)
+            ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
             new_expr = f"{ts_func}({metric_field}, {window})"
             warning = (
-                f"Converted {bare_regular.group(1)}({metric_field}) to "
+                f"Converted {outer}({metric_field}) to "
                 f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
             )
 

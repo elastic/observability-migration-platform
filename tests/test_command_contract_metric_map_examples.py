@@ -106,11 +106,11 @@ def test_command_contract_metric_map_yaml_examples_load_and_apply():
         assert resolver.resolve_metric_field("container_memory_working_set_bytes") == (
             "container.memory.working_set"
         )
-        # Class-2 remains a gap: source metric is not silently renamed.
         assert resolver.resolve_metric_field("container_network_receive_bytes_total") == (
-            "container_network_receive_bytes_total"
+            "k8s.pod.network.io"
         )
-        assert resolver.metric_map_gaps()
+        assert not resolver.metric_map_gaps()
+        assert resolver.metric_map_warnings()
 
         datadog_map = _load_configured_field_map(
             argparse.Namespace(
@@ -123,8 +123,9 @@ def test_command_contract_metric_map_yaml_examples_load_and_apply():
             )
         )
         assert datadog_map.map_metric("system.cpu.user") == "system.cpu.user.pct"
-        assert datadog_map.map_metric("system.net.bytes_rcvd") == "system_net_bytes_rcvd"
-        assert datadog_map.metric_map_gaps()
+        assert datadog_map.map_metric("system.net.bytes_rcvd") == "system.network.in.bytes"
+        assert not datadog_map.metric_map_gaps()
+        assert datadog_map.metric_map_warnings()
 
 
 def test_command_contract_examples_prefer_unified_cli():

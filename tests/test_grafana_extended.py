@@ -912,6 +912,45 @@ class TestLogQLHonesty(unittest.TestCase):
         ctx = _translate('{service_name="api"} |~ "error"', panel_type="logs")
         self.assertIn("message", ctx.esql_query)
 
+    def test_logql_service_object_parent_maps_to_service_name(self):
+        """Live ECS caps advertise ``service`` as a non-searchable object parent.
+
+        Prefer ``service.name`` so ES|QL does not 400 with
+        ``Unknown column [service], did you mean [service.name]?``.
+        """
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp, field_profile="otel")
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "service": {
+                "object": {
+                    "type": "object",
+                    "searchable": False,
+                    "aggregatable": False,
+                }
+            },
+            "service.name": {
+                "keyword": {
+                    "type": "keyword",
+                    "searchable": True,
+                    "aggregatable": True,
+                }
+            },
+            "message": {
+                "text": {
+                    "type": "text",
+                    "searchable": True,
+                    "aggregatable": False,
+                }
+            },
+        }
+        self.assertEqual(resolver.resolve_label("service"), "service.name")
+        ctx = _translate('{service="api"} |~ "timeout|error"', panel_type="logs", resolver=resolver)
+        self.assertEqual(ctx.feasibility, "feasible", ctx.warnings)
+        self.assertIn('service.name == "api"', ctx.esql_query)
+        self.assertNotIn("WHERE service ==", ctx.esql_query)
+        self.assertIn("KEEP @timestamp, service.name, message", ctx.esql_query)
+
 
 # =========================================================================
 # Panel Type Coverage
@@ -2205,26 +2244,33 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         _, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
-    def test_stat_panel_emits_native_instant_query(self):
-        """Issue #127 / instant-query semantics: a single-value (stat) panel
-        must emit a native PROMQL *instant* query bound to ``time=?_tend`` (the
-        time-picker end), not a ``step=`` range query that the metric viz then
-        has to collapse."""
+    def test_stat_panel_emits_range_collapsed_latest_value(self):
+        """Single-value (stat) tiles collapse a PROMQL *range* over the
+        dashboard window via ``LAST(value, step)`` instead of instant
+        ``time=?_tend``. Instant-at-now returns empty when the latest sample
+        lags the picker end (seed gaps / scrape stalls); ES|QL gauges already
+        reduce over the view. Alert instant (#200) is unchanged — it calls
+        ``build_native_promql_query`` directly."""
         panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="stat")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         esql = yaml_panel["esql"]
         self.assertEqual(esql["type"], "metric")
-        self.assertIn("time=?_tend", esql["query"])
-        self.assertNotIn("step=", esql["query"])
+        query = esql["query"]
+        self.assertNotIn("time=?_tend", query)
+        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
 
-    def test_gauge_panel_emits_native_instant_query(self):
+    def test_gauge_panel_emits_range_collapsed_latest_value(self):
         panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="gauge")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         esql = yaml_panel["esql"]
         self.assertEqual(esql["type"], "gauge")
-        self.assertIn("time=?_tend", esql["query"])
+        query = esql["query"]
+        self.assertNotIn("time=?_tend", query)
+        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_timeseries_panel_emits_adaptive_range_query(self):
         """A real time-series (line) panel is a range plot, but a migrated

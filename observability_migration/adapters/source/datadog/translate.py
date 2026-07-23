@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import (
     assess_field_usage,
     is_counter_metric_field,
@@ -867,6 +868,88 @@ def _translate_formula_metric_widget(
     return "\n".join(lines)
 
 
+def _metric_map_attribute_where_clauses(
+    field_map: FieldMapProfile,
+    metric: str,
+    source_labels: dict[str, str] | None = None,
+) -> list[str]:
+    map_result = field_map.resolve_metric_map_result(metric, source_labels=source_labels)
+    if map_result is None or not map_result.applied or map_result.entry is None:
+        return []
+    clauses: list[str] = []
+    for key, value in map_result.entry.attribute_filter.items():
+        field = _esql_identifier(key)
+        clauses.append(f'{field} == "{_esql_escape(value)}"')
+    return clauses
+
+
+def _metric_map_source_filter(
+    field_map: FieldMapProfile,
+    metric: str,
+    source_labels: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Source scope tags consumed by the selected metric_map variant."""
+    map_result = field_map.resolve_metric_map_result(metric, source_labels=source_labels)
+    if map_result is None or not map_result.applied or map_result.entry is None:
+        return {}
+    return dict(map_result.entry.source_filter)
+
+
+def _scope_filter_consumed_by_metric_map(filt: Any, consumed: dict[str, str]) -> bool:
+    if not consumed or not isinstance(filt, TagFilter):
+        return False
+    if filt.negated or filt.is_in_list:
+        return False
+    return consumed.get(filt.key) == filt.value
+
+
+def _metric_map_agg_options(
+    field_map: FieldMapProfile,
+    mq: MetricQuery,
+    metric_cap,
+    result: TranslationResult | None = None,
+) -> tuple[bool | None, float | None, str, list[str]]:
+    """Return ``(use_rate_override, unit_scale, target_index, warnings)`` from metric_map."""
+    source_labels = mq.scope_tags
+    map_result = field_map.resolve_metric_map_result(mq.metric, source_labels=source_labels)
+    transform = "none"
+    unit_scale = None
+    target_index = ""
+    if map_result is not None and map_result.applied and map_result.entry is not None:
+        transform = map_result.entry.transform
+        unit_scale = map_result.unit_scale
+        target_index = str(map_result.entry.target_index or "").strip()
+    source_has_rate = bool(mq.as_rate or _needs_rate(mq))
+    if metric_cap is None:
+        target_is_counter: bool | None = None
+    elif is_counter_metric_field(metric_cap):
+        target_is_counter = True
+    elif str(getattr(metric_cap, "time_series_metric_kind", "") or "").strip().lower() == "gauge":
+        target_is_counter = False
+    else:
+        target_is_counter = None
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=source_has_rate,
+        transform=transform,
+        target_is_counter=target_is_counter,
+    )
+    warnings: list[str] = []
+    if gap_reason:
+        if result is not None:
+            _append_unique_warning(result, gap_reason)
+        else:
+            warnings.append(gap_reason)
+    use_rate: bool | None = None
+    if action == "drop_rate":
+        use_rate = False
+    elif action in {"to_rate", "keep_source_rate"}:
+        use_rate = True
+    elif action == "gap":
+        # Fail closed: do not invent rate when the transform cannot be proven.
+        use_rate = bool(source_has_rate)
+    return use_rate, unit_scale, target_index, warnings
+
+
 def _build_metric_query_spec(
     wq: WidgetQuery,
     field_map: FieldMapProfile,
@@ -875,7 +958,14 @@ def _build_metric_query_spec(
     mq = wq.metric_query
     assert mq is not None
 
-    es_metric = field_map.map_metric(mq.metric)
+    source_labels = mq.scope_tags
+    map_result = field_map.resolve_metric_map_result(mq.metric, source_labels=source_labels)
+    if map_result is not None and not map_result.applied:
+        gap = str(map_result.gap_reason or "").strip() or (
+            f"metric_map[{mq.metric!r}] was not applied"
+        )
+        _append_unique_warning(result, gap)
+    es_metric = field_map.map_metric(mq.metric, source_labels=source_labels)
     es_agg = _resolve_agg(mq.space_agg, es_metric)
     raw_group_fields = [field_map.map_tag(tag, context="metric") for tag in mq.group_by]
     group_fields = [_esql_identifier(field_name) for field_name in raw_group_fields]
@@ -914,7 +1004,12 @@ def _build_metric_query_spec(
             raise ValueError(f"target group field `{raw_group_field}` is not aggregatable")
 
     where_clauses = [TIME_FILTER]
+    consumed_source_filters = _metric_map_source_filter(
+        field_map, mq.metric, source_labels=source_labels
+    )
     for filt in mq.scope:
+        if _scope_filter_consumed_by_metric_map(filt, consumed_source_filters):
+            continue
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
@@ -952,16 +1047,28 @@ def _build_metric_query_spec(
                 for warning in filter_assessment.warnings:
                     _append_unique_warning(result, warning)
 
+    where_clauses.extend(
+        _metric_map_attribute_where_clauses(field_map, mq.metric, source_labels=source_labels)
+    )
+    use_rate_override, unit_scale, mapped_index, map_warnings = _metric_map_agg_options(
+        field_map, mq, metric_cap, result
+    )
+    for warning in map_warnings:
+        _append_unique_warning(result, warning)
+
     if mq.value_filter_op and mq.value_filter_threshold is not None:
         where_clauses.append(
             f"{_esql_identifier(es_metric)} {mq.value_filter_op} "
             f"{_formula_number_literal(mq.value_filter_threshold)}"
         )
 
-    if mq.as_rate or _needs_rate(mq):
+    if use_rate_override is not False and (mq.as_rate or _needs_rate(mq)):
         _append_unique_warning(
             result,
-            "rate semantics approximated with delta over observed bucket span",
+            "rate semantics approximated with delta over observed bucket span; "
+            "when switching Agent→OTel collection, map counters with "
+            "--metric-map-file (transform/unit_scale) so RATE() emits against "
+            "the OTel counter field",
         )
     if mq.as_count:
         _append_unique_warning(
@@ -983,10 +1090,17 @@ def _build_metric_query_spec(
     return _MetricQuerySpec(
         query_name=wq.name,
         alias=_safe_alias(wq.name or "query"),
-        index=field_map.metric_index,
+        index=mapped_index or field_map.metric_index,
         where_str=" AND ".join(where_clauses),
         group_fields=group_fields,
-        agg_expr=_format_agg_expr(es_agg, es_metric, mq, is_counter=is_counter_metric_field(metric_cap)),
+        agg_expr=_format_agg_expr(
+            es_agg,
+            es_metric,
+            mq,
+            is_counter=is_counter_metric_field(metric_cap),
+            use_rate=use_rate_override,
+            unit_scale=unit_scale,
+        ),
         mq=mq,
         es_metric=es_metric,
         tag_where_str=tag_where,
@@ -2162,12 +2276,19 @@ def _build_categorical_esql(
 
 
 def _format_agg_expr(
-    agg: str, metric_field: str, mq: MetricQuery | None = None, is_counter: bool = False,
+    agg: str,
+    metric_field: str,
+    mq: MetricQuery | None = None,
+    is_counter: bool = False,
+    *,
+    use_rate: bool | None = None,
+    unit_scale: float | None = None,
 ) -> str:
     metric_expr = _esql_identifier(metric_field)
+    rate_requested = use_rate if use_rate is not None else bool(mq and (mq.as_rate or _needs_rate(mq)))
     if mq and mq.as_rate and (mq.space_agg or "").lower() == "count":
         expr = 'COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1)'
-    elif mq and (mq.as_rate or _needs_rate(mq)):
+    elif mq and rate_requested:
         expr = _rate_approx_expr(metric_field, mq)
     else:
         # A TSDS counter-typed field is rejected by every plain (non-rate)
@@ -2193,6 +2314,8 @@ def _format_agg_expr(
     multiplier = _rate_multiplier(mq) if mq else 1
     if multiplier != 1:
         expr = f"({expr}) * {multiplier}"
+    if unit_scale is not None and unit_scale != 1.0:
+        expr = f"({expr}) * {unit_scale}"
     return expr
 
 
@@ -2530,7 +2653,7 @@ def _build_lens_widget_config(
     mq = wq.metric_query
     assert mq is not None
 
-    es_metric = field_map.map_metric(mq.metric)
+    es_metric = field_map.map_metric(mq.metric, source_labels=mq.scope_tags)
     agg = _resolve_agg(mq.space_agg, es_metric)
 
     # For scalar/metric panels the Datadog request ``aggregator`` (time

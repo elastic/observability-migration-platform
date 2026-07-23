@@ -57,6 +57,8 @@ class FieldMapProfile:
     metric_suffix: str = ""
     tag_prefix: str = ""
     _metric_map_gaps: list[str] = field(default_factory=list, repr=False)
+    _metric_map_warnings: list[str] = field(default_factory=list, repr=False)
+    _metric_map_applied: dict[str, str] = field(default_factory=dict, repr=False)
     _metric_map_entries_cache: dict | None = field(default=None, repr=False)
 
     def _metric_map_entries(self):
@@ -69,27 +71,53 @@ class FieldMapProfile:
     def metric_map_gaps(self) -> list[str]:
         return list(self._metric_map_gaps)
 
+    def metric_map_warnings(self) -> list[str]:
+        return list(self._metric_map_warnings)
+
+    def metric_map_applied(self) -> dict[str, str]:
+        return dict(self._metric_map_applied)
+
+    def resolve_metric_map_result(self, metric: str, source_labels=None):
+        """Return the resolved metric_map result for ``metric``, if any."""
+        from observability_migration.core.metric_mapping import resolve_metric_map
+
+        return resolve_metric_map(
+            metric,
+            self._metric_map_entries(),
+            source_labels=source_labels,
+        )
+
     def merge_metric_map(self, entries: dict[str, Any]) -> None:
         """Merge normalized metric_map entries, invalidating the resolve cache."""
         self.metric_map.update(entries)
         self._metric_map_entries_cache = None
         self._metric_map_gaps = []
+        self._metric_map_warnings = []
+        self._metric_map_applied = {}
 
     def merge_tag_map(self, entries: dict[str, str]) -> None:
         """Merge tag renames (source tag -> ES field) over the profile tag_map."""
         if entries:
             self.tag_map.update(entries)
 
-    def map_metric(self, dd_metric: str) -> str:
+    def map_metric(self, dd_metric: str, source_labels=None) -> str:
         from observability_migration.core.metric_mapping import resolve_metric_map
 
-        mapped = resolve_metric_map(dd_metric, self._metric_map_entries())
+        mapped = resolve_metric_map(
+            dd_metric,
+            self._metric_map_entries(),
+            source_labels=source_labels,
+        )
         if mapped is not None:
+            for warning in mapped.warnings:
+                if warning not in self._metric_map_warnings:
+                    self._metric_map_warnings.append(warning)
             if mapped.gap_reason and mapped.gap_reason not in self._metric_map_gaps:
                 self._metric_map_gaps.append(mapped.gap_reason)
             if mapped.applied:
+                self._metric_map_applied[dd_metric] = mapped.target
                 return mapped.target
-            # Class-2: do not silently rename; fall through with source name.
+            # Unapplied mapping: fall through with source name.
         es_name = dd_metric.replace(".", "_")
         if self.metric_prefix:
             es_name = f"{self.metric_prefix}{es_name}"
