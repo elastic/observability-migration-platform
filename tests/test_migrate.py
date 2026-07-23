@@ -347,6 +347,86 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("template variable", joined)
         self.assertNotIn("label_suffix", result.esql_query or "")
 
+    def test_template_variable_prefix_glued_to_metric_is_not_feasible(self):
+        # ``${prefix:raw}rpc_server_duration_bucket`` — the prefix var makes the
+        # exact metric name dynamic; it must not produce a garbled variable name
+        # (``$prefixrpc_server_duration_bucket``) or a garbage ES|QL query
+        # referencing the non-existent field ``label_prefixrpc_server_duration_bucket``.
+        result = self.translate(
+            'sum(increase(${prefix:raw}rpc_server_duration_bucket{job="$job"}[$__rate_interval])) by (le)'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("$prefix", joined)
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        # Must NOT expose the garbled concatenated name
+        self.assertNotIn("$prefixrpc_server_duration_bucket", joined)
+        # Must NOT emit a garbage query referencing the phantom field
+        self.assertNotIn("label_prefixrpc_server_duration_bucket", result.esql_query or "")
+
+    def test_otel_collector_rpc_responses_panel_is_not_feasible(self):
+        # Regression lock for issue #283 — the exact OTel Collector community
+        # dashboard panel title "RPC server responses by GRPC status code (receivers)".
+        # It uses BOTH a template-var function name (${metric:value}) AND a
+        # prefix-glued template var (${prefix:raw}); neither must leak an
+        # "unknown function" error or a label_* garbage query.
+        result = self.translate(
+            'sum by(rpc_grpc_status_code) (${metric:value}(${prefix:raw}rpc_server_responses_per_rpc_count{job="$job"}[$__rate_interval]))'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        self.assertNotIn("unknown function", joined_lower)
+        esql = result.esql_query or ""
+        self.assertNotIn("unknown function", esql)
+        self.assertNotIn("label_metric", esql)
+
+    def test_templated_range_interval_is_not_blamed_as_dynamic_metric_name(self):
+        # ``[${step}m]`` is a templated *range interval*, not a metric/label
+        # name — the metric ``node_cpu_seconds_total`` is fully concrete. The
+        # prefix-glued guardrail must NOT fire here: matching the interval var
+        # would emit a false "metric or label name is built from a Grafana
+        # template variable ($step)" diagnostic that sends operators after the
+        # wrong problem. Regression guard against the prefix regex matching
+        # template vars inside a ``[...]`` range/subquery selector.
+        for expr in (
+            # range selector: var preceded by ``[``
+            'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)',
+            # subquery resolution: var preceded by the ``:`` separator
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m:${step}m])) by (instance)',
+            # offset modifier: templated offset duration, metric is concrete
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m] offset ${off}h)) by (instance)',
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                joined = " ".join(result.warnings).lower()
+                self.assertNotIn("metric or label name is built from", joined)
+                self.assertNotIn("dynamic metric/label name", joined)
+
+    def test_prefix_glued_to_recording_rule_name_is_not_feasible(self):
+        # A template variable glued into a recording-rule metric name is still a
+        # dynamic metric name and must degrade — both when the variable leads the
+        # name (``${env}:api:...``, first char after it is ``:``) and when a
+        # variable *segment* follows a colon (``job:${env}:api:...``). The latter
+        # must not be swallowed as a subquery resolution interval: stripping
+        # range selectors leaves these colons in metric-name position.
+        for expr in (
+            "sum(${env}:api_request_latency_seconds) by (le)",
+            "sum(job:${env}:api_request_latency_seconds) by (le)",
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                self.assertEqual(result.feasibility, "not_feasible")
+                joined = " ".join(result.warnings).lower()
+                self.assertIn("template variable", joined)
+                self.assertIn("manual redesign", joined)
+
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
         self.assertFalse(panels.can_use_native_promql(expr))

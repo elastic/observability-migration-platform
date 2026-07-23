@@ -343,10 +343,16 @@ def _join_is_faithful(frag, resolver, output_group_fields):
     return bool(resolved_enrich) and all(label in out for label in resolved_enrich)
 
 
+# Shared building blocks for every template-variable regex below, so the braced
+# (``${var}``) and bracket (``[[var]]``) syntaxes are defined once and cannot
+# drift out of sync between the base matcher and the glued-prefix guardrail.
+_TV_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_TV_BRACED_FMT = r"(?::[^}]*)?"  # optional ``:format`` modifier inside ``${...}``
+_TV_BRACKET_FMT = r"(?::[^\]]+)?"  # optional ``:format`` modifier inside ``[[...]]``
 _GRAFANA_TEMPLATE_VAR_RE = re.compile(
-    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}"
-    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
-    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::[^\]]+)?\]\]"
+    r"\$\{(?P<braced>" + _TV_NAME + r")" + _TV_BRACED_FMT + r"\}"
+    r"|\$(?P<plain>" + _TV_NAME + r")"
+    r"|\[\[(?P<bracket>" + _TV_NAME + r")" + _TV_BRACKET_FMT + r"\]\]"
 )
 _RANK_TEMPLATE_LIMIT_RE = re.compile(
     r"\b(?P<func>topk|bottomk)\s*\(\s*"
@@ -367,6 +373,46 @@ _TEMPLATE_FUNC_VAR_RE = re.compile(r"(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r
 # A template variable glued onto an identifier (e.g. ``metric_name${suffix}``) —
 # the exact metric/label name is only known after Grafana expands the variable.
 _GLUED_TEMPLATE_VAR_RE = re.compile(r"(?<=[A-Za-z0-9_])(?:" + _GRAFANA_TEMPLATE_VAR_RE.pattern + r")")
+# A delimited template variable glued as a *prefix* onto an identifier
+# (e.g. ``${prefix:raw}metric`` / ``[[prefix]]metric``) — same dynamic-name
+# hazard as the suffix form.  The plain ``$var`` alternative is intentionally
+# excluded: it has no right delimiter, so ``$metricfoo`` is the whole variable
+# ``metricfoo``, not ``$metric`` glued to ``foo`` (and a lookahead would
+# false-positive on ``$__rate_interval`` macros and bare ``$metric[5m]``).
+# The ``(?!__)`` guards exclude Grafana built-in macros whose names start with
+# ``__`` (e.g. ``${__range_s}s``) — those are time-range selectors, not a
+# user variable prefixed onto a metric name.  The lookahead includes ``:`` so a
+# prefix glued onto a recording-rule name (``${env}:job:rate``) — whose names may
+# use ``:`` — is still caught.  Distinguishing a templated *duration* inside a
+# range/subquery selector (``metric[${step}m]``, ``metric[5m:${step}m]``) from a
+# genuine dynamic metric/label name is *not* done here — a fixed-width lookbehind
+# cannot see the enclosing ``[...]`` context, so the guardrail strips range
+# selectors first (``_RANGE_SELECTOR_RE``) before running this pattern.
+_PREFIX_GLUED_TEMPLATE_VAR_RE = re.compile(
+    r"(?:"
+    r"\$\{(?!__)" + _TV_NAME + _TV_BRACED_FMT + r"\}"
+    r"|\[\[(?!__)" + _TV_NAME + _TV_BRACKET_FMT + r"\]\]"
+    r")"
+    r"(?=[A-Za-z_:])"
+)
+# A PromQL range/subquery selector (``[5m]``, ``[${step}m]``, ``[5m:${step}m]``,
+# ``[[[win]]m]``).  Its contents are templated *durations*, never metric/label
+# names, so it is stripped before the glued-prefix check — otherwise an interval
+# variable is misread as a dynamic metric name (a concrete metric would then be
+# wrongly blamed).  ``(?<!\[)`` plus the explicit ``[[...]]`` branch protect a
+# name-position bracket variable (``[[prefix]]metric``), which must still be
+# caught; the ``\$\{...\}`` branch lets a braced interval var carry its own
+# braces without ending the selector early.
+_RANGE_SELECTOR_RE = re.compile(r"(?<!\[)\[(?:\$\{[^}]*\}|\[\[[^\]]*\]\]|[^\[\]{}])*\]")
+# The ``offset`` modifier's value is likewise a templated *duration*
+# (``metric offset ${off}h``), not a name; strip it (with any leading sign and
+# glued unit) for the same reason.  ``\boffset`` keeps ``offset`` inside a metric
+# name (``http_offset_total``) from matching.
+_OFFSET_MODIFIER_RE = re.compile(
+    r"\boffset\s+-?\s*"
+    r"(?:\$\{[^}]*\}|\[\[[^\]]*\]\]|\$[A-Za-z_][A-Za-z0-9_]*|\d[\d.]*)"
+    r"[A-Za-z0-9_]*"
+)
 _STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\'')
 
 
@@ -897,10 +943,18 @@ def template_variable_guardrail_rule(context):
         )
         return "dynamic function name requires manual redesign"
 
-    # A template variable glued onto an identifier (``otelcol_..._spans${suffix}``)
-    # makes the exact metric/label name dynamic; resolving it to a placeholder
-    # would silently query a non-existent field, so block it honestly.
-    glued_var = _GLUED_TEMPLATE_VAR_RE.search(expr)
+    # A template variable glued onto an identifier — either as a suffix
+    # (``otelcol_..._spans${suffix}``) or as a delimited prefix
+    # (``${prefix:raw}metric_name``) — makes the exact metric/label name dynamic;
+    # resolving it to a placeholder would silently query a non-existent field,
+    # so block it honestly.  The prefix form uses a separate regex because the
+    # plain ``$var`` alternative cannot be a glued prefix (no right delimiter).
+    # Range/subquery selectors and the ``offset`` modifier are stripped first so a
+    # templated *duration* (``metric[${step}m]``, ``metric[5m:${step}m]``,
+    # ``metric offset ${off}h``) is never mistaken for a dynamic metric/label
+    # name — the surrounding metric there is concrete.
+    glued_scan = _OFFSET_MODIFIER_RE.sub(" ", _RANGE_SELECTOR_RE.sub(" ", expr))
+    glued_var = _GLUED_TEMPLATE_VAR_RE.search(glued_scan) or _PREFIX_GLUED_TEMPLATE_VAR_RE.search(glued_scan)
     if glued_var:
         inner = _GRAFANA_TEMPLATE_VAR_RE.search(glued_var.group(0))
         var_name = _template_var_name(inner) if inner else "var"
