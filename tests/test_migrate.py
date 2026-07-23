@@ -7537,6 +7537,77 @@ class TranslatorRegressionTests(unittest.TestCase):
             " | SORT device ASC | KEEP device | LIMIT 1000",
         )
 
+    def test_query_variable_control_skips_absent_scope_filter(self):
+        """If live caps prove a selector filter field is absent, do not emit an
+        ES|QL predicate that would break the control's population query."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = self._device_scope_resolver()
+        resolver._field_cache.pop("device", None)
+        resolver._field_cache["instance"] = {
+            "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+        }
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance_filtered",
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+            collect_warnings=warnings,
+        )
+
+        query = controls[0]["query"]
+        self.assertNotIn("device !=", query)
+        self.assertTrue(
+            any("device" in warning and "not present" in warning for warning in warnings),
+            warnings,
+        )
+
+    def test_query_variable_control_skips_metric_name_scope_filter(self):
+        """``__name__`` is a Prometheus metric selector, not a stored label
+        column, so it must not be emitted as an ES|QL control predicate."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = self._device_scope_resolver()
+        resolver._field_cache["instance"] = {
+            "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+        }
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance_filtered",
+                "query": 'label_values({__name__=~"node_.*"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+            collect_warnings=warnings,
+        )
+
+        query = controls[0]["query"]
+        self.assertNotIn("__name__", query)
+        self.assertTrue(
+            any("__name__" in warning and "metric-name" in warning for warning in warnings),
+            warnings,
+        )
+
     def test_query_variable_multi_select_scalar_bind_reports_gap(self):
         """Issue #312: a multi-select Grafana variable that must bind a scalar
         ES|QL parameter is forced single-select. That loss must be reported as a

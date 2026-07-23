@@ -5623,7 +5623,14 @@ def _extract_variable_scope_template_refs(query_text):
     return refs
 
 
-def _extract_variable_scope_filters(query_text, resolver=None, rule_pack=None):
+def _extract_variable_scope_filters(
+    query_text,
+    resolver=None,
+    rule_pack=None,
+    *,
+    control_warnings=None,
+    variable_name="",
+):
     """Literal label matchers that scope a ``label_values()`` control (#312).
 
     Grafana's ``label_values(metric{device!="nbd1"}, device)`` restricts the
@@ -5664,8 +5671,28 @@ def _extract_variable_scope_filters(query_text, resolver=None, rule_pack=None):
             # Chained scope on another variable -- handled separately (#269).
             continue
         raw_label = matcher.group("label")
+        if raw_label == "__name__":
+            if control_warnings is not None:
+                _append_unique(
+                    control_warnings,
+                    f"variable '{variable_name}' has a label_values() selector filter on "
+                    "__name__ (Prometheus metric-name matcher); Kibana ES|QL controls "
+                    "cannot express metric-name scoped option lists, so that filter "
+                    "was not applied to the control query",
+                )
+            continue
         if resolver is not None:
             field = resolver.resolve_control_field(raw_label) or raw_label
+            field_exists = getattr(resolver, "field_exists", None)
+            if field_exists is not None and field_exists(field) is False:
+                if control_warnings is not None:
+                    _append_unique(
+                        control_warnings,
+                        f"variable '{variable_name}' has a label_values() selector filter "
+                        f"on '{raw_label}', but resolved field '{field}' is not present "
+                        "on the target; that filter was not applied to the control query",
+                    )
+                continue
         elif rule_pack is not None:
             field = rule_pack.control_field_overrides.get(raw_label, raw_label)
         else:
@@ -6312,7 +6339,13 @@ def query_variable_rule(context):
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
         # cluster-wide ES|QL fallback run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
-        scope_filters = _extract_variable_scope_filters(query_text, resolver, context.rule_pack)
+        scope_filters = _extract_variable_scope_filters(
+            query_text,
+            resolver,
+            context.rule_pack,
+            control_warnings=context.control_warnings,
+            variable_name=name,
+        )
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
@@ -6676,6 +6709,7 @@ def _ensure_param_controls(
     data_view,
     resolver=None,
     rule_pack=None,
+    control_warnings=None,
 ):
     """Guarantee a binding control exists for every emitted ``?var`` (issue #131).
 
@@ -6722,7 +6756,13 @@ def _ensure_param_controls(
             resolved = resolver.resolve_control_field(source_field, metric_field=metric_field or None)
             if resolved:
                 field_name = resolved
-        scope_filters = _extract_variable_scope_filters(query_text, resolver, rule_pack)
+        scope_filters = _extract_variable_scope_filters(
+            query_text,
+            resolver,
+            rule_pack,
+            control_warnings=control_warnings,
+            variable_name=name,
+        )
         controls.append(
             _build_esql_param_control(
                 variable_name=name,
@@ -8254,6 +8294,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         controls_data_view,
         resolver=controls_resolver,
         rule_pack=rule_pack,
+        control_warnings=result.control_warnings,
     )
     rewritten_panel_results = _rewrite_variable_warnings(
         result.panel_results,
