@@ -1174,11 +1174,14 @@ def join_label_enrichment_check_rule(context):
             return reason
 
     # A by()/without() label that is neither an on(...) match key nor a
-    # group_left(...) enrichment label was assumed to survive on the primary
-    # metric. When live target field capabilities are available, verify that
-    # assumption: if the resolved grouping field is genuinely absent from the
-    # target, the STATS ... BY would fail at query time, so fail closed instead
-    # of shipping executable-but-broken ES|QL (issue #197 review).
+    # group_left(...) enrichment label is assumed to survive on the primary
+    # metric after the join RHS is dropped. When live target field capabilities
+    # are available and the resolved grouping field is absent, the panel still
+    # translated into valid ES|QL — the field is simply not (yet) ingested. Per
+    # issue #187 that is a transient *data readiness* condition, not a
+    # translation infeasibility, and must not flip the feasibility verdict (which
+    # would otherwise depend on whether ``--es-url`` was supplied). Surface it as
+    # a data-readiness warning and keep the panel feasible.
     resolver = context.resolver
     if resolver is not None and getattr(resolver, "has_field_capabilities", None) and resolver.has_field_capabilities():
         for pending_frag in pending_frags:
@@ -1197,18 +1200,15 @@ def join_label_enrichment_check_rule(context):
                 if not resolved or resolver.field_exists(resolved) is False:
                     missing.append(label)
             if missing:
-                context.feasibility = "not_feasible"
-                context.confidence = 0.0
                 labels_text = ", ".join(missing)
-                reason = (
-                    f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
-                    f"manual redesign: after dropping the group_left(...) enrichment, '{labels_text}' "
-                    f"is not present on the primary metric '{primary_metric}' in the target schema "
-                    "(live field capabilities), so the grouping would fail at query time; rebuild "
-                    "this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension"
+                _append_unique(
+                    context.warnings,
+                    f"Grouping field {labels_text} is missing from live schema discovery "
+                    "(data readiness, not translation infeasibility): after dropping the "
+                    f"group_left(...) enrichment, '{labels_text}' is not present on the primary "
+                    f"metric '{primary_metric}' in the target yet, so this panel needs that "
+                    "field ingested (or the grouping dimension dropped) to return rows",
                 )
-                _append_unique(context.warnings, reason)
-                return reason
 
     rhs_metrics = sorted(
         {

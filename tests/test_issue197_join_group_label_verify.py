@@ -3,9 +3,14 @@
 
 """Issue #197 review (Medium): an explicit ``by(...)`` label that is neither an
 ``on(...)`` match key nor a ``group_left(...)`` enrichment label is assumed to
-survive on the primary metric after the join RHS is dropped. When live target
-field capabilities are available and prove that grouping field absent, the panel
-must stay ``not_feasible`` rather than emit executable-but-broken ``STATS ... BY``.
+survive on the primary metric after the join RHS is dropped.
+
+Historically, when live target field capabilities proved that grouping field
+absent, the panel was flipped to ``not_feasible``. Issue #187 supersedes that:
+the translation is correct ES|QL and a missing target field is a transient
+*data readiness* condition, not a translation infeasibility, so the panel stays
+``feasible`` (with a data-readiness warning) and the verdict no longer depends
+on whether ``--es-url`` was supplied.
 """
 
 import unittest
@@ -44,10 +49,11 @@ def _translate(resolver):
 
 
 class TestJoinGroupLabelVerify(unittest.TestCase):
-    def test_absent_group_field_live_is_not_feasible(self):
+    def test_absent_group_field_live_is_data_readiness_not_not_feasible(self):
         # Live caps: primary metric present, but the `shard` grouping field is
-        # genuinely absent from the target. The join drop would emit
-        # `STATS ... BY shard`, which fails at query time → fail closed.
+        # absent from the target (not yet ingested). The translation is correct
+        # ES|QL, so per issue #187 the panel stays feasible with a
+        # data-readiness warning rather than flipping to not_feasible.
         resolver = _live_resolver(
             field_cache={
                 "rabbitmq_queue_messages_ready": {},
@@ -56,9 +62,9 @@ class TestJoinGroupLabelVerify(unittest.TestCase):
             },
         )
         result = _translate(resolver)
-        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertEqual(result.feasibility, "feasible")
         self.assertTrue(
-            any("shard" in w and "not present on the primary metric" in w for w in result.warnings),
+            any("shard" in w and "data readiness" in w for w in result.warnings),
             result.warnings,
         )
 
