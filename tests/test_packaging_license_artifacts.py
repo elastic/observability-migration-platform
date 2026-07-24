@@ -5,11 +5,17 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _pyproject_version() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(data["project"]["version"])
 
 REQUIRED_ARTIFACT_SUFFIXES = (
     "LICENSE",
@@ -62,6 +68,9 @@ class PackagingLicenseArtifactsTests(unittest.TestCase):
 
             wheel = next(output_dir.glob("*.whl"))
             sdist = next(output_dir.glob("*.tar.gz"))
+            version = _pyproject_version()
+            self.assertEqual(wheel.name, f"obs_migrate-{version}-py3-none-any.whl")
+            self.assertEqual(sdist.name, f"obs_migrate-{version}.tar.gz")
 
             with zipfile.ZipFile(wheel) as archive:
                 wheel_members = archive.namelist()

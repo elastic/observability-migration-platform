@@ -1712,11 +1712,28 @@ class TestDoctorSubcommand(unittest.TestCase):
     def test_doctor_reports_kb_tool_availability(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            app_cli.main(["doctor"])
+            with self.assertRaises(SystemExit) as ctx:
+                app_cli.main(["doctor"])
+        self.assertEqual(ctx.exception.code, 0)
         out = buf.getvalue().lower()
         self.assertIn("obs-migrate doctor", out)
+        self.assertIn("python:", out)
+        self.assertIn("platform:", out)
+        self.assertIn("required dependencies:", out)
+        self.assertIn("optional extras:", out)
         self.assertIn("kb-dashboard-cli", out)
         self.assertIn("kb-dashboard-lint", out)
+        self.assertIn("ready.", out)
+        self.assertIn("next steps:", out)
+        self.assertIn("list-samples", out)
+        self.assertIn("migrate", out)
+
+    def test_root_help_mentions_single_cli_quick_start(self):
+        parser = app_cli._build_parser()
+        help_text = parser.format_help()
+        self.assertIn("obs-migrate doctor", help_text)
+        self.assertIn("list-samples", help_text)
+        self.assertIn("Prefer this `obs-migrate` entry point", help_text)
 
 
 if __name__ == "__main__":

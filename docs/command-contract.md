@@ -33,15 +33,60 @@ cp serverless_creds.env.example serverless_creds.env
 
 ## Install And Setup
 
-Use Python 3.11 or newer. If `python3` resolves to an older interpreter on your
-machine, create `.venv` with an explicit 3.11+ executable instead. From a repo
-checkout or release source archive, install the end-user extras before running
-the CLI:
+**One tool:** use `obs-migrate` for everything (doctor, samples, migrate,
+compile, upload). Prefer the `[all]` extra so Grafana, Datadog, and Kibana
+tooling install together. Legacy `grafana-migrate` / `datadog-migrate`
+entry points remain as compatibility aliases.
+
+**Platforms:** macOS and Linux are supported. CI packaging and unit tests run
+on Ubuntu; clean-install package smoke is exercised on Python 3.11 and 3.12.
+macOS is covered by local packaging smoke. Windows is not a supported or
+CI-tested install target yet. See `README.md` Compatibility for the full
+matrix.
+
+**Python:** Supported 3.11+; CI pytest covers 3.11/3.12/3.13. Prefer
+`obs-migrate[all]` so first-time machines get Grafana + Datadog + Kibana
+tooling together. On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
+fallback. Run `obs-migrate doctor` after install — it checks Python,
+required imports, extras, and compile tools, and exits non-zero if something
+blocking is missing.
+
+### Recommended (operators): `uvx` + `[all]`
+
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. Until
+PyPI publishing is enabled, pin a Git release tag:
+
+```bash
+uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
+  obs-migrate doctor
+uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
+  obs-migrate list-samples
+```
+
+Once on PyPI: `uvx --from 'obs-migrate[all]' obs-migrate doctor`.
+
+### Persistent pip install
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0"
+.venv/bin/obs-migrate doctor
+```
+
+From a repo checkout or unpacked release source archive:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install ".[all]"
 .venv/bin/obs-migrate doctor
+```
+
+With [`uv`](https://docs.astral.sh/uv/) for contributor / CI-style locked envs
+(`make sync`):
+
+```bash
+uv sync --locked --all-extras
+uv run obs-migrate doctor
 ```
 
 For contributor workflows, prefer `make sync` (the locked `uv` environment used

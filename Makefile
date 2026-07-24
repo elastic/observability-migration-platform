@@ -7,7 +7,7 @@ PYTHON := .venv/bin/python
 KIBANA_DASHBOARDS_API_SCHEMA_URL ?=
 
 .PHONY: help sync licenses test test-e2e lint typecheck check-native-schema \
-	setup-browser test-interactions interaction-audit-local
+	setup-browser test-interactions interaction-audit-local bump-version
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -15,6 +15,14 @@ help: ## List available targets
 
 sync: ## Sync the dev virtualenv from uv.lock
 	uv sync --locked --all-extras
+
+bump-version: ## Bump pyproject version (VERSION=X.Y.Z) and refresh uv.lock
+	@test -n "$(VERSION)" || (echo "USAGE: make bump-version VERSION=X.Y.Z"; exit 2)
+	@if [ -x "$(PYTHON)" ]; then \
+	  $(PYTHON) scripts/bump_version.py "$(VERSION)"; \
+	else \
+	  python3 scripts/bump_version.py "$(VERSION)"; \
+	fi
 
 licenses: ## Regenerate docs/licenses/dependencies.md and sbom.cdx.json
 	UV_PROJECT_ENVIRONMENT=.venv-licensing \

@@ -94,14 +94,42 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 
 ## Releasing
 
-1. One-time: register `obs-migrate` on PyPI and add a Trusted Publisher for
-   this repo + `.github/workflows/release.yml` (environment `pypi`).
-2. Bump `version` in `pyproject.toml`; commit via PR.
-3. Tag the merge commit `vX.Y.Z` and push the tag. The release workflow builds
-   the wheel/sdist and attaches them, plus the SBOM, to a GitHub Release.
-4. Until PyPI Trusted Publishing is configured, the workflow's PyPI publish step
-   is intentionally disabled. After Trusted Publishing is enabled, re-enable that
-   step so tag pushes also publish to PyPI via OIDC.
+1. Bump the package version and refresh the lockfile:
+
+   ```bash
+   make bump-version VERSION=X.Y.Z
+   ```
+
+   (`scripts/bump_version.py` updates `pyproject.toml` and runs `uv lock`.)
+   Open a PR with that bump (and any release notes / docs).
+
+2. After merge, tag the merge commit `vX.Y.Z` and push the tag. The release
+   workflow fails fast if the tag does not match `[project].version` in
+   `pyproject.toml`, then builds the wheel/sdist and attaches them (plus the
+   SBOM) to a GitHub Release.
+
+3. **One-time PyPI Trusted Publishing** (deferred until org/access is ready):
+   - Create a pending Trusted Publisher on PyPI for project `obs-migrate` with:
+     - Owner: `elastic`
+     - Repository: `observability-migration-platform`
+     - Workflow: `release.yml`
+     - Environment: `pypi`
+   - Docs: https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
+
+4. After the publisher exists, re-enable the publish step in
+   `.github/workflows/release.yml` by removing `if: ${{ false }}` from the
+   “Publish to PyPI (Trusted Publishing)” step. Subsequent `v*` tags publish
+   via OIDC (no long-lived PyPI token).
+
+5. Post-publish verification:
+
+   ```bash
+   uvx --from 'obs-migrate[grafana,kibana]' obs-migrate doctor
+   uvx --from 'obs-migrate[grafana,kibana]' obs-migrate migrate --help
+   ```
+
+Until step 3–4 are done, operators should use checkout/`pip`, `uv run`, or the
+git-based `uvx` path documented in `README.md`.
 
 ## Docs And Structure Rules
 

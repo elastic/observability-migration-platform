@@ -25,6 +25,7 @@ from typing import Any, cast
 import requests
 
 import observability_migration.targets.kibana.adapter  # noqa: F401
+from observability_migration import __version__
 from observability_migration.adapters.source.grafana.esql_validate import (
     _query_source_and_index,
     summarize_validation_records,
@@ -142,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(2)
     dd_creds = load_credentials_from_env(args.env_file)
 
-    print("\n  Datadog → Kibana Migration Tool v0.1.0")
+    print(f"\n  Datadog → Kibana Migration Tool v{__version__}")
     print(f"  Source: {args.source}")
     print(f"  Field profile: {args.field_profile}")
     print(f"  Output: {args.output_dir}\n")

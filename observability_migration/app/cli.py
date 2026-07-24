@@ -112,11 +112,30 @@ def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obs-migrate",
-        description="Source-agnostic observability migration platform.",
+        description=(
+            "Migrate Grafana or Datadog observability assets into Kibana. "
+            "One CLI for install checks, samples, migrate, compile, and upload."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Quick start:\n"
+            "  obs-migrate doctor\n"
+            "  obs-migrate list-samples\n"
+            "  obs-migrate migrate --source grafana --input-mode files "
+            "--input-dir ./dashboards --output-dir ./out --compile\n"
+            "\n"
+            "Prefer this `obs-migrate` entry point. The legacy "
+            "`grafana-migrate` / `datadog-migrate` scripts remain as "
+            "compatibility aliases.\n"
+            "Full command contract: docs/command-contract.md"
+        ),
     )
     sub = parser.add_subparsers(dest="command")
 
-    migrate = sub.add_parser("migrate", help="Run a migration")
+    migrate = sub.add_parser(
+        "migrate",
+        help="Migrate dashboards/alerts from Grafana or Datadog into Kibana",
+    )
     migrate.add_argument(
         "--source", choices=source_registry.names(), required=True,
         help="Source vendor (grafana, datadog, ...)",
@@ -285,7 +304,10 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_tls_arguments(migrate)
     add_selection_arguments(migrate)
 
-    sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
+    sub.add_parser(
+        "doctor",
+        help="Check that obs-migrate is installed and ready (start here)",
+    )
 
     compile_cmd = sub.add_parser("compile", help="Compile YAML to NDJSON")
     compile_cmd.add_argument("--yaml-dir", required=True, help="Directory with dashboard YAML files")
@@ -807,32 +829,160 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "verify":
         sys.exit(_run_verify(args))
     elif args.command == "doctor":
-        _run_doctor()
+        sys.exit(_run_doctor())
     else:
         parser.print_help()
         sys.exit(1)
 
 
-def _run_doctor() -> None:
-    """Report environment readiness for the Kibana compile/lint path."""
+def _run_doctor() -> int:
+    """Report first-run readiness: Python, deps, extras, and Kibana tools.
+
+    Returns 0 when the install can compile/migrate (kb tools installed or
+    reachable via ``uvx``); returns 1 when a blocking gap remains.
+    """
+    import importlib.util
+    import platform
     import shutil
 
+    from observability_migration import __version__
+    from observability_migration._version import read_project_version
     from observability_migration.targets.kibana._kbtool import (
         KB_DASHBOARD_TOOL_VERSION,
         KbToolUnavailableError,
         tool_argv,
     )
 
+    issues: list[str] = []
+    notes: list[str] = []
+    py = sys.version_info
+    package_root = Path(__file__).resolve().parents[1]
+
     print("obs-migrate doctor")
+    print(f"  package version: {__version__}")
+    print(f"  package location: {package_root}")
+    print(f"  python: {platform.python_version()} ({sys.executable})")
+    print(f"  platform: {platform.system()} {platform.machine()} ({platform.platform()})")
+
+    if py < (3, 11):
+        issues.append(
+            f"Python {platform.python_version()} is below the supported floor "
+            "(need 3.11+)."
+        )
+    elif py >= (3, 14):
+        notes.append(
+            "Python 3.14+ is allowed by packaging metadata but is not in the "
+            "CI pytest matrix yet; prefer 3.11–3.13 for production migrations."
+        )
+
+    try:
+        project_version = read_project_version()
+        if project_version != __version__:
+            notes.append(
+                f"pyproject/metadata mismatch "
+                f"(read_project_version={project_version!r})"
+            )
+    except RuntimeError:
+        pass
+
+    # Core runtime imports (always required by the installed package).
+    required = (
+        ("yaml", "PyYAML"),
+        ("pydantic", "pydantic"),
+        ("requests", "requests"),
+        ("lark", "lark"),
+        ("grafana_client", "grafana-client"),
+        ("promql_parser", "promql-parser"),
+    )
+    print("  required dependencies:")
+    for mod, label in required:
+        if importlib.util.find_spec(mod) is None:
+            print(f"    {label}: MISSING")
+            issues.append(
+                f"Required dependency {label!r} is not importable. "
+                "Reinstall with: uvx --from 'obs-migrate[all]' obs-migrate doctor"
+            )
+        else:
+            print(f"    {label}: ok")
+
+    # Optional extras — helpful for first-time operators choosing [all].
+    print("  optional extras:")
+    datadog_ok = importlib.util.find_spec("datadog_api_client") is not None
+    print(
+        f"    datadog (datadog-api-client): "
+        f"{'ok' if datadog_ok else 'not installed — Datadog API mode needs obs-migrate[datadog] or [all]'}"
+    )
+    if not datadog_ok:
+        notes.append(
+            "Datadog API client not installed; file-mode Datadog migrate still "
+            "works. For --input-mode api install obs-migrate[all] (or [datadog])."
+        )
+
+    uv_path = shutil.which("uv")
+    uvx_path = shutil.which("uvx")
+    print(f"  uv on PATH: {'yes (' + uv_path + ')' if uv_path else 'no'}")
+    print(f"  uvx on PATH: {'yes (' + uvx_path + ')' if uvx_path else 'no'}")
+    if not uvx_path and py < (3, 12):
+        issues.append(
+            "Python < 3.12 needs uv/uvx on PATH so compile/lint can use the "
+            "pinned kb-dashboard-* fallback. Install: https://docs.astral.sh/uv/"
+        )
+    elif not uvx_path:
+        notes.append(
+            "uv/uvx not on PATH. Fine if kb-dashboard-* is installed via "
+            "obs-migrate[kibana]/[all] on Python 3.12+; otherwise install uv."
+        )
+
     print(f"  pinned kb-dashboard tool version: {KB_DASHBOARD_TOOL_VERSION}")
-    print(f"  uv on PATH: {'yes' if shutil.which('uvx') else 'no'}")
+    kb_ok = True
     for tool in ("kb-dashboard-cli", "kb-dashboard-lint"):
         try:
             argv = tool_argv(tool)
             mode = "installed" if argv[0] != "uvx" else "uvx fallback"
             print(f"  {tool}: available ({mode})")
         except KbToolUnavailableError as exc:
+            kb_ok = False
             print(f"  {tool}: UNAVAILABLE - {exc}")
+            issues.append(str(exc))
+    if not kb_ok and py >= (3, 12):
+        notes.append(
+            "On Python 3.12+, prefer obs-migrate[all] (or [kibana]) so "
+            "kb-dashboard-cli/lint install in-venv without needing uvx."
+        )
+
+    if notes:
+        print()
+        print("Notes:")
+        for note in notes:
+            print(f"  - {note}")
+
+    if issues:
+        print()
+        print("Problems (fix these before migrating):")
+        for issue in issues:
+            print(f"  - {issue}")
+        print()
+        print("First-time install (macOS/Linux, needs uv):")
+        print(
+            "  uvx --from 'obs-migrate[all]@git+https://github.com/"
+            "elastic/observability-migration-platform.git@v0.3.0' obs-migrate doctor"
+        )
+        return 1
+
+    print()
+    print("Ready.")
+    print("Next steps:")
+    print("  obs-migrate list-samples")
+    print(
+        "  obs-migrate migrate --source grafana --input-mode files "
+        "--input-dir <dir> --output-dir ./out --compile"
+    )
+    print(
+        "  obs-migrate migrate --source datadog --input-mode files "
+        "--input-dir <dir> --output-dir ./out --compile"
+    )
+    print("See docs/command-contract.md for upload, API mode, and verification.")
+    return 0
 
 
 def _run_verify_panels(args: Any) -> None:
