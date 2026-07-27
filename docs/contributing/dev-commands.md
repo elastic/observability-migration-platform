@@ -1,0 +1,434 @@
+# Contributor / CI Command Reference
+
+Runnable commands that need a **repo checkout**: verification and benchmark
+gates, `scripts/` lab lifecycle, repo-oriented validation CLIs, and pytest.
+
+Companion docs:
+
+- [`../command-contract.md`](../command-contract.md) — the operator surface: everything you
+  can run from an installed `elastic-observability-migration` wheel.
+- [`../testing.md`](../testing.md) — why each gate exists, what it proves, and the
+  confidence pyramid it belongs to.
+
+Everything below assumes a checkout with the locked dev environment
+(`make sync`), so examples use `.venv/bin/...`, `PYTHONPATH=parity-rig`,
+`bash scripts/...`, and `docker compose`. An operator who only installed the
+CLI never needs any of it.
+
+## Dev Environment Setup
+
+Prefer `make sync` (the locked `uv` environment used by CI):
+
+```bash
+make sync
+```
+
+The equivalent direct invocations, and the local git hooks:
+
+```bash
+uv sync --locked --all-extras
+uv run obs-migrate doctor
+```
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[all,dev]"
+.venv/bin/pre-commit install
+.venv/bin/pre-commit run --all-files
+```
+
+`.venv/bin/pip install -e ".[datadog]"` installs just the Datadog client extra
+when you do not want the full `[all]` set;
+`.venv/bin/pip install -e ".[kibana]"` installs `kb-dashboard-cli` in-venv for
+the legacy compile/import path (requires Python 3.12+).
+
+## Verification And Benchmark Gates
+
+The `parity-rig/verifier/` tools are repo-oriented correctness gates used by
+development and CI. They are intentionally layered: each gate answers a different
+question, and no single gate is sufficient for "the dashboard is correct".
+
+| Tool | Input | What it proves | Typical gate |
+|---|---|---|---|
+| `verifier.live_validate` | `migration_report.json` | Elasticsearch accepts the emitted ES|QL (`real_bug` vs `data_gap`) | no `real_bug` |
+| `verifier.dashboards_api` | `migration_report.json` + Kibana | Kibana's typed Dashboards API accepts the mapped panel payload | no `dashboards_api_rejected` |
+| `obs-migrate compare` | `verification_packets.json` + seeded data | Native PromQL and translated ES|QL are numerically close | no `FAIL`/`ERROR`; bounded `SHAPE_PASS` |
+| `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
+| `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
+| `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
+| `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
+| `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
+| `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
+| `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
+| `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
+
+Offline coverage gates (no cluster, every PR) live in the unit suite, not
+`verifier/`: `tests/core/coverage/test_supported_types.py` cross-checks the
+supported-type registry (`observability_migration/core/coverage/supported_types.py`)
+against the code's routing both ways; `tests/test_panel_matrix.py` (Grafana) and
+`tests/test_datadog_panel_matrix.py` (Datadog) lint every panel/widget type
+through the real pipeline; `tests/test_canary.py` validates the registry-driven
+kitchen-sink canary against `docs/dashboards/schema.json`. The fidelity ratchet
+runs as an e2e gate (`tests/e2e/test_fidelity_ratchet.py`) against committed
+baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
+
+Examples:
+
+```bash
+# Runtime ES|QL oracle: catches invalid emitted ES|QL that compile/lint miss.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
+  --migration-out migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --fail-on-bug
+
+# Typed Kibana UI contract: validates mapped panels against /api/dashboards.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.dashboards_api \
+  --migration-out migration_output/dashboards \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --api-key "$KEY" \
+  --fail-on-error
+
+# Semantic corpus gate over compare reports.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_gate \
+  --report comparison_report.json \
+  --max-fail 0 \
+  --max-error 0 \
+  --max-shape-pass 25
+
+# PM benchmark-history gate. Compare the latest run to the most recent
+# compatible different CLI hash (same G/D config and schema-discovery class).
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.benchmark_gate \
+  --history benchmark_history.json \
+  --max-drop-pp 0.5 \
+  --max-count-drop 5 \
+  --max-duration-increase-pct 100
+
+# Same gate, but scoped like the PM UI's datasource filters.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.benchmark_gate \
+  --history benchmark_history.json \
+  --source grafana \
+  --grafana-datasource prometheus \
+  --grafana-datasource-map grafana-datasources.json \
+  --max-drop-pp 0.5 \
+  --max-count-drop 5
+
+# Build a bigger pinned corpus manifest without introducing marketplace noise.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_manifest \
+  --grafana-catalog dashboards.json \
+  --grafana-datasource-map grafana-datasources.json \
+  --top 500 \
+  --long-tail tail_500_2000:500:2000:100 \
+  --datasource-quota prometheus=100 \
+  --datasource-quota loki=50 \
+  --bug-seed 1860 \
+  --output corpus.manifest.json
+```
+
+`live_validate` reads identifier-control defaults from each panel's QueryIR, so
+queries containing `??field` are executed with the same selected field as the
+migrated dashboard. Validation deduplication includes those defaults; two
+otherwise identical queries with different selected fields are both checked.
+
+Fidelity ratchet and render audit:
+
+```bash
+# Fidelity ratchet: Layer-9 invariant ERROR counts must not regress vs the
+# committed baseline. Refresh a baseline (only after an intentional change) with
+# --update; CI runs it without --update via tests/e2e/test_fidelity_ratchet.py.
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
+  --migration-out migration_output/dashboards \
+  --baseline parity-rig/benchmark/fidelity_baseline_grafana.json
+
+# Render audit: prove panels actually render in Kibana (catches Lens accessor /
+# "invalid column" errors that live_validate and the schema gate cannot see).
+# Serverless needs a one-time SSO login into a persistent Chrome profile
+# (--user-data-dir); a local no-SSO Kibana needs no profile.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
+
+# Focusing the right tab in a live agent-browser session (--agent-browser):
+# bootstrap.sh logs in once and keeps a persistent profile
+# (~/.agent-browser/profiles/obs-migrate-verifier) + saved state. A live session
+# often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
+# (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
+# (/internal/security/capture-url, auth_provider_hint). --agent-browser is a
+# tab-selection helper: it enumerates `tab list --json` and activates the Kibana
+# /app/* tab matching the host + dashboard id (ignoring the stray tabs) so the
+# session isn't left on the wrong tab. DOM capture ALWAYS uses the headless
+# dump_dom path (it reads HTML, so CSS-class render markers like embPanel__error
+# are visible, and it navigates to the exact target URL), so you still pass a
+# logged-in --user-data-dir profile. The pure selection rule is
+# select_kibana_page_url() in render_audit_driver.py.
+# Manual equivalent: `agent-browser tab list` then `agent-browser tab t<N>` for
+# the Kibana tab whose URL matches the cluster host + dashboard id.
+KIBANA_URL="$KIBANA_ENDPOINT" bash parity-rig/verifier/bootstrap.sh   # one-time SSO
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --user-data-dir /path/to/logged-in-chrome-profile \
+  --agent-browser --fail-on-error
+
+# Full local automation (no SSO): spin up a security-disabled ES+Kibana, then
+# migrate+upload the canary, seed, and render-audit it.
+STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+bash scripts/run_render_audit_local.sh
+docker compose -f parity-rig/docker-compose.render-audit.yml down -v
+```
+
+Dashboard interaction audit (control selection → affected queries). Requires
+Stack 9.5+. Offline unit coverage is `make test-interactions`; the live suite
+is nightly/manual only (`.github/workflows/dashboard-interaction-audit.yml`).
+
+```bash
+# One-time Chromium install for Playwright (optional; not part of default unit tests).
+make setup-browser
+
+# Offline interaction contracts / scenario planning / fake-browser tests.
+make test-interactions
+
+# Live local suite (caller starts the stack). Default scenarios:
+# synthetic-controls,redis-11835,k8s-views-global
+STACK_VERSION=9.5.0-SNAPSHOT docker compose -f parity-rig/docker-compose.render-audit.yml up -d --wait
+STACK_VERSION=9.5.0-SNAPSHOT make interaction-audit-local
+# Or scope one dashboard:
+SCENARIOS=redis-11835 bash scripts/run_interaction_audit_local.sh
+docker compose -f parity-rig/docker-compose.render-audit.yml down -v
+```
+
+Artifacts land under `ARTIFACT_ROOT` (default
+`./interaction-audit-artifacts/<scenario>/<run-id>/`), including `report.json`
+and optional Playwright traces/screenshots. Exit code is `1` only when the
+report status is `fail`; expected `migration_gap` / decorative controls warn
+with exit `0`. Useful env knobs: `FULL=1` (denser nightly seed),
+`SKIP_MIGRATE=1` + `KEEP_WORK=1` + `WORK_DIR=...` (browser-only re-run),
+`SCREENSHOTS=on-fail|always|never`, `LIVE_VALIDATE=0` (lint only after seed).
+
+`benchmark_gate` exits non-zero when no comparison was made (empty history, no
+compatible baseline, or a datasource/source filter matching no current/baseline
+metrics). Use `--allow-skip` only when intentionally bootstrapping a new
+history/baseline, and `--allow-filter-skip` only when an empty filtered slice is
+expected.
+
+Regression-gate guidance:
+
+- Use `benchmark_gate` for the PM trend numbers (`dashboard_migration_pct`,
+  `dashboard_clean_pct`, `panel_migration_pct`, `panel_clean_pct`,
+  `panel_verified_pct`, and optional duration). It also checks denominator drops
+  (`dashboards`, `panels_total`, `verification_total`) so stable percentages
+  cannot hide a smaller corpus or reduced verification coverage.
+- Keep PR gates smaller and deterministic. Use a pinned manifest from
+  `corpus_manifest` plus bug seeds. Run the larger stratified corpus nightly or
+  before risky translator changes.
+- A `benchmark_gate` "no compatible baseline" result is not a pass on quality;
+  it means the run changed config/schema class enough that the gate cannot make
+  a fair comparison. By default this exits non-zero in CI; establish a new
+  baseline before relying on trend decisions.
+
+The repo-oriented `obs-migrate verify-panels` and `obs-migrate verify-visual`
+wrappers also delegate to `parity-rig/verifier`; their flags are documented with
+the other `obs-migrate` subcommands in
+[`../command-contract.md`](../command-contract.md).
+
+## Validation / Verification CLIs
+
+```bash
+# Scope validation to just the dashboards a migration uploaded (recommended).
+# --dashboards-from reads a migration detailed report or a prior smoke report and
+# validates only those dashboards — by uploaded saved-object ID when the artifact
+# carries one, otherwise by title. This keeps runs practical on busy spaces (#198).
+.venv/bin/grafana-validate-uploaded \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --dashboards-from migration_output/dashboards/migration_report.json \
+  --output upload_smoke_report.json
+
+.venv/bin/grafana-generate-corpus --help
+```
+
+Scope flags are also available for ad-hoc runs: `--dashboard-id` /
+`--dashboard-title` (repeatable) restrict to specific dashboards. With no scope
+flags the validator inspects **every** dashboard in the space, prints an
+explicit `WARNING` that it is doing so, and skips `[DELETED]` placeholder
+dashboards (pass `--include-deleted` to validate those too). The run prints
+per-dashboard `[i/N]` progress before writing the final report.
+
+## Legacy Repo-Checkout Alert Flow
+
+The operator path is the single unified command documented under
+[Tested Alert Upload Flow](../command-contract.md#tested-alert-upload-flow).
+This multi-step flow remains supported in a source checkout when you want to
+regenerate the curated example artifacts without touching dashboards, or when
+you want the destructive round-trip `verify_alert_rule_uploads.py` path:
+
+```bash
+.venv/bin/python scripts/generate_alert_support_report.py
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/obs-migrate upload \
+  --artifact-dir examples/alerting/generated/grafana/dashboards \
+  --artifact-format yaml \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY"
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/python scripts/verify_alert_rule_uploads.py \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --api-key "$KEY" \
+  --keep-rules
+
+set -a && source serverless_creds.env && set +a
+.venv/bin/python scripts/audit_migrated_rules.py
+```
+
+This sequence regenerates the curated Grafana and Datadog alert comparison artifacts, uploads the generated `Legacy Alert Examples` dashboard, round-trips the emitted rules through Kibana, and then audits the migrated rules present in Kibana. `scripts/verify_alert_rule_uploads.py` deletes its verification rules unless `--keep-rules` is passed.
+
+`scripts/audit_migrated_rules.py` and `scripts/verify_alert_rule_uploads.py` are
+the repo-checkout equivalents of the packaged `obs-migrate audit-rules` and
+`obs-migrate verify-alert-rules` subcommands.
+
+## Script Commands
+
+### Local Lab Lifecycle
+
+```bash
+bash scripts/start_local_lab.sh
+bash scripts/start_local_lab.sh --with-alloy --recreate
+bash scripts/stop_local_lab.sh
+bash scripts/stop_local_lab.sh --volumes
+```
+
+These commands assume the selected local lab project owns the configured local ports. If another repo-owned lab is already using them, set `LOCAL_LAB_PROJECT`, `LOCAL_GRAFANA_PORT`, `LOCAL_ES_PORT`, `LOCAL_KIBANA_PORT`, and any colliding OTLP / Alloy ports before starting a second stack.
+
+### Local Validation Flows
+
+```bash
+bash scripts/full_local_demo.sh --sample-set bundled
+bash scripts/full_local_demo.sh --sample-set bundled --recreate-lab
+bash scripts/full_local_demo.sh
+```
+
+These wrappers write reports even when smoke validation or query validation finds issues, so inspect `migration_report.json` and `upload_smoke_report.json` instead of treating exit `0` as “all panels are perfect.”
+
+### Datadog Demo Flows
+
+Default mode uses the curated four-dashboard smoke subset. Browser extras are opt-in.
+
+```bash
+bash scripts/run_datadog_demo.sh
+bash scripts/run_datadog_demo.sh --browser-audit --capture-screenshots
+bash scripts/run_datadog_demo.sh --target serverless
+```
+
+For local-target Datadog demos, keep a single local lab stack active on the selected ports. If you just recreated the lab, wait for the chosen Elasticsearch container to report Docker health `healthy` before rerunning the wrapper.
+
+### Migration Helpers
+
+```bash
+bash scripts/run_migration.sh
+bash scripts/run_migration.sh --skip-data
+bash scripts/run_migration.sh --skip-upload
+```
+
+### Schema / Lint / Layout
+
+```bash
+bash scripts/generate_dashboard_schema.sh
+.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>
+KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
+```
+
+`generate_dashboard_schema.sh` refreshes the legacy/debug `kb-dashboard-core`
+YAML schema. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
+Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
+Dashboards API bundle while the API remains technical preview, because the
+standard Kibana bundle may contain redirect-only shells.
+
+Dashboard YAML lint and compiled-layout validation run automatically inside
+`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+
+```python
+from observability_migration.targets.kibana.lint import lint_dashboard_yaml
+ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+
+from observability_migration.targets.kibana.layout import validate_compiled_layout
+ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
+```
+
+The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
+`elastic-observability-migration[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
+
+### Data Setup
+
+For new use, prefer the package-native
+[`obs-migrate seed-sample-data`](../command-contract.md#seed-sample-data) /
+[`obs-migrate remove-sample-data`](../command-contract.md#remove-sample-data)
+subcommands, which ship in the installed wheel and honor the shared
+`--ca-cert`/`--insecure` TLS flags. `scripts/setup_telemetry_data.py` is now a
+thin shim over the same library, kept for existing automation:
+
+```bash
+set -a && source serverless_creds.env && set +a
+DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
+  .venv/bin/python scripts/setup_telemetry_data.py migration_output/dashboards
+```
+
+Use the migrated dashboard artifact directory for any source. Pass multiple
+artifact roots to generate one combined target schema/data set:
+
+```bash
+DATA_HOURS=6 INTERVAL_SEC=30 BATCH_DOC_LIMIT=8000 \
+  .venv/bin/python scripts/setup_telemetry_data.py \
+    grafana_output/dashboards datadog_output/dashboards
+```
+
+Keep the per-source stream layout the operator doc recommends under
+[Seeding more than one source at once](../command-contract.md#seeding-more-than-one-source-at-once):
+`metrics-prometheus-default` for Grafana, `metrics-datadog-default` for
+Datadog, `logs-generic-default` shared. Mixing Prometheus-style labels and
+Datadog/ECS field objects in one stream produces mapping conflicts.
+
+The common setup script discovers YAML and verification packets from each
+artifact root. Useful flags:
+
+| Flag | Meaning |
+|---|---|
+| `--data-hours` | Hours of synthetic data to generate. Defaults to 2. Falls back to `DATA_HOURS` env. |
+| `--interval-sec` | Seconds between samples. Defaults to 60. Falls back to `INTERVAL_SEC` env. |
+| `--batch-docs` | Documents per bulk request. Defaults to 5000. Falls back to `BATCH_DOC_LIMIT` env. |
+| `--max-combinations` | Maximum dimension combinations per stream per timestamp. Defaults to 12. Falls back to `MAX_COMBINATIONS` env. Lower this for very high-cardinality contracts. |
+| `--no-recreate` | Skip all index template and data stream operations. Use when the streams already exist with the desired mappings and you only want to ingest more synthetic documents. |
+
+Dashboard migration writes `schema_change_report.md` and
+`telemetry_contract.json` automatically. To regenerate schema changes from
+source queries to target fields, or to combine several source outputs, prefer
+the package-native
+[`obs-migrate schema-report`](../command-contract.md#schema-report) subcommand.
+The equivalent repo-checkout script is:
+
+```bash
+.venv/bin/python scripts/generate_telemetry_contract.py \
+  grafana_output/dashboards datadog_output/dashboards \
+  --output telemetry_contract.json \
+  --schema-report schema_change_report.md
+```
+
+Both forms write a single Markdown document with a top-level summary plus one
+section per artifact directory, mapping every panel from its source
+fields/queries to the target stream/fields it produces.
+
+### Pipeline Trace Regeneration
+
+```bash
+.venv/bin/python scripts/audit_pipeline.py --update-docs
+```
+
+## Test Commands
+
+```bash
+.venv/bin/python -m pytest tests/ -x -q
+.venv/bin/python -m pytest tests/core/ -x -q
+.venv/bin/python -m pytest tests/test_migrate.py -x -q
+.venv/bin/python -m pytest tests/test_datadog_migrate.py -x -q
+.venv/bin/python -m pytest tests/e2e/ -x -q
+```

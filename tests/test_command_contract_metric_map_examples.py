@@ -46,7 +46,7 @@ def test_command_contract_has_metric_map_operator_examples():
         "#### Datadog existing-OTEL example",
         "system.cpu.user: system.cpu.user.pct",
         "system.net.bytes_rcvd:",
-        ".venv/bin/obs-migrate migrate",
+        "obs-migrate migrate",
         "--source grafana",
         "--source datadog",
         "--field-profile otel",

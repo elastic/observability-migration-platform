@@ -2,8 +2,9 @@
 
 The canonical reference for how migration correctness is verified in this repo.
 For contributor setup and the minimal pre-PR checklist see `../CONTRIBUTING.md`;
-for the runnable command inventory see `command-contract.md`. This document
-explains the **why and how** of every gate.
+for the runnable gate/script commands see `contributing/dev-commands.md`, and
+for the operator CLI see `command-contract.md`. This document explains the
+**why and how** of every gate.
 
 ## The confidence pyramid
 
@@ -204,7 +205,8 @@ Issue tracker: https://github.com/elastic/observability-migration-platform/issue
 ## Tier 4 — Live authority
 
 Needs `ELASTICSEARCH_ENDPOINT`, `KIBANA_ENDPOINT`, and an API key (one key works
-for both on Serverless). Full command examples are in `command-contract.md`.
+for both on Serverless). Full command examples are in
+`contributing/dev-commands.md`.
 
 | Gate | Module | Proves |
 |---|---|---|
@@ -321,7 +323,7 @@ contract is documented below. It is Playwright-driven, requires Elastic Stack
   code is `1` only on `fail`, else `0`. Within a dashboard every interaction is
   collected; a failed earlier scenario (for example Redis) stops the shell loop
   so later dashboards are not reported as validated.
-- **Local commands** (see `command-contract.md` for full knobs):
+- **Local commands** (see `contributing/dev-commands.md` for full knobs):
   ```bash
   make setup-browser
   make test-interactions

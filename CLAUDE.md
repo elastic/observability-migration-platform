@@ -33,7 +33,9 @@ YAML/compile path. Treat this repository as the single source of truth.
   `docs/targets/kibana.md` for Kibana target/native API/YAML artifact behavior,
   `docs/sources/grafana.md` or `docs/sources/datadog.md` for source-specific
   behavior, `docs/contributing/import-paths.md` for public helper/module moves,
-  and `docs/testing.md` for verifier/gate changes. If public install/scope
+  `docs/testing.md` for verifier/gate changes, and
+  `docs/contributing/dev-commands.md` for repo-checkout-only commands
+  (`scripts/*`, verifier gates, pytest). If public install/scope
   changes, also update `README.md` and `docs/README.md`. Generated trace docs
   must be updated through their templates/generators.
 - Preserve "degrade gracefully" behavior for unsupported translations — do not silently hide semantic gaps.
@@ -48,7 +50,7 @@ YAML/compile path. Treat this repository as the single source of truth.
   and a clean view-mode browser session. Clear stale dashboard edit state before
   trusting browser observations.
 - For dashboard-regression work, use the layered verifier gates documented in
-  `docs/command-contract.md`: `verifier.live_validate` for runtime ES|QL errors,
+  `docs/contributing/dev-commands.md`: `verifier.live_validate` for runtime ES|QL errors,
   `verifier.dashboards_api` for typed Kibana UI-contract validation,
   `obs-migrate compare` plus `verifier.corpus_gate` for semantic parity,
   `verifier.benchmark_gate` for PM benchmark-history regressions,

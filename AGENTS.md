@@ -69,7 +69,9 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
   - Public install/scope pointers: `README.md` and `docs/README.md`.
   - Importable public helpers/modules: `docs/contributing/import-paths.md`.
   - Verification gates or verifier commands: `docs/testing.md` and the relevant
-    command examples in `docs/command-contract.md`.
+    command examples in `docs/contributing/dev-commands.md`.
+  - Repo-checkout-only commands (`scripts/*`, verifier gates, pytest):
+    `docs/contributing/dev-commands.md`, never `docs/command-contract.md`.
   - Generated trace docs: edit the matching `*.tpl.md` or generator and run
     `python scripts/audit_pipeline.py --update-docs`.
 - Do not commit secrets or generated local artifacts.
@@ -85,7 +87,7 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
   run scoped smoke/direct `_query` checks, and browser-check a clean view-mode
   Kibana session. Clear stale dashboard edit state before trusting browser output.
 - For dashboard-regression fixes, run the layered verifier gates documented in
-  `docs/command-contract.md`: `verifier.live_validate` (runtime ES|QL),
+  `docs/contributing/dev-commands.md`: `verifier.live_validate` (runtime ES|QL),
   `verifier.dashboards_api` (typed Kibana dashboard contract), `obs-migrate
   compare` + `verifier.corpus_gate` (semantic parity), `verifier.benchmark_gate`
   (PM benchmark-history regression guard), `verifier.scorecard` (Layer-9 fidelity
