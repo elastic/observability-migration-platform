@@ -974,6 +974,10 @@ def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
 
 _GIB = 1 << 30
 
+# How far before its own document timestamp an ``epoch_seconds`` gauge (boot
+# time, node time) may be placed.
+_EPOCH_GAUGE_WINDOW_SEC = 90 * 86400
+
 
 @dataclasses.dataclass(frozen=True)
 class ValueProfile:
@@ -1034,8 +1038,15 @@ def _gauge_value(
         # Anchor near the document timestamp so sibling differences (now - boot)
         # are small positive uptimes. Deterministic per (field, combo).
         anchor = now_epoch if now_epoch is not None else 0.0
-        offset = (abs(hash(field_name)) % (90 * 86400)) + combo_idx * 3600
-        value = anchor - offset + 60 * _diurnal(hour)
+        # The per-combo stagger and the diurnal wobble have to fit *inside* the
+        # window alongside the hash offset, otherwise a value can land before
+        # the window or after its own timestamp (a negative uptime). `hash` is
+        # salted per process, so an unclamped modulo makes that a coin flip.
+        stagger = min(float(combo_idx * 3600), _EPOCH_GAUGE_WINDOW_SEC - 1.0)
+        wobble = 60 * _diurnal(hour)
+        span = max(_EPOCH_GAUGE_WINDOW_SEC - stagger - wobble, 1.0)
+        offset = (abs(hash(field_name)) % int(span)) + stagger + wobble
+        value = anchor - offset
         if ceiling is not None:
             value = min(value, ceiling)
         return value

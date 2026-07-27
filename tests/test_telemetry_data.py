@@ -6,8 +6,11 @@ import json
 import re
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from unittest import mock
 
+from observability_migration.core import telemetry_data as td
 from observability_migration.core.telemetry_contract import build_telemetry_contract
 from observability_migration.core.telemetry_data import (
     _contract_index_patterns,
@@ -98,13 +101,48 @@ class GaugeMagnitudeTests(unittest.TestCase):
         vals = [d["node_load1"] for d in self._docs(fields)]
         self.assertTrue(all(0.0 <= v <= 8.0 for v in vals), vals)
 
-    def test_epoch_seconds_near_timestamp(self):
+    def _epoch_gauge_samples(self, fake_hash=None):
+        """Return ``(value, own document timestamp)`` pairs for an epoch gauge.
+
+        ``fake_hash`` shadows the salted builtin so a chosen point in the offset
+        window can be pinned instead of left to PYTHONHASHSEED.
+        """
         now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
-        epoch = now.timestamp()
         fields = {"node_time_seconds": {"role": "metric", "metric_kind": "gauge"}}
-        vals = [d["node_time_seconds"] for d in self._docs(fields, now=now)]
-        # within 90 days before the document timestamp, never in the future
-        self.assertTrue(all(epoch - 90 * 86400 <= v <= epoch + 1 for v in vals), vals)
+        patch = mock.patch.dict(td.__dict__, {"hash": fake_hash}) if fake_hash else nullcontext()
+        with patch:
+            docs = self._docs(fields, now=now)
+        return [
+            (
+                d["node_time_seconds"],
+                datetime.datetime.fromisoformat(d["@timestamp"].replace("Z", "+00:00")).timestamp(),
+            )
+            for d in docs
+        ]
+
+    def test_epoch_seconds_near_timestamp(self):
+        for value, doc_epoch in self._epoch_gauge_samples():
+            # within 90 days before the document timestamp, never in the future
+            self.assertGreaterEqual(value, doc_epoch - 90 * 86400)
+            self.assertLessEqual(value, doc_epoch)
+
+    def test_epoch_seconds_stays_in_window_at_both_hash_extremes(self):
+        """`hash` is salted per process, so the offset modulo has to be clamped.
+
+        Unclamped, the top of the window pushed samples before ``now - 90d`` and
+        the bottom pushed one past its own timestamp (a negative uptime).
+        """
+        for label, hashed in (
+            ("top of window", 90 * 86400 - 1),
+            ("bottom of window", 0),
+            ("just under the window", 90 * 86400),
+        ):
+            with self.subTest(label):
+                samples = self._epoch_gauge_samples(fake_hash=lambda _s, h=hashed: h)
+                self.assertTrue(samples)
+                for value, doc_epoch in samples:
+                    self.assertGreaterEqual(value, doc_epoch - 90 * 86400)
+                    self.assertLessEqual(value, doc_epoch)
 
     def test_unknown_gauge_value_unchanged_from_legacy(self):
         # Guard: an unrecognised gauge keeps the exact legacy formula output.
