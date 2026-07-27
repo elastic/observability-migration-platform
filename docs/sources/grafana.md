@@ -207,6 +207,16 @@ metric names`) and are marked `migrated_with_warnings`.
 > `profile_mismatch`, `field_capabilities_discovery`, and resolved target-field
 > `status` in `required_target_contract.json`.
 
+> **Feasibility is invariant to `--es-url`.** The feasibility verdict answers
+> only *was the panel translated successfully?* A panel that translates into
+> valid ES|QL but whose source metric or grouping field has not yet been
+> ingested is **not** reclassified as `not_feasible` — that is a transient *data
+> readiness* condition surfaced as a warning (`... is missing from live schema
+> discovery (data readiness, not translation infeasibility)`), owned by the
+> telemetry-preparation step. `not_feasible` is reserved for constructs the
+> target genuinely cannot express, so pointing the same run at a populated vs.
+> empty cluster yields the same per-panel verdict.
+
 Dashboard migration writes `schema_change_report.md` and
 `telemetry_contract.json` under `<output-dir>/dashboards/` automatically. Use
 the schema report for the per-panel Prometheus source field -> Elastic target
