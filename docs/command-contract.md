@@ -54,22 +54,23 @@ blocking is missing.
 ### Recommended (operators): `uvx` + `[all]`
 
 Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. Until
-PyPI publishing is enabled, pin a Git release tag:
+PyPI publishing is enabled, pin a Git release tag (not `@main`):
 
 ```bash
-uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
-  obs-migrate doctor
-uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
-  obs-migrate list-samples
+PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+uvx --from "$PKG" obs-migrate doctor
+uvx --from "$PKG" obs-migrate list-samples
 ```
 
-Once on PyPI: `uvx --from 'obs-migrate[all]' obs-migrate doctor`.
+After `v0.4.0` (or newer) is tagged, switch the tag. Once on PyPI:
+`PKG='obs-migrate[all]'`.
 
 ### Persistent pip install
 
 ```bash
+PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 python3 -m venv .venv
-.venv/bin/pip install "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0"
+.venv/bin/pip install "$PKG"
 .venv/bin/obs-migrate doctor
 ```
 

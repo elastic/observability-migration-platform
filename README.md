@@ -1,157 +1,119 @@
 # Observability Migration Platform
 
-[![Quality](https://github.com/elastic/mig-to-kbn/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/elastic/mig-to-kbn/actions/workflows/tests.yml)
-[![License & SBOM](https://github.com/elastic/mig-to-kbn/actions/workflows/license-check.yml/badge.svg?branch=main)](https://github.com/elastic/mig-to-kbn/actions/workflows/license-check.yml)
+[![Quality](https://github.com/elastic/observability-migration-platform/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/elastic/observability-migration-platform/actions/workflows/tests.yml)
+[![License & SBOM](https://github.com/elastic/observability-migration-platform/actions/workflows/license-check.yml/badge.svg?branch=main)](https://github.com/elastic/observability-migration-platform/actions/workflows/license-check.yml)
 [![License: Elastic-2.0](https://img.shields.io/badge/license-Elastic%20License%202.0-005571)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
 Migrate Grafana and Datadog dashboards, alerts, and monitors into Kibana.
-Unsupported translations are marked for manual review instead of being
-silently dropped.
+Unsupported translations are marked for manual review instead of silently
+dropped.
 
-**One tool:** `obs-migrate` — install it once, then doctor → try a sample →
-migrate your assets. (Legacy `grafana-migrate` / `datadog-migrate` scripts
-still exist for compatibility; prefer `obs-migrate`.)
+Use one CLI: **`obs-migrate`**.
 
-## Status
+## Requirements
 
-Pre-1.0 (`0.4.0`). No standalone binary — Python package only. PyPI
-publishing is pending Trusted Publisher setup; until then use the
-git-based `uvx` install below (pin a release tag, not `@main`). Pin tags
-if you automate on top of pre-1.0 releases.
+| Need | Detail |
+|------|--------|
+| OS | macOS or Linux (Windows not supported yet) |
+| Python | **3.11+** (3.11–3.13 recommended) |
+| Tooling | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` + `uvx`) |
 
-## Quick Start (operators)
+No repo clone required. Install with the `[all]` extra so Grafana, Datadog,
+and Kibana compile/lint dependencies arrive together.
 
-**Need (first-time machine):**
-1. **Python 3.11+** (3.11–3.13 recommended; see Compatibility)
-2. **[`uv`](https://docs.astral.sh/uv/)** on `PATH` (installs `uv` + `uvx`)
-3. macOS or Linux
+Pre-1.0 (`0.4.0`). Python package only (no standalone binary). PyPI publish
+is pending Trusted Publisher setup — until then, install from a **pinned Git
+tag** (not `@main`).
 
-You do **not** need to clone this repo. `obs-migrate[all]` pulls Grafana,
-Datadog, and Kibana compile/lint dependencies in one install.
+## Quick start
 
-### 1. Install and check
+Set the package once, then reuse it:
 
 ```bash
-uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
-  obs-migrate doctor
+# Until PyPI is live, pin a release tag (example: latest published tag).
+PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 ```
 
-Use `[all]` so Grafana, Datadog, and Kibana compile/lint tooling are
-available in one shot. After the next release that includes this packaging
-work, prefer `@v0.4.0` (or newer). Once PyPI publishing is enabled:
+After this packaging work ships as `v0.4.0` (or newer), switch the tag.
+Once on PyPI, use `PKG='obs-migrate[all]'` instead.
+
+### 1. Check the install
 
 ```bash
-uvx --from 'obs-migrate[all]' obs-migrate doctor
+uvx --from "$PKG" obs-migrate doctor
 ```
 
-Healthy `doctor` output looks like:
-
-```text
-obs-migrate doctor
-  package version: …
-  package location: …/site-packages/observability_migration
-  pinned kb-dashboard tool version: 0.4.1
-  uv on PATH: yes
-  kb-dashboard-cli: available (installed)
-  kb-dashboard-lint: available (installed)
-
-Next steps:
-  obs-migrate list-samples
-  obs-migrate migrate --source grafana --input-mode files --input-dir <dir> --output-dir ./out
-```
+`doctor` verifies Python, required imports, extras, `uv`/`uvx`, and Kibana
+compile tools. Exit `0` means ready; non-zero prints what to fix.
 
 ### 2. Try a bundled sample (offline)
 
 ```bash
-uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
-  obs-migrate list-samples
+uvx --from "$PKG" obs-migrate list-samples
 ```
 
-Pick a sample `input_dir` from the JSON, then:
+Copy a sample `input_dir` from the JSON, then:
 
 ```bash
-uvx --from "obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0" \
-  obs-migrate migrate --source grafana --input-mode files \
-  --input-dir "<sample-input_dir>" --output-dir ./out --assets dashboards --compile
+uvx --from "$PKG" obs-migrate migrate \
+  --source grafana --input-mode files \
+  --input-dir "<sample-input_dir>" \
+  --output-dir ./out --assets dashboards --compile
 ```
 
-### 3. Migrate your dashboards
+### 3. Migrate your assets
 
-Same command, point `--input-dir` at your exported Grafana or Datadog JSON
-(or use `--input-mode api` with credentials). Full flags, env files, upload,
-and verification: [`docs/command-contract.md`](docs/command-contract.md).
+Same `migrate` command — point `--input-dir` at your exported Grafana or
+Datadog JSON, or use `--input-mode api` with credentials. Upload,
+verification, and full flag reference:
+[`docs/command-contract.md`](docs/command-contract.md).
 
-### Other install options
+## Other installs
 
-| When | How |
-|------|-----|
-| Persistent local install | `python3 -m venv .venv && .venv/bin/pip install "obs-migrate[all]@git+…@TAG"` then `.venv/bin/obs-migrate …` |
-| Repo contributor / CI | `uv sync --locked --all-extras` then `uv run obs-migrate …` or `make sync` |
-| Narrow extras | `.[grafana]`, `.[datadog]`, `.[kibana]` instead of `[all]` if you know you need only one source |
+| When | Command |
+|------|---------|
+| Persistent venv | `python3 -m venv .venv && .venv/bin/pip install "$PKG"` then `.venv/bin/obs-migrate …` |
+| Contributor checkout | `make sync` (or `uv sync --locked --all-extras`) then `uv run obs-migrate …` |
+| Narrow extras | `[grafana]`, `[datadog]`, or `[kibana]` instead of `[all]` |
 
-On **Python 3.11**, the `[kibana]` / `[all]` extras do not install
-`kb-dashboard-*` in-venv (those tools need 3.12+); compile/lint use a pinned
-`uvx` fallback — keep `uv` on `PATH`. `doctor` prints `(uvx fallback)` then.
+On **Python 3.11**, Kibana compile tools are not installed in-venv (they need
+3.12+); `doctor` reports `(uvx fallback)` and `uv` must stay on `PATH`.
+
+Legacy `grafana-migrate` / `datadog-migrate` entry points remain as
+compatibility aliases — prefer `obs-migrate`.
 
 ## Compatibility
 
-- **OS (supported)**: macOS and Linux. Windows is not a supported or
-  CI-tested install target yet.
-- **OS (tested)**:
-  - **Linux (Ubuntu)**: CI unit tests, packaging smoke, and release builds
-    (`ubuntu-latest`). Clean-install package smoke covers Python **3.11** and
-    **3.12**.
-  - **macOS**: local packaging / clean-install smoke (wheel + sdist,
-    `obs-migrate doctor`, offline Grafana/Datadog `--compile`).
-- **Python**:
-  - **Supported:** 3.11+ (`requires-python = ">=3.11"`).
-  - **Recommended / CI-tested:** 3.11, 3.12, 3.13 (pytest matrix on Ubuntu).
-  - **Package smoke (clean wheel install + migrate):** 3.11 and 3.12 in CI;
-    local matrix also covers 3.13 and 3.14 where available.
-  - **Not supported:** 3.10 and older (installer must reject).
-  - **Kibana tooling:** `[kibana]` / `[all]` install `kb-dashboard-*` only on
-    **3.12+**; on **3.11** compile/lint use a pinned `uvx` fallback (so `uv`
-    must be on `PATH`).
-  - **Dependencies:** core install needs `grafana-client`, `promql-parser`,
-    `pydantic`, `PyYAML`, `requests`, `lark`. Operators should use
-    `obs-migrate[all]` so Datadog + Kibana extras are included. Run
-    `obs-migrate doctor` on a fresh machine to verify imports and tools.
-- **Kibana**: Elastic Serverless and ES|QL-capable Stack Kibana — see
-  [`docs/targets/kibana.md`](docs/targets/kibana.md).
-- **Grafana source**: dashboard JSON v1 schema; alerts via the unified
-  alerting API.
-- **Datadog source**: dashboards and monitors via the public Datadog API.
+| Area | Support |
+|------|---------|
+| OS | **Supported:** macOS, Linux. **CI-tested:** Ubuntu. **Local smoke:** macOS. Windows not claimed. |
+| Python | **Supported:** 3.11+. **CI pytest:** 3.11, 3.12, 3.13. **Clean-install smoke:** 3.11–3.12 (CI); 3.13–3.14 exercised locally. **Rejected:** ≤3.10. |
+| Kibana target | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
+| Grafana | Dashboard JSON v1; alerts via unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
+| Datadog | Dashboards and monitors via public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |
 
 ## Documentation
 
-- Docs index — [`docs/README.md`](docs/README.md)
-- Canonical commands — [`docs/command-contract.md`](docs/command-contract.md)
-- Known limitations — [`docs/known-limitations.md`](docs/known-limitations.md)
-- Architecture — [`docs/architecture.md`](docs/architecture.md)
-- Grafana source — [`docs/sources/grafana.md`](docs/sources/grafana.md)
-- Datadog source — [`docs/sources/datadog.md`](docs/sources/datadog.md)
-- Kibana target — [`docs/targets/kibana.md`](docs/targets/kibana.md)
-
-## Governance
-
 | Doc | Use when |
 | --- | --- |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, verification, docs rules, and pull request expectations |
-| [`SUPPORT.md`](SUPPORT.md) | Getting help and what to include in issues |
-| [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability (not via public issues) |
-| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community expectations and conduct reporting |
+| [`docs/README.md`](docs/README.md) | Docs index |
+| [`docs/command-contract.md`](docs/command-contract.md) | Canonical CLI commands and install detail |
+| [`docs/known-limitations.md`](docs/known-limitations.md) | Known gaps |
+| [`docs/architecture.md`](docs/architecture.md) | How the pipeline fits together |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, releasing, PR expectations |
+| [`SUPPORT.md`](SUPPORT.md) | Getting help |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 
-For bugs and feature requests,
-[open an issue](https://github.com/elastic/mig-to-kbn/issues).
+Bugs and feature requests:
+[open an issue](https://github.com/elastic/observability-migration-platform/issues).
 
 ## Licensing
 
 First-party content is source-available under the Elastic License 2.0
 (`ELv2`); see [`LICENSE`](LICENSE). Redistributed third-party material is
-listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) under its
-upstream terms. A locked license-compliance check and CycloneDX SBOM run
-in CI — see
+listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). CI runs a
+locked license check and CycloneDX SBOM — see
 [`.github/workflows/license-check.yml`](.github/workflows/license-check.yml).
 
 ## Trademarks
