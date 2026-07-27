@@ -189,5 +189,4 @@ The classifier's Markdown output ends up at `$OUT-classified.md` and surfaces th
 ## See also
 
 - [`docs/command-contract.md`](../../docs/command-contract.md) — canonical obs-migrate CLIs.
-- [`parity-rig/RESULTS.md`](../RESULTS.md) — known translator gaps catalogue.
 - [`.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md`](../../.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md) — interactive panel debugging via Chrome DevTools MCP + agent-browser.

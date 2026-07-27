@@ -37,9 +37,6 @@ Use this index when you want the shortest path to the right document.
 | Path | Use when |
 |---|---|
 | `targets/kibana.md` | You want the shared Kibana native API / YAML emit / compile / upload runtime |
-| `targets/kibana-esql-capabilities.md` | You want the current ES|QL capability survey |
-| `targets/kibana-esql-upgrade-matrix.md` | You want the concrete ES|QL follow-up matrix for this repo |
-| `targets/roadmap.md` | You want tracked translator improvements: shipped work with live-test steps and deferred designs |
 | `dashboards/README.md` | You want the dashboard YAML schema, lint, and layout validation tooling |
 
 ## Contributing Docs

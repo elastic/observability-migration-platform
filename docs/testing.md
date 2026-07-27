@@ -115,8 +115,7 @@ the *current* code and fails if ERROR counts rise. → See
 
 Closes the offline gap where sibling Grafana emitters can produce ES-illegal or
 self-inconsistent fused `STATS` / `EVAL` pipelines that unit snapshots never
-assert. Spec:
-`docs/superpowers/specs/2026-07-17-grafana-translation-correctness-harness-design.md`.
+assert.
 
 | Piece | Module / test | What it proves |
 |---|---|---|
@@ -148,8 +147,6 @@ assert. Spec:
 
 Same offline gap as Grafana — sibling Datadog emitters can fuse illegal or
 self-inconsistent `STATS` / `EVAL` pipelines that unit snapshots never assert.
-Extension spec:
-`docs/superpowers/specs/2026-07-20-translation-correctness-harness-extension-design.md`.
 
 | Piece | Module / test | What it proves |
 |---|---|---|

@@ -276,9 +276,8 @@ CASES: list[tuple[str, str, str]] = [
         ),
         "timeseries",
     ),
-    # group_right stays on the existing not_feasible path (out of scope for
-    # this issue — see docs/superpowers/specs/2026-07-10-vector-matching-join-migration-gap-design.md),
-    # but with a message naming why (only group_left is supported).
+    # group_right stays on the existing not_feasible path, but with a message
+    # naming why (only group_left is supported).
     (
         "agg_join_group_right_not_feasible",
         (
