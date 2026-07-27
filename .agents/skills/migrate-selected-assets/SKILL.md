@@ -11,7 +11,13 @@ This skill writes the selected assets to the target. It is otherwise read-only o
 
 ## Which command form to use (package vs. repo)
 
-Assume the user **installed the package** (`obs-migrate`, `grafana-migrate`, `datadog-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Every command and artifact below ships in the installed wheel — no `scripts/`, `infra/`, or `examples/` directory is required.
+Install from PyPI
+([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
+Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
+or a persistent `pip install` (`obs-migrate`, `grafana-migrate`, `datadog-migrate` on
+`PATH`). Prefix `.venv/bin/` only for a repo checkout. Every command and
+artifact below ships in the installed wheel — no `scripts/`, `infra/`, or
+`examples/` directory is required.
 
 ## The selection surface (read this before scoping)
 
@@ -146,6 +152,9 @@ obs-migrate upload \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY"
 
+# Or one-shot migrate+upload (same Kibana flags + --upload on migrate):
+# obs-migrate migrate … --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --upload
+
 # Alerts (selected): create the rules in one shot, disabled + tagged:
 obs-migrate migrate \
   --source datadog --input-mode api --env-file datadog_creds.env \
@@ -157,6 +166,11 @@ obs-migrate migrate \
 
 - Default `obs-migrate upload --artifact-dir` uses typed Dashboards API payloads from `native/` (`--artifact-format auto`). `--yaml-dir` is a compatibility alias for YAML mapping, not the primary path.
 - `--create-alert-rules` requires an alert-capable selection (`--assets alerts` or `all`) plus `--kibana-url` and `--kibana-api-key`. Rules land **disabled** — enable them in Kibana (or audit with `obs-migrate audit-rules`) after review.
+- Watch the run for `Selected N of M …` and exact degrade lines such as
+  `WARN: folder selection requested but unavailable for datadog dashboard; kept without folder filtering`.
+- A `--select-*` set that matches **no dashboards** prints
+  `ERROR: no Datadog dashboards matched the --select-* criteria.` and exits
+  non-zero; for alerts it can yield an empty alert set.
 - **Custom-CA / self-signed clusters:** every CLI here accepts `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) for testing only. They cover source, Elasticsearch, Kibana, and the Node upload step.
 
 ## Step 3 — Confirm the selection landed
@@ -168,7 +182,7 @@ obs-migrate migrate \
 ## Honest limits (tell the user)
 
 - **Some dimensions degrade per source/asset.** `--select-*` is uniform, but not every dimension is supplyable everywhere (see the availability table): Datadog dashboard folders live in the Dashboard-Lists API the engine doesn't fetch; Datadog/Grafana-unified starred and Datadog-monitor folder/datasource aren't available; Grafana dashboards have no first-class team. Those **degrade gracefully** (asset kept + `WARN`) rather than dropping assets — surface the `WARN` lines, don't pretend the filter applied.
-- **Selectors are exact + client-side.** Matching is case-insensitive exact (no prefix/glob); filtering happens after extraction. A `--select-*` set that matches nothing for **dashboards** exits non-zero; for alerts it yields an empty alert set.
+- **Selectors are exact + client-side.** Matching is case-insensitive exact (no prefix/glob); filtering happens after extraction. A `--select-*` set that matches nothing for **dashboards** errors and exits non-zero; for alerts it yields an empty alert set.
 - **`--monitor-query` is Datadog-side.** Its expressiveness is Datadog's, not ours; it composes with `--select-*` (which then narrows further client-side).
 - **No id selector for Grafana.** Grafana has no `--dashboard-ids` or alert-id flag — scope Grafana by `--select-*` or a curated `--input-dir`.
 - **Created rules are disabled.** A selected alert migration does not arm anything; rules are disabled and tagged `obs-migration` until a human enables them.
