@@ -1741,19 +1741,25 @@ def _build_dashboard_schema_resolver(
     )
 
 
-def _print_metrics_target_operator_guidance(args: Any, resolver: SchemaResolver | None) -> None:
+def _print_metrics_target_operator_guidance(
+    args: argparse.Namespace, resolver: SchemaResolver | None
+) -> None:
     """Warn on migrate-first / mixed-wildcard / UI-vs-query index footguns (#284)."""
     concrete_streams: list[str] = []
     conflicts: list[str] = []
+    discovery_error = ""
     es_url = str(getattr(args, "es_url", "") or "").strip()
     if resolver is not None and es_url:
         try:
             concrete_streams = list(resolver.concrete_index_candidates() or [])
-        except Exception:
-            concrete_streams = []
+            discovery_error = resolver.concrete_index_error()
+        except Exception as exc:
+            discovery_error = str(exc)
         try:
             conflicts = list(resolver.tsdb_conflict_fields() or [])
         except Exception:
+            # Conflict detection is an extra hint on top of the stream list;
+            # losing it should not suppress the rest of the guidance.
             conflicts = []
     guidance = assess_metrics_target(
         data_view=getattr(args, "data_view", "") or "",
@@ -1761,6 +1767,7 @@ def _print_metrics_target_operator_guidance(args: Any, resolver: SchemaResolver 
         es_url=es_url,
         concrete_streams=concrete_streams,
         tsdb_conflict_fields=conflicts,
+        stream_discovery_error=discovery_error,
     )
     print_metrics_target_guidance(guidance)
 

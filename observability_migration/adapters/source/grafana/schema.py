@@ -138,6 +138,7 @@ class SchemaResolver:
         self._discovered_mappings = {}
         self._discovery_attempted = False
         self._concrete_index_cache = None
+        self._concrete_index_error = ""
         self._schema_profile = None
         self._schema_profile_cache_id = None
         self._discovery_status = "not_attempted"
@@ -503,6 +504,11 @@ class SchemaResolver:
                 verify=self._verify,
             )
             if resp.status_code != 200:
+                # Record why, so callers can tell "cannot read the target" apart
+                # from "target has no streams" instead of reporting both as [].
+                self._concrete_index_error = (
+                    f"_resolve/index returned HTTP {resp.status_code}"
+                )
                 return
             body = resp.json()
             discovered = []
@@ -512,8 +518,8 @@ class SchemaResolver:
                     if name and name not in discovered:
                         discovered.append(name)
             self._concrete_index_cache = discovered
-        except Exception:
-            pass
+        except Exception as exc:
+            self._concrete_index_error = f"_resolve/index request failed: {exc}"
 
     def resolve_label(self, label, metric_field=None):
         if label in self._rule_pack.ignored_labels:
@@ -1044,6 +1050,15 @@ class SchemaResolver:
     def concrete_index_candidates(self):
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
+
+    def concrete_index_error(self) -> str:
+        """Why stream discovery came back empty, or "" if it genuinely is.
+
+        ``concrete_index_candidates()`` returns ``[]`` both when the target has
+        no matching streams and when ``_resolve/index`` could not be read.
+        """
+        self._discover_concrete_indexes()
+        return self._concrete_index_error
 
     def tsdb_conflict_fields(self) -> list[str]:
         """Fields that advertise both time_series_dimension and time_series_metric.
