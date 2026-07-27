@@ -69,8 +69,14 @@ class PackagingLicenseArtifactsTests(unittest.TestCase):
             wheel = next(output_dir.glob("*.whl"))
             sdist = next(output_dir.glob("*.tar.gz"))
             version = _pyproject_version()
-            self.assertEqual(wheel.name, f"obs_migrate-{version}-py3-none-any.whl")
-            self.assertEqual(sdist.name, f"obs_migrate-{version}.tar.gz")
+            self.assertEqual(
+                wheel.name,
+                f"elastic_observability_migration-{version}-py3-none-any.whl",
+            )
+            self.assertEqual(
+                sdist.name,
+                f"elastic_observability_migration-{version}.tar.gz",
+            )
 
             with zipfile.ZipFile(wheel) as archive:
                 wheel_members = archive.namelist()

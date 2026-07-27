@@ -31,7 +31,7 @@ REPORT_PATH = REPO_ROOT / "docs" / "licenses" / "dependencies.md"
 
 # First-party packages to ignore entirely. The project's own editable install
 # has no license metadata exposed to pip-licenses and must not fail the gate.
-IGNORE_PACKAGES = {"obs-migrate"}
+IGNORE_PACKAGES = {"elastic-observability-migration"}
 
 # Manual license overrides for packages whose PyPI metadata is missing but
 # whose upstream LICENSE file has been inspected directly.

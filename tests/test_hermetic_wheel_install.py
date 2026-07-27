@@ -53,7 +53,7 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 text=True,
                 cwd=neutral,
             )
-            wheels = list(dist.glob("obs_migrate-*-py3-none-any.whl"))
+            wheels = list(dist.glob("elastic_observability_migration-*-py3-none-any.whl"))
             self.assertEqual(len(wheels), 1, wheels)
             wheel = wheels[0]
 
@@ -194,7 +194,7 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 text=True,
                 cwd=neutral,
             )
-            sdists = list(dist.glob("obs_migrate-*.tar.gz"))
+            sdists = list(dist.glob("elastic_observability_migration-*.tar.gz"))
             self.assertEqual(len(sdists), 1, sdists)
             sdist = sdists[0]
 
