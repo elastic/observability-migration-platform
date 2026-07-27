@@ -67,6 +67,10 @@ GitHub tag fallback (never `@main`):
 PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
 ```
 
+Example pins above track `[project].version` via `make bump-version` (enforced
+on release by `scripts/check_release_version.py`). The PyPI badge on the README
+always shows the latest published version.
+
 ### Persistent pip install
 
 ```bash
