@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elastic-observability-migration"
-version = "0.4.0"
+version = "0.4.0rc1"
 description = "Source-agnostic observability migration platform (Grafana, Datadog → Kibana)."
 readme = "README.md"
 license = "Elastic-2.0"
