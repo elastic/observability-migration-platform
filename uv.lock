@@ -549,6 +549,92 @@ wheels = [
 ]
 
 [[package]]
+name = "elastic-observability-migration"
+version = "0.4.0"
+source = { editable = "." }
+dependencies = [
+    { name = "grafana-client" },
+    { name = "lark" },
+    { name = "promql-parser" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "datadog-api-client" },
+    { name = "grafana-client" },
+    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12'" },
+    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12'" },
+    { name = "promql-parser" },
+]
+browser = [
+    { name = "playwright" },
+]
+datadog = [
+    { name = "datadog-api-client" },
+]
+dev = [
+    { name = "build" },
+    { name = "cyclonedx-bom" },
+    { name = "hypothesis" },
+    { name = "jsonschema" },
+    { name = "mypy" },
+    { name = "pip-licenses" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "setuptools" },
+    { name = "types-pyyaml" },
+    { name = "types-requests" },
+    { name = "wheel" },
+]
+grafana = [
+    { name = "grafana-client" },
+    { name = "promql-parser" },
+]
+kibana = [
+    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12'" },
+    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.3.0" },
+    { name = "cyclonedx-bom", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "datadog-api-client", marker = "extra == 'datadog'" },
+    { name = "elastic-observability-migration", extras = ["datadog"], marker = "extra == 'all'" },
+    { name = "elastic-observability-migration", extras = ["grafana"], marker = "extra == 'all'" },
+    { name = "elastic-observability-migration", extras = ["kibana"], marker = "extra == 'all'" },
+    { name = "grafana-client", specifier = ">=5.0.0" },
+    { name = "grafana-client", marker = "extra == 'grafana'", specifier = ">=5.0.0" },
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.130.0" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.25" },
+    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12' and extra == 'kibana'", specifier = "==0.4.1" },
+    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12' and extra == 'kibana'", specifier = "==0.4.1" },
+    { name = "lark", specifier = ">=1.2.2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.20.1" },
+    { name = "pip-licenses", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.61.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
+    { name = "promql-parser", specifier = ">=0.7.0" },
+    { name = "promql-parser", marker = "extra == 'grafana'", specifier = ">=0.7.0" },
+    { name = "pydantic", specifier = ">=2.11.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.31.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.11" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = ">=77" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20260408" },
+    { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.33.0.20260408" },
+    { name = "wheel", marker = "extra == 'dev'" },
+]
+provides-extras = ["grafana", "datadog", "kibana", "dev", "all", "browser"]
+
+[[package]]
 name = "elastic-transport"
 version = "9.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1481,92 +1567,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/24/bf/d1bda4f6168e0b2e9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/b2/d0896bdcdc8d28a7fc5717c305f1a861c26e18c05047949fb371034d98bd/nodeenv-1.10.0-py2.py3-none-any.whl", hash = "sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827", size = 23438, upload-time = "2025-12-20T14:08:52.782Z" },
 ]
-
-[[package]]
-name = "obs-migrate"
-version = "0.4.0"
-source = { editable = "." }
-dependencies = [
-    { name = "grafana-client" },
-    { name = "lark" },
-    { name = "promql-parser" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "requests" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "datadog-api-client" },
-    { name = "grafana-client" },
-    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12'" },
-    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12'" },
-    { name = "promql-parser" },
-]
-browser = [
-    { name = "playwright" },
-]
-datadog = [
-    { name = "datadog-api-client" },
-]
-dev = [
-    { name = "build" },
-    { name = "cyclonedx-bom" },
-    { name = "hypothesis" },
-    { name = "jsonschema" },
-    { name = "mypy" },
-    { name = "pip-licenses" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "setuptools" },
-    { name = "types-pyyaml" },
-    { name = "types-requests" },
-    { name = "wheel" },
-]
-grafana = [
-    { name = "grafana-client" },
-    { name = "promql-parser" },
-]
-kibana = [
-    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12'" },
-    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "build", marker = "extra == 'dev'", specifier = ">=1.3.0" },
-    { name = "cyclonedx-bom", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "datadog-api-client", marker = "extra == 'datadog'" },
-    { name = "grafana-client", specifier = ">=5.0.0" },
-    { name = "grafana-client", marker = "extra == 'grafana'", specifier = ">=5.0.0" },
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.130.0" },
-    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.25" },
-    { name = "kb-dashboard-cli", marker = "python_full_version >= '3.12' and extra == 'kibana'", specifier = "==0.4.1" },
-    { name = "kb-dashboard-lint", marker = "python_full_version >= '3.12' and extra == 'kibana'", specifier = "==0.4.1" },
-    { name = "lark", specifier = ">=1.2.2" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.20.1" },
-    { name = "obs-migrate", extras = ["datadog"], marker = "extra == 'all'" },
-    { name = "obs-migrate", extras = ["grafana"], marker = "extra == 'all'" },
-    { name = "obs-migrate", extras = ["kibana"], marker = "extra == 'all'" },
-    { name = "pip-licenses", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.61.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.1" },
-    { name = "promql-parser", specifier = ">=0.7.0" },
-    { name = "promql-parser", marker = "extra == 'grafana'", specifier = ">=0.7.0" },
-    { name = "pydantic", specifier = ">=2.11.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.31.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.11" },
-    { name = "setuptools", marker = "extra == 'dev'", specifier = ">=77" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12.20260408" },
-    { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.33.0.20260408" },
-    { name = "wheel", marker = "extra == 'dev'" },
-]
-provides-extras = ["grafana", "datadog", "kibana", "dev", "all", "browser"]
 
 [[package]]
 name = "packageurl-python"

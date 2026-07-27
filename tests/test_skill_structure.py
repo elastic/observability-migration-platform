@@ -297,7 +297,7 @@ class CliFlagTests(unittest.TestCase):
         module = _load_script_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
-            body = "```bash\ngrafana-migrate --whatever-flag\npip install 'obs-migrate[grafana]'\n```\n"
+            body = "```bash\ngrafana-migrate --whatever-flag\npip install 'elastic-observability-migration[grafana]'\n```\n"
             _skill(root, "my-skill", body=body)
             self.assertEqual(module.check_structure(root), [])
 

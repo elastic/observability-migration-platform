@@ -28,7 +28,7 @@ class BumpVersionScriptTests(unittest.TestCase):
     def test_update_pyproject_version_replaces_first_version_line(self):
         text = (
             '[build-system]\nrequires = ["setuptools"]\n\n'
-            '[project]\nname = "obs-migrate"\nversion = "0.1.0"\n'
+            '[project]\nname = "elastic-observability-migration"\nversion = "0.1.0"\n'
             'description = "x"\n'
         )
         updated = self.bump.update_pyproject_version(text, "0.4.0")
@@ -42,7 +42,7 @@ class BumpVersionScriptTests(unittest.TestCase):
 
     def test_main_writes_pyproject_with_skip_lock(self):
         sample = (
-            '[project]\nname = "obs-migrate"\nversion = "0.1.0"\n'
+            '[project]\nname = "elastic-observability-migration"\nversion = "0.1.0"\n'
             'description = "x"\n'
         )
         with tempfile.TemporaryDirectory() as tmp:

@@ -43,7 +43,7 @@ also smoke-tested on macOS. Windows is not supported. See `README.md`
 Compatibility for the full matrix.
 
 **Python:** 3.11 or newer (CI pytest: 3.11, 3.12, 3.13). Prefer
-`obs-migrate[all]` on first-time machines so Grafana, Datadog, and Kibana
+`elastic-observability-migration[all]` on first-time machines so Grafana, Datadog, and Kibana
 tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
 `uvx` fallback. Run `obs-migrate doctor` after install — it checks Python,
 required imports, extras, and compile tools, and exits non-zero if something
@@ -57,17 +57,17 @@ package is not on PyPI yet, so pin a GitHub release tag (not `@main`):
 ```bash
 # Pin the latest release tag (example below). See:
 # https://github.com/elastic/observability-migration-platform/releases
-PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples
 ```
 
-When the package is on PyPI, use `PKG='obs-migrate[all]'`.
+When the package is on PyPI, use `PKG='elastic-observability-migration[all]'`.
 
 ### Persistent pip install
 
 ```bash
-PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 python3 -m venv .venv
 .venv/bin/pip install "$PKG"
 .venv/bin/obs-migrate doctor
@@ -1751,7 +1751,7 @@ ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
 ```
 
 The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
-`obs-migrate[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
+`elastic-observability-migration[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
 
 ### Data Setup
 

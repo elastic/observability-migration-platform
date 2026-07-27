@@ -3561,7 +3561,7 @@
           }
         }
       ],
-      "name": "obs-migrate",
+      "name": "elastic-observability-migration",
       "type": "application",
       "version": "0.1.0"
     },

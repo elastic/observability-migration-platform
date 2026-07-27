@@ -6,7 +6,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "obs-migrate"
+name = "elastic-observability-migration"
 version = "0.4.0"
 description = "Source-agnostic observability migration platform (Grafana, Datadog → Kibana)."
 readme = "README.md"
@@ -69,9 +69,9 @@ dev = [
 # End-user "everything" install: all sources + the Kibana tooling, but NOT the
 # maintainer dev/test toolchain. Use `.[all,dev]` for a contributor checkout.
 all = [
-  "obs-migrate[grafana]",
-  "obs-migrate[datadog]",
-  "obs-migrate[kibana]",
+  "elastic-observability-migration[grafana]",
+  "elastic-observability-migration[datadog]",
+  "elastic-observability-migration[kibana]",
 ]
 # Browser automation for contributor/CI dashboard interaction audits only.
 # Intentionally excluded from the end-user `all` extra above.

@@ -111,12 +111,12 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 3. **One-time PyPI Trusted Publishing** (deferred; no Elastic PyPI org yet):
 
    There is no Elastic PyPI organization account to use today. Create the
-   `obs-migrate` project under a personal PyPI account, share ownership with
+   `elastic-observability-migration` project under a personal PyPI account, share ownership with
    the maintainers, and transfer into an Elastic org later when one exists.
 
    - Each maintainer creates a PyPI account (2FA required).
    - One person creates a **pending** Trusted Publisher for project
-     `obs-migrate` (this claims the name under that person's account until
+     `elastic-observability-migration` (this claims the name under that person's account until
      first publish): https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
    - Trusted Publisher fields point at **this GitHub repo** (not a PyPI org):
      - Owner: `elastic` (GitHub org)
@@ -139,8 +139,8 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 5. Post-publish verification:
 
    ```bash
-   uvx --from 'obs-migrate[grafana,kibana]' obs-migrate doctor
-   uvx --from 'obs-migrate[grafana,kibana]' obs-migrate migrate --help
+   uvx --from 'elastic-observability-migration[grafana,kibana]' obs-migrate doctor
+   uvx --from 'elastic-observability-migration[grafana,kibana]' obs-migrate migrate --help
    ```
 
 Until step 3–4 are done, operators should use checkout/`pip`, `uv run`, or the

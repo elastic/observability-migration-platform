@@ -18,7 +18,7 @@ def _pyproject_version() -> str:
 
 def _uv_lock_obs_migrate_version() -> str:
     text = (ROOT / "uv.lock").read_text(encoding="utf-8")
-    match = re.search(r'name = "obs-migrate"\nversion = "([^"]+)"', text)
+    match = re.search(r'name = "elastic-observability-migration"\nversion = "([^"]+)"', text)
     assert match is not None, "obs-migrate entry missing from uv.lock"
     return match.group(1)
 

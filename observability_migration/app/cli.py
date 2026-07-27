@@ -900,7 +900,7 @@ def _run_doctor() -> int:
             print(f"    {label}: MISSING")
             issues.append(
                 f"Required dependency {label!r} is not importable. "
-                "Reinstall with: uvx --from 'obs-migrate[all]' obs-migrate doctor"
+                "Reinstall with: uvx --from 'elastic-observability-migration[all]' obs-migrate doctor"
             )
         else:
             print(f"    {label}: ok")
@@ -910,12 +910,12 @@ def _run_doctor() -> int:
     datadog_ok = importlib.util.find_spec("datadog_api_client") is not None
     print(
         f"    datadog (datadog-api-client): "
-        f"{'ok' if datadog_ok else 'not installed — Datadog API mode needs obs-migrate[datadog] or [all]'}"
+        f"{'ok' if datadog_ok else 'not installed — Datadog API mode needs elastic-observability-migration[datadog] or [all]'}"
     )
     if not datadog_ok:
         notes.append(
             "Datadog API client not installed; file-mode Datadog migrate still "
-            "works. For --input-mode api install obs-migrate[all] (or [datadog])."
+            "works. For --input-mode api install elastic-observability-migration[all] (or [datadog])."
         )
 
     uv_path = shutil.which("uv")
@@ -930,7 +930,7 @@ def _run_doctor() -> int:
     elif not uvx_path:
         notes.append(
             "uv/uvx not on PATH. Fine if kb-dashboard-* is installed via "
-            "obs-migrate[kibana]/[all] on Python 3.12+; otherwise install uv."
+            "elastic-observability-migration[kibana]/[all] on Python 3.12+; otherwise install uv."
         )
 
     print(f"  pinned kb-dashboard tool version: {KB_DASHBOARD_TOOL_VERSION}")
@@ -946,7 +946,7 @@ def _run_doctor() -> int:
             issues.append(str(exc))
     if not kb_ok and py >= (3, 12):
         notes.append(
-            "On Python 3.12+, prefer obs-migrate[all] (or [kibana]) so "
+            "On Python 3.12+, prefer elastic-observability-migration[all] (or [kibana]) so "
             "kb-dashboard-cli/lint install in-venv without needing uvx."
         )
 
@@ -964,7 +964,7 @@ def _run_doctor() -> int:
         print()
         print("First-time install (macOS/Linux, needs uv):")
         print(
-            "  uvx --from 'obs-migrate[all]@git+https://github.com/"
+            "  uvx --from 'elastic-observability-migration[all]@git+https://github.com/"
             "elastic/observability-migration-platform.git@v0.3.0' obs-migrate doctor"
         )
         return 1

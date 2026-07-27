@@ -46,7 +46,7 @@ class CheckReleaseVersionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "pyproject.toml").write_text(
-                '[project]\nname = "obs-migrate"\nversion = "1.2.3"\n',
+                '[project]\nname = "elastic-observability-migration"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             with self.assertRaises(SystemExit) as ctx:

@@ -33,13 +33,13 @@ Set the package source once, then reuse it:
 ```bash
 # Pin the latest release tag (example below). See:
 # https://github.com/elastic/observability-migration-platform/releases
-PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 ```
 
 When the package is on PyPI, use:
 
 ```bash
-PKG='obs-migrate[all]'
+PKG='elastic-observability-migration[all]'
 ```
 
 ### 1. Check the install

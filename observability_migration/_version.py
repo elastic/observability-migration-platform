@@ -15,7 +15,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-_PACKAGE_NAME = "obs-migrate"
+_PACKAGE_NAME = "elastic-observability-migration"
 
 
 @lru_cache(maxsize=4)
@@ -30,6 +30,6 @@ def read_project_version(root: Path | None = None) -> str:
         return version(_PACKAGE_NAME)
     except PackageNotFoundError as exc:
         raise RuntimeError(
-            "obs-migrate version unavailable: no pyproject.toml next to the "
+            "elastic-observability-migration version unavailable: no pyproject.toml next to the "
             "package and the distribution is not installed"
         ) from exc
