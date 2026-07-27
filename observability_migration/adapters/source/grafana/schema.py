@@ -1045,6 +1045,18 @@ class SchemaResolver:
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
 
+    def tsdb_conflict_fields(self) -> list[str]:
+        """Fields that advertise both time_series_dimension and time_series_metric.
+
+        Mixed backends under a wildcard ``metrics-*`` can produce this conflict
+        and make ``TS`` queries fail with dimension/metric merge errors. Exposed
+        for migrate-time operator guidance (issue #284).
+        """
+        from .metrics_target_guidance import tsdb_conflict_fields_from_field_cache
+
+        self._discover_fields()
+        return tsdb_conflict_fields_from_field_cache(self._field_cache)
+
     def merge_control_schema(self, payload: Mapping[str, object] | None) -> None:
         """Merge offline control-schema field/co-occurrence hints into discovery.
 

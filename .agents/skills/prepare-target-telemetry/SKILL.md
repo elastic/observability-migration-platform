@@ -74,7 +74,8 @@ How you plan to ship Prometheus into Elastic decides the field profile:
 
 - **`--esql-index`** — metrics query + schema-discovery target (`TS`/`FROM` / native `PROMQL index=…`). Required for Prometheus fidelity when the stream is not the default data-view pattern.
 - **`--data-view`** — Kibana UI / control bind; may differ from `--esql-index`.
-- See `docs/command-contract.md` → Target index flags. Wrong/missing `--esql-index` is the #1 reason migrated Prometheus panels query the wrong stream.
+- See `docs/command-contract.md` → Target index flags **and** “Migrate-first vs data-first”. Wrong/missing `--esql-index` is the #1 reason migrated Prometheus panels query the wrong stream.
+- **Migrate-first:** pick the concrete stream your ingest will create *before* migrating; empty panels until data lands are expected. **Data-first:** with `--es-url`, pin both flags away from mixed `metrics-*` when multiple backends exist. Migrate prints readiness warnings for both timelines.
 
 Late-bound grouping (`by ($var)` → `??var`) and label-matcher params (`$var` → `?var`) need live `--es-url` so `esql_named_param_binding` can probe. `--translation-mode {auto,native,esql}` controls native PROMQL vs forced ES|QL.
 

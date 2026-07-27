@@ -480,6 +480,40 @@ Both native-PROMQL and ES|QL-fallback panels then query
 `metrics-alloy.prometheus-default`. Prefer setting `--data-view` to that same
 stream when you also want the Kibana data-view object / controls scoped there.
 
+### Migrate-first vs data-first (data plane before assets)
+
+`obs-migrate` moves dashboard/alert **definitions**. It does not create
+collectors or invent a data stream from Grafana datasource UIDs. Empty panels
+after a green migrate are usually a **data-plane** problem. Two valid
+sequences:
+
+**Migrate-first (assets before telemetry):**
+
+1. Choose the ingest route and the **concrete** stream name it will create.
+2. Migrate with both `--data-view` and `--esql-index` set to that planned
+   stream (avoid a mixed `metrics-*` wildcard on shared clusters).
+3. Without `--es-url`, field mappings are unverified guesses — empty panels
+   until data lands are expected. The CLI prints a migrate-first readiness
+   warning for this case.
+4. When dual-write starts, re-run with `--es-url` / `--preflight` against the
+   **same** stream, then `live_validate` / compare / render audit.
+5. Use `seed-sample-data` only for demos on a dedicated stream — not as cutover
+   proof.
+
+**Data-first (telemetry already in Elastic):**
+
+1. Pass `--es-url` so migrate can list concrete streams under your pattern.
+2. If `--data-view` / `--esql-index` is a wildcard covering multiple backends
+   (Prometheus + Datadog + OTel), the CLI warns and asks you to pin both flags
+   to one concrete stream. Treat TSDB dimension/metric merge failures as
+   **index readiness**, not translator bugs.
+3. Migrate pointed at that stream, then verify immediately.
+
+**Operator rule of thumb:** ingest path → concrete stream → set both
+`--data-view` and `--esql-index` → migrate/verify. When the two flags differ,
+queries follow `--esql-index` (or `--data-view` when unset); the CLI warns that
+the Kibana UI bind may still use `--data-view`.
+
 Without `--es-url`, schema discovery is skipped entirely, so `--esql-index`
 still sets the query `FROM`/`PROMQL index` target, but the run falls back to
 OTel field defaults and cannot warn you that the index does not match your data.

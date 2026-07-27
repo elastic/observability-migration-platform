@@ -368,6 +368,12 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("Metrics query target (native PROMQL and ES|QL)", text)
         self.assertIn("esql_index or data_view", text)
         self.assertIn("retargets **both**", text)
+        # Issue #284: both operator timelines + concrete-stream rule of thumb.
+        self.assertIn("### Migrate-first vs data-first (data plane before assets)", text)
+        self.assertIn("Migrate-first (assets before telemetry)", text)
+        self.assertIn("Data-first (telemetry already in Elastic)", text)
+        self.assertIn("index readiness", text)
+        self.assertIn("ingest path → concrete stream", text)
 
     def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")

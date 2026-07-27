@@ -94,6 +94,10 @@ from .extract import (
 from .links import build_links_summary, translate_dashboard_links, translate_panel_links
 from .local_ai import resolve_task_model
 from .manifest import save_migration_manifest
+from .metrics_target_guidance import (
+    assess_metrics_target,
+    print_metrics_target_guidance,
+)
 from .panels import _dashboard_output_stem, _flatten_dashboard_panels, translate_dashboard
 from .polish import apply_metadata_polish
 from .preflight import (
@@ -1737,6 +1741,30 @@ def _build_dashboard_schema_resolver(
     )
 
 
+def _print_metrics_target_operator_guidance(args: Any, resolver: SchemaResolver | None) -> None:
+    """Warn on migrate-first / mixed-wildcard / UI-vs-query index footguns (#284)."""
+    concrete_streams: list[str] = []
+    conflicts: list[str] = []
+    es_url = str(getattr(args, "es_url", "") or "").strip()
+    if resolver is not None and es_url:
+        try:
+            concrete_streams = list(resolver.concrete_index_candidates() or [])
+        except Exception:
+            concrete_streams = []
+        try:
+            conflicts = list(resolver.tsdb_conflict_fields() or [])
+        except Exception:
+            conflicts = []
+    guidance = assess_metrics_target(
+        data_view=getattr(args, "data_view", "") or "",
+        esql_index=getattr(args, "esql_index", "") or "",
+        es_url=es_url,
+        concrete_streams=concrete_streams,
+        tsdb_conflict_fields=conflicts,
+    )
+    print_metrics_target_guidance(guidance)
+
+
 def _print_schema_discovery_status(
     resolver: SchemaResolver,
     *,
@@ -2180,8 +2208,10 @@ def main(argv: list[str] | None = None):
             resolver,
             field_profile=args.field_profile,
         )
+        _print_metrics_target_operator_guidance(args, resolver)
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
+        _print_metrics_target_operator_guidance(args, None)
         control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
         if control_schema_path:
             schema_file = Path(control_schema_path)
