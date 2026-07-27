@@ -108,13 +108,28 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
    `pyproject.toml`, then builds the wheel/sdist and attaches them (plus the
    SBOM) to a GitHub Release.
 
-3. **One-time PyPI Trusted Publishing** (deferred until org/access is ready):
-   - Create a pending Trusted Publisher on PyPI for project `obs-migrate` with:
-     - Owner: `elastic`
+3. **One-time PyPI Trusted Publishing** (deferred; no Elastic PyPI org yet):
+
+   There is no Elastic PyPI organization account to use today. Create the
+   `obs-migrate` project under a personal PyPI account, share ownership with
+   the maintainers, and transfer into an Elastic org later when one exists.
+
+   - Each maintainer creates a PyPI account (2FA required).
+   - One person creates a **pending** Trusted Publisher for project
+     `obs-migrate` (this claims the name under that person's account until
+     first publish): https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
+   - Trusted Publisher fields point at **this GitHub repo** (not a PyPI org):
+     - Owner: `elastic` (GitHub org)
      - Repository: `observability-migration-platform`
      - Workflow: `release.yml`
      - Environment: `pypi`
-   - Docs: https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
+   - Ensure the GitHub Actions environment `pypi` exists on the repo.
+   - On the PyPI project, add the other maintainers as **Owner** collaborators
+     (so anyone can manage publishers/collaborators later). Maintainer role
+     alone cannot add people or change Trusted Publishers.
+   - Later: transfer the project to an Elastic PyPI organization when
+     available (PyPI project settings → transfer), then re-check that the
+     Trusted Publisher still matches this workflow.
 
 4. After the publisher exists, re-enable the publish step in
    `.github/workflows/release.yml` by removing `if: ${{ false }}` from the
