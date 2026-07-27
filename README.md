@@ -6,37 +6,40 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
 Migrate Grafana and Datadog dashboards, alerts, and monitors into Kibana.
-Unsupported translations are marked for manual review instead of silently
-dropped.
+Unsupported translations are marked for manual review instead of being
+silently dropped.
 
 Use one CLI: **`obs-migrate`**.
+
+Pre-1.0 (`0.4.0`). Distributed as a Python package only — there is no
+standalone binary. The package is not on PyPI yet, so install from a
+**pinned GitHub release tag** (never `@main`) until publishing is enabled.
 
 ## Requirements
 
 | Need | Detail |
 |------|--------|
-| OS | macOS or Linux (Windows not supported yet) |
-| Python | **3.11+** (3.11–3.13 recommended) |
-| Tooling | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` + `uvx`) |
+| OS | macOS or Linux (Windows is not supported) |
+| Python | 3.11 or newer (3.11–3.13 recommended) |
+| Installer | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` and `uvx`) |
 
-No repo clone required. Install with the `[all]` extra so Grafana, Datadog,
-and Kibana compile/lint dependencies arrive together.
-
-Pre-1.0 (`0.4.0`). Python package only (no standalone binary). PyPI publish
-is pending Trusted Publisher setup — until then, install from a **pinned Git
-tag** (not `@main`).
+You do not need to clone this repository. Install with the `[all]` extra so
+Grafana, Datadog, and Kibana compile/lint dependencies are included together.
 
 ## Quick start
 
-Set the package once, then reuse it:
+Set the package source once, then reuse it:
 
 ```bash
-# Until PyPI is live, pin a release tag (example: latest published tag).
+# Latest published release tag today. After v0.4.0 is tagged, prefer that.
 PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 ```
 
-After this packaging work ships as `v0.4.0` (or newer), switch the tag.
-Once on PyPI, use `PKG='obs-migrate[all]'` instead.
+When the package is on PyPI, use:
+
+```bash
+PKG='obs-migrate[all]'
+```
 
 ### 1. Check the install
 
@@ -44,8 +47,9 @@ Once on PyPI, use `PKG='obs-migrate[all]'` instead.
 uvx --from "$PKG" obs-migrate doctor
 ```
 
-`doctor` verifies Python, required imports, extras, `uv`/`uvx`, and Kibana
-compile tools. Exit `0` means ready; non-zero prints what to fix.
+`doctor` checks your Python version, required imports, optional extras,
+`uv`/`uvx`, and Kibana compile tools. Exit code `0` means ready; a non-zero
+exit prints what to fix.
 
 ### 2. Try a bundled sample (offline)
 
@@ -53,7 +57,7 @@ compile tools. Exit `0` means ready; non-zero prints what to fix.
 uvx --from "$PKG" obs-migrate list-samples
 ```
 
-Copy a sample `input_dir` from the JSON, then:
+Copy a sample’s `input_dir` from the JSON output, then:
 
 ```bash
 uvx --from "$PKG" obs-migrate migrate \
@@ -64,34 +68,35 @@ uvx --from "$PKG" obs-migrate migrate \
 
 ### 3. Migrate your assets
 
-Same `migrate` command — point `--input-dir` at your exported Grafana or
-Datadog JSON, or use `--input-mode api` with credentials. Upload,
-verification, and full flag reference:
+Use the same `migrate` command with your exported Grafana or Datadog JSON
+(`--input-dir`), or use `--input-mode api` with credentials. For upload,
+verification, and the full flag reference, see
 [`docs/command-contract.md`](docs/command-contract.md).
 
-## Other installs
+## Other install options
 
-| When | Command |
-|------|---------|
-| Persistent venv | `python3 -m venv .venv && .venv/bin/pip install "$PKG"` then `.venv/bin/obs-migrate …` |
+| When | How |
+|------|-----|
+| Persistent virtualenv | `python3 -m venv .venv && .venv/bin/pip install "$PKG"` then `.venv/bin/obs-migrate …` |
 | Contributor checkout | `make sync` (or `uv sync --locked --all-extras`) then `uv run obs-migrate …` |
-| Narrow extras | `[grafana]`, `[datadog]`, or `[kibana]` instead of `[all]` |
+| Narrower extras | Use `[grafana]`, `[datadog]`, or `[kibana]` instead of `[all]` |
 
-On **Python 3.11**, Kibana compile tools are not installed in-venv (they need
-3.12+); `doctor` reports `(uvx fallback)` and `uv` must stay on `PATH`.
+On **Python 3.11**, Kibana compile tools are not installed into the
+environment (they require 3.12+). `doctor` reports `uvx fallback`, and `uv`
+must remain on `PATH`.
 
-Legacy `grafana-migrate` / `datadog-migrate` entry points remain as
-compatibility aliases — prefer `obs-migrate`.
+The older `grafana-migrate` and `datadog-migrate` commands still work as
+compatibility aliases. Prefer `obs-migrate`.
 
 ## Compatibility
 
-| Area | Support |
-|------|---------|
-| OS | **Supported:** macOS, Linux. **CI-tested:** Ubuntu. **Local smoke:** macOS. Windows not claimed. |
-| Python | **Supported:** 3.11+. **CI pytest:** 3.11, 3.12, 3.13. **Clean-install smoke:** 3.11–3.12 (CI); 3.13–3.14 exercised locally. **Rejected:** ≤3.10. |
-| Kibana target | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
-| Grafana | Dashboard JSON v1; alerts via unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
-| Datadog | Dashboards and monitors via public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |
+| Area | Detail |
+|------|--------|
+| OS | Supported on macOS and Linux. CI runs on Ubuntu; packaging is also smoke-tested on macOS. Windows is not supported. |
+| Python | Supported: 3.11+. CI pytest: 3.11, 3.12, 3.13. Clean-install smoke in CI: 3.11 and 3.12 (also verified on 3.13 and 3.14). Python 3.10 and older are rejected. |
+| Kibana | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
+| Grafana | Dashboard JSON v1; alerts via the unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
+| Datadog | Dashboards and monitors via the public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |
 
 ## Documentation
 
@@ -101,7 +106,7 @@ compatibility aliases — prefer `obs-migrate`.
 | [`docs/command-contract.md`](docs/command-contract.md) | Canonical CLI commands and install detail |
 | [`docs/known-limitations.md`](docs/known-limitations.md) | Known gaps |
 | [`docs/architecture.md`](docs/architecture.md) | How the pipeline fits together |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, releasing, PR expectations |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, releasing, and PR expectations |
 | [`SUPPORT.md`](SUPPORT.md) | Getting help |
 | [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 
