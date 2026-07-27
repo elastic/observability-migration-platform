@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_README = ROOT / "README.md"
 COMMAND_CONTRACT = ROOT / "docs" / "command-contract.md"
+DEV_COMMANDS = ROOT / "docs" / "contributing" / "dev-commands.md"
 KIBANA_TARGET_DOC = ROOT / "docs" / "targets" / "kibana.md"
 GRAFANA_SOURCE_DOC = ROOT / "docs" / "sources" / "grafana.md"
 DATADOG_SOURCE_DOC = ROOT / "docs" / "sources" / "datadog.md"
@@ -26,6 +27,45 @@ PREPARE_TARGET_TELEMETRY_SKILL = ROOT / ".cursor" / "skills" / "prepare-target-t
 
 
 class CommandContractDocTests(unittest.TestCase):
+    def test_command_contract_stays_operator_runnable(self):
+        # Issue #329: the operator doc must only contain commands someone can
+        # run from an installed wheel. Contributor/CI material moved out.
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        for spelling in re.findall(r"\.venv/bin/[\w.-]*", text):
+            self.assertEqual(
+                spelling,
+                ".venv/bin/activate",
+                msg=f"operator doc invokes a repo venv path: {spelling}",
+            )
+        for banned in (
+            "bash scripts/",
+            "PYTHONPATH=parity-rig",
+            "pytest",
+            "python -m verifier.",
+        ):
+            self.assertNotIn(banned, text, msg=f"contributor-only content: {banned}")
+        self.assertIn("contributing/dev-commands.md", text)
+
+    def test_dev_commands_doc_holds_the_moved_contributor_content(self):
+        text = DEV_COMMANDS.read_text(encoding="utf-8")
+        for fragment in (
+            "## Verification And Benchmark Gates",
+            "verifier.corpus_manifest",
+            "## Validation / Verification CLIs",
+            "grafana-validate-uploaded",
+            "## Script Commands",
+            "bash scripts/start_local_lab.sh",
+            "scripts/setup_telemetry_data.py",
+            "scripts/audit_pipeline.py --update-docs",
+            "## Test Commands",
+            "pytest tests/",
+        ):
+            self.assertIn(fragment, text, msg=f"dev-commands.md missing: {fragment}")
+
+    def test_docs_index_links_the_contributor_command_doc(self):
+        text = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("contributing/dev-commands.md", text)
+
     def test_command_contract_mentions_assets_flag(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("--assets {dashboards,alerts,all}", text)
@@ -54,8 +94,10 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertNotIn("Primary, production path.", text)
         self.assertIn("--assets alerts", text)
 
-    def test_command_contract_uses_split_dashboard_upload_path_for_legacy_flow(self):
-        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+    def test_dev_commands_use_split_dashboard_upload_path_for_legacy_flow(self):
+        # The legacy repo-checkout alert flow lives in the contributor doc; the
+        # operator doc keeps only the one-command flow.
+        text = DEV_COMMANDS.read_text(encoding="utf-8")
         self.assertIn(
             "--artifact-dir examples/alerting/generated/grafana/dashboards",
             text,

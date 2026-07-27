@@ -5,9 +5,9 @@ migration runs, validation, parity testing, reporting, and documentation
 refreshes.
 
 These scripts are part of the repository workflow, but they are not the same as
-the installed CLI entry points declared in `pyproject.toml`. For the canonical
-command inventory and supported invocation patterns, use
-`docs/command-contract.md`.
+the installed CLI entry points declared in `pyproject.toml`. For runnable
+examples of the script commands below, use `docs/contributing/dev-commands.md`;
+for the installed CLI, use `docs/command-contract.md`.
 
 ## Main Groups
 
@@ -109,7 +109,8 @@ package installed. Outputs land under `/tmp/obs-migrate-e2e/` (Grafana) and
 
 ## Start Here
 
-- `docs/command-contract.md` for exact command examples and expected inputs
+- `docs/contributing/dev-commands.md` for exact script command examples
+- `docs/command-contract.md` for the installed CLI command examples
 - `docs/local-otlp-validation.md` for the local lab workflow
 - `docs/dashboards/README.md` for dashboard schema and validation tooling
 - `examples/alerting/README.md` for alert support reporting and verification

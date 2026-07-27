@@ -6,7 +6,8 @@ Thanks for contributing to `obs-migrate`.
 
 - Read `README.md` for the public project overview.
 - Use `docs/README.md` for the full documentation map.
-- Use `docs/command-contract.md` for canonical commands.
+- Use `docs/command-contract.md` for canonical operator commands, and
+  `docs/contributing/dev-commands.md` for repo-checkout gate/script commands.
 - See `AGENTS.md` for automation/repo-working rules (including the `make`
   build/test/lint targets and the commit workflow).
 
@@ -37,7 +38,7 @@ make test-interactions      # offline interaction-audit unit tests
 ```
 
 Live control checks need a local no-SSO stack (9.5+) — see
-`docs/testing.md` and `docs/command-contract.md`.
+`docs/testing.md` and `docs/contributing/dev-commands.md`.
 
 ## Verification
 

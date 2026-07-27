@@ -188,5 +188,6 @@ The classifier's Markdown output ends up at `$OUT-classified.md` and surfaces th
 
 ## See also
 
+- [`docs/contributing/dev-commands.md`](../../docs/contributing/dev-commands.md) — runnable verifier gate commands.
 - [`docs/command-contract.md`](../../docs/command-contract.md) — canonical obs-migrate CLIs.
 - [`.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md`](../../.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md) — interactive panel debugging via Chrome DevTools MCP + agent-browser.
