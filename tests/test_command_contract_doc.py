@@ -397,6 +397,20 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("Metrics query target (native PROMQL and ES|QL)", text)
         self.assertIn("esql_index or data_view", text)
         self.assertIn("retargets **both**", text)
+        # Issue #284: both operator timelines + concrete-stream rule of thumb.
+        self.assertIn("### Migrate-first vs data-first (data plane before assets)", text)
+        self.assertIn("Migrate-first (assets before telemetry)", text)
+        self.assertIn("Data-first (telemetry already in Elastic)", text)
+        self.assertIn("index readiness", text)
+        self.assertIn("ingest path → concrete stream", text)
+        # The warning is Grafana-only and its findings are also an artifact.
+        self.assertIn("`datadog-migrate` does not print this warning yet", text)
+        self.assertIn("`run_summary.json` under\n`metrics_target`", text)
+        # Issue #284: the two silent-scoping footguns operators hit next.
+        self.assertIn(
+            "#### The `data_stream.dataset` filter is scoped to wildcard targets", text
+        )
+        self.assertIn("#### `--logs-index` is independent of `--data-view`", text)
 
     def test_command_contract_documents_dedicated_cli_input_mode_parity(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")

@@ -490,6 +490,78 @@ if needed, hand-edit) which index it kept. This is intentional and does not
 warn, because dashboards that mix ES|QL log/metric panels with PromQL panels
 legitimately target different indexes on purpose.
 
+### Migrate-first vs data-first (data plane before assets)
+
+`obs-migrate` moves dashboard/alert **definitions**. It does not create
+collectors or invent a data stream from Grafana datasource UIDs. Empty panels
+after a green migrate are usually a **data-plane** problem. Two valid
+sequences:
+
+**Migrate-first (assets before telemetry):**
+
+1. Choose the ingest route and the **concrete** stream name it will create.
+2. Migrate with both `--data-view` and `--esql-index` set to that planned
+   stream (avoid a mixed `metrics-*` wildcard on shared clusters).
+3. Without `--es-url`, field mappings are unverified guesses — empty panels
+   until data lands are expected.
+4. When dual-write starts, re-run with `--es-url` / `--preflight` against the
+   **same** stream, then `live_validate` / compare / render audit.
+5. Use `seed-sample-data` only for demos on a dedicated stream — not as cutover
+   proof.
+
+**Data-first (telemetry already in Elastic):**
+
+1. Pass `--es-url` so migrate can list concrete streams under your pattern.
+2. If the metrics target is a wildcard, the CLI names the streams it resolves
+   to and asks you to pin both flags to one of them; when those streams span
+   several backends (Prometheus + Datadog + OTel) it says so explicitly. Treat
+   TSDB dimension/metric merge failures as **index readiness**, not translator
+   bugs.
+3. Migrate pointed at that stream, then verify immediately.
+
+**Operator rule of thumb:** ingest path → concrete stream → set both
+`--data-view` and `--esql-index` → migrate/verify.
+
+`grafana-migrate` (dashboards and alerts-only runs alike) prints a
+metrics-target readiness warning only when the target is actually risky — a
+wildcard query target (with or without `--es-url`), a wildcard that resolves to
+several streams, a target whose streams cannot be listed, a pinned target that
+does not resolve on the cluster, or TSDB dimension/metric conflicts. A run that
+already pins both flags to an existing concrete stream prints nothing. When the
+two flags differ, queries follow `--esql-index` (or `--data-view` when unset)
+and the CLI prints an informational note; it escalates to a warning only in the
+surprising direction, where `--data-view` is concrete but the queries still span
+a wildcard. The same findings are written to `run_summary.json` under
+`metrics_target` (`alerts.metrics_target` for alerts-only runs) so CI and the
+reporting skills see them after the console output has scrolled away.
+`datadog-migrate` does not print this warning yet; apply the same rule of thumb
+to its `--data-view` / `--field-profile` metric index by hand.
+
+#### The `data_stream.dataset` filter is scoped to wildcard targets
+
+A migrated Grafana dashboard can carry a dashboard-level
+`data_stream.dataset` filter, so "I pointed at `metrics-*`" does not always mean
+"I am reading all of `metrics-*`". The rules:
+
+- **Metrics panels.** The filter is emitted only when *every* panel query index
+  contains a wildcard, and defaults to the literal `prometheus`
+  (`--dataset-filter` overrides it, `--dataset-filter ""` disables it). Pinning
+  `--esql-index` to a concrete stream drops the filter, because the index
+  pattern is already the constraint and a literal `prometheus` would exclude
+  every document in, say, a `prometheus.remote_write` data stream.
+- **Native PROMQL** clears the default filter outright, and `--translation-mode
+  esql` clears it too for the `otel` / `auto` / `passthrough` profiles, since
+  binding `data_stream.dataset: prometheus` on OTel data renders panels empty.
+- **Logs panels.** No filter unless you pass `--logs-dataset-filter`, and then
+  only for wildcard log targets.
+
+#### `--logs-index` is independent of `--data-view`
+
+Loki/LogQL panels read `--logs-index` (default `logs-*`, also settable as
+`logs_index` in a rule pack). It does **not** inherit `--data-view` or
+`--esql-index`, so a dashboard that mixes metrics and logs panels needs both
+targets set explicitly.
+
 ### Reusing existing OTEL metrics with `--metric-map-file`
 
 Use `--metric-map-file` when the dashboard was authored against one metric

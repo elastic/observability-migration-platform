@@ -138,6 +138,8 @@ class SchemaResolver:
         self._discovered_mappings = {}
         self._discovery_attempted = False
         self._concrete_index_cache = None
+        self._concrete_index_error = ""
+        self._concrete_index_missing = False
         self._schema_profile = None
         self._schema_profile_cache_id = None
         self._discovery_status = "not_attempted"
@@ -492,9 +494,12 @@ class SchemaResolver:
         self._concrete_index_cache = []
         if not self._es_url:
             return
-        if not any(token in self._index_pattern for token in ("*", "?", ",")):
+        pinned = not any(token in self._index_pattern for token in ("*", "?", ","))
+        if pinned:
+            # A pinned target is its own candidate list whatever the cluster
+            # says; the resolve below only decides whether it exists, so the
+            # downstream index-mode/narrowing callers keep today's behavior.
             self._concrete_index_cache = [self._index_pattern]
-            return
         try:
             resp = requests.get(
                 f"{self._es_url}/_resolve/index/{self._index_pattern}",
@@ -503,6 +508,11 @@ class SchemaResolver:
                 verify=self._verify,
             )
             if resp.status_code != 200:
+                # Record why, so callers can tell "cannot read the target" apart
+                # from "target has no streams" instead of reporting both as [].
+                self._concrete_index_error = (
+                    f"_resolve/index returned HTTP {resp.status_code}"
+                )
                 return
             body = resp.json()
             discovered = []
@@ -511,9 +521,20 @@ class SchemaResolver:
                     name = entry.get("name")
                     if name and name not in discovered:
                         discovered.append(name)
+            if pinned:
+                # `_resolve/index` answers 200 with empty buckets for a name
+                # that does not exist, so this is the one place a typo'd or
+                # not-yet-created `--esql-index` can be caught. An alias counts
+                # as existing here, but is deliberately kept out of the
+                # candidate list above, which feeds index-mode inference and
+                # wildcard narrowing.
+                self._concrete_index_missing = not discovered and not (
+                    body.get("aliases") or []
+                )
+                return
             self._concrete_index_cache = discovered
-        except Exception:
-            pass
+        except Exception as exc:
+            self._concrete_index_error = f"_resolve/index request failed: {exc}"
 
     def resolve_label(self, label, metric_field=None):
         if label in self._rule_pack.ignored_labels:
@@ -1044,6 +1065,40 @@ class SchemaResolver:
     def concrete_index_candidates(self):
         self._discover_concrete_indexes()
         return list(self._concrete_index_cache or [])
+
+    def concrete_index_error(self) -> str:
+        """Why stream discovery came back empty, or "" if it genuinely is.
+
+        ``concrete_index_candidates()`` returns ``[]`` both when the target has
+        no matching streams and when ``_resolve/index`` could not be read.
+        """
+        self._discover_concrete_indexes()
+        return self._concrete_index_error
+
+    def concrete_index_missing(self) -> bool:
+        """True when a pinned (non-wildcard) target does not exist on the cluster.
+
+        ``concrete_index_candidates()`` echoes a pinned pattern back whether or
+        not it resolves, so a typo'd or not-yet-created ``--esql-index`` is
+        invisible there. False when offline, when the target is a wildcard, or
+        when the resolve could not be performed.
+        """
+        self._discover_concrete_indexes()
+        return bool(self._concrete_index_missing)
+
+    def tsdb_conflict_fields(self) -> list[str]:
+        """Fields whose TSDB role disagrees across the target's indices.
+
+        Mixed backends under a wildcard ``metrics-*`` can produce this conflict
+        and make ``TS`` queries fail with dimension/metric merge errors. Exposed
+        for migrate-time operator guidance (issue #284); see
+        ``tsdb_conflict_fields_from_field_cache`` for the ``_field_caps`` shapes
+        this covers.
+        """
+        from .metrics_target_guidance import tsdb_conflict_fields_from_field_cache
+
+        self._discover_fields()
+        return tsdb_conflict_fields_from_field_cache(self._field_cache)
 
     def merge_control_schema(self, payload: Mapping[str, object] | None) -> None:
         """Merge offline control-schema field/co-occurrence hints into discovery.

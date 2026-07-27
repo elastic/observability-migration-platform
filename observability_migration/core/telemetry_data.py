@@ -12,6 +12,7 @@ import json
 import math
 import random
 import re
+import zlib
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -936,8 +937,19 @@ def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
     return ordered
 
 
+def _stable_salt(field_name: str) -> int:
+    """Deterministic per-name salt.
+
+    ``hash()`` is salted per interpreter, so using it here made every seeded
+    value depend on ``PYTHONHASHSEED`` — the same metric got a different band on
+    each run, and bugs in the derived formulas surfaced as a per-job lottery
+    rather than a reproducible failure.
+    """
+    return zlib.crc32(field_name.encode("utf-8"))
+
+
 def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: random.Random) -> float:
-    base_rate = 0.5 + (abs(hash(field_name)) % 40) / 10
+    base_rate = 0.5 + (_stable_salt(field_name) % 40) / 10
     return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
 
 
@@ -974,6 +986,12 @@ def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
 
 _GIB = 1 << 30
 
+# How far before its own document timestamp an ``epoch_seconds`` gauge (boot
+# time, node time) may be placed, and the amplitude of the diurnal wobble that
+# has to fit inside that window alongside the per-combo stagger.
+_EPOCH_GAUGE_WINDOW_SEC = 90 * 86400
+_EPOCH_GAUGE_WOBBLE_SEC = 60.0
+
 
 @dataclasses.dataclass(frozen=True)
 class ValueProfile:
@@ -991,7 +1009,7 @@ def _value_profile(field_name: str) -> ValueProfile:
     seeded values for unrecognised metrics do not drift.
     """
     name = field_name.lower()
-    salt = abs(hash(field_name))
+    salt = _stable_salt(field_name)
     if name.endswith("_bytes") or name.endswith("_bytes_total"):
         # 8-64 GiB, stable per metric.
         return ValueProfile(base=float((8 + salt % 56) * _GIB), span=2.0 * _GIB, unit="bytes")
@@ -1034,8 +1052,24 @@ def _gauge_value(
         # Anchor near the document timestamp so sibling differences (now - boot)
         # are small positive uptimes. Deterministic per (field, combo).
         anchor = now_epoch if now_epoch is not None else 0.0
-        offset = (abs(hash(field_name)) % (90 * 86400)) + combo_idx * 3600
-        value = anchor - offset + 60 * _diurnal(hour)
+        # Reserve the per-combo stagger and the *full* wobble amplitude out of
+        # the window so `anchor - window <= value <= anchor` holds by
+        # construction: an unreserved offset can land before the window or after
+        # its own timestamp (a negative uptime).
+        #
+        # The modulus deliberately uses the constant amplitude rather than this
+        # hour's wobble. The salt dwarfs the span, so folding an hour-dependent
+        # term into the modulus would re-roll the whole offset every hour and
+        # turn a stable boot time into ~90 days of noise; the wobble is additive
+        # only, keeping the series stable to within its own amplitude.
+        stagger = min(
+            float(combo_idx * 3600),
+            _EPOCH_GAUGE_WINDOW_SEC - _EPOCH_GAUGE_WOBBLE_SEC - 1.0,
+        )
+        span = max(_EPOCH_GAUGE_WINDOW_SEC - stagger - _EPOCH_GAUGE_WOBBLE_SEC, 1.0)
+        wobble = _EPOCH_GAUGE_WOBBLE_SEC * _diurnal(hour)
+        offset = (_stable_salt(field_name) % int(span)) + stagger + wobble
+        value = anchor - offset
         if ceiling is not None:
             value = min(value, ceiling)
         return value
