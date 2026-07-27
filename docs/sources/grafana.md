@@ -416,6 +416,49 @@ parameter (issue #131 / #132).
 Exercised by `build_label_matcher_param_canary` (also uploaded by
 `scripts/run_render_audit_local.sh`).
 
+### Regular Controls vs. Variable (ES|QL) Controls (Issue #312)
+
+Kibana has two dashboard control shapes, and a migrated Grafana template
+variable becomes one or the other by a single deterministic rule — whether the
+target can **bind ES|QL named parameters** for that migration pass:
+
+- **Variable (ES|QL) control** (`type: esql`, `variable_type: values`) — emitted
+  when named-parameter binding is available. Panel `$var` label matchers are
+  rewritten to native ES|QL parameters (`WHERE field == ?var` / `RLIKE ?var`),
+  so the control must *define* that parameter. Because a dashboard's templating
+  list enables binding for the pass (see *Variable Label Filters* above, unless
+  a live `--es-url` probe recorded the cluster cannot bind), **every** variable
+  on a templated dashboard — including ones no panel references — becomes a
+  variable control. This keeps all variables the same shape (a dashboard does
+  not end up with one regular control and one variable control) and preserves
+  Grafana parity for unused variables instead of quietly downgrading them.
+- **Regular options/range control** (`type: options` / `type: range`, backed by
+  a `field` + `data_view`) — emitted only when the target cannot bind ES|QL
+  parameters at all. Then `$var` matchers are dropped-and-warned (no `?var` to
+  bind), so a generic data-view control is the faithful shape and, again, every
+  variable uses it consistently.
+
+The split is therefore *per target capability*, never per individual variable.
+
+**Multi-select.** A variable (ES|QL) control binds its selection into a scalar
+parameter position (`== ?var` / `RLIKE ?var`), which cannot accept a
+multi-value selection, so a Grafana multi-select variable is emitted as a
+single-select control. That loss is reported (not silent) as a
+`control_warnings` entry (`"variable '<name>' was multi-select in Grafana but
+binds a scalar ES|QL parameter in Kibana; emitted a single-select control"`).
+Regular options controls, which do not bind a scalar parameter, keep the source
+`multi` flag.
+
+**Value-list filters.** A `label_values(metric{device!="nbd1"}, device)`
+variable restricts its option list to series matching the selector. The
+migrated ES|QL values control preserves those *literal* matchers as extra
+`WHERE` predicates (`... AND device != "nbd1"`), so excluded values (`nbd1`) do
+not appear in the dropdown. Supported operators map as `=`/`!=` →
+`==`/`!=` and `=~`/`!~` → `RLIKE`/`NOT RLIKE`. Selector matchers that reference
+*another* template variable (`{instance="$instance"}`) are the chained-scope
+case above (issue #269): they cannot be expressed as a fixed predicate and are
+surfaced as a `control_warnings` degradation instead.
+
 ## Command Coverage
 
 Grafana command examples and the canonical shared migration contract are
