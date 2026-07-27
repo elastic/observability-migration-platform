@@ -20,7 +20,7 @@ _PACKAGE_NAME = "obs-migrate"
 
 @lru_cache(maxsize=4)
 def read_project_version(root: Path | None = None) -> str:
-    """Return the project version string (e.g. ``\"0.4.0\"``)."""
+    """Return the project version string (e.g. ``\"1.2.3\"``)."""
     base = root if root is not None else Path(__file__).resolve().parents[1]
     pyproject = base / "pyproject.toml"
     if pyproject.is_file():

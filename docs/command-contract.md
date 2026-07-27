@@ -55,7 +55,8 @@ Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. The
 package is not on PyPI yet, so pin a GitHub release tag (not `@main`):
 
 ```bash
-# Latest published release tag today. After v0.4.0 is tagged, prefer that.
+# Pin the latest release tag (example below). See:
+# https://github.com/elastic/observability-migration-platform/releases
 PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples

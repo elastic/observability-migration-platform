@@ -11,9 +11,9 @@ silently dropped.
 
 Use one CLI: **`obs-migrate`**.
 
-Pre-1.0 (`0.4.0`). Distributed as a Python package only — there is no
-standalone binary. The package is not on PyPI yet, so install from a
-**pinned GitHub release tag** (never `@main`) until publishing is enabled.
+Pre-1.0. Distributed as a Python package only — there is no standalone
+binary. The package is not on PyPI yet, so install from a **pinned GitHub
+release tag** (never `@main`) until publishing is enabled.
 
 ## Requirements
 
@@ -31,7 +31,8 @@ Grafana, Datadog, and Kibana compile/lint dependencies are included together.
 Set the package source once, then reuse it:
 
 ```bash
-# Latest published release tag today. After v0.4.0 is tagged, prefer that.
+# Pin the latest release tag (example below). See:
+# https://github.com/elastic/observability-migration-platform/releases
 PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 ```
 

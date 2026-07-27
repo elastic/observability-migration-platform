@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def normalize_tag(tag: str) -> str:
-    """Strip a leading ``v`` from Git tags (``v0.4.0`` → ``0.4.0``)."""
+    """Strip a leading ``v`` from Git tags (``v1.2.3`` → ``1.2.3``)."""
     tag = tag.strip()
     if tag.startswith("v") or tag.startswith("V"):
         return tag[1:]
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tag",
         required=True,
-        help="Git tag name (e.g. v0.4.0 or 0.4.0)",
+        help="Git tag name (e.g. v1.2.3 or 1.2.3)",
     )
     parser.add_argument(
         "--root",
