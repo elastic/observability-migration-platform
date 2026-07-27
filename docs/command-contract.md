@@ -51,9 +51,11 @@ Compatibility for the full matrix.
 **Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13). Prefer
 `elastic-observability-migration[all]` on first-time machines so Grafana, Datadog, and Kibana
 tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
-`uvx` fallback. Run `obs-migrate doctor` after install — it checks Python,
-required imports, extras, and compile tools, and exits non-zero if something
-blocking is missing.
+`uvx` fallback. After install, run doctor with the **same launcher** you will
+use for migrate (`uvx --from "$PKG" obs-migrate doctor`,
+`.venv/bin/obs-migrate doctor`, or bare `obs-migrate doctor` only after
+`source .venv/bin/activate`). Doctor checks Python, required imports, extras,
+and compile tools, and exits non-zero if something blocking is missing.
 
 ### Recommended (operators): `uvx` + `[all]`
 
@@ -78,11 +80,15 @@ PyPI badge on the README always shows the latest published version.
 
 ### Persistent pip install
 
+Prefer the `.venv/bin/obs-migrate` prefix (no activate required), or activate
+the venv once per shell if you want the bare command:
+
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install "elastic-observability-migration[all]"
-obs-migrate doctor
+.venv/bin/pip install "$PKG"
+.venv/bin/obs-migrate doctor
+# Or activate once per shell, then use bare obs-migrate:
+# source .venv/bin/activate && obs-migrate doctor
 ```
 
 From an unpacked release source archive, install the current directory instead:
@@ -92,9 +98,36 @@ pip install ".[all]"
 obs-migrate doctor
 ```
 
-Every example below assumes `obs-migrate` is on `PATH` (an activated
-virtualenv, a `pipx`/`uv tool` install, or the `uvx --from "$PKG"` prefix from
-the section above).
+With [`uv`](https://docs.astral.sh/uv/) for contributor / CI-style locked envs
+(`make sync`):
+
+```bash
+uv sync --locked --all-extras
+uv run obs-migrate doctor
+# or: .venv/bin/obs-migrate doctor
+```
+
+### If you see `command not found: obs-migrate`
+
+There is no global `obs-migrate` binary. Do **not** run bare `obs-migrate`
+unless the venv is activated. Use one of:
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+.venv/bin/obs-migrate doctor
+source .venv/bin/activate && obs-migrate doctor
+uv run obs-migrate doctor   # contributor locked env after make sync
+```
+
+For contributor workflows, prefer `make sync` (the locked `uv` environment used
+by CI). If you are using a plain virtualenv directly, install the dev extra and
+enable local git hooks:
+
+```bash
+.venv/bin/pip install -e ".[all,dev]"
+.venv/bin/pre-commit install
+.venv/bin/pre-commit run --all-files
+```
 
 Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
 `obs-migrate upload --legacy-import`) resolve the tool **installed-first**:
@@ -103,7 +136,7 @@ install the Kibana tools into the same environment with
 3.12+), otherwise the runtime falls back to a pinned `uvx`, which requires `uv`
 on `PATH`. The default typed Dashboards API upload path does **not** need
 `kb-dashboard-cli`; YAML lint and compiled-layout validation run in-process.
-Run `obs-migrate doctor` to see which path is active.
+Run `obs-migrate doctor` (or `uvx --from "$PKG" obs-migrate doctor`) to see which path is active.
 
 Datadog live API extraction (`--input-mode api` on either the unified or
 dedicated CLI; legacy dedicated spelling `--source api` also works) requires

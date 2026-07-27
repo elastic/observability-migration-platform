@@ -106,9 +106,17 @@ PKG='elastic-observability-migration[all]'
 python3 -m venv .venv
 .venv/bin/pip install "$PKG"
 .venv/bin/obs-migrate doctor
+# Or activate once per shell, then use bare obs-migrate:
+# source .venv/bin/activate && obs-migrate doctor
 ```
 
-Put `.venv/bin` on `PATH` or invoke `.venv/bin/obs-migrate` explicitly.
+**Do not** run bare `obs-migrate` until the venv is activated. Prefer
+`.venv/bin/obs-migrate` (no activate) or keep using `uvx --from "$PKG" …`.
+
+If the user hits `command not found: obs-migrate`, they skipped the launcher —
+point them at `uvx --from "$PKG" obs-migrate …`, `.venv/bin/obs-migrate …`, or
+`source .venv/bin/activate` first. See `README.md` → “If you see command not
+found”.
 
 ### GitHub tag fallback (never `@main`)
 

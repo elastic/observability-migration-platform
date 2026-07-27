@@ -89,13 +89,33 @@ Use the same `migrate` command with your exported Grafana or Datadog JSON
 verification, and the full flag reference, see
 [`docs/command-contract.md`](docs/command-contract.md).
 
+Always keep the same launcher you used for `doctor` (`uvx --from "$PKG" …`).
+Bare `obs-migrate` is only on `PATH` after a persistent venv install **and**
+activation (see below).
+
 ## Other install options
 
 | When | How |
 |------|-----|
-| Persistent virtualenv | `python3 -m venv .venv && .venv/bin/pip install "$PKG"` then `.venv/bin/obs-migrate …` |
-| Contributor checkout | `make sync` (or `uv sync --locked --all-extras`) then `uv run obs-migrate …` |
+| Persistent virtualenv | `python3 -m venv .venv && .venv/bin/pip install "$PKG"`, then either `.venv/bin/obs-migrate …` **or** `source .venv/bin/activate` and bare `obs-migrate …` |
+| Contributor checkout | `make sync` (or `uv sync --locked --all-extras`) then `uv run obs-migrate …` (or `.venv/bin/obs-migrate …`) |
 | Narrower extras | Use `[grafana]`, `[datadog]`, or `[kibana]` instead of `[all]` |
+
+### If you see `command not found: obs-migrate`
+
+The package does not ship a global binary. Use one of:
+
+```bash
+# Quick start / recommended
+uvx --from "$PKG" obs-migrate doctor
+
+# Persistent venv (path prefix — no activate required)
+.venv/bin/obs-migrate doctor
+
+# Persistent venv (activate once per shell, then bare command)
+source .venv/bin/activate
+obs-migrate doctor
+```
 
 On **Python 3.11**, Kibana compile tools are not installed into the
 environment (they require 3.12+). `doctor` reports `uvx fallback`, and `uv`

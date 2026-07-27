@@ -139,6 +139,22 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertNotIn("--yaml-dir migration_output/yaml", text)
         self.assertNotIn("--output-dir migration_output/compiled", text)
 
+    def test_root_readme_documents_obs_migrate_invocation_safety_net(self):
+        """Issue #254: bare obs-migrate without a launcher looks "broken"."""
+        text = ROOT_README.read_text(encoding="utf-8")
+        self.assertIn("uvx --from \"$PKG\" obs-migrate doctor", text)
+        self.assertIn("### If you see `command not found: obs-migrate`", text)
+        self.assertIn("source .venv/bin/activate", text)
+        self.assertIn(".venv/bin/obs-migrate doctor", text)
+        self.assertIn("Always keep the same launcher", text)
+
+    def test_command_contract_documents_obs_migrate_invocation_safety_net(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("### If you see `command not found: obs-migrate`", text)
+        self.assertIn("source .venv/bin/activate && obs-migrate doctor", text)
+        self.assertIn("There is no global `obs-migrate` binary", text)
+        self.assertIn("same launcher", text)
+
     def test_alerting_examples_readme_uses_split_alert_artifact_paths(self):
         text = ALERTING_EXAMPLES_README.read_text(encoding="utf-8")
         self.assertIn(
