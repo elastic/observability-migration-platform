@@ -94,13 +94,16 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 
 ## Releasing
 
-1. Bump the package version and refresh the lockfile:
+1. Bump the package version (also refreshes `uv.lock` and license/SBOM docs):
 
    ```bash
    make bump-version VERSION=X.Y.Z
    ```
 
-   (`scripts/bump_version.py` updates `pyproject.toml` and runs `uv lock`.)
+   (`scripts/bump_version.py` updates `pyproject.toml` and runs `uv lock`,
+   then `make licenses` regenerates `docs/licenses/*`. Use
+   `SKIP_LICENSES=1` only for local experiments — release PRs must refresh
+   the SBOM.)
    Open a PR with that bump (and any release notes / docs).
 
 2. After merge, tag the merge commit `vX.Y.Z` and push the tag. The release
