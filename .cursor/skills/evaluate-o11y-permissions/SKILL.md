@@ -9,7 +9,20 @@ Goal: give the user confidence their credentials can perform every step **before
 
 ## Which command form to use (package vs. repo)
 
-Assume the user **installed the package** (`pip install 'elastic-observability-migration[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
+Assume the user installs from PyPI
+([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)),
+typically with `[all]`:
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# or: pip install 'elastic-observability-migration[all]'
+```
+
+Prefer **`obs-migrate`** on `PATH` (or via `uvx --from …`). Prefix `.venv/bin/`
+only for a repo checkout. Alert round-trip / rule-audit checks are shipped as
+`obs-migrate verify-alert-rules` and `obs-migrate audit-rules` — package users
+do **not** need any `scripts/...` file. `examples/` YAML also does not exist
+for them; use their own migrated output.
 
 ## Mental model (state this to the user)
 
@@ -29,13 +42,15 @@ Reading dashboards is the proof. (See the `connect-to-o11y-source` skill for ful
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
-KIBANA_URL= grafana-migrate --source api --output-dir /tmp/perm-src --assets dashboards
+KIBANA_URL= obs-migrate migrate \
+  --source grafana --input-mode api \
+  --output-dir /tmp/perm-src --assets dashboards
 ```
 
 - **Pulled dashboards:** source read permission is sufficient.
 - **401/403:** the source user/token lacks read access (or is wrong).
 
-Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `datadog-migrate` exercises the Monitors API.
+Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `--source datadog` exercises the Monitors API.
 
 `--assets` takes exactly one value: `dashboards`, `alerts`, or `all`. It is **not** a comma list — to exercise both dashboard and monitor reads in one Datadog run use `--assets all`, not `--assets dashboards,alerts`.
 
@@ -98,6 +113,7 @@ obs-migrate verify-alert-rules \
 ```
 
 `verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward: `obs-migrate audit-rules ... --disable-enabled` to disable, then `obs-migrate delete-rules --kibana-url ... --kibana-api-key ...` (dry-run) and `... --confirm` to delete. The dashboard upload proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test. `--yaml-dir` remains a compatibility alias for YAML mapping; prefer `--artifact-dir` with native artifacts.
+
 ## Serverless caveats (call these out)
 
 - Saved-object `GET`/`_find`/direct `DELETE` are blocked on Serverless. Listing uses `_export`; "delete" rewrites objects to `[DELETED]` placeholders via re-import. So a user can lack nothing and still be unable to hard-delete — that is the platform, not a permission gap.
