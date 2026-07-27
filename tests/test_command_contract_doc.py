@@ -146,7 +146,12 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn("### If you see `command not found: obs-migrate`", text)
         self.assertIn("source .venv/bin/activate", text)
         self.assertIn(".venv/bin/obs-migrate doctor", text)
-        self.assertIn("Always keep the same launcher", text)
+        self.assertIn("You do not need to clone this repository", text)
+        self.assertIn("Always reuse the same launcher", text)
+        # Operator README must not lead with contributor-only tooling.
+        self.assertNotIn("make bump-version", text)
+        self.assertNotIn("make sync", text)
+        self.assertNotIn("Contributor checkout", text)
 
     def test_command_contract_documents_obs_migrate_invocation_safety_net(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
