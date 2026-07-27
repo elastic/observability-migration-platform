@@ -441,6 +441,16 @@ def run_alert_pipeline(
         # emitting raw names. Prime capabilities here so alert translation can
         # still validate every emitted metric/label against the live target.
         resolver.discovery_status()
+    metrics_target_guidance = None
+    if owns_resolver:
+        # Alerts-only runs translate PromQL against the same
+        # `esql_index or data_view` target as dashboards, so they hit the same
+        # index footguns (#284). The dashboard flow prints this itself.
+        from .cli import assess_metrics_target_from_args
+        from .metrics_target_guidance import print_metrics_target_guidance
+
+        metrics_target_guidance = assess_metrics_target_from_args(args, resolver)
+        print_metrics_target_guidance(metrics_target_guidance)
     mapping_batch = map_alerts_batch(
         all_alert_irs,
         data_view=getattr(args, "data_view", "metrics-*"),
@@ -491,6 +501,8 @@ def run_alert_pipeline(
         "by_automation_tier": by_tier,
         "by_kind": by_kind,
     }
+    if metrics_target_guidance is not None:
+        summary["metrics_target"] = metrics_target_guidance.as_summary()
     if resolver is not None:
         field_discovery = resolver.field_resolution_summary()
         summary["field_discovery"] = field_discovery

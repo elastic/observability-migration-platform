@@ -75,7 +75,8 @@ How you plan to ship Prometheus into Elastic decides the field profile:
 - **`--esql-index`** — metrics query + schema-discovery target (`TS`/`FROM` / native `PROMQL index=…`). Required for Prometheus fidelity when the stream is not the default data-view pattern.
 - **`--data-view`** — Kibana UI / control bind; may differ from `--esql-index`.
 - See `docs/command-contract.md` → Target index flags **and** “Migrate-first vs data-first”. Wrong/missing `--esql-index` is the #1 reason migrated Prometheus panels query the wrong stream.
-- **Migrate-first:** pick the concrete stream your ingest will create *before* migrating; empty panels until data lands are expected. **Data-first:** with `--es-url`, pin both flags away from a `metrics-*` wildcard, especially when several backends share it. Migrate warns whenever the metrics target is still a wildcard, names the streams it resolves to, and stays quiet once both flags are pinned.
+- **Migrate-first:** pick the concrete stream your ingest will create *before* migrating; empty panels until data lands are expected. **Data-first:** with `--es-url`, pin both flags away from a `metrics-*` wildcard, especially when several backends share it. `grafana-migrate` warns when the metrics target is still a wildcard (naming the streams it resolves to) or when a pinned target does not exist on the cluster, stays quiet once both flags point at an existing concrete stream, and records the same findings under `metrics_target` in `run_summary.json`. `datadog-migrate` has no such warning — check its metric index by hand.
+- `--logs-index` (default `logs-*`) does **not** inherit `--data-view`/`--esql-index`; set it too for dashboards that mix metrics and Loki panels.
 
 Late-bound grouping (`by ($var)` → `??var`) and label-matcher params (`$var` → `?var`) need live `--es-url` so `esql_named_param_binding` can probe. `--translation-mode {auto,native,esql}` controls native PROMQL vs forced ES|QL.
 

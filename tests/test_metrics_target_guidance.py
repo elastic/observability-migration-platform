@@ -14,15 +14,17 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from observability_migration.adapters.source.grafana import cli as grafana_cli
 from observability_migration.adapters.source.grafana import metrics_target_guidance as mtg
+from observability_migration.adapters.source.grafana.rules import RulePackConfig
+from observability_migration.adapters.source.grafana.schema import SchemaResolver
 
 _PINNED = "metrics-prometheus-default"
 
@@ -30,16 +32,20 @@ _PINNED = "metrics-prometheus-default"
 class StubResolver:
     """Minimal stand-in for SchemaResolver's guidance-facing surface."""
 
-    def __init__(self, streams=(), error="", conflicts=()):
+    def __init__(self, streams=(), error="", conflicts=(), missing=False):
         self._streams = list(streams)
         self._error = error
         self._conflicts = list(conflicts)
+        self._missing = missing
 
     def concrete_index_candidates(self):
         return list(self._streams)
 
     def concrete_index_error(self):
         return self._error
+
+    def concrete_index_missing(self):
+        return self._missing
 
     def tsdb_conflict_fields(self):
         return list(self._conflicts)
@@ -125,6 +131,16 @@ class DivergentFlagTests(unittest.TestCase):
         self.assertIn("metrics-*", text)
         self.assertRegex(text.lower(), r"broader|spans")
 
+    def test_broader_query_warning_does_not_stack_with_migrate_first(self):
+        """Both would say "pin the wildcard"; the specific one wins."""
+        guidance = mtg.assess_metrics_target(
+            data_view=_PINNED,
+            esql_index="metrics-*",
+            es_url="",
+        )
+        self.assertEqual(len(guidance.warnings), 1)
+        self.assertNotIn("migrate-first", guidance.warnings[0].lower())
+
 
 class DataFirstWildcardTests(unittest.TestCase):
     def _warnings(self, streams, **kwargs):
@@ -196,6 +212,192 @@ class DataFirstWildcardTests(unittest.TestCase):
         self.assertRegex(text.lower(), r"tsdb|dimension|metric|readiness|index")
 
 
+class PinnedTargetTests(unittest.TestCase):
+    def test_pinned_target_that_does_not_resolve_warns(self):
+        """The likeliest operator error is a typo'd concrete stream.
+
+        `concrete_index_candidates()` echoes a pinned pattern straight back, so
+        without the explicit existence check this run was silent.
+        """
+        guidance = mtg.assess_metrics_target(
+            data_view=_PINNED,
+            esql_index=_PINNED,
+            es_url="https://es.example",
+            concrete_streams=[_PINNED],
+            target_missing=True,
+        )
+        text = "\n".join(guidance.warnings)
+        self.assertIn(_PINNED, text)
+        self.assertRegex(text.lower(), r"does not exist|no data stream")
+
+    def test_missing_flag_is_ignored_for_a_wildcard_target(self):
+        guidance = mtg.assess_metrics_target(
+            data_view="metrics-*",
+            esql_index="",
+            es_url="https://es.example",
+            concrete_streams=[_PINNED],
+            target_missing=True,
+        )
+        self.assertNotRegex("\n".join(guidance.warnings).lower(), r"does not exist")
+
+
+class TsdbConflictDetectionTests(unittest.TestCase):
+    """`_field_caps` payload shapes, not the pre-digested list."""
+
+    def test_dimension_and_metric_across_types_conflict(self):
+        cache = {
+            "host.name": {
+                "keyword": {"type": "keyword", "time_series_dimension": True},
+                "long": {"type": "long", "time_series_metric": "gauge"},
+            }
+        }
+        self.assertEqual(mtg.tsdb_conflict_fields_from_field_cache(cache), ["host.name"])
+
+    def test_metric_conflicts_indices_is_a_conflict(self):
+        """The single-type shape behind "Cannot merge [DIMENSION] with [METRIC]".
+
+        Elasticsearch reports the disagreement out-of-band here rather than by
+        setting both flags, so a flags-only check misses it.
+        """
+        cache = {
+            "system.cpu.total": {
+                "long": {
+                    "type": "long",
+                    "time_series_metric": "counter",
+                    "metric_conflicts_indices": [
+                        ".ds-metrics-prometheus-default-000001",
+                        ".ds-metrics-datadog-default-000001",
+                    ],
+                }
+            }
+        }
+        self.assertEqual(
+            mtg.tsdb_conflict_fields_from_field_cache(cache), ["system.cpu.total"]
+        )
+
+    def test_non_dimension_indices_is_a_conflict(self):
+        cache = {
+            "pod": {
+                "keyword": {
+                    "type": "keyword",
+                    "time_series_dimension": True,
+                    "non_dimension_indices": [".ds-metrics-otel-default-000001"],
+                }
+            }
+        }
+        self.assertEqual(mtg.tsdb_conflict_fields_from_field_cache(cache), ["pod"])
+
+    def test_consistent_fields_are_not_conflicts(self):
+        cache = {
+            "host.name": {"keyword": {"type": "keyword", "time_series_dimension": True}},
+            "system.memory.used": {"long": {"type": "long", "time_series_metric": "gauge"}},
+            "@timestamp": {"date": {"type": "date"}},
+        }
+        self.assertEqual(mtg.tsdb_conflict_fields_from_field_cache(cache), [])
+
+    def test_malformed_or_absent_cache_is_tolerated(self):
+        self.assertEqual(mtg.tsdb_conflict_fields_from_field_cache(None), [])
+        self.assertEqual(mtg.tsdb_conflict_fields_from_field_cache({"a": "nope"}), [])
+
+
+class SchemaResolverTargetProbeTests(unittest.TestCase):
+    """The real `_resolve/index` handling behind the stubs above."""
+
+    @staticmethod
+    def _resolver(index_pattern):
+        return SchemaResolver(RulePackConfig(), es_url="https://es", index_pattern=index_pattern)
+
+    @staticmethod
+    def _response(status_code=200, body=None):
+        return Mock(status_code=status_code, json=lambda: body or {})
+
+    def test_wildcard_lists_data_streams_and_indices_but_not_aliases(self):
+        """Candidates feed index-mode inference and narrowing; keep them concrete."""
+        body = {
+            "data_streams": [{"name": _PINNED}],
+            "indices": [{"name": "metrics-legacy-000001"}],
+            "aliases": [{"name": "metrics-alias"}],
+        }
+        resolver = self._resolver("metrics-*")
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(body=body),
+        ):
+            self.assertEqual(
+                resolver.concrete_index_candidates(),
+                [_PINNED, "metrics-legacy-000001"],
+            )
+        self.assertEqual(resolver.concrete_index_error(), "")
+        self.assertFalse(resolver.concrete_index_missing())
+
+    def test_pinned_target_backed_only_by_an_alias_exists(self):
+        resolver = self._resolver("metrics-alias")
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(body={"aliases": [{"name": "metrics-alias"}]}),
+        ):
+            self.assertFalse(resolver.concrete_index_missing())
+
+    def test_pinned_target_that_resolves_is_not_missing(self):
+        resolver = self._resolver(_PINNED)
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(body={"data_streams": [{"name": _PINNED}]}),
+        ):
+            self.assertEqual(resolver.concrete_index_candidates(), [_PINNED])
+            self.assertFalse(resolver.concrete_index_missing())
+
+    def test_pinned_target_that_does_not_resolve_is_missing(self):
+        """`_resolve/index` answers 200 with empty buckets for an unknown name."""
+        resolver = self._resolver("metrics-prometheus-defualt")
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(body={"indices": [], "data_streams": []}),
+        ):
+            self.assertTrue(resolver.concrete_index_missing())
+            # Candidates still echo the pinned pattern so index-mode inference
+            # and wildcard narrowing keep behaving as before.
+            self.assertEqual(resolver.concrete_index_candidates(), ["metrics-prometheus-defualt"])
+
+    def test_unreadable_target_is_not_reported_as_missing(self):
+        resolver = self._resolver(_PINNED)
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(status_code=403),
+        ):
+            self.assertFalse(resolver.concrete_index_missing())
+            self.assertIn("HTTP 403", resolver.concrete_index_error())
+
+    def test_offline_resolver_probes_nothing(self):
+        resolver = SchemaResolver(RulePackConfig(), es_url=None, index_pattern=_PINNED)
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get"
+        ) as mock_get:
+            self.assertFalse(resolver.concrete_index_missing())
+            self.assertEqual(resolver.concrete_index_candidates(), [])
+        mock_get.assert_not_called()
+
+    def test_conflicting_field_caps_reach_the_guidance(self):
+        resolver = self._resolver("metrics-*")
+        caps = {
+            "fields": {
+                "system.cpu.total": {
+                    "long": {
+                        "type": "long",
+                        "time_series_metric": "counter",
+                        "metric_conflicts_indices": [".ds-metrics-datadog-default-000001"],
+                    }
+                },
+                "host.name": {"keyword": {"type": "keyword", "time_series_dimension": True}},
+            }
+        }
+        with patch(
+            "observability_migration.adapters.source.grafana.schema.requests.get",
+            return_value=self._response(body=caps),
+        ):
+            self.assertEqual(resolver.tsdb_conflict_fields(), ["system.cpu.total"])
+
+
 class PrintAndCliWiringTests(unittest.TestCase):
     def _render(self, guidance):
         buf = io.StringIO()
@@ -250,6 +452,94 @@ class PrintAndCliWiringTests(unittest.TestCase):
             grafana_cli._print_metrics_target_operator_guidance(args, resolver)
         self.assertIn("HTTP 403", buf.getvalue())
 
+    def test_cli_helper_reports_a_pinned_target_that_does_not_resolve(self):
+        args = SimpleNamespace(data_view=_PINNED, esql_index=_PINNED, es_url="https://es.example")
+        resolver = StubResolver(streams=[_PINNED], missing=True)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            grafana_cli._print_metrics_target_operator_guidance(args, resolver)
+        self.assertIn("does not exist", buf.getvalue())
+
+    def test_cli_helper_names_a_message_less_resolver_failure(self):
+        """An empty reason would read as "the target is simply empty"."""
+
+        class Boom(StubResolver):
+            def concrete_index_candidates(self):
+                raise RuntimeError()
+
+        args = SimpleNamespace(data_view="metrics-*", esql_index="", es_url="https://es.example")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            grafana_cli._print_metrics_target_operator_guidance(args, Boom())
+        out = buf.getvalue()
+        self.assertIn("RuntimeError", out)
+        self.assertNotIn("no concrete data streams", out)
+
+
+class AlertsOnlyRunTests(unittest.TestCase):
+    """`--assets alerts` translates PromQL against the same target (#284)."""
+
+    _DASHBOARD = {
+        "title": "Alerts",
+        "uid": "mtg-alerts",
+        "panels": [
+            {
+                "id": 101,
+                "title": "CPU Alert",
+                "alert": {
+                    "name": "CPU High",
+                    "conditions": [
+                        {
+                            "evaluator": {"type": "gt", "params": [80]},
+                            "reducer": {"type": "avg"},
+                            "query": {"params": ["A", "5m", "now"]},
+                            "operator": {"type": "and"},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    def _run(self, *, data_view):
+        from observability_migration.adapters.source.grafana.alert_pipeline import (
+            run_alert_pipeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(
+                source="files",
+                input_dir=tmp,
+                data_view=data_view,
+                esql_index=data_view,
+                es_url="",
+                grafana_token="",
+                kibana_url="",
+                kibana_api_key="",
+                space_id="",
+                create_alert_rules=False,
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                summary = run_alert_pipeline(
+                    args,
+                    output_dir=Path(tmp) / "alerts",
+                    raw_dashboards=[self._DASHBOARD],
+                )
+            return buf.getvalue(), summary
+
+    def test_wildcard_target_warns_on_an_alerts_only_run(self):
+        out, summary = self._run(data_view="metrics-*")
+        self.assertIn("metrics target / data-plane readiness", out)
+        self.assertTrue(
+            any("migrate-first" in w.lower() for w in summary["metrics_target"]["warnings"])
+        )
+
+    def test_pinned_target_stays_quiet_on_an_alerts_only_run(self):
+        out, summary = self._run(data_view=_PINNED)
+        self.assertNotIn("metrics target / data-plane readiness", out)
+        self.assertEqual(summary["metrics_target"]["warnings"], [])
+
 
 class OfflineMigrateStdoutTests(unittest.TestCase):
     _DASHBOARD = {
@@ -273,13 +563,13 @@ class OfflineMigrateStdoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             in_dir = root / "in"
+            out_dir = root / "out"
             in_dir.mkdir()
             (in_dir / "d.json").write_text(json.dumps(self._DASHBOARD), encoding="utf-8")
             argv = [
-                "grafana-migrate",
                 "--source", "files",
                 "--input-dir", str(in_dir),
-                "--output-dir", str(root / "out"),
+                "--output-dir", str(out_dir),
                 "--assets", "dashboards",
                 "--data-view", data_view,
                 "--translation-mode", "native",
@@ -288,24 +578,28 @@ class OfflineMigrateStdoutTests(unittest.TestCase):
             if esql_index:
                 argv += ["--esql-index", esql_index]
             buf = io.StringIO()
-            original = list(sys.argv)
-            try:
-                sys.argv = argv
-                with redirect_stdout(buf):
-                    grafana_cli.main()
-            finally:
-                sys.argv = original
-            return buf.getvalue()
+            with redirect_stdout(buf):
+                grafana_cli.main(argv)
+            summary = json.loads((out_dir / "run_summary.json").read_text(encoding="utf-8"))
+            return buf.getvalue(), summary
 
     def test_wildcard_target_prints_migrate_first_warning(self):
-        out = self._migrate(data_view="metrics-*")
+        out, _ = self._migrate(data_view="metrics-*")
         self.assertIn("metrics target / data-plane readiness", out)
         self.assertIn("migrate-first", out.lower())
         self.assertIn("metrics-*", out)
 
+    def test_findings_are_recorded_in_the_run_summary(self):
+        """The banner scrolls past mid-run; CI only keeps the artifacts."""
+        _, summary = self._migrate(data_view="metrics-*")
+        target = summary["metrics_target"]
+        self.assertEqual(target["query_index"], "metrics-*")
+        self.assertTrue(any("migrate-first" in w.lower() for w in target["warnings"]))
+
     def test_pinned_target_does_not_print_a_second_readiness_banner(self):
         """Only the pre-existing field-discovery warning should fire here."""
-        out = self._migrate(data_view=_PINNED, esql_index=_PINNED)
+        out, summary = self._migrate(data_view=_PINNED, esql_index=_PINNED)
         self.assertNotIn("metrics target / data-plane readiness", out)
         # The unrelated, correctly-gated offline warning still does its job.
         self.assertIn("migrated panels may render empty", out)
+        self.assertEqual(summary["metrics_target"]["warnings"], [])

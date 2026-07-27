@@ -14,10 +14,10 @@ This module turns those timelines into migrate-time messages. It does not
 auto-select a stream from Grafana datasource UIDs.
 
 Only a *risky* target speaks up. A run that already pins both flags to one
-concrete stream has nothing to fix, and the generic "no ``--es-url``, so fields
-are unverified" case is already covered by the field-discovery warning in
-``core.reporting.report`` — repeating it here would train operators to skim
-past both banners.
+concrete stream that exists has nothing to fix, and the generic "no
+``--es-url``, so fields are unverified" case is already covered by the
+field-discovery warning in ``core.reporting.report`` — repeating it here would
+train operators to skim past both banners.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def backend_family(stream_name: str | None) -> str:
     return "other"
 
 
-@dataclass(frozen=True)
+@dataclass
 class MetricsTargetGuidance:
     """Operator-facing findings about the chosen metrics target.
 
@@ -71,6 +71,20 @@ class MetricsTargetGuidance:
     @property
     def messages(self) -> list[str]:
         return [*self.warnings, *self.notes]
+
+    def as_summary(self) -> dict[str, object]:
+        """Machine-readable form for ``run_summary.json``.
+
+        The banner scrolls past in a long migrate run and CI never sees it, so
+        the same findings are recorded in the run artifacts for the reporting
+        skills to pick up.
+        """
+        return {
+            "query_index": self.query_index,
+            "data_view": self.data_view,
+            "warnings": list(self.warnings),
+            "notes": list(self.notes),
+        }
 
 
 def _unique_preserve(items: Iterable[str]) -> list[str]:
@@ -100,13 +114,15 @@ def assess_metrics_target(
     concrete_streams: Sequence[str] | None = None,
     tsdb_conflict_fields: Sequence[str] | None = None,
     stream_discovery_error: str | None = None,
+    target_missing: bool = False,
 ) -> MetricsTargetGuidance:
     """Return operator-facing findings for the chosen metrics target.
 
     Pure function — callers supply live stream candidates / conflict fields when
     ``--es-url`` discovery is available. ``stream_discovery_error`` lets a
     caller say "I could not list streams" so an unreadable target is not
-    reported as an empty one.
+    reported as an empty one, and ``target_missing`` says a *pinned* target does
+    not resolve on the cluster.
     """
     data_view_token = str(data_view or "").strip() or "metrics-*"
     esql_token = str(esql_index or "").strip()
@@ -116,10 +132,17 @@ def assess_metrics_target(
     conflicts = _unique_preserve(tsdb_conflict_fields or [])
     discovery_error = str(stream_discovery_error or "").strip()
     query_is_wildcard = is_wildcard_index(query_index)
+    diverged = bool(esql_token) and esql_token != data_view_token
+    query_broader_than_ui = (
+        diverged and query_is_wildcard and not is_wildcard_index(data_view_token)
+    )
     warnings: list[str] = []
     notes: list[str] = []
 
-    if not es_configured and query_is_wildcard:
+    # The broader-than-UI warning below already names the fix for this run, so
+    # emitting the generic migrate-first advice next to it just stacks two
+    # banners that say "pin the wildcard".
+    if not es_configured and query_is_wildcard and not query_broader_than_ui:
         warnings.append(
             f"Migrate-first (no --es-url) against wildcard '{query_index}'. You "
             "are committing assets to a planned metrics target before live "
@@ -131,8 +154,8 @@ def assess_metrics_target(
             "lands are expected — not a translator failure."
         )
 
-    if esql_token and esql_token != data_view_token:
-        if query_is_wildcard and not is_wildcard_index(data_view_token):
+    if diverged:
+        if query_broader_than_ui:
             warnings.append(
                 f"Query target is broader than the UI bind: --data-view "
                 f"'{data_view_token}' is a concrete stream, but native PROMQL "
@@ -147,6 +170,15 @@ def assess_metrics_target(
                 "Kibana data view and controls. This is supported — no action "
                 "needed if the broader UI bind is deliberate."
             )
+
+    if es_configured and not query_is_wildcard and target_missing:
+        warnings.append(
+            f"Pinned metrics target '{query_index}' does not exist on this "
+            "cluster (no data stream, index, or alias resolves to it). Every "
+            "migrated metrics query will read it anyway, so all panels render "
+            "empty. Check the name for a typo, or create/ingest the stream "
+            "first and re-run."
+        )
 
     if es_configured and query_is_wildcard:
         if streams:
@@ -225,7 +257,21 @@ def print_metrics_target_guidance(guidance: MetricsTargetGuidance) -> None:
 
 
 def tsdb_conflict_fields_from_field_cache(field_cache: dict | None) -> list[str]:
-    """Return field names that carry both dimension and metric TSDB roles."""
+    """Return field names whose TSDB role disagrees across the target's indices.
+
+    ``_field_caps`` reports this two ways, and both have to be read:
+
+    * The field resolves to several *types*, one carrying
+      ``time_series_dimension`` and another ``time_series_metric`` (e.g. a
+      keyword dimension in one stream, a numeric gauge in another).
+    * The field resolves to a single type and Elasticsearch reports the
+      disagreement out-of-band via ``metric_conflicts_indices`` (differing
+      ``time_series_metric`` values) or ``non_dimension_indices`` (a dimension
+      in some indices only). This is the shape a numeric dimension colliding
+      with a numeric metric takes, and it is the one behind the
+      ``Cannot merge [DIMENSION] with [METRIC]`` failures on mixed
+      ``metrics-*`` wildcards.
+    """
     conflicts: list[str] = []
     if not isinstance(field_cache, dict):
         return conflicts
@@ -234,6 +280,7 @@ def tsdb_conflict_fields_from_field_cache(field_cache: dict | None) -> list[str]
             continue
         has_dim = False
         has_met = False
+        reported_conflict = False
         for meta in types.values():
             if not isinstance(meta, dict):
                 continue
@@ -241,7 +288,9 @@ def tsdb_conflict_fields_from_field_cache(field_cache: dict | None) -> list[str]
                 has_dim = True
             if meta.get("time_series_metric"):
                 has_met = True
-        if has_dim and has_met:
+            if meta.get("metric_conflicts_indices") or meta.get("non_dimension_indices"):
+                reported_conflict = True
+        if reported_conflict or (has_dim and has_met):
             conflicts.append(str(name))
     return sorted(conflicts)
 

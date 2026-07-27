@@ -95,6 +95,7 @@ from .links import build_links_summary, translate_dashboard_links, translate_pan
 from .local_ai import resolve_task_model
 from .manifest import save_migration_manifest
 from .metrics_target_guidance import (
+    MetricsTargetGuidance,
     assess_metrics_target,
     print_metrics_target_guidance,
 )
@@ -1680,6 +1681,7 @@ def _write_run_summary(
     requested_assets: str,
     dashboard_summary: dict[str, Any] | None,
     alert_summary: dict[str, Any] | None,
+    metrics_target: MetricsTargetGuidance | None = None,
 ) -> None:
     base_dir.mkdir(parents=True, exist_ok=True)
     run_summary = {
@@ -1689,6 +1691,9 @@ def _write_run_summary(
             "alerts": alert_summary is not None,
         },
     }
+    if metrics_target is not None:
+        # The banner scrolls past mid-run and CI only keeps the artifacts.
+        run_summary["metrics_target"] = metrics_target.as_summary()
     if dashboard_summary is not None:
         run_summary["dashboards"] = dashboard_summary
     if alert_summary is not None:
@@ -1741,35 +1746,50 @@ def _build_dashboard_schema_resolver(
     )
 
 
-def _print_metrics_target_operator_guidance(
+def _describe_exception(exc: BaseException) -> str:
+    """Never return "" — an empty reason reads as "the target is fine"."""
+    return str(exc).strip() or exc.__class__.__name__
+
+
+def assess_metrics_target_from_args(
     args: argparse.Namespace, resolver: SchemaResolver | None
-) -> None:
-    """Warn on migrate-first / mixed-wildcard / UI-vs-query index footguns (#284)."""
+) -> MetricsTargetGuidance:
+    """Assess migrate-first / mixed-wildcard / UI-vs-query index footguns (#284)."""
     concrete_streams: list[str] = []
     conflicts: list[str] = []
     discovery_error = ""
+    target_missing = False
     es_url = str(getattr(args, "es_url", "") or "").strip()
     if resolver is not None and es_url:
         try:
             concrete_streams = list(resolver.concrete_index_candidates() or [])
             discovery_error = resolver.concrete_index_error()
+            target_missing = bool(resolver.concrete_index_missing())
         except Exception as exc:
-            discovery_error = str(exc)
+            discovery_error = _describe_exception(exc)
         try:
             conflicts = list(resolver.tsdb_conflict_fields() or [])
         except Exception:
             # Conflict detection is an extra hint on top of the stream list;
             # losing it should not suppress the rest of the guidance.
             conflicts = []
-    guidance = assess_metrics_target(
+    return assess_metrics_target(
         data_view=getattr(args, "data_view", "") or "",
         esql_index=getattr(args, "esql_index", "") or "",
         es_url=es_url,
         concrete_streams=concrete_streams,
         tsdb_conflict_fields=conflicts,
         stream_discovery_error=discovery_error,
+        target_missing=target_missing,
     )
+
+
+def _print_metrics_target_operator_guidance(
+    args: argparse.Namespace, resolver: SchemaResolver | None
+) -> MetricsTargetGuidance:
+    guidance = assess_metrics_target_from_args(args, resolver)
     print_metrics_target_guidance(guidance)
+    return guidance
 
 
 def _print_schema_discovery_status(
@@ -2215,10 +2235,10 @@ def main(argv: list[str] | None = None):
             resolver,
             field_profile=args.field_profile,
         )
-        _print_metrics_target_operator_guidance(args, resolver)
+        metrics_target_guidance = _print_metrics_target_operator_guidance(args, resolver)
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
-        _print_metrics_target_operator_guidance(args, None)
+        metrics_target_guidance = _print_metrics_target_operator_guidance(args, None)
         control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
         if control_schema_path:
             schema_file = Path(control_schema_path)
@@ -2782,6 +2802,7 @@ def main(argv: list[str] | None = None):
             field_discovery=field_discovery,
         ),
         alert_summary=alert_run_summary,
+        metrics_target=metrics_target_guidance,
     )
 
     if args.preflight:

@@ -528,14 +528,45 @@ sequences:
 **Operator rule of thumb:** ingest path → concrete stream → set both
 `--data-view` and `--esql-index` → migrate/verify.
 
-Migrate prints a metrics-target readiness warning only when the target is
-actually risky — a wildcard query target (with or without `--es-url`), a
-wildcard that resolves to several streams, a target whose streams cannot be
-listed, or TSDB dimension/metric conflicts. A run that already pins both flags
-to one concrete stream prints nothing. When the two flags differ, queries
-follow `--esql-index` (or `--data-view` when unset) and the CLI prints an
-informational note; it escalates to a warning only in the surprising direction,
-where `--data-view` is concrete but the queries still span a wildcard.
+`grafana-migrate` (dashboards and alerts-only runs alike) prints a
+metrics-target readiness warning only when the target is actually risky — a
+wildcard query target (with or without `--es-url`), a wildcard that resolves to
+several streams, a target whose streams cannot be listed, a pinned target that
+does not resolve on the cluster, or TSDB dimension/metric conflicts. A run that
+already pins both flags to an existing concrete stream prints nothing. When the
+two flags differ, queries follow `--esql-index` (or `--data-view` when unset)
+and the CLI prints an informational note; it escalates to a warning only in the
+surprising direction, where `--data-view` is concrete but the queries still span
+a wildcard. The same findings are written to `run_summary.json` under
+`metrics_target` (`alerts.metrics_target` for alerts-only runs) so CI and the
+reporting skills see them after the console output has scrolled away.
+`datadog-migrate` does not print this warning yet; apply the same rule of thumb
+to its `--data-view` / `--field-profile` metric index by hand.
+
+#### The `data_stream.dataset` filter is scoped to wildcard targets
+
+A migrated Grafana dashboard can carry a dashboard-level
+`data_stream.dataset` filter, so "I pointed at `metrics-*`" does not always mean
+"I am reading all of `metrics-*`". The rules:
+
+- **Metrics panels.** The filter is emitted only when *every* panel query index
+  contains a wildcard, and defaults to the literal `prometheus`
+  (`--dataset-filter` overrides it, `--dataset-filter ""` disables it). Pinning
+  `--esql-index` to a concrete stream drops the filter, because the index
+  pattern is already the constraint and a literal `prometheus` would exclude
+  every document in, say, a `prometheus.remote_write` data stream.
+- **Native PROMQL** clears the default filter outright, and `--translation-mode
+  esql` clears it too for the `otel` / `auto` / `passthrough` profiles, since
+  binding `data_stream.dataset: prometheus` on OTel data renders panels empty.
+- **Logs panels.** No filter unless you pass `--logs-dataset-filter`, and then
+  only for wildcard log targets.
+
+#### `--logs-index` is independent of `--data-view`
+
+Loki/LogQL panels read `--logs-index` (default `logs-*`, also settable as
+`logs_index` in a rule pack). It does **not** inherit `--data-view` or
+`--esql-index`, so a dashboard that mixes metrics and logs panels needs both
+targets set explicitly.
 
 ### Reusing existing OTEL metrics with `--metric-map-file`
 
