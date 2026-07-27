@@ -16,7 +16,7 @@ help: ## List available targets
 sync: ## Sync the dev virtualenv from uv.lock
 	uv sync --locked --all-extras
 
-bump-version: ## Bump version (VERSION=X.Y.Z), refresh uv.lock, and license/SBOM artifacts
+bump-version: ## Bump version (VERSION=X.Y.Z), sync README/docs pins, refresh uv.lock + SBOM
 	@test -n "$(VERSION)" || (echo "USAGE: make bump-version VERSION=X.Y.Z"; exit 2)
 	@if [ -x "$(PYTHON)" ]; then \
 	  $(PYTHON) scripts/bump_version.py "$(VERSION)"; \

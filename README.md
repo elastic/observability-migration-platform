@@ -43,6 +43,10 @@ GitHub tag install (optional fallback; never `@main`):
 PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
 ```
 
+The example pins above are kept in sync with the package version by
+`make bump-version`. The PyPI badge at the top of this README always reflects
+the latest published release on PyPI.
+
 ### 1. Check the install
 
 ```bash

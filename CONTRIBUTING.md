@@ -100,16 +100,20 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
    make bump-version VERSION=X.Y.Z
    ```
 
-   (`scripts/bump_version.py` updates `pyproject.toml` and runs `uv lock`,
-   then `make licenses` regenerates `docs/licenses/*`. Use
+   (`scripts/bump_version.py` updates `pyproject.toml`, rewrites the example
+   PyPI pin / git-tag install lines in `README.md`,
+   `docs/command-contract.md`, and the mirrored `install-obs-migrate` skills,
+   then runs `uv lock`. `make licenses` regenerates `docs/licenses/*`. Use
    `SKIP_LICENSES=1` only for local experiments — release PRs must refresh
    the SBOM.)
-   Open a PR with that bump (and any release notes / docs).
+   Open a PR with that bump (and any release notes). Do **not** hand-edit
+   version pins in the README — let `bump-version` keep them aligned.
 
 2. After merge, tag the merge commit `vX.Y.Z` and push the tag. The release
    workflow fails fast if the tag does not match `[project].version` in
-   `pyproject.toml`, then builds the wheel/sdist and attaches them (plus the
-   SBOM) to a GitHub Release.
+   `pyproject.toml`, **or** if operator install pins in README / command-contract
+   / install skill drift from that version, then builds the wheel/sdist and
+   attaches them (plus the SBOM) to a GitHub Release.
 
 3. **PyPI Trusted Publishing** (configured; no Elastic PyPI org yet):
 
