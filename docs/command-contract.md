@@ -1342,7 +1342,7 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 
 # Focusing the right tab in a live agent-browser session (--agent-browser):
 # bootstrap.sh logs in once and keeps a persistent profile
-# (~/.agent-browser/profiles/mig-to-kbn-verifier) + saved state. A live session
+# (~/.agent-browser/profiles/obs-migrate-verifier) + saved state. A live session
 # often has MULTIPLE tabs — Kibana tabs PLUS a Gemini "glic" side-panel
 # (https://gemini.google.com/glic), staging.found.no, or an SSO interstitial
 # (/internal/security/capture-url, auth_provider_hint). --agent-browser is a

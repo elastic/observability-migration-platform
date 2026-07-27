@@ -1,6 +1,6 @@
 # Parity Rig
 
-End-to-end correctness harness for mig-to-kbn. Feeds the **same** simulated
+End-to-end correctness harness for obs-migrate. Feeds the **same** simulated
 Prometheus metrics into Grafana (via Prometheus) and Kibana (via Elastic's
 native `/_prometheus/api/v1/write` endpoint), then runs each migrated
 panel's query against both stores and diffs the results.
@@ -110,8 +110,8 @@ The rig writes data to `metrics-express.prometheus-parity` (set by the
 ```bash
 set -a; source serverless_creds.env; set +a
 .venv/bin/python -m observability_migration.adapters.source.grafana.cli \
-  --input-dir /tmp/mig-to-kbn-e2e/input-express \
-  --output-dir /tmp/mig-to-kbn-e2e/parity-express-native \
+  --input-dir /tmp/obs-migrate-e2e/input-express \
+  --output-dir /tmp/obs-migrate-e2e/parity-express-native \
   --assets dashboards \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --es-api-key "$KEY" \
@@ -126,7 +126,7 @@ set -a; source serverless_creds.env; set +a
 ```bash
 PROM_URL=http://localhost:29090 \
 ESQL_INDEX=metrics-express.prometheus-parity \
-REPORT_PATH=/tmp/mig-to-kbn-e2e/parity-express-native/dashboards/migration_report.json \
+REPORT_PATH=/tmp/obs-migrate-e2e/parity-express-native/dashboards/migration_report.json \
 PARITY_WINDOW_MINUTES=8 \
 PARITY_STEP_SECONDS=60 \
   python harness/parity.py

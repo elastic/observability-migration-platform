@@ -398,7 +398,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_cmd.add_argument(
         "--migration-out",
         required=True,
-        help="Per-dashboard mig-to-kbn output directory (contains migration_report.json, yaml/, compiled/).",
+        help="Per-dashboard obs-migrate output directory (contains migration_report.json, yaml/, compiled/).",
     )
     verify_cmd.add_argument("--kibana-url", default="", help="Kibana base URL (required for T4).")
     verify_cmd.add_argument("--es-url", default="", help="Elasticsearch base URL (required for T5).")

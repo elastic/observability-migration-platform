@@ -3,7 +3,7 @@
 Usage::
 
     python -m parity-rig.verifier.cli \
-        --migration-out /tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards \
+        --migration-out /tmp/obs-migrate-e2e/parity-out-<slug>/dashboards \
         --kibana-url $KIBANA_ENDPOINT \
         --es-url $ELASTICSEARCH_ENDPOINT \
         --api-key $KEY \
@@ -42,7 +42,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--migration-out",
         type=Path,
         required=True,
-        help="Path to the per-dashboard mig-to-kbn output directory "
+        help="Path to the per-dashboard obs-migrate output directory "
              "(contains migration_report.json, yaml/, compiled/).",
     )
     p.add_argument(

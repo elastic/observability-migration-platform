@@ -2022,7 +2022,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         the parent resolver's API key so they can run `_field_caps` and pick
         up source-faithful fields. Without the key, the alternate resolver
         operated blind and silently fell back to OTEL-only mappings — the
-        exact root cause of elastic/mig-to-kbn#21 (the control bound to
+        exact root cause of elastic/observability-migration-platform#21 (the control bound to
         `instance` ended up pointing at `service.instance.id` while the
         panel WHERE clause correctly used `instance`)."""
         parent = migrate.SchemaResolver(

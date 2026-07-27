@@ -37,13 +37,13 @@ done
 
 # Map each fixture / dashboard JSON to a short slug.
 declare -a DASHBOARDS=(
-  "diverse-panels-test:Diverse Panel Types Test:/tmp/mig-to-kbn-e2e/input-all/diverse-panels-test.json"
-  "home:Home - Migration Test Lab:/tmp/mig-to-kbn-e2e/input-all/home.json"
-  "k8s-views-global:Kubernetes / Views / Global:/tmp/mig-to-kbn-e2e/input-all/k8s-views-global.json"
-  "node-exporter-full:Node Exporter Full:/tmp/mig-to-kbn-e2e/input-all/node-exporter-full.json"
-  "prometheus-all:Prometheus 2.0 (by FUSAKLA):/tmp/mig-to-kbn-e2e/input-all/prometheus-all.json"
+  "diverse-panels-test:Diverse Panel Types Test:/tmp/obs-migrate-e2e/input-all/diverse-panels-test.json"
+  "home:Home - Migration Test Lab:/tmp/obs-migrate-e2e/input-all/home.json"
+  "k8s-views-global:Kubernetes / Views / Global:/tmp/obs-migrate-e2e/input-all/k8s-views-global.json"
+  "node-exporter-full:Node Exporter Full:/tmp/obs-migrate-e2e/input-all/node-exporter-full.json"
+  "prometheus-all:Prometheus 2.0 (by FUSAKLA):/tmp/obs-migrate-e2e/input-all/prometheus-all.json"
   "node-exporter-full-1860:Node Exporter Full (canonical 1860):$RIG/grafana/dashboards/node-exporter-full-1860.json"
-  "express-prometheus-middleware:Express Prometheus Middleware:/tmp/mig-to-kbn-e2e/input-express/express-prometheus-middleware.json"
+  "express-prometheus-middleware:Express Prometheus Middleware:/tmp/obs-migrate-e2e/input-express/express-prometheus-middleware.json"
 )
 
 cd "$WORKTREE"
@@ -54,8 +54,8 @@ for entry in "${DASHBOARDS[@]}"; do
   echo "============================================================"
   echo "  $title  ($slug)"
   echo "============================================================"
-  INPUT=/tmp/mig-to-kbn-e2e/parity-input-$slug
-  OUTPUT=/tmp/mig-to-kbn-e2e/parity-out-$slug
+  INPUT=/tmp/obs-migrate-e2e/parity-input-$slug
+  OUTPUT=/tmp/obs-migrate-e2e/parity-out-$slug
   mkdir -p "$INPUT"
   cp "$path" "$INPUT/dashboard.json"
 

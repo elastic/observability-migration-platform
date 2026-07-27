@@ -60,7 +60,7 @@ _DEFAULT_PARAMS: dict = {
 }
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_E2E_ROOT = os.environ.get("E2E_ROOT", "/tmp/mig-to-kbn-e2e")
+_E2E_ROOT = os.environ.get("E2E_ROOT", "/tmp/obs-migrate-e2e")
 
 YAML_FILES = sorted(
     glob.glob(os.path.join(_E2E_ROOT, "grafana/*/dashboards/yaml/*.yaml"))

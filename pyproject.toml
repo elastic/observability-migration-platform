@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/elastic/mig-to-kbn"
-Repository = "https://github.com/elastic/mig-to-kbn"
-Issues = "https://github.com/elastic/mig-to-kbn/issues"
+Homepage = "https://github.com/elastic/observability-migration-platform"
+Repository = "https://github.com/elastic/observability-migration-platform"
+Issues = "https://github.com/elastic/observability-migration-platform/issues"
 
 [project.optional-dependencies]
 grafana = [

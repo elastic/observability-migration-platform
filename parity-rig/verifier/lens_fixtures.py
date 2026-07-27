@@ -3,7 +3,7 @@
 Kibana's `@kbn/lens-embeddable-utils` / Lens-as-code builder is an authoritative
 way to generate valid Lens attributes, but it lives in the Kibana TypeScript
 toolchain. This module defines the *consumer-side* contract for those generated
-fixtures so mig-to-kbn can enforce coverage and schema sanity without depending
+fixtures so obs-migrate can enforce coverage and schema sanity without depending
 on a Kibana checkout at test time.
 
 Preferred wrapper fixture JSON shape::

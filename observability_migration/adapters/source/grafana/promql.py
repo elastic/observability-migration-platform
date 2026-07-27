@@ -2876,7 +2876,7 @@ def _ast_binary_fragment(node, expr):
     # Set operators (``or``/``and``/``unless``) are not joins; they have
     # set-union/intersection/difference semantics that preserve operands'
     # label sets. Even though the parser models them with a ManyToMany
-    # cardinality modifier, mig-to-kbn's join translation path is wrong
+    # cardinality modifier, obs-migrate's join translation path is wrong
     # for them. Route them to the binary_expr family so the formula plan
     # builder can either apply the safe same-metric ``or`` rewrite or
     # refuse the translation honestly.
