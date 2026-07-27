@@ -39,13 +39,13 @@ jobs:
         with:
           name: dist
           path: dist/
-      # PyPI publish stays disabled until a Trusted Publisher is configured for
-      # project `obs-migrate` (Owner=elastic, Repository=observability-migration-platform,
-      # Workflow=release.yml, Environment=pypi). See CONTRIBUTING.md Releasing.
-      # Flip: delete the `if:` line below (or set it to true) after publisher setup.
+      # Trusted Publishing (OIDC) — no PyPI API token. Pending/normal publisher
+      # must match: project elastic-observability-migration, Owner=elastic,
+      # Repository=observability-migration-platform, Workflow=release.yml,
+      # Environment=pypi. Personal PyPI ownership for now; migrate to an Elastic
+      # org later. See CONTRIBUTING.md Releasing.
       # Docs: https://docs.pypi.org/trusted-publishers/
       - name: Publish to PyPI (Trusted Publishing)
-        if: ${{ false }}
         uses: pypa/gh-action-pypi-publish@release/v1
       - name: Attach artifacts + SBOM to GitHub Release
         uses: softprops/action-gh-release@v2
