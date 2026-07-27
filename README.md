@@ -4,6 +4,7 @@
 [![License & SBOM](https://github.com/elastic/observability-migration-platform/actions/workflows/license-check.yml/badge.svg?branch=main)](https://github.com/elastic/observability-migration-platform/actions/workflows/license-check.yml)
 [![License: Elastic-2.0](https://img.shields.io/badge/license-Elastic%20License%202.0-005571)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/elastic-observability-migration)](https://pypi.org/project/elastic-observability-migration/)
 
 Migrate Grafana and Datadog dashboards, alerts, and monitors into Kibana.
 Unsupported translations are marked for manual review instead of being
@@ -11,9 +12,9 @@ silently dropped.
 
 Use one CLI: **`obs-migrate`**.
 
-Pre-1.0. Distributed as a Python package only — there is no standalone
-binary. The package is not on PyPI yet, so install from a **pinned GitHub
-release tag** (never `@main`) until publishing is enabled.
+Pre-1.0. Distributed as a Python package on PyPI:
+[`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/).
+There is no standalone binary. The console script is still `obs-migrate`.
 
 ## Requirements
 
@@ -31,16 +32,20 @@ Grafana, Datadog, and Kibana compile/lint dependencies are included together.
 Set the package source once, then reuse it:
 
 ```bash
-# Pin the latest release tag (example below). See:
-# https://github.com/elastic/observability-migration-platform/releases
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
-```
-
-When the package is on PyPI, use:
-
-```bash
+# PyPI (recommended). Pin a version when you want a fixed release, e.g.
+# PKG='elastic-observability-migration[all]==0.4.0rc1'
 PKG='elastic-observability-migration[all]'
 ```
+
+GitHub tag install (optional fallback; never `@main`):
+
+```bash
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+```
+
+The example pins above are kept in sync with the package version by
+`make bump-version`. The PyPI badge at the top of this README always reflects
+the latest published release on PyPI.
 
 ### 1. Check the install
 

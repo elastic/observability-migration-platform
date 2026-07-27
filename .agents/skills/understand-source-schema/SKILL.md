@@ -5,7 +5,24 @@ description: Use when the user asks how their schema/fields/metric names/labels 
 
 # Understand the source schema (source → Elastic field mapping)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: help the user see exactly how their source field names become Elastic field names, get that mapping for **their** dashboards, and know how to override it. Source schemas (Prometheus `instance`/`job`/`node_cpu_seconds_total`, Datadog `system.cpu.user`/`host`) usually do **not** match Elastic field names, so this gap is expected, not a bug.
+
+## Prerequisites (install)
+
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## How the mapping works (Grafana)
 
@@ -32,7 +49,7 @@ Goal: help the user see exactly how their source field names become Elastic fiel
 
 ## Get the mapping for the user's own dashboards
 
-Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. First run with the planned profile; add a live `--es-url` after telemetry starts so the resolver can confirm which target fields actually exist:
+First run with the planned profile; add a live `--es-url` after telemetry starts so the resolver can confirm which target fields actually exist:
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
@@ -50,11 +67,12 @@ obs-migrate migrate \
 ```
 
 (Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below. For Prometheus, set `--esql-index` to the metrics query/discovery stream even when `--data-view` differs as the Kibana UI bind (`docs/command-contract.md` → Target index flags).
+
 ## Get the purpose-built per-panel mapping table (start here)
 
 The most direct answer to "how do my fields map?" is the **schema-change report**, a per-panel `dashboard │ panel │ source_fields │ target_stream │ target_fields` table. Dashboard migration writes it automatically at `<output-dir>/dashboards/schema_change_report.md`, alongside `<output-dir>/dashboards/telemetry_contract.json`.
 
-To regenerate the report, or to merge several source outputs into one table, use the installed package command (no source checkout, no `scripts/` directory needed):
+To regenerate the report, or to merge several source outputs into one table, use the installed package command:
 
 ```bash
 obs-migrate schema-report \
@@ -110,13 +128,14 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 - Do **not** invent metric-name transformation rules (e.g. exact `prometheus.<metric>.value` forms) without confirming against the emitted YAML/packets for the actual run.
 - Do **not** use Grafana `auto` before telemetry exists. Use an explicit planned profile, then rerun validation with a reachable `--es-url` after ingest begins.
 - Do **not** treat a source-vs-Elastic naming difference as a migration bug — it is the schema gap this skill exists to map and resolve.
-- Do **not** reach for repo-only scripts for the schema report: migration writes `schema_change_report.md` automatically, and `obs-migrate schema-report` is the package-native regeneration/merge command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout.)
+- Do **not** reach for repo-only scripts for the schema report: migration writes `schema_change_report.md` automatically, and `obs-migrate schema-report` is the package-native regeneration/merge command. (`scripts/generate_telemetry_contract.py` is the same thing in a source checkout only.)
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `obs-migrate schema-report --help` — the per-panel source→target table command (shipped in the package).
 - `docs/sources/grafana.md` (SchemaResolver + rule packs + Current Boundaries) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
 - `prepare-target-telemetry` skill — choose ingest route / `--esql-index` before data exists.
 - `assess-migration-readiness` skill — `missing` fields/metrics show up there as blockers/actions.
 - `explain-migration-gaps` skill — approximation warnings (e.g. histogram assume+warn) vs mapping bugs.
-- `obs-migrate extensions --help` and `grafana-migrate --help` — rule-pack and `--rules-file` options for the installed version.
+- `obs-migrate extensions --help` and `obs-migrate migrate --help` — rule-pack / `--rules-file` / `--field-profile` options for the installed version.

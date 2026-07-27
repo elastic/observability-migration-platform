@@ -5,7 +5,24 @@ description: Use when, before or while running an obs-migrate Grafana/Prometheus
 
 # Plan target telemetry for an assets-first migration
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: choose the future Elastic telemetry layout, migrate assets against that contract, then verify it after telemetry starts flowing. `obs-migrate` migrates dashboard definitions and queries — **not your data**; panels stay empty until matching telemetry lands under the planned field names. Per-source detail lives in the skills under **See also**.
+
+## Prerequisites (install)
+
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## Normal migration sequence
 
@@ -13,7 +30,7 @@ Goal: choose the future Elastic telemetry layout, migrate assets against that co
 2. Select the matching `--field-profile`; this is the planned target schema.
 3. Migrate and upload assets. An empty Elastic cluster is valid at this stage.
 4. Point the telemetry pipeline at Elastic.
-5. Rerun preflight with `--es-url` to compare live `_field_caps` with the plan.
+5. Rerun preflight with `--es-url` (and `--es-api-key` when needed) to compare live `_field_caps` with the plan.
 
 `unknown` field status before step 4 means verification is pending, not that the asset migration failed.
 
@@ -21,10 +38,14 @@ Goal: choose the future Elastic telemetry layout, migrate assets against that co
 
 - **Grafana:** use `--field-profile auto --es-url <url> --preflight`. `auto`
   requires `--es-url`; it detects clear named Prometheus layouts or, when caps
-  are ambiguous, emits as **`otel`** with an explicit warning.
+  are ambiguous, emits as **`otel`** with an explicit warning
+  (`WARNING: field profile auto could not detect a named Prometheus layout;
+  falling back to otel`).
 - **Datadog:** select the expected profile explicitly and add
   `--es-url <url> --preflight`. Datadog does not auto-detect profiles; inspect
-  the confirmed/missing totals and `target_readiness_contract.json`.
+  the confirmed/missing totals and `target_readiness_contract.json`. Live
+  missing fields show as `Preflight: issues` with `[warn] … field '…' not
+  found in target mapping` (translation still continues).
 - Treat a live `missing` field as a profile/index mismatch to resolve before
   upload. For Grafana, inspect `required_target_contract.json`:
   `profile_mismatch` (planned ≠ detected named layout) is recorded there for
@@ -69,25 +90,51 @@ You cannot point Datadog at Elastic directly, and its field profile does not aut
 | Elasticsearch native `/_prometheus` write | `prometheus_native` | `metrics.system_cpu_user` | `labels.instance` |
 | Custom / unknown | `passthrough` or custom YAML | `system.cpu.user` | `host` (as-is) |
 
+Datadog has **no** `auto` profile (confirmed in `obs-migrate migrate --help`).
+
 ## Verify after telemetry starts (both sources)
 
-1. Rerun **one** dashboard with `--es-url` (+ `--preflight`). For Grafana, set `--esql-index` / `--data-view` correctly. Read field existence: Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Both carry `status` values such as `confirmed`, `missing`, or `unknown`.
+1. Rerun **one** dashboard with `--es-url` / `--es-api-key` (+ `--preflight`). For Grafana, set `--esql-index` / `--data-view` correctly. Read field existence: Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Both carry `status` values such as `confirmed`, `missing`, or `unknown`.
 2. Open the per-panel source→target table written by the migration: `<out>/dashboards/schema_change_report.md`. Use `obs-migrate schema-report --artifact-dir <out>/dashboards --output schema_change_report.md` only to regenerate or combine existing outputs.
-3. **Prove panels light up without waiting for real ingest:** `obs-migrate seed-sample-data --artifact-dir <out>/dashboards --es-url "$ES"` ingests synthetic docs matching the contract so panels render; tear down with `obs-migrate remove-sample-data --confirm` (dry-run without `--confirm`).
+3. **Prove panels light up without waiting for real ingest** (auth flag is **`--api-key`**, not `--es-api-key`):
+
+```bash
+# Defaults: --es-url ← ELASTICSEARCH_ENDPOINT|ES_URL, --api-key ← KEY
+obs-migrate seed-sample-data \
+  --artifact-dir <out>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Dry-run (prints plan, deletes nothing) — --artifact-dir is required:
+obs-migrate remove-sample-data \
+  --artifact-dir <out>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY"
+
+# Actually tear down seeder-owned streams:
+obs-migrate remove-sample-data \
+  --artifact-dir <out>/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --confirm
+```
+
 4. Expect approximation warnings once data lands (`histogram_quantile` assume+warn, multi-target fusion, histogram mean ratio) — triage with `explain-migration-gaps`, not profile thrashing.
 5. Only roll out once fields are `confirmed` / panels light up.
 
 ## Honest limits / Do NOT
 
-- **The tool does not ingest data or set up collectors/Fleet/Agent for you.** Follow Elastic's ingestion docs for the route you pick; this skill covers only what `obs-migrate` reads and produces.
+- **The tool does not ingest production telemetry or set up collectors/Fleet/Agent for you.** `seed-sample-data` only writes **synthetic** docs for lab proof; follow Elastic's ingestion docs for the real route.
 - **Do NOT use Grafana `auto` before data exists** — choose an explicit planned profile instead.
 - **Do NOT assume a profile** — it must match the ingest route you intend to deploy.
 - **Do NOT omit `--esql-index` on Grafana/Prometheus** when the query stream differs from `--data-view`.
 - **Do NOT treat `unknown` as proven or failed.** It means live target field caps were unavailable; rerun after data starts flowing.
+- **Do NOT pass `--es-api-key` to `seed-sample-data` / `remove-sample-data`** — those commands take `--api-key` (or env `KEY`).
 - An empty panel after upload is often missing/wrong-window data or wrong index, not a translator bug.
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `understand-source-schema` — exact source→Elastic field mapping model, profiles, and report locations.
 - `remediate-field-mapping-gaps` — fix empty/wrong panels after upload.
 - `explain-migration-gaps` — approximation warnings vs redesign work.

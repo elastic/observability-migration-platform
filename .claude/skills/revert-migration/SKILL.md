@@ -5,11 +5,24 @@ description: Use when the user wants to "undo the migration", "delete the dashbo
 
 # Revert a migration (remove generated Kibana assets)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: cleanly remove the assets a migration put **into Kibana** — dashboards, alerting rules, or both — so the user can back out or redo. This is a **target-only, destructive** operation; nothing is touched in the source Grafana/Datadog.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Every command below ships in the installed wheel — no `scripts/`, `infra/`, or `examples/` directory is required.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## Safety first
 
@@ -19,13 +32,17 @@ Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.ve
 
 ## Reverting dashboards
 
-There is no "delete by migration tag" for dashboards — you delete **by id**. Find the ids first, then delete the ones you want.
+There is no "delete by migration tag" for dashboards — you delete **by id**. Prefer ids from `<output-dir>/dashboards/native/*.native.json` → `dashboard_id`, then confirm they still exist:
 
 ```bash
 export KIBANA_ENDPOINT="https://...kbn..." KEY="<api-key>"
 
 # 1. List dashboards in Kibana to find the ids to remove (read-only):
 obs-migrate cluster list-dashboards \
+  --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+
+# Optional: confirm Serverless vs stateful (affects delete semantics messaging):
+obs-migrate cluster detect-serverless \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
 # 2. Delete the chosen dashboards by id:
@@ -35,7 +52,7 @@ obs-migrate cluster delete-dashboards \
 ```
 
 - `delete-dashboards` **requires** `--dashboard-ids`; there is no "delete all" switch. To remove everything, list first and pass the full id set.
-- **Placeholder caveat:** `delete-dashboards` **clears** each dashboard into a `[DELETED]` placeholder rather than removing the saved object outright. The command prints a note saying so — relay it; the user may still see `[DELETED]` shells in the saved-objects list.
+- **Placeholder caveat:** on Elastic Serverless, `delete-dashboards` **clears** each dashboard into a `[DELETED] …` placeholder rather than removing the saved object outright. The command prints a note saying so — relay it; the user may still see `[DELETED]` shells in `list-dashboards` until removed in the Kibana UI.
 
 ## Reverting alerting rules
 
@@ -45,6 +62,7 @@ Migrated rules are tagged `obs-migration` (or named `[migrated] ...`). `obs-migr
 # 1. Dry run: show which migrated rules WOULD be deleted (no changes):
 obs-migrate delete-rules \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
+# JSON includes dry_run=true, would_delete_count, would_delete_rule_ids
 
 # 2. Confirm: actually delete them:
 obs-migrate delete-rules \
@@ -64,7 +82,7 @@ obs-migrate audit-rules \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled
 ```
 
-`audit-rules --disable-enabled` disables the enabled migrated rules but leaves them in place. Use `delete-rules --confirm` only when the user truly wants them gone.
+`audit-rules --disable-enabled` disables the enabled migrated rules but leaves them in place. Use `delete-rules --confirm` only when the user truly wants them gone. Plain `audit-rules` (no flag) is read-only and reports `enabled_migrated_rule_ids` / `disabled_migrated_rule_ids`.
 
 ## Full revert (dashboards + rules)
 
@@ -77,13 +95,13 @@ obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 obs-migrate delete-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --confirm # execute
 ```
 
-After reverting, the user can re-run the migration cleanly (e.g. via migrate-selected-assets or migrate-all-supported-assets) without duplicate assets.
+After reverting, the user can re-run the migration cleanly (e.g. via migrate-selected-assets or migrate-all-supported-assets) without duplicate active dashboards (placeholders may still exist until UI cleanup).
 
 ## Honest limits (tell the user)
 
 - **Dashboards delete by id, not by tag.** There is no migration-tag filter for dashboards and no "delete all" flag — list and pass ids.
 - **Dashboard deletion has no dry-run or `--confirm`.** The safe preview is `cluster list-dashboards`; once `delete-dashboards --dashboard-ids ...` runs, it mutates the target.
-- **Dashboards become `[DELETED]` placeholders**, not fully removed objects — that is the command's Serverless-safe behavior, not a bug.
+- **Dashboards become `[DELETED]` placeholders on Serverless**, not fully removed objects — that is the command's Serverless-safe behavior, not a bug.
 - **`delete-rules` only matches migrated rules** (tag `obs-migration` / name `[migrated] ...`). Rules created another way are not in scope; hand-built Kibana rules are untouched.
 - **Source is never modified.** Reverting cleans Kibana only; the user's Grafana/Datadog assets remain as-is.
 - **Custom-CA / self-signed clusters:** `cluster` and `delete-rules` accept `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) or `--insecure` (env `OBS_MIGRATE_INSECURE`, testing only).
@@ -91,14 +109,16 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 ## Do NOT
 
 - Do **not** run a destructive delete without confirming the scope with the user first.
-- Do **not** claim `delete-dashboards` fully removed the objects — it leaves `[DELETED]` placeholders.
+- Do **not** claim `delete-dashboards` fully removed the objects on Serverless — it leaves `[DELETED]` placeholders.
 - Do **not** invent a "delete all dashboards" or "delete by tag" dashboard flag — neither exists; use ids.
 - Do **not** use `delete-rules` when the user only wants rules paused — use `audit-rules --disable-enabled` for disable-without-delete.
 - Do **not** touch the source vendor to "undo" — revert is target-only.
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `migrate-selected-assets` skill — re-migrate a chosen subset after reverting.
 - `migrate-all-supported-assets` skill — re-run a full migration after a clean revert.
+- `review-and-enable-migrated-alerts` skill — audit/disable before delete when rules were enabled.
 - `obs-migrate cluster --help`, `obs-migrate delete-rules --help`, `obs-migrate audit-rules --help` — authoritative flags for the installed version.
 - `docs/command-contract.md` — cluster, delete-rules, and audit-rules contracts and the Serverless delete caveat (online docs / repo).

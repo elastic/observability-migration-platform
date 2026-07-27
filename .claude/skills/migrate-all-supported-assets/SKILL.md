@@ -5,21 +5,34 @@ description: Use when the user has decided to fully switch and wants to "migrate
 
 # Migrate every supported dashboard / alerting rule
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: migrate **everything the engine supports** from a source in one run, then give the user a straight account of what landed and **what could not migrate**. This is the full-sweep step for teams that have already assessed readiness and decided to switch.
 
 This skill writes all supported assets to the target. It is otherwise read-only on the source.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user **installed the package** (`obs-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Every command and artifact below ships in the installed wheel — no `scripts/`, `infra/`, or `examples/` directory is required.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## Core fact: "all" is the absence of a selector
 
-There is no `--all` flag. A bulk migration is simply `--assets all` (or `--assets dashboards` / `--assets alerts`) **with no id/query selector** — the engine then processes the full set the source returns and reports the ones it cannot translate. Unsupported assets are **surfaced, never silently dropped** (degrade-gracefully).
+There is no `--all` flag. A bulk migration is simply `--assets all` (or `--assets dashboards` / `--assets alerts`) **with no id/query / `--select-*` selector** — the engine then processes the full set the source returns and reports the ones it cannot translate. Unsupported assets are **surfaced, never silently dropped** (degrade-gracefully).
 
 - `--assets dashboards` → every supported dashboard, no alert artifacts.
 - `--assets alerts` → every supported rule/monitor, no dashboard YAML.
-- `--assets all` → both isolated pipelines in one command (the union).
+- `--assets all` → both isolated pipelines in one command (the union). Look for both `…/dashboards/` and `…/alerts/` under the output dir.
 
 ## Step 1 — Run the full migration
 
@@ -63,6 +76,7 @@ obs-migrate migrate \
 
 - `--upload` pushes dashboards via the **typed Dashboards API** (in-memory / persisted `native/*.native.json` payloads). It does **not** require `kb-dashboard-cli` recompile for the default path; pass `--compile` / `--legacy-import` only when you intentionally want NDJSON/YAML compile artifacts. `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
 - Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect `full_out/dashboards/native/`, then `obs-migrate upload --artifact-dir full_out/dashboards`.
+- Without `--create-alert-rules`, alert translation still writes `monitor_migration_results.json` (Datadog) / equivalent Grafana alert artifacts — **not** `monitor_rule_upload_results.json` / `alert_rule_upload_results.json` (those appear only when rules are created in Kibana).
 - File-based sources: swap `--input-mode api` for `--input-mode files --input-dir <dir>` pointing at all exported dashboard JSON.
 - **Custom-CA / self-signed clusters:** `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) verifies against a private CA; `--insecure` (env `OBS_MIGRATE_INSECURE`) skips verification for testing only. Both cover source, Elasticsearch, Kibana, and the Node upload step.
 
@@ -76,7 +90,8 @@ The whole point of a bulk run is the **coverage report**. Read it; do not assume
 | Dashboard coverage buckets | `full_out/dashboards/migration_report.json` | `summary` (counts), readiness buckets |
 | Per-panel status / why a panel didn't migrate | `full_out/dashboards/migration_manifest.json` | `panels[].status`, `panels[].reasons`; Grafana type: `panels[].grafana_type`; Datadog widget type: `panels[].datadog_widget_type` |
 | Which asset families ran | `full_out/run_summary.json` | top-level summary |
-| Alert rule creation results | `full_out/alerts/monitor_rule_upload_results.json` (Datadog) / `full_out/alerts/alert_rule_upload_results.json` (Grafana) | created / failed / skipped |
+| Alert translation (always for `--assets alerts\|all`) | `full_out/alerts/monitor_migration_results.json` (Datadog) | tiers / kinds / failures |
+| Alert rule creation results (only with `--create-alert-rules`) | `full_out/alerts/monitor_rule_upload_results.json` (Datadog) / `full_out/alerts/alert_rule_upload_results.json` (Grafana) | created / failed / skipped |
 
 The dashboards that **cannot** migrate appear as non-clean entries in `migration_summary.md` and as `requires_manual` / `not_feasible` panels (with `reasons`) in the manifest. Panels that **migrated with warnings** (accepted approximations such as `histogram_quantile` → `PERCENTILE`) are also non-clean — triage with `explain-migration-gaps` rather than counting them as hard failures by default. Alerts that cannot be emitted are reported in the alert artifacts. Relay these explicitly — that list is the deliverable, not an afterthought.
 
@@ -94,7 +109,7 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 - **Grafana API extraction is capped at 500 dashboards** per search request — a very large org may not be fully covered in one API pass; note it and consider file exports for the remainder.
 - **No `--es-url` ⇒ no live validation.** A target-less run still translates and reports, but does not prove panels render against real data.
 - **Created rules are disabled.** A bulk alert migration arms nothing; rules are disabled and tagged `obs-migration` until enabled by a human.
-- **Empty panels are often missing data, not a bug.** A clean translation renders empty without matching telemetry in the target; use `prepare-target-telemetry` / `obs-migrate seed-sample-data`.
+- **Empty panels are often missing data, not a bug.** A clean translation renders empty without matching telemetry in the target; use `prepare-target-telemetry` and/or `obs-migrate seed-sample-data` (auth flag **`--api-key`**, defaults to env `KEY` — not `--es-api-key`).
 - **Degrade gracefully:** unsupported assets are surfaced with reasons, never hidden — that is the contract.
 
 ## Do NOT
@@ -107,6 +122,7 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `assess-migration-readiness` skill — run this first to know how much will migrate (and at what evidence level) before sweeping.
 - `migrate-selected-assets` skill — migrate a chosen subset instead of everything.
 - `explain-migration-gaps` skill — plain-language triage of warned vs blocked panels.

@@ -964,8 +964,7 @@ def _run_doctor() -> int:
         print()
         print("First-time install (macOS/Linux, needs uv):")
         print(
-            "  uvx --from 'elastic-observability-migration[all]@git+https://github.com/"
-            "elastic/observability-migration-platform.git@v0.3.0' obs-migrate doctor"
+            "  uvx --from 'elastic-observability-migration[all]' obs-migrate doctor"
         )
         return 1
 

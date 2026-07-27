@@ -5,11 +5,24 @@ description: Use when the user asks whether their credentials/API key has the ri
 
 # Evaluate migration permissions (source + target)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: give the user confidence their credentials can perform every step **before** they invest in a migration. Separate non-mutating probes from checks that change target state, and be honest about what each proves.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## Mental model (state this to the user)
 
@@ -29,13 +42,15 @@ Reading dashboards is the proof. (See the `connect-to-o11y-source` skill for ful
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
-KIBANA_URL= grafana-migrate --source api --output-dir /tmp/perm-src --assets dashboards
+KIBANA_URL= obs-migrate migrate \
+  --source grafana --input-mode api \
+  --output-dir /tmp/perm-src --assets dashboards
 ```
 
 - **Pulled dashboards:** source read permission is sufficient.
 - **401/403:** the source user/token lacks read access (or is wrong).
 
-Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `datadog-migrate` exercises the Monitors API.
+Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `--source datadog` exercises the Monitors API.
 
 `--assets` takes exactly one value: `dashboards`, `alerts`, or `all`. It is **not** a comma list — to exercise both dashboard and monitor reads in one Datadog run use `--assets all`, not `--assets dashboards,alerts`.
 
@@ -98,6 +113,7 @@ obs-migrate verify-alert-rules \
 ```
 
 `verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward: `obs-migrate audit-rules ... --disable-enabled` to disable, then `obs-migrate delete-rules --kibana-url ... --kibana-api-key ...` (dry-run) and `... --confirm` to delete. The dashboard upload proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test. `--yaml-dir` remains a compatibility alias for YAML mapping; prefer `--artifact-dir` with native artifacts.
+
 ## Serverless caveats (call these out)
 
 - Saved-object `GET`/`_find`/direct `DELETE` are blocked on Serverless. Listing uses `_export`; "delete" rewrites objects to `[DELETED]` placeholders via re-import. So a user can lack nothing and still be unable to hard-delete — that is the platform, not a permission gap.
@@ -113,6 +129,7 @@ obs-migrate verify-alert-rules \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `connect-to-o11y-source` skill — source setup and reachability.
 - `obs-migrate verify-alert-rules --help` and `obs-migrate audit-rules --help` — the self-cleaning alert write proof and the read-only rule audit (shipped in the package).
 - `obs-migrate cluster --help` and `obs-migrate migrate --help` — authoritative target/alerting flags for the installed version.

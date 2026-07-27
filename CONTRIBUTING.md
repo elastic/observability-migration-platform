@@ -100,56 +100,47 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
    make bump-version VERSION=X.Y.Z
    ```
 
-   (`scripts/bump_version.py` updates `pyproject.toml` and runs `uv lock`,
-   then `make licenses` regenerates `docs/licenses/*`. Use
+   (`scripts/bump_version.py` updates `pyproject.toml`, rewrites the example
+   PyPI pin / git-tag install lines in `README.md`,
+   `docs/command-contract.md`, and the mirrored `install-obs-migrate` skills,
+   then runs `uv lock`. `make licenses` regenerates `docs/licenses/*`. Use
    `SKIP_LICENSES=1` only for local experiments — release PRs must refresh
    the SBOM.)
-   Open a PR with that bump (and any release notes / docs).
+   Open a PR with that bump (and any release notes). Do **not** hand-edit
+   version pins in the README — let `bump-version` keep them aligned.
 
 2. After merge, tag the merge commit `vX.Y.Z` and push the tag. The release
    workflow fails fast if the tag does not match `[project].version` in
-   `pyproject.toml`, then builds the wheel/sdist and attaches them (plus the
-   SBOM) to a GitHub Release.
+   `pyproject.toml`, **or** if operator install pins in README / command-contract
+   / install skill drift from that version, then builds the wheel/sdist and
+   attaches them (plus the SBOM) to a GitHub Release.
 
-3. **One-time PyPI Trusted Publishing** (no Elastic PyPI org yet):
+3. **PyPI Trusted Publishing** (configured; no Elastic PyPI org yet):
 
-   There is no Elastic PyPI organization account to use today. Create the
-   `elastic-observability-migration` project under a personal PyPI account,
-   share ownership with the maintainers, and transfer into an Elastic org
-   later when one exists.
+   Releases publish to
+   [`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)
+   via OIDC from `.github/workflows/release.yml` (GitHub environment `pypi`,
+   tags `v*`). Ownership is on a personal PyPI account until an Elastic org
+   exists; then transfer the project and re-check the Trusted Publisher.
 
-   - Each maintainer creates a PyPI account (2FA required).
-   - One person creates a **pending** Trusted Publisher for project
-     `elastic-observability-migration` (this claims the name under that
-     person's account until first publish):
-     https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
-   - Trusted Publisher fields point at **this GitHub repo** (not a PyPI org):
-     - Owner: `elastic` (GitHub org)
-     - Repository: `observability-migration-platform`
-     - Workflow: `release.yml`
-     - Environment: `pypi`
-   - Ensure the GitHub Actions environment `pypi` exists on the repo
-     (restrict deployments to `v*` tags; no PyPI API token secret needed).
-   - After the first successful tag publish, add the other maintainers as
-     **Owner** collaborators on the PyPI project (Maintainer cannot add
-     people or change Trusted Publishers).
-   - Later: transfer the project to an Elastic PyPI organization when
-     available (PyPI project settings → transfer), then re-check that the
-     Trusted Publisher still matches this workflow.
+   - Add maintainers as PyPI **Owner** collaborators:
+     https://pypi.org/manage/project/elastic-observability-migration/collaboration/
+   - Trusted Publisher fields (already set): Owner `elastic`, Repository
+     `observability-migration-platform`, Workflow `release.yml`, Environment
+     `pypi`.
 
-4. Tagging a matching `vX.Y.Z` runs Trusted Publishing via OIDC (no
-   long-lived PyPI token). The publish step lives in
-   `.github/workflows/release.yml`.
+4. Tagging a matching `vX.Y.Z` (or pre-release such as `v0.4.0rc1`) publishes
+   via OIDC (no long-lived PyPI token).
 
 5. Post-publish verification:
 
    ```bash
-   uvx --from 'elastic-observability-migration[grafana,kibana]' obs-migrate doctor
-   uvx --from 'elastic-observability-migration[grafana,kibana]' obs-migrate migrate --help
+   uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+   uvx --from 'elastic-observability-migration[all]' obs-migrate migrate --help
    ```
 
-Until the first PyPI release exists, operators should use checkout/`pip`,
-`uv run`, or the git-based `uvx` path documented in `README.md`.
+Operators install from PyPI as documented in `README.md` (git-tag `uvx` remains
+an optional fallback).
 
 ## Docs And Structure Rules
 
