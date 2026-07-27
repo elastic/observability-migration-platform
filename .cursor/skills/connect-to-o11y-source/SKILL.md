@@ -18,8 +18,8 @@ Python/`uv` gotchas. Datadog API mode needs `[datadog]` or `[all]`.
 **This skill** owns credentials and live source proof after install.
 
 ```bash
-uvx --from 'elastic-observability-migration[all]' obs-migrate ...
-# or: obs-migrate ...  after a persistent install puts it on PATH
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
 ```
 
 

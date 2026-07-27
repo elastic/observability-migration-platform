@@ -15,8 +15,8 @@ If `obs-migrate` is missing or `doctor` is not **Ready**, follow
 Python/`uv` gotchas. Do not invent alternate install commands here.
 
 ```bash
-uvx --from 'elastic-observability-migration[all]' obs-migrate ...
-# or: obs-migrate ...  after a persistent install puts it on PATH
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
 ```
 
 Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
