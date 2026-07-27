@@ -7,19 +7,15 @@ description: Use when the user wants to connect, authenticate, point the tool at
 
 Goal: get the user authenticated against their source vendor and **prove the tool can reach it** with the cheapest real call, before they invest in a migration.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Most consumers install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer the unified CLI **`obs-migrate`**. The older `grafana-migrate` /
-`datadog-migrate` entry points remain as compatibility aliases.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Datadog API mode needs the `[datadog]` or `[all]` extra.
+This skill owns **credentials and live source proof** after install.
 
-- **Ephemeral (recommended):** `uvx --from 'elastic-observability-migration[…]' obs-migrate …`
-- **Persistent:** `pip install 'elastic-observability-migration[…]'` then `obs-migrate` on `PATH`
-- **Repo checkout only:** prefix `.venv/bin/`
-
-This skill uses the package form. Do not assume a repo, `infra/`, `examples/`,
-or `scripts/` directory exists.
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
 
 ## Core facts (do not invent around these)
 
@@ -27,21 +23,6 @@ or `scripts/` directory exists.
 - Credentials come from **environment variables** (export them in the shell, or keep them in a local env file you `source`). Datadog also accepts `--env-file`.
 - `--list-dashboards` is **target-side (Kibana), not source-side.** It lists dashboards *in Kibana* and needs `--kibana-url`. Do **not** use it to test a Grafana/Datadog connection.
 - A connectivity check is a **source-only** operation: do not add target flags like `--es-url`, `--kibana-url`, `--data-view`, or `--field-profile`. Set `KIBANA_URL=` in the shell to suppress any default local-Kibana preflight.
-
-## Install (once)
-
-```bash
-# Ephemeral check (needs uv on PATH):
-uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
-
-# Or persistent venv:
-pip install 'elastic-observability-migration[grafana]'   # or [datadog], or [all]
-obs-migrate doctor
-```
-
-`grafana` and `datadog` are real optional extras. Datadog API mode **requires**
-the `datadog` extra (`datadog-api-client`). From a repo checkout:
-`python3 -m venv .venv && .venv/bin/pip install -e ".[grafana]"`.
 
 ## Grafana
 
@@ -83,8 +64,7 @@ What it does under the hood: authenticates and calls Grafana `/api/search?type=d
 Credentials (env): `DD_API_KEY`, `DD_APP_KEY`, and optionally `DD_SITE` (default `datadoghq.com`). You can export them or put them in an env file passed via `--env-file`.
 
 ```bash
-pip install 'elastic-observability-migration[datadog]'   # if not using [all]
-# or: uvx --from 'elastic-observability-migration[datadog]' …
+# Requires [datadog] or [all] extra — see install-obs-migrate if doctor lacks the client.
 export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
 ```
 
@@ -142,5 +122,6 @@ Do not paste fabricated console output to the user. Report what actually printed
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `obs-migrate migrate --help` — authoritative flag list for the installed version (`grafana-migrate` / `datadog-migrate --help` for aliases).
 - `docs/sources/grafana.md`, `docs/sources/datadog.md`, `docs/command-contract.md` — connection/auth and env-var reference (online docs / repo).

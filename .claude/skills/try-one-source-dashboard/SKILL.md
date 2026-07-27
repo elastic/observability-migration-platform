@@ -9,14 +9,16 @@ Goal: take **one** dashboard the user already owns, migrate it all the way into 
 
 This skill writes exactly one dashboard to the target. It is otherwise read-only on the source.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-Every artifact and command below ships in the installed wheel — no `scripts/`,
-`infra/`, or `examples/` directory is required.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Step 1 — Scope to a single dashboard
 
@@ -111,6 +113,7 @@ Optional one-shot: append `--upload --kibana-url … --kibana-api-key …` to th
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `scan-o11y-environment` skill — inventory of what exists (pick the dashboard to try from here).
 - `assess-migration-readiness` skill — feasibility verdict and evidence level before trying.
 - `prepare-target-telemetry` skill — field profile / seed path so panels are not empty.

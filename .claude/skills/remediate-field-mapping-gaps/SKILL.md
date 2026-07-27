@@ -7,15 +7,16 @@ description: Use when migrated Kibana panels are empty, show missing/unknown fie
 
 Goal: move from "the migrated panel is empty or wrong" to a concrete source-to-Elastic mapping fix. Field mapping gaps are expected in observability migrations; treat them as schema alignment work, not automatically as translator bugs.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-Package-native remediation surfaces: `schema-report`, `extensions`,
-`--rules-file` / `--field-profile`, and (Grafana alias only)
-`grafana-migrate --suggest-rule-pack-out`.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Start with the symptom
 
@@ -97,6 +98,7 @@ obs-migrate migrate --source datadog ... --field-profile custom-field-profile.ya
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `understand-source-schema` — source-to-target mapping model and report locations.
 - `prepare-target-telemetry` — ingest route / index flags before blaming translation.
 - `explain-migration-gaps` — approximation vs redesign triage.

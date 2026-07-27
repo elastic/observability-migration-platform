@@ -7,14 +7,16 @@ description: Use when the user asks for "a migration report", "coverage summary"
 
 Goal: compose a **shareable coverage summary** from artifacts a completed `obs-migrate migrate` run already wrote on disk — read-only; do not re-run migration or touch any cluster.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-This skill is artifact-reading; the optional appendix uses
-`obs-migrate schema-report`.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Inputs (artifact table)
 
@@ -60,6 +62,7 @@ State the counts from `summary` (and skipped from `panels[]` when relevant) and 
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `explain-migration-gaps` skill — turn each panel `reason` into manual rebuild guidance.
 - `validate-side-by-side` skill — prove migrated panels match source numerically.
 - `debug-uploaded-kibana-dashboard` skill — empty/wrong UI after upload.

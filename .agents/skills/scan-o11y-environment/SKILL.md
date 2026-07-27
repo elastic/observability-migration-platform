@@ -11,14 +11,16 @@ Goal: tell the user **what they have and what shape it is** — counts, types, d
 
 There is **no standalone scan/inventory command.** Inventory is produced as a by-product of a **source-only migration run**: point it at the source, write to a throwaway output dir, do not upload, then read the report artifacts. No Elastic/Kibana target is required.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** (`uvx --from 'elastic-observability-migration[all]' …` or a
-persistent `pip install`). Prefix `.venv/bin/` only for a repo checkout. Inventory
-artifacts are written by the CLI — no `scripts/`, `infra/`, or `examples/` directory
-is needed.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Run a source-only inventory pass
 
@@ -83,6 +85,7 @@ Non-migratable datasources flagged today include InfluxDB, MySQL/Postgres/MSSQL,
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `assess-migration-readiness` skill — what will vs. won't migrate.
 - `obs-migrate migrate --help` — confirm `--preflight`, `--select-*`, and asset flags for the installed version.
 - `docs/command-contract.md` — artifact descriptions (online docs / repo).

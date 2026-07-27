@@ -7,14 +7,16 @@ description: Use when the user asks how their schema/fields/metric names/labels 
 
 Goal: help the user see exactly how their source field names become Elastic field names, get that mapping for **their** dashboards, and know how to override it. Source schemas (Prometheus `instance`/`job`/`node_cpu_seconds_total`, Datadog `system.cpu.user`/`host`) usually do **not** match Elastic field names, so this gap is expected, not a bug.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent install. Prefix `.venv/bin/` only for a repo checkout.
-`obs-migrate schema-report` and `obs-migrate extensions` ship in the package —
-no `scripts/` directory is required.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## How the mapping works (Grafana)
 
@@ -124,6 +126,7 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `obs-migrate schema-report --help` — the per-panel source→target table command (shipped in the package).
 - `docs/sources/grafana.md` (SchemaResolver + rule packs + Current Boundaries) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
 - `prepare-target-telemetry` skill — choose ingest route / `--esql-index` before data exists.

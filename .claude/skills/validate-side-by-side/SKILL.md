@@ -7,12 +7,16 @@ description: Use when the user asks to "validate the migration", "compare side b
 
 Goal: run `obs-migrate compare` to check per-panel parity against the source — numerically where the native PROMQL oracle applies, and as a structural-only row (never hidden) for Datadog, non-PromQL, or no-oracle panels. The command issues read-only `_query` requests against the **target** Elasticsearch cluster; it writes nothing to Grafana or Datadog and does not re-run migration.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Command
 
@@ -103,6 +107,7 @@ Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the 
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `report-migration-coverage` skill — shareable coverage summary from migrate artifacts.
 - `explain-migration-gaps` skill — why a panel did not migrate cleanly and how to rebuild it.
 - `debug-uploaded-kibana-dashboard` skill — UI render failures after upload.

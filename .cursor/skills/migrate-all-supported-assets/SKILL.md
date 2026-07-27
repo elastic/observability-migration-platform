@@ -9,14 +9,16 @@ Goal: migrate **everything the engine supports** from a source in one run, then 
 
 This skill writes all supported assets to the target. It is otherwise read-only on the source.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-Every command and artifact below ships in the installed wheel — no `scripts/`,
-`infra/`, or `examples/` directory is required.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Core fact: "all" is the absence of a selector
 
@@ -114,6 +116,7 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `assess-migration-readiness` skill — run this first to know how much will migrate (and at what evidence level) before sweeping.
 - `migrate-selected-assets` skill — migrate a chosen subset instead of everything.
 - `explain-migration-gaps` skill — plain-language triage of warned vs blocked panels.

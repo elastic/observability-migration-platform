@@ -7,17 +7,16 @@ description: Use when the user reports a panel rendering empty / "No results fou
 
 Diagnose why an **uploaded** migrated dashboard panel is empty, errored, or wrong in Kibana. Prefer **package-native** evidence first (`grafana-validate-uploaded`, artifacts, direct `/_query`); escalate to Chrome DevTools MCP / `agent-browser` when you need the exact Lens network request or a screenshot.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** / **`grafana-validate-uploaded`** via
-`uvx --from 'elastic-observability-migration[all]' …` or a persistent `pip install`.
-Prefix `.venv/bin/` only for a repo checkout.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
 
-**Operator path (no repo):** upload → `grafana-validate-uploaded` → re-run panel ES|QL via `curl` `/_query` → classify against `migration_manifest.json` / native IR.
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
 
-**Repo / CI path (optional):** `obs-migrate verify-panels` needs the `parity-rig` verifier on `PYTHONPATH` (plain `uvx obs-migrate verify-panels` reports `verifier unavailable`). Render audit / `agent-browser` bootstrap live under `parity-rig/` and `docs/testing.md`.
 
 ## Fast package-native triage (do this first)
 
@@ -153,6 +152,7 @@ Render-audit driver (importable from the package): `python -m observability_migr
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - [`~/.claude/skills/chrome-devtools-debugging/SKILL.md`](~/.claude/skills/chrome-devtools-debugging/SKILL.md) — Chrome DevTools MCP foundation.
 - [`~/.claude/skills/chrome-devtools-debugging/agent-browser.md`](~/.claude/skills/chrome-devtools-debugging/agent-browser.md) — bulk HAR / diff / Suspense primitives.
 - `explain-migration-gaps` — warned/blocked status triage.

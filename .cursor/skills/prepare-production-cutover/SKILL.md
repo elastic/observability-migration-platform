@@ -7,14 +7,16 @@ description: Use when the user asks whether an obs-migrate Grafana/Datadog migra
 
 Goal: turn migration artifacts and existing validation skills into a **go/no-go cutover decision**. This is the final gate before users stop relying on the source Grafana/Datadog dashboards or alerts. Do not rerun migration just to look decisive; read the artifacts, validate the risky paths, and keep a rollback plan visible.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-Defer install/doctor details to `install-obs-migrate` when that skill is present;
-otherwise run `obs-migrate doctor` once before cutover evidence gathering.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Required inputs
 
@@ -71,6 +73,7 @@ Rollback: dashboards by id via revert-migration (Serverless [DELETED] placeholde
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `report-migration-coverage` — coverage headline and manual-effort buckets.
 - `validate-side-by-side` — numeric/structural dashboard parity.
 - `explain-migration-gaps` — why panels warned, failed, or need manual rebuild.

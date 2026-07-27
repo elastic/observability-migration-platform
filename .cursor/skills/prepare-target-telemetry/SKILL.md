@@ -7,15 +7,18 @@ description: Use when, before or while running an obs-migrate Grafana/Prometheus
 
 Goal: choose the future Elastic telemetry layout, migrate assets against that contract, then verify it after telemetry starts flowing. `obs-migrate` migrates dashboard definitions and queries — **not your data**; panels stay empty until matching telemetry lands under the planned field names. Per-source detail lives in the skills under **See also**.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-There is **no** `prepare-target-telemetry` subcommand — this skill is the
-planning/verify workflow around `migrate --field-profile` / `--preflight`,
-`schema-report`, and `seed-sample-data` / `remove-sample-data`.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI
+There is **no** `prepare-target-telemetry` subcommand — this skill is the planning/verify workflow around `migrate --field-profile` / `--preflight`, `schema-report`, and `seed-sample-data` / `remove-sample-data`.
+ (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Normal migration sequence
 
@@ -127,6 +130,7 @@ obs-migrate remove-sample-data \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `understand-source-schema` — exact source→Elastic field mapping model, profiles, and report locations.
 - `remediate-field-mapping-gaps` — fix empty/wrong panels after upload.
 - `explain-migration-gaps` — approximation warnings vs redesign work.

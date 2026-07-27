@@ -22,13 +22,16 @@ Always tell the user which level their run achieved. A clean-looking verdict at 
 
 **Datadog:** `--preflight` runs a different checker (issues embed in `migration_report.json`). It does **not** emit Grafana's `preflight_report.json` / `evidence_level` contract. Treat Datadog preflight as gap surfacing (block/warn/info), and use target validation + try-one/`validate-side-by-side` for confidence — do not invent an `evidence_level` for Datadog.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …` or a
-persistent install. Prefix `.venv/bin/` only for a repo checkout. Readiness artifacts
-are written by the CLI — no `scripts/` / `infra/` required.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Run the assessment
 
@@ -102,6 +105,7 @@ High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `scan-o11y-environment` skill — the descriptive inventory layer beneath this.
 - `prepare-target-telemetry` skill — field profile / `--esql-index` before readiness claims.
 - `explain-migration-gaps` skill — warned vs blocked panel triage.

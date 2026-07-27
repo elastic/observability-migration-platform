@@ -7,22 +7,16 @@ description: Use when the user asks whether their credentials/API key has the ri
 
 Goal: give the user confidence their credentials can perform every step **before** they invest in a migration. Separate non-mutating probes from checks that change target state, and be honest about what each proves.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user installs from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)),
-typically with `[all]`:
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
 
-```bash
-uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
-# or: pip install 'elastic-observability-migration[all]'
-```
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
 
-Prefer **`obs-migrate`** on `PATH` (or via `uvx --from …`). Prefix `.venv/bin/`
-only for a repo checkout. Alert round-trip / rule-audit checks are shipped as
-`obs-migrate verify-alert-rules` and `obs-migrate audit-rules` — package users
-do **not** need any `scripts/...` file. `examples/` YAML also does not exist
-for them; use their own migrated output.
 
 ## Mental model (state this to the user)
 
@@ -129,6 +123,7 @@ obs-migrate verify-alert-rules \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `connect-to-o11y-source` skill — source setup and reachability.
 - `obs-migrate verify-alert-rules --help` and `obs-migrate audit-rules --help` — the self-cleaning alert write proof and the read-only rule audit (shipped in the package).
 - `obs-migrate cluster --help` and `obs-migrate migrate --help` — authoritative target/alerting flags for the installed version.

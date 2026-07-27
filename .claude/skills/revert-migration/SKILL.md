@@ -7,13 +7,16 @@ description: Use when the user wants to "undo the migration", "delete the dashbo
 
 Goal: cleanly remove the assets a migration put **into Kibana** — dashboards, alerting rules, or both — so the user can back out or redo. This is a **target-only, destructive** operation; nothing is touched in the source Grafana/Datadog.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
-Every command below ships in the installed wheel.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Safety first
 
@@ -107,6 +110,7 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `migrate-selected-assets` skill — re-migrate a chosen subset after reverting.
 - `migrate-all-supported-assets` skill — re-run a full migration after a clean revert.
 - `review-and-enable-migrated-alerts` skill — audit/disable before delete when rules were enabled.

@@ -7,12 +7,16 @@ description: Use when obs-migrate created Kibana alerting rules and the user ask
 
 Goal: keep migrated alert rules safe. `obs-migrate` creates emitted Kibana rules **disabled** and tagged `obs-migration`; enabling them is a deliberate production decision after query, threshold, connector, and rollback review.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## Inputs
 
@@ -93,6 +97,7 @@ or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `evaluate-o11y-permissions` — prove the Kibana key can read/create alert rules.
 - `migrate-all-supported-assets` / `migrate-selected-assets` — create rules disabled with `--create-alert-rules`.
 - `prepare-production-cutover` — include alert-rule readiness in the final go/no-go.

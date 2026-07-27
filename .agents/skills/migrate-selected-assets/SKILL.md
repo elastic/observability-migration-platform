@@ -9,15 +9,16 @@ Goal: migrate a **deliberately chosen subset** of the user's source assets into 
 
 This skill writes the selected assets to the target. It is otherwise read-only on the source.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Install from PyPI
-([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
-Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
-or a persistent `pip install` (`obs-migrate`, `grafana-migrate`, `datadog-migrate` on
-`PATH`). Prefix `.venv/bin/` only for a repo checkout. Every command and
-artifact below ships in the installed wheel — no `scripts/`, `infra/`, or
-`examples/` directory is required.
+If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
+**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
+pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
+and the Ready check. Do not invent alternate install commands here.
+Credentials and live source proof stay in `connect-to-o11y-source`.
+
+Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+
 
 ## The selection surface (read this before scoping)
 
@@ -198,6 +199,7 @@ obs-migrate migrate \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `scan-o11y-environment` skill — inventory the assets so the user knows what to select.
 - `assess-migration-readiness` skill — feasibility verdict + evidence level before committing the selection.
 - `try-one-source-dashboard` skill — one dashboard end-to-end for a side-by-side.
