@@ -5,19 +5,25 @@ description: Use when the user wants to "try one of my dashboards", "migrate jus
 
 # Try one of my dashboards (single end-to-end migration)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: take **one** dashboard the user already owns, migrate it all the way into Kibana, and set up a **side-by-side** so they can judge fidelity before committing to a bulk migration. This is the "prove it on something real" step — narrower than a full migration, higher-signal than inventory or a readiness verdict.
 
 This skill writes exactly one dashboard to the target. It is otherwise read-only on the source.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 
 ## Step 1 — Scope to a single dashboard

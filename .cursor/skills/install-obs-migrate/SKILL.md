@@ -5,6 +5,9 @@ description: Use when obs-migrate is missing, doctor fails, the user asks how to
 
 # Install and verify `obs-migrate`
 
+**Audience:** operators who need a working `obs-migrate` before any migration.
+Other skills defer here so install guidance stays in one place.
+
 Goal: get a **Ready** `obs-migrate` on this machine, then hand off to the skill
 the user actually wanted (`connect-to-o11y-source`, `scan-o11y-environment`,
 migrate skills, etc.). This skill is the **only** place that owns install
@@ -80,8 +83,7 @@ command -v uvx
 | Datadog live API (`--input-mode api`) | `[datadog]` or `[all]` | File-mode Datadog works without the client; API mode needs `datadog-api-client` |
 | Contributor / repo checkout | `.[all,dev]` via `make sync` | Not the operator path |
 
-**Default recommendation:** `[all]` via `uvx` so the agent never strand the user
-on a missing extra mid-migration.
+**Default recommendation:** `[all]` via `uvx` so you are not blocked mid-migration by a missing extra.
 
 ## Step 3 — Install and verify (operator path)
 
@@ -117,7 +119,7 @@ PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observa
 uvx --from "$PKG" obs-migrate doctor
 ```
 
-### Repo checkout (contributors)
+### Repo checkout (contributors only — not the operator path)
 
 ```bash
 make sync
@@ -134,7 +136,7 @@ uv run obs-migrate doctor
 - For Datadog API work: `datadog (datadog-api-client): ok`
 - `uv`/`uvx` on `PATH` when relying on kb-dashboard `uvx` fallback (Python 3.11)
 
-Then run one offline smoke:
+Then run one offline smoke (still no source credentials needed):
 
 ```bash
 uvx --from 'elastic-observability-migration[all]' obs-migrate list-samples

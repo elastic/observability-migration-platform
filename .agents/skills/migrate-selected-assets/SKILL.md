@@ -5,19 +5,25 @@ description: Use when the user wants to migrate "these specific dashboards", "on
 
 # Migrate selected dashboards / alerting rules
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: migrate a **deliberately chosen subset** of the user's source assets into Kibana — more than the single-dashboard trial, less than a full sweep. Scope with the uniform `--select-*` metadata flags (folder / tag / datasource / team / last-updated / starred), available on `obs-migrate migrate` for **both** sources and **both** dashboards and alerts. Some dimensions a given source/asset genuinely cannot supply — those **degrade gracefully** (the asset is kept and a `WARN` names the skipped dimension), so be explicit about what filters effectively and what passes through.
 
 This skill writes the selected assets to the target. It is otherwise read-only on the source.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 
 ## The selection surface (read this before scoping)

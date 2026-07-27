@@ -5,17 +5,23 @@ description: Use when the user asks to "validate the migration", "compare side b
 
 # Validate side by side
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: run `obs-migrate compare` to check per-panel parity against the source — numerically where the native PROMQL oracle applies, and as a structural-only row (never hidden) for Datadog, non-PromQL, or no-oracle panels. The command issues read-only `_query` requests against the **target** Elasticsearch cluster; it writes nothing to Grafana or Datadog and does not re-run migration.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 
 ## Command
@@ -90,13 +96,14 @@ Besides **`FAIL`** / **`SOURCE_FAIL`** (which set exit `1`), verdicts **`ERROR`*
 
 Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the user expected to be numerically verified to the **`explain-migration-gaps`** skill for rebuild guidance. Note that **`STRUCTURAL`** can also hide panels that migrated with **accepted approximations** (`migrated_with_warnings` / Datadog `warning`) — structural shape ≠ semantic fidelity; use `explain-migration-gaps` when the user expected numeric proof. For a shareable headline scorecard (not per-panel parity), use **`report-migration-coverage`**.
 
-### Beyond compare (see also)
+### Beyond compare (operator follow-ups)
 
-`obs-migrate compare` proves oracle / live-source parity where applicable; it does **not** prove Lens UI render. When the user asks "will it show up correctly in Kibana?", also point to:
+`obs-migrate compare` proves oracle / live-source parity where applicable; it does **not** prove Lens UI render. When an operator asks "will it show up correctly in Kibana?":
 
-- `obs-migrate verify` (emitted-query acceptance + optional `--compare` scorecard)
-- Render audit / `verifier.dashboards_api` / `verifier.live_validate` — deeper gates; `obs-migrate verify` lists the ones it does **not** run (`docs/testing.md`, often via `parity-rig/` in a repo checkout)
+- `obs-migrate verify` (emitted-query acceptance + optional `--compare`)
+- `grafana-validate-uploaded` and/or open the dashboard in Kibana view mode
 - `debug-uploaded-kibana-dashboard` for a single broken panel
+- Optional lab/repo gates listed by `obs-migrate verify` and in `docs/testing.md` — not required for the normal operator path
 
 ## Honest limits / Do NOT
 

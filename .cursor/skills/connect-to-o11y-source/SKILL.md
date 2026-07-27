@@ -5,17 +5,23 @@ description: Use when the user wants to connect, authenticate, point the tool at
 
 # Connect to an o11y source (Grafana / Datadog)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: get the user authenticated against their source vendor and **prove the tool can reach it** with the cheapest real call, before they invest in a migration.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Datadog API mode needs the `[datadog]` or `[all]` extra.
-This skill owns **credentials and live source proof** after install.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Datadog API mode needs `[datadog]` or `[all]`.
+**This skill** owns credentials and live source proof after install.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
 
 ## Core facts (do not invent around these)
 

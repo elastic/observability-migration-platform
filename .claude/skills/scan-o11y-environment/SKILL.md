@@ -5,6 +5,8 @@ description: Use when the user wants to scan, inventory, list, or take stock of 
 
 # Scan an o11y environment (inventory)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: tell the user **what they have and what shape it is** — counts, types, datasources, organization — so they can decide scope. This is descriptive inventory, **not** a readiness verdict (that is the `assess-migration-readiness` skill).
 
 ## Core fact
@@ -13,13 +15,17 @@ There is **no standalone scan/inventory command.** Inventory is produced as a by
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 
 ## Run a source-only inventory pass

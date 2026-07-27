@@ -5,17 +5,23 @@ description: Use when the user asks whether an obs-migrate Grafana/Datadog migra
 
 # Prepare production cutover
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: turn migration artifacts and existing validation skills into a **go/no-go cutover decision**. This is the final gate before users stop relying on the source Grafana/Datadog dashboards or alerts. Do not rerun migration just to look decisive; read the artifacts, validate the risky paths, and keep a rollback plan visible.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 
 ## Required inputs
@@ -26,8 +32,8 @@ Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migra
 | Dashboard coverage | `report-migration-coverage` over `<output-dir>/dashboards/migration_summary.md` and `migration_manifest.json` |
 | Native review artifacts | `<output-dir>/dashboards/native/*.native.json` (typed upload payload; `dashboard_id` for deep links / revert) |
 | Numeric/structural parity | `validate-side-by-side` / `obs-migrate compare` over comparison report |
-| Live ES\|QL acceptance (package) | `obs-migrate verify` (optional `--compare`); deeper `verifier.*` / `verify-panels` need repo `parity-rig` (`docs/testing.md`) |
-| UI render truth | Render audit (`python -m observability_migration.targets.kibana.render_audit_driver` / repo scripts) — only gate for Lens accessor / empty-state failures; also `grafana-validate-uploaded` for runtime empty/error panels without a full browser audit |
+| Live ES\|QL / runtime emptiness (operator) | `obs-migrate verify` (optional `--compare`) and/or `grafana-validate-uploaded` on critical uploaded dashboards |
+| UI render truth (optional deeper) | Browser check in Kibana view mode; full render-audit / `verifier.*` gates in `docs/testing.md` are lab/repo extras — not required to issue a go/no-go for most operators |
 | Gap explanations | `explain-migration-gaps` for warned / manual / not_feasible / compare `FAIL` / `SKIP` / unexpected `STRUCTURAL` or `SOURCE_DRIFT` |
 | Alert rule safety | `review-and-enable-migrated-alerts` over `<output-dir>/alerts/*_comparison_results.json` and rule-upload results; live `obs-migrate audit-rules` |
 | Back-out path | `revert-migration` for dashboard ids and migrated alert rules |
@@ -38,7 +44,7 @@ Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migra
 2. **Get the coverage headline** — use `report-migration-coverage`. Record clean %, warned, needs-review, blocked, Datadog `skipped` (if any), and manual-effort buckets. Exit code alone is not evidence.
 3. **Review native artifacts** — spot-check `dashboards/native/*.native.json` for critical dashboards before trusting upload.
 4. **Validate critical dashboards** — run or read `validate-side-by-side` / `obs-migrate compare`. Numeric proof applies only where the native PROMQL oracle (or Datadog `SOURCE_*` live packets) applies; `STRUCTURAL`, `SKIP`, `ERROR`, and bare `SOURCE_DRIFT` are not cutover proof by themselves.
-5. **Prove panels render / execute** — at minimum `obs-migrate verify` and/or `grafana-validate-uploaded` on the critical uploaded set; prefer render audit when staking UI claims. ES|QL success alone does not prove Lens renders.
+5. **Prove panels execute (and spot-check UI)** — run `obs-migrate verify` and/or `grafana-validate-uploaded` on the critical uploaded set, then open those dashboards in Kibana view mode. ES|QL success alone does not prove Lens chrome is perfect; treat empty UI with successful `/_query` as a separate UI issue.
 6. **Classify every gap** — use `explain-migration-gaps`. Accepted approximations (warned panels that still render) can be `GO WITH CONDITIONS` if owners accept them; hard `not_feasible` on a critical path is `NO-GO`.
 7. **Confirm data/field readiness** — if panels are empty or queries hit missing fields, use `remediate-field-mapping-gaps` / `prepare-target-telemetry` before cutover. Do not label a schema mismatch as a product success.
 8. **Review alert rules before enabling** — use `review-and-enable-migrated-alerts`. Migrated rules are created disabled; enabling is a separate human gate. Confirm with `audit-rules` that migrated rules are still disabled before go-live.

@@ -1,163 +1,146 @@
 ---
 name: debug-uploaded-kibana-dashboard
-description: Use when the user reports a panel rendering empty / "No results found" / "Migration Required" / wrong-shape values after obs-migrate upload (or hands over a Kibana dashboard URL and asks "why is this panel broken") — diagnoses a Kibana dashboard that obs-migrate uploaded by capturing the ES|QL Kibana actually runs (package-native validators first; Chrome DevTools MCP / agent-browser when UI capture is needed), classifying empty vs runtime error vs not_feasible, and feeding real translator bugs back to the pipeline.
+description: Use when an operator reports a migrated Kibana panel empty / "No results found" / "Migration Required" / wrong values after obs-migrate upload, or asks why a panel is broken — diagnoses uploaded dashboards with package CLIs (grafana-validate-uploaded, artifacts, /_query) and plain Kibana UI checks. Not for repo test harnesses or translator development.
 ---
 
 # Debug an uploaded Kibana dashboard
 
-Diagnose why an **uploaded** migrated dashboard panel is empty, errored, or wrong in Kibana. Prefer **package-native** evidence first (`grafana-validate-uploaded`, artifacts, direct `/_query`); escalate to Chrome DevTools MCP / `agent-browser` when you need the exact Lens network request or a screenshot.
+**Audience:** operators running the published `obs-migrate` CLI against their real Grafana/Datadog source and Elastic/Kibana target. Help them decide whether the problem is missing data, wrong index/profile, an accepted translation warning, or a panel that needs rebuild — using only package commands and artifacts from their migrate run.
 
 ## Prerequisites (install)
 
-If `obs-migrate` is missing, `uvx`/`doctor` fails, or the tool is not **Ready**,
-**stop and follow `install-obs-migrate` first** — that skill owns PyPI/`uvx`/
-pip install, extras (`[all]` / `[grafana]` / `[datadog]`), Python/`uv` gotchas,
-and the Ready check. Do not invent alternate install commands here.
-Credentials and live source proof stay in `connect-to-o11y-source`.
-
-Use the installed `obs-migrate` CLI (or `uvx --from 'elastic-observability-migration[all]' obs-migrate …` after install). Prefix `.venv/bin/` only for a repo checkout.
-
-
-## Fast package-native triage (do this first)
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
 
 ```bash
-export ELASTICSEARCH_ENDPOINT="..." KIBANA_ENDPOINT="..." KEY="..."
-# or: set -a; source ./serverless_creds.env; set +a
+uvx --from 'elastic-observability-migration[all]' obs-migrate ...
+# or: obs-migrate ...  after a persistent install puts it on PATH
+```
 
-# 1) Confirm the dashboard id from the migrate artifacts:
-#    <output-dir>/dashboards/native/*.native.json → dashboard_id
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
+
+## What success looks like for the operator
+
+You can answer, with evidence:
+
+1. Which dashboard id / panel is broken  
+2. Whether Kibana’s query returns rows, errors, or empty  
+3. Whether the fix is **data/ingest**, **flags/profile**, **accepted approximation**, or **manual rebuild in Kibana**  
+4. The next concrete CLI or Kibana step (not a code change)
+
+## Fast triage (package-native — do this first)
+
+```bash
+# 1) dashboard_id from the migrate output:
+#    <output-dir>/dashboards/native/*.native.json → "dashboard_id"
 obs-migrate cluster list-dashboards \
-  --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" | rg -i '<title-or-id>'
+  --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
-# 2) Runtime emptiness / errors without a browser:
+# 2) Runtime empty / error panels (no browser automation required):
 grafana-validate-uploaded \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY" \
   --dashboard-id <dashboard_id> \
-  --output /tmp/upload-validate-<slug>.json
+  --output /tmp/upload-validate.json
 
-# 3) Replay an empty panel's materialized_query from that report:
+# 3) Replay an empty panel query from that report against Elasticsearch:
 curl -sS -H "Authorization: ApiKey $KEY" -H 'Content-Type: application/json' \
   "$ELASTICSEARCH_ENDPOINT/_query" \
-  -d "{\"query\": \"<materialized_query from report>\"}"
+  -d '{"query":"<materialized_query from the report>"}'
 ```
 
-Deep link: `$KIBANA_ENDPOINT/app/dashboards#/view/<dashboard_id>` (from `native/*.native.json` `dashboard_id`). On Elastic Serverless, `GET /api/dashboards/dashboard/<id>` may 404 even when the dashboard is listed — trust `cluster list-dashboards` / `grafana-validate-uploaded`, not that GET alone.
+Open the dashboard in Kibana (view mode):  
+`$KIBANA_ENDPOINT/app/dashboards#/view/<dashboard_id>`
 
-Classify from the validate report:
+On Elastic Serverless, a raw `GET /api/dashboards/dashboard/<id>` may 404 even when the dashboard lists — trust `cluster list-dashboards` and `grafana-validate-uploaded`.
 
-| Report signal | Likely class | Next step |
+### Read the migrate artifacts (same `--output-dir` as the upload)
+
+| File | Use |
+|---|---|
+| `dashboards/migration_summary.md` | Must-fix / scorecard |
+| `dashboards/migration_manifest.json` | Per-panel `status`, `reasons`, warnings |
+| `dashboards/native/*.native.json` | Uploaded shape + `dashboard_id` |
+| `dashboards/verification_packets.json` | Source vs translated query context |
+| `dashboards/schema_change_report.md` | Field mapping table |
+| `target_readiness_contract.json` (Datadog) / `required_target_contract.json` (Grafana) | Missing vs confirmed fields |
+
+YAML under `dashboards/yaml/` is a compatibility view — prefer native/IR + the validate report for “what Kibana ran.”
+
+## Decision tree
+
+| What the operator sees | Class | Next |
 |---|---|---|
-| `empty_panels` with `rows: 0`, no error | data / filter / field gap | Workflow B |
-| `runtime_error_panels` / ES error text | runtime / mapping | Workflow D |
-| Panel is markdown / status `not_feasible` in manifest | translator hard stop | Workflow C |
-| Query returns rows but UI empty | Lens/UI / Suspense | Chrome / render-audit |
+| Values wrong but panel has data | Wrong query / mapping / approximation | Compare manifest `reasons` + validate query; see `explain-migration-gaps` / `remediate-field-mapping-gaps` |
+| “No results found” / validate `empty_panels` with `rows: 0` | Data, filter, time range, or wrong index | Widen time range; check `--esql-index` / `--data-view` / `--field-profile`; `prepare-target-telemetry` |
+| “Migration Required” markdown | Hard stop / placeholder | Read `reasons` → `explain-migration-gaps` (rebuild guidance) |
+| Red toast / runtime error in validate report | ES/Lens error | Classify unknown column / circuit breaker / type error below |
+| Query returns rows in `/_query` but UI still empty | Kibana UI / Lens display | Screenshot + Elastic support / UI check; not automatically a migrate bug |
 
-Also open artifacts (prefer user's `--output-dir`):
+Render-audit style labels (when you have them): `render_error` (real product bug) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness). Prefer honest data-gap language over blaming the translator when `/_query` returns 0 rows.
 
-- `dashboards/migration_manifest.json` — `status`, `reasons`, `warnings`
-- `dashboards/native/*.native.json` / `ir/*.ir.json` — emitted panel config / queries
-- `dashboards/verification_packets.json` — source vs translated query context
-- YAML under `dashboards/yaml/` is a **compatibility** view, not the Lens runtime truth
+## Empty panel checklist
 
-Map UI emptiness to **render-audit taxonomy** when available (`docs/testing.md`): `render_error` (translator/Lens bug, fail) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness, warn).
+1. **Time range** — match the source dashboard window in Kibana.  
+2. **Index / data view** — Grafana: `--esql-index` (query) vs `--data-view` (UI). Wrong stream is the most common empty Prometheus panel.  
+3. **Field profile** — Datadog/Grafana profile must match how telemetry was ingested (`prepare-target-telemetry`).  
+4. **Filters** — strip a suspicious `WHERE` and re-run `/_query`; check distinct values for the filter field.  
+5. **Seed only for lab proof** — optional `obs-migrate seed-sample-data` / `remove-sample-data` (`--api-key`, not `--es-api-key`) to prove panels can light up; not a substitute for real ingest.
 
-## Decision tree (when looking at the Kibana UI)
+## Runtime errors (toasts / validate report)
 
-1. **Does the panel actually render with values?** → If wrong-looking, *Workflow A*.
-2. **"No results found" / empty?** → *Workflow B*.
-3. **"Migration Required" markdown?** → *Workflow C*.
-4. **Red toast / runtime error?** → *Workflow D*.
+- **Circuit breaker / data too large** — cluster capacity; narrow time range; not a migrate bug.  
+- **Unknown column that appears in the query** — missing field in the target index → ingest / profile / index flags.  
+- **Unknown column that does not appear in the query** — alias/mapping mismatch → `remediate-field-mapping-gaps`.  
+- **Counter/gauge or native PROMQL verification errors** — try `--translation-mode esql` or fix metric typing in ingest; see `explain-migration-gaps`.
 
-## Workflow A — "panel shows wrong values"
+## After you know the class (operator actions)
 
-Need the **exact** ES|QL Lens sent (may differ from native artifacts).
+| Class | Operator action |
+|---|---|
+| Missing / wrong telemetry | Fix ingest or flags; re-run migrate on the one dashboard; re-upload |
+| Accepted approximation | Document and accept, or rebuild the panel in Kibana (`explain-migration-gaps`) |
+| `not_feasible` / blocked | Rebuild in Kibana using reasons + recommended targets |
+| Suspected product bug | Capture dashboard id, panel title, materialized query, validate JSON path; open an issue with those artifacts (no need to patch the translator yourself) |
 
-**Package-first:** use `grafana-validate-uploaded` query fields / `obs-migrate verify` emitted-query gate when they already captured the query.
-
-**Browser (Chrome DevTools MCP):** prerequisites — `chrome-devtools` MCP with `--autoConnect` (see [setup](~/.claude/skills/chrome-devtools-debugging/setup-autoconnect.md)); Chrome signed into the target Kibana on the dashboard.
-
-1. **`take_snapshot`** to map the panel.
-2. **`list_network_requests`** with `resourceTypes: ["xhr","fetch"]`; filter URLs ending in `_query`.
-3. **`get_network_request`** → save request/response under `/tmp/<panel-slug>.*`. Request body `query` is the Lens truth.
-4. Compare to `native/*.native.json` / `ir/*.ir.json`. Kibana may add `BUCKET(@timestamp,...)` or aliases — that is downstream transform, not automatically a translator bug.
-5. Re-run via `curl` `$ELASTICSEARCH_ENDPOINT/_query` with the same query body.
-6. Cluster correct + Lens wrong → UI/mapping issue (screenshot). Cluster wrong → translator/data (Workflow B/C).
-
-## Workflow B — "No results found"
-
-Order of frequency:
-
-### B1: Filter / time window matches no docs
-
-1. Capture query (validate report or Workflow A).
-2. Strip the suspected `WHERE` / widen the time range; re-run `/_query`.
-3. Inspect distinct values:
-   `FROM <index> | WHERE <metric> IS NOT NULL | STATS n = COUNT(*) BY <field> | SORT n DESC | LIMIT 20`
-4. If production filters are fine but **lab** data lacks them, that is a data/seed gap (`prepare-target-telemetry` / `seed-sample-data`), not a silent translator pass. Do **not** require `parity-rig/producer` for package operators.
-
-### B2: Field name resolved wrong
+Re-migrate the smallest scope:
 
 ```bash
-curl -sS -H "Authorization: ApiKey $KEY" \
-  "$ELASTICSEARCH_ENDPOINT/<index>/_field_caps?fields=instance,service.instance.id" | jq .
+# Datadog example
+obs-migrate migrate --source datadog --input-mode api \
+  --dashboard-ids <id> --output-dir retry_out --assets dashboards \
+  --field-profile otel --data-view "metrics-*" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY" \
+  --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --upload
 ```
 
-Compare to the emitted filter fields. Fix via rule pack / `--field-profile` / `remediate-field-mapping-gaps` (package path), not by hand-editing Kibana first.
+Then re-run `grafana-validate-uploaded` on the same `dashboard_id`.
 
-### B3: Aggregation collapses to null
+## Optional deeper checks (not required for operators)
 
-Multi-target TS collapse picking null-only rows — historically fixed with null-safe `MAX` collapse in PromQL translation. If a **new** shape recurs, reproduce with a unit test; do not "fix" by editing the uploaded saved object alone.
+These help when an agent or lab environment is available; **do not block the operator journey on them**:
 
-## Workflow C — "Migration Required" markdown
+- Browser DevTools / screenshots while signed into Kibana (capture the Lens `/_query` body if validate did not).  
+- `obs-migrate verify` for emitted-query acceptance.  
+- Repo-only gates (`verify-panels`, `parity-rig`, render-audit scripts) — see `docs/testing.md` if you have a checkout; bare `uvx` does not include those harnesses.
 
-1. Snapshot/screenshot the panel (browser) or read markdown from artifacts.
-2. Find the panel in `migration_manifest.json` / `migration_report.json` by title; read `reasons` / status.
-3. Classify against `docs/sources/grafana.md` Current Boundaries (approximations vs hard stops). Do **not** call standard `histogram_quantile` + `sum(... by (le))` "out of scope" when status is `migrated_with_warnings`.
-4. Hand plain-language rebuild guidance to `explain-migration-gaps`.
+## Do NOT
 
-## Workflow D — runtime error popup
-
-1. Browser: `list_console_messages` / network error body — richer than the toast.
-2. Or package: `grafana-validate-uploaded` / `obs-migrate verify` error classification (`real_bug` vs `data_gap`).
-3. Classify:
-   - circuit breaker / data too large → cluster pressure, not translator
-   - `Unknown column [X]` present in query → data/index gap
-   - `Unknown column [Y]` **not** in query → alias/SchemaResolver mismatch class
-   - counter/gauge / native PROMQL `verification_exception` → translation-mode / type gate
-
-## Workflow E — bulk UI walks (`agent-browser`, repo)
-
-When you need every `/_query`, pixel diffs, or Suspense walks across many panels, use `agent-browser` + `parity-rig/verifier/bootstrap.sh` (**repo-only** SAML bootstrap). See [agent-browser companion](~/.claude/skills/chrome-devtools-debugging/agent-browser.md) and `docs/testing.md`.
-
-Watch for wrong-tab / Gemini "glic" targets: `agent-browser tab list` and select the Kibana dashboard tab before URL checks.
-
-Render-audit driver (importable from the package): `python -m observability_migration.targets.kibana.render_audit_driver` (browser session still required). Local no-SSO helper: `scripts/run_render_audit_local.sh` (repo).
-
-## After diagnosis (real translator bug)
-
-1. Red→green unit test in the repo (`tests/…`).
-2. Smallest translator/profile fix; `make test` / targeted pytest.
-3. Re-migrate the single dashboard (`try-one-source-dashboard` / `migrate --dashboard-ids` / files) and `obs-migrate upload` (or `migrate --upload`). Prefer package CLIs over `parity-rig/upload-all.sh` for operators.
-4. Re-check with `grafana-validate-uploaded` and/or the failing panel's `/_query` replay.
-
-## Things not to do
-
-- Don't invent `OBS_MIGRATE_CREDS` — export `KEY` / `ELASTICSEARCH_ENDPOINT` / `KIBANA_ENDPOINT` (or `source` a local `serverless_creds.env`).
-- Don't claim `obs-migrate verify-panels` works from bare `uvx` without `parity-rig` on `PYTHONPATH`.
-- Don't blame the translator without reproducing via `/_query` or `grafana-validate-uploaded`.
-- Don't `evaluate_script` in ways that read credentials/secrets from the Kibana session.
-- Don't paste full network response bodies into chat — save to files and summarize.
-- Don't treat empty panels as translator bugs when `/_query` returns 0 rows for missing telemetry.
+- Do **not** require cloning this repo, `parity-rig/`, or unit tests to help an operator.  
+- Do **not** invent `OBS_MIGRATE_CREDS` — use ordinary env exports.  
+- Do **not** blame the translator when `/_query` returns 0 rows for missing data.  
+- Do **not** hand-edit every Kibana panel before fixing shared index/profile/ingest issues.  
+- Do **not** paste full network bodies into chat — save files and summarize.
 
 ## See also
 
-- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
-- [`~/.claude/skills/chrome-devtools-debugging/SKILL.md`](~/.claude/skills/chrome-devtools-debugging/SKILL.md) — Chrome DevTools MCP foundation.
-- [`~/.claude/skills/chrome-devtools-debugging/agent-browser.md`](~/.claude/skills/chrome-devtools-debugging/agent-browser.md) — bulk HAR / diff / Suspense primitives.
-- `explain-migration-gaps` — warned/blocked status triage.
-- `remediate-field-mapping-gaps` — field/profile/index fixes.
-- `validate-side-by-side` — numeric parity (`obs-migrate compare`).
-- `prepare-target-telemetry` / `seed-sample-data` — data readiness.
-- `docs/testing.md` — render-audit taxonomy and layered gates.
-- `docs/command-contract.md` — `upload`, `grafana-validate-uploaded`, `verify`.
+- `install-obs-migrate` — Ready install.  
+- `prepare-target-telemetry` / `remediate-field-mapping-gaps` — empty from data/mapping.  
+- `explain-migration-gaps` — warnings and rebuild guidance.  
+- `validate-side-by-side` — numeric/structural parity (`obs-migrate compare`).  
+- `revert-migration` — remove a bad upload.  
+- `docs/command-contract.md` — `upload`, `grafana-validate-uploaded`, `verify`.  
+- `docs/testing.md` — layered gates (including optional lab/repo tools).
