@@ -35,35 +35,33 @@ cp serverless_creds.env.example serverless_creds.env
 
 **One tool:** use `obs-migrate` for everything (doctor, samples, migrate,
 compile, upload). Prefer the `[all]` extra so Grafana, Datadog, and Kibana
-tooling install together. Legacy `grafana-migrate` / `datadog-migrate`
-entry points remain as compatibility aliases.
+tooling install together. The older `grafana-migrate` / `datadog-migrate`
+commands remain as compatibility aliases.
 
-**Platforms:** macOS and Linux are supported. CI packaging and unit tests run
-on Ubuntu; clean-install package smoke is exercised on Python 3.11 and 3.12.
-macOS is covered by local packaging smoke. Windows is not a supported or
-CI-tested install target yet. See `README.md` Compatibility for the full
-matrix.
+**Platforms:** macOS and Linux are supported. CI runs on Ubuntu; packaging is
+also smoke-tested on macOS. Windows is not supported. See `README.md`
+Compatibility for the full matrix.
 
-**Python:** Supported 3.11+; CI pytest covers 3.11/3.12/3.13. Prefer
-`obs-migrate[all]` so first-time machines get Grafana + Datadog + Kibana
-tooling together. On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
-fallback. Run `obs-migrate doctor` after install — it checks Python,
+**Python:** 3.11 or newer (CI pytest: 3.11, 3.12, 3.13). Prefer
+`obs-migrate[all]` on first-time machines so Grafana, Datadog, and Kibana
+tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
+`uvx` fallback. Run `obs-migrate doctor` after install — it checks Python,
 required imports, extras, and compile tools, and exits non-zero if something
 blocking is missing.
 
 ### Recommended (operators): `uvx` + `[all]`
 
-Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. Until
-PyPI publishing is enabled, pin a Git release tag (not `@main`):
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. The
+package is not on PyPI yet, so pin a GitHub release tag (not `@main`):
 
 ```bash
+# Latest published release tag today. After v0.4.0 is tagged, prefer that.
 PKG='obs-migrate[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples
 ```
 
-After `v0.4.0` (or newer) is tagged, switch the tag. Once on PyPI:
-`PKG='obs-migrate[all]'`.
+When the package is on PyPI, use `PKG='obs-migrate[all]'`.
 
 ### Persistent pip install
 
