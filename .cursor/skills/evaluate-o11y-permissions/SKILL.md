@@ -9,7 +9,7 @@ Goal: give the user confidence their credentials can perform every step **before
 
 ## Which command form to use (package vs. repo)
 
-Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
+Assume the user **installed the package** (`pip install 'elastic-observability-migration[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
 
 ## Mental model (state this to the user)
 

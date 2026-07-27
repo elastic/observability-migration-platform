@@ -9,7 +9,7 @@ Goal: get the user authenticated against their source vendor and **prove the too
 
 ## Which command form to use (package vs. repo)
 
-Most consumers have **installed the package** (`pip install 'obs-migrate[grafana]'`), so the CLIs are on `PATH`: call `obs-migrate`, `grafana-migrate`, `datadog-migrate` directly. Only inside a source checkout do you prefix `.venv/bin/`. This skill uses the bare (package) form; prefix `.venv/bin/` if and only if the user is working from a cloned repo. Do not assume a repo, `infra/`, `examples/`, or `scripts/` directory exists.
+Most consumers have **installed the package** (`pip install 'elastic-observability-migration[grafana]'`), so the CLIs are on `PATH`: call `obs-migrate`, `grafana-migrate`, `datadog-migrate` directly. Only inside a source checkout do you prefix `.venv/bin/`. This skill uses the bare (package) form; prefix `.venv/bin/` if and only if the user is working from a cloned repo. Do not assume a repo, `infra/`, `examples/`, or `scripts/` directory exists.
 
 ## Core facts (do not invent around these)
 
@@ -21,7 +21,7 @@ Most consumers have **installed the package** (`pip install 'obs-migrate[grafana
 ## Install (once)
 
 ```bash
-pip install 'obs-migrate[grafana]'   # or 'obs-migrate[datadog]', or 'obs-migrate[all]'
+pip install 'elastic-observability-migration[grafana]'   # or 'elastic-observability-migration[datadog]', or 'elastic-observability-migration[all]'
 obs-migrate doctor                   # confirms the install + tool resolution
 ```
 
@@ -67,7 +67,7 @@ What it does under the hood: authenticates and calls Grafana `/api/search?type=d
 Credentials (env): `DD_API_KEY`, `DD_APP_KEY`, and optionally `DD_SITE` (default `datadoghq.com`). You can export them or put them in an env file passed via `--env-file`.
 
 ```bash
-pip install 'obs-migrate[datadog]'
+pip install 'elastic-observability-migration[datadog]'
 export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
 ```
 

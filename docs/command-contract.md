@@ -51,23 +51,26 @@ blocking is missing.
 
 ### Recommended (operators): `uvx` + `[all]`
 
-Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`. The
-package is not on PyPI yet, so pin a GitHub release tag (not `@main`):
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) on `PATH`.
+Install from PyPI (recommended):
 
 ```bash
-# Pin the latest release tag (example below). See:
-# https://github.com/elastic/observability-migration-platform/releases
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+PKG='elastic-observability-migration[all]'
+# Optional pin, e.g. PKG='elastic-observability-migration[all]==0.4.0rc1'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples
 ```
 
-When the package is on PyPI, use `PKG='elastic-observability-migration[all]'`.
+GitHub tag fallback (never `@main`):
+
+```bash
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+```
 
 ### Persistent pip install
 
 ```bash
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.3.0'
+PKG='elastic-observability-migration[all]'
 python3 -m venv .venv
 .venv/bin/pip install "$PKG"
 .venv/bin/obs-migrate doctor
