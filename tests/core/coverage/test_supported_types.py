@@ -3,8 +3,7 @@
 
 """Coverage-completeness gate: keep the supported-type registry honest against
 the code's actual routing tables, and assert every chart-bearing type has matrix
-coverage. See docs/superpowers/specs/2026-06-25-migration-confidence-pyramid-design.md
-(specs are gitignored)."""
+coverage."""
 
 from observability_migration.core.coverage import supported_types as st
 

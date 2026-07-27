@@ -3088,7 +3088,7 @@ class TestBinaryExpressions(unittest.TestCase):
         ES|QL equivalent. The translator used to silently emit an
         approximation; it now refuses, surfacing a clear ``not_feasible``
         marker so the panel is reported rather than rendered with a
-        dropped operand. See parity-rig RESULTS.md."""
+        dropped operand."""
         ctx = _translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
         self.assertEqual(ctx.feasibility, "not_feasible")
         reasons = " ".join(getattr(ctx, "warnings", []) or [])

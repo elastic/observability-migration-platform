@@ -18,11 +18,6 @@ entry points, and the shared post-upload smoke runtime. Source-aware emitted
 query validation still remains in source adapters because it needs
 source-specific rewrite logic.
 
-For a current survey of Kibana ES|QL commands, functions, editor behavior, and
-translation-relevant opportunities, see `docs/targets/kibana-esql-capabilities.md`.
-For the concrete implementation follow-up in this repo, see
-`docs/targets/kibana-esql-upgrade-matrix.md`.
-
 ## Current Module Map
 
 | Responsibility | Primary location | Notes |

@@ -98,9 +98,7 @@ bash run-all-parity.sh
 ```
 
 It writes `reports/parity-all/<slug>/parity-report.json` per dashboard
-and `reports/parity-all/_combined.json` for the aggregate counts. See
-[`RESULTS.md`](./RESULTS.md) for an interpretation of what each
-verdict bucket means and which (few) translator gaps remain.
+and `reports/parity-all/_combined.json` for the aggregate counts.
 
 ## Migrating the dashboard
 

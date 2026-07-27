@@ -8,10 +8,9 @@ PromQL and Kibana ES|QL; this module proves *visual* parity by driving
 ``agent-browser`` over both products and pixel-diffing the rendered
 panels.
 
-It is the measurement instrument the layout redesign
-(``parity-rig/verifier/verifier-plans/LAYOUT-REDESIGN-2026-05-12.md``)
-gates on: every layout change must hold or improve the median diff
-score across all parity dashboards.
+It is the measurement instrument layout changes gate on: every layout
+change must hold or improve the median diff score across all parity
+dashboards.
 
 Architecture
 ------------
