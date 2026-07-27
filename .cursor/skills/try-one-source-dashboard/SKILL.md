@@ -11,7 +11,12 @@ This skill writes exactly one dashboard to the target. It is otherwise read-only
 
 ## Which command form to use (package vs. repo)
 
-Assume the user **installed the package** (`obs-migrate`, `grafana-migrate`, `datadog-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Every artifact and command below ships in the installed wheel — no `scripts/`, `infra/`, or `examples/` directory is required.
+Install from PyPI
+([`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)).
+Prefer **`obs-migrate`** via `uvx --from 'elastic-observability-migration[all]' …`
+or a persistent `pip install`. Prefix `.venv/bin/` only for a repo checkout.
+Every artifact and command below ships in the installed wheel — no `scripts/`,
+`infra/`, or `examples/` directory is required.
 
 ## Step 1 — Scope to a single dashboard
 
@@ -19,7 +24,7 @@ How you pin to one dashboard differs by source. **This is the most common place 
 
 ### Datadog — by dashboard id (live API)
 
-Datadog exposes a dashboard id selector. Pass exactly one id:
+`--dashboard-ids` is **Datadog only** (help text: "Comma-separated Datadog dashboard IDs"). Pass exactly one id:
 
 ```bash
 export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
@@ -33,7 +38,7 @@ obs-migrate migrate \
   --data-view "metrics-*"
 ```
 
-The `--dashboard-ids` selector scopes the live Datadog API run to the one dashboard you want to try. The dedicated `datadog-migrate --source api --dashboard-ids <id>` form also works, but prefer the unified `obs-migrate migrate` command in new package-first guidance.
+(`datadog-migrate --source api --dashboard-ids <id>` also works; prefer unified `obs-migrate migrate`.)
 
 ### Grafana — by single-dashboard export (no API id selector)
 
@@ -75,6 +80,8 @@ obs-migrate upload \
   --kibana-api-key "$KEY"
 ```
 
+Optional one-shot: append `--upload --kibana-url … --kibana-api-key …` to the Step 1 `migrate` command instead of a separate `upload` (same typed Dashboards API path). Prefer the two-step flow when the user wants to review `native/*.native.json` first.
+
 - Default upload reads **persisted native** payloads (`--artifact-format auto`). Prefer reviewing `native/*.native.json` (and `ir/*.ir.json`) before upload. `--yaml-dir` / `--artifact-format yaml` is a compatibility path that maps YAML through the typed API — not the primary package path.
 - Adding `--es-url` during Step 1 turns on live target field discovery and emitted-query validation; without it the run stays in offline analysis and panels may look empty for lack of data, not because the translation is wrong.
 - **Custom-CA / self-signed clusters:** all CLIs accept `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) to skip verification for testing only. These apply to source, Elasticsearch, Kibana, and the Node upload step.
@@ -89,17 +96,18 @@ obs-migrate upload \
 
 ## Honest limits (tell the user)
 
-- **Grafana single-dashboard = a one-file export.** There is no Grafana API id selector; scope by `--input-dir` containing only that dashboard.
-- **Empty panels are often missing data, not a bug.** A clean translation can still render empty if the target cluster has no matching telemetry. Use `prepare-target-telemetry` and/or `obs-migrate seed-sample-data --artifact-dir try_one_out/dashboards` (tear down with `obs-migrate remove-sample-data --confirm`); say so rather than blaming the translator.
+- **Grafana single-dashboard = a one-file export.** There is no Grafana API id selector; scope by `--input-dir` containing only that dashboard. `--dashboard-ids` is Datadog-only.
+- **Empty panels are often missing data, not a bug.** A clean translation can still render empty if the target cluster has no matching telemetry. Use `prepare-target-telemetry` and/or `obs-migrate seed-sample-data --artifact-dir try_one_out/dashboards` (tear down with `obs-migrate remove-sample-data --confirm`); say so rather than blaming the translator. Lab seeding is optional investigation — not required for the product path when real target telemetry exists.
 - **No `--es-url` ⇒ no live validation.** Treat an offline run as directional; it does not prove panels render against real data.
 - **Degrade gracefully:** unsupported panels are surfaced as `requires_manual` / `not_feasible` with reasons; many others land as `migrated_with_warnings` for documented approximations — relay those, never hide them.
 
 ## Do NOT
 
-- Do **not** invent a Grafana API `--dashboard-ids` flag — it does not exist; use a single-dashboard files export.
+- Do **not** invent a Grafana API `--dashboard-ids` flag — it does not exist for Grafana; use a single-dashboard files export.
 - Do **not** claim panels are validated when the run had no `--es-url` and no upload smoke / render check.
 - Do **not** bulk-migrate here. Selecting many dashboards (by folder/tag/datasource/team) or migrating everything is the Phase D "migrate selected / every supported dashboard" skill.
 - Do **not** cite manifest fields you have not confirmed (e.g. `grafana_type` exists on Grafana manifest panels; open the JSON when unsure).
+- Do **not** assume a repo checkout or eng-only harness paths.
 
 ## See also
 
@@ -109,5 +117,5 @@ obs-migrate upload \
 - `explain-migration-gaps` skill — plain-language warnings vs hard stops.
 - `debug-uploaded-kibana-dashboard` skill — diagnose a single broken uploaded panel.
 - `revert-migration` skill — remove generated assets; or `obs-migrate cluster delete-dashboards --dashboard-ids <id>` for the one uploaded dashboard.
-- `obs-migrate upload --help`, `datadog-migrate --help`, `grafana-migrate --help` — confirm flags for the installed version.
+- `obs-migrate upload --help`, `obs-migrate migrate --help` — confirm flags for the installed version.
 - `docs/command-contract.md` — upload, cluster, and live-extraction flags and artifacts (online docs / repo).
