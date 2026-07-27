@@ -6,6 +6,7 @@ import json
 import re
 import tempfile
 import unittest
+import zlib
 from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
@@ -80,15 +81,20 @@ class ValueProfileTests(unittest.TestCase):
     def test_unknown_metric_uses_generic_legacy_band(self):
         p = _value_profile("some_unknown_widget_gauge")
         self.assertEqual(p.unit, "generic")
-        # legacy formula base = 10 + abs(hash(name)) % 500
-        self.assertEqual(p.base, 10 + abs(hash("some_unknown_widget_gauge")) % 500)
+        # legacy formula base = 10 + salt % 500
+        self.assertEqual(p.base, 10 + td._stable_salt("some_unknown_widget_gauge") % 500)
 
 
 class GaugeMagnitudeTests(unittest.TestCase):
-    def _docs(self, fields, now=None):
+    def _docs(self, fields, now=None, data_hours=1):
         contract = {"streams": {"metrics-*": {"fields": fields}}}
         now = now or datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
-        return [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+        return [
+            d
+            for _, d in generate_documents(
+                contract, now=now, data_hours=data_hours, interval_sec=3600
+            )
+        ]
 
     def test_bytes_gauge_is_gib_scale_in_documents(self):
         fields = {"node_memory_MemTotal_bytes": {"role": "metric", "metric_kind": "gauge"}}
@@ -101,17 +107,21 @@ class GaugeMagnitudeTests(unittest.TestCase):
         vals = [d["node_load1"] for d in self._docs(fields)]
         self.assertTrue(all(0.0 <= v <= 8.0 for v in vals), vals)
 
-    def _epoch_gauge_samples(self, fake_hash=None):
+    def _epoch_gauge_samples(self, salt=None, data_hours=1):
         """Return ``(value, own document timestamp)`` pairs for an epoch gauge.
 
-        ``fake_hash`` shadows the salted builtin so a chosen point in the offset
-        window can be pinned instead of left to PYTHONHASHSEED.
+        ``salt`` pins a chosen point in the offset window instead of taking
+        whatever the field name happens to hash to.
         """
         now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
         fields = {"node_time_seconds": {"role": "metric", "metric_kind": "gauge"}}
-        patch = mock.patch.dict(td.__dict__, {"hash": fake_hash}) if fake_hash else nullcontext()
+        patch = (
+            mock.patch.object(td, "_stable_salt", lambda _name: salt)
+            if salt is not None
+            else nullcontext()
+        )
         with patch:
-            docs = self._docs(fields, now=now)
+            docs = self._docs(fields, now=now, data_hours=data_hours)
         return [
             (
                 d["node_time_seconds"],
@@ -126,30 +136,51 @@ class GaugeMagnitudeTests(unittest.TestCase):
             self.assertGreaterEqual(value, doc_epoch - 90 * 86400)
             self.assertLessEqual(value, doc_epoch)
 
-    def test_epoch_seconds_stays_in_window_at_both_hash_extremes(self):
-        """`hash` is salted per process, so the offset modulo has to be clamped.
+    def test_epoch_seconds_stays_in_window_at_both_offset_extremes(self):
+        """The stagger and the wobble have to be reserved out of the window.
 
-        Unclamped, the top of the window pushed samples before ``now - 90d`` and
-        the bottom pushed one past its own timestamp (a negative uptime).
+        Unreserved, the top of the window pushed samples before ``now - 90d``
+        and the bottom pushed one past its own timestamp (a negative uptime).
         """
-        for label, hashed in (
+        for label, salt in (
             ("top of window", 90 * 86400 - 1),
             ("bottom of window", 0),
-            ("just under the window", 90 * 86400),
+            ("just over the window", 90 * 86400),
         ):
             with self.subTest(label):
-                samples = self._epoch_gauge_samples(fake_hash=lambda _s, h=hashed: h)
+                samples = self._epoch_gauge_samples(salt=salt)
                 self.assertTrue(samples)
                 for value, doc_epoch in samples:
                     self.assertGreaterEqual(value, doc_epoch - 90 * 86400)
                     self.assertLessEqual(value, doc_epoch)
 
+    def test_epoch_seconds_is_stable_across_the_day(self):
+        """Boot time is a property of the host, not of the hour we sampled it.
+
+        The modulus must not depend on the diurnal wobble: the salt dwarfs the
+        span, so an hour-dependent modulus re-rolls the offset every hour and
+        `now - boot` becomes uniform noise over the whole 90-day window instead
+        of an uptime that grows smoothly.
+        """
+        samples = self._epoch_gauge_samples(data_hours=24)
+        self.assertGreater(len(samples), 12)
+        uptimes = [doc_epoch - value for value, doc_epoch in samples]
+        self.assertGreaterEqual(min(uptimes), 0.0)
+        self.assertLessEqual(max(uptimes) - min(uptimes), 60.0)
+
+    def test_seeded_values_do_not_depend_on_the_interpreter_hash_seed(self):
+        """`_value_profile` promises bands that are "stable per metric"."""
+        self.assertEqual(
+            td._stable_salt("node_memory_MemTotal_bytes"),
+            zlib.crc32(b"node_memory_MemTotal_bytes"),
+        )
+
     def test_unknown_gauge_value_unchanged_from_legacy(self):
         # Guard: an unrecognised gauge keeps the exact legacy formula output.
         # The legacy band was base + combo_idx*3 + 25*_diurnal(hour) + rng.random();
-        # the generic profile (base = 10 + hash%500, span = 25) must reproduce it
-        # bit-for-bit. We recompute in-process (hash is per-process salted) using
-        # the real first document's hour and the first Random(42) draw.
+        # the generic profile (base = 10 + salt%500, span = 25) must reproduce it
+        # bit-for-bit, using the real first document's hour and the first
+        # Random(42) draw.
         import random as _random
 
         from observability_migration.core.telemetry_data import _diurnal, _document_timestamps
@@ -161,7 +192,7 @@ class GaugeMagnitudeTests(unittest.TestCase):
 
         first_ts = _document_timestamps(now, data_hours=1, interval_sec=3600)[0]
         hour = first_ts.hour + first_ts.minute / 60.0
-        base = 10 + abs(hash(name)) % 500
+        base = 10 + td._stable_salt(name) % 500
         first_draw = _random.Random(42).random()
         expected = round(base + 0 * 3 + 25 * _diurnal(hour) + first_draw, 4)
         self.assertEqual(got, expected)
