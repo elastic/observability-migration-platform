@@ -301,7 +301,7 @@ class ObsMigrateParseMatrixTests(unittest.TestCase):
 # argv → runner for ``main()`` dispatch. Exit-code commands use sys.exit(runner()).
 _DISPATCH_CASES: list[tuple[list[str], str, bool]] = [
     (["migrate", "--source", "grafana", "--input-mode", "files", "--input-dir", "/tmp/in", "--output-dir", "/tmp/out"], "_run_migrate", False),
-    (["doctor"], "_run_doctor", False),
+    (["doctor"], "_run_doctor", True),
     (["compile", "--yaml-dir", "/tmp/yaml", "--output-dir", "/tmp/ndjson"], "_run_compile", False),
     (["upload", "--yaml-dir", "/tmp/yaml", "--kibana-url", "https://kb.example", "--kibana-api-key", "k"], "_run_upload", False),
     (["cluster", "list-dashboards", "--kibana-url", "https://kb.example"], "_run_cluster", False),

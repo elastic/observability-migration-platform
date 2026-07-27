@@ -1,11 +1,11 @@
 ---
 name: debug-uploaded-kibana-dashboard
-description: Use when the user reports a panel rendering empty / "No results found" / "Migration Required" / wrong-shape values after running parity-rig/upload-all.sh or obs-migrate upload, or hands over a Kibana dashboard URL and asks "why is this panel broken" — diagnoses a Kibana dashboard that mig-to-kbn uploaded to the Serverless cluster by driving Chrome via the chrome-devtools MCP server, capturing the per-panel ES|QL the Kibana UI is actually running, the /_query network response, browser console errors, and a screenshot of the failing panel.
+description: Use when the user reports a panel rendering empty / "No results found" / "Migration Required" / wrong-shape values after running parity-rig/upload-all.sh or obs-migrate upload, or hands over a Kibana dashboard URL and asks "why is this panel broken" — diagnoses a Kibana dashboard that obs-migrate uploaded to the Serverless cluster by driving Chrome via the chrome-devtools MCP server, capturing the per-panel ES|QL the Kibana UI is actually running, the /_query network response, browser console errors, and a screenshot of the failing panel.
 ---
 
 # Debug an uploaded Kibana dashboard
 
-Pairs the generic `chrome-devtools-debugging` skill with mig-to-kbn's specific workflow: open the uploaded dashboard in Chrome, capture exactly what Kibana's Lens is sending to `/_query`, classify the failure mode against the mig-to-kbn migration report, and feed that back to the translator pipeline if it turns out to be a real bug.
+Pairs the generic `chrome-devtools-debugging` skill with obs-migrate's specific workflow: open the uploaded dashboard in Chrome, capture exactly what Kibana's Lens is sending to `/_query`, classify the failure mode against the obs-migrate migration report, and feed that back to the translator pipeline if it turns out to be a real bug.
 
 **Prerequisites:** `chrome-devtools` MCP server configured with `--autoConnect` (see [the generic skill](~/.cursor/skills/chrome-devtools-debugging/setup-autoconnect.md)). Chrome 144+ open, signed into the target Kibana, on the dashboard in question.
 
@@ -105,7 +105,7 @@ The translator emitted markdown rather than ES|QL because the source PromQL hit 
    - `A / B` between distinct vectors with no explicit `on()` — should fall through to ES|QL when supported; if it didn't, the gate may be missing a case.
    - "Divergent filters/groupings cannot be translated safely" — by design when operands have incompatible filter or BY shapes.
 5. Map empty/wrong UI to **render-audit taxonomy** when available (`docs/testing.md`): `render_error` (translator/Lens bug, fail) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness, warn). Late-bound grouping "invalid column" after a missing label is usually a field/data gap, not a translator regression.
-6. If the pattern is a *new* class that mig-to-kbn could plausibly translate, file an issue and link to the captured panel screenshot. Otherwise report expected approximation vs hard stop clearly.
+6. If the pattern is a *new* class that obs-migrate could plausibly translate, file an issue and link to the captured panel screenshot. Otherwise report expected approximation vs hard stop clearly.
 
 ## Workflow D — runtime error popup (red toast in Kibana)
 
@@ -132,9 +132,9 @@ KIBANA_URL=https://<cluster>.kb.us-central1.gcp.staging.elastic.cloud \
   bash parity-rig/verifier/bootstrap.sh
 ```
 
-The bootstrap script launches Chrome headed, waits for you to SAML through once, then snapshots the auth state to `~/.agent-browser/state/mig-to-kbn-verifier.json`. From then on every verifier loop reuses it without SAML.
+The bootstrap script launches Chrome headed, waits for you to SAML through once, then snapshots the auth state to `~/.agent-browser/state/obs-migrate-verifier.json`. From then on every verifier loop reuses it without SAML.
 
-**Persistent profile + cookie reuse.** Bootstrap uses a persistent Chrome profile at `~/.agent-browser/profiles/mig-to-kbn-verifier` (`--profile`). The SAML cookies live in that profile and **persist even when the `state save` step fails** — so if the headless render-audit later hits a login wall, re-running `bootstrap.sh` (or any `--profile <that dir>` headed open) is usually enough to re-warm the session; you rarely need to nuke the profile.
+**Persistent profile + cookie reuse.** Bootstrap uses a persistent Chrome profile at `~/.agent-browser/profiles/obs-migrate-verifier` (`--profile`). The SAML cookies live in that profile and **persist even when the `state save` step fails** — so if the headless render-audit later hits a login wall, re-running `bootstrap.sh` (or any `--profile <that dir>` headed open) is usually enough to re-warm the session; you rarely need to nuke the profile.
 
 > **Wrong-tab / Gemini "glic" gotcha (read this when login-detection or URL checks misbehave).** An `agent-browser` session frequently has **multiple tabs/targets** open — Kibana dashboard tabs **plus** unrelated ones like Chrome's Gemini "glic" side-panel (`https://gemini.google.com/glic`, a `webview` target), `staging.found.no`, or an Elastic SSO interstitial (`/internal/security/capture-url`, `auth_provider_hint`). The **active** target is often the *wrong* one, so `agent-browser get url` returns the gemini URL and login-detection/URL checks read the wrong page — even after you completed SAML in the Kibana tab. Don't trust the active tab:
 >
@@ -150,7 +150,7 @@ The bootstrap script launches Chrome headed, waits for you to SAML through once,
 ### E1: capture every `/_query` Lens dispatches during a dashboard load
 
 ```bash
-STATE=$HOME/.agent-browser/state/mig-to-kbn-verifier.json
+STATE=$HOME/.agent-browser/state/obs-migrate-verifier.json
 HAR=/tmp/<slug>.har
 
 agent-browser close --all
@@ -221,7 +221,7 @@ This is the foundation of `parity-rig/verifier/` (the framework in flight). The 
 
 For any panel, the agent has *two* sources of truth besides Kibana:
 
-1. **Migration artifacts** (prefer the user's `--output-dir`): `dashboards/migration_report.json`, `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`. Find the panel by `title`. Useful fields: `status`, `promql`, `esql`, `reasons`, `notes`, `query_ir`. Repo-only parity-rig paths under `/tmp/mig-to-kbn-e2e/` are optional developer loops — label them as such.
+1. **Migration artifacts** (prefer the user's `--output-dir`): `dashboards/migration_report.json`, `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`. Find the panel by `title`. Useful fields: `status`, `promql`, `esql`, `reasons`, `notes`, `query_ir`. Repo-only parity-rig paths under `/tmp/obs-migrate-e2e/` are optional developer loops — label them as such.
 2. **Dashboard id for deep links:** from `native/*.native.json` `dashboard_id` (or compiled NDJSON when `--compile` / legacy import was used). Construct `<kibana>/app/dashboards#/view/<id>`.
 
 Render-audit driver (package): `python -m observability_migration.targets.kibana.render_audit_driver` or `scripts/run_render_audit_local.sh` for local no-SSO stacks — see `docs/testing.md`.
@@ -261,5 +261,5 @@ If a real translator gap is identified:
 - `parity-rig/verifier/bootstrap.sh` — one-time `agent-browser` SAML + persistent state setup (**repo-only**).
 - `docs/sources/grafana.md` — Current Boundaries (approximations vs hard stops).
 - `docs/testing.md` — render-audit taxonomy and layered verifier gates.
-- `docs/command-contract.md` — canonical mig-to-kbn CLIs (`obs-migrate`, `grafana-validate-uploaded`).
+- `docs/command-contract.md` — canonical obs-migrate CLIs (`obs-migrate`, `grafana-validate-uploaded`).
 - `explain-migration-gaps` — plain-language triage when status is warned/blocked.

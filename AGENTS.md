@@ -8,12 +8,11 @@ governance files.
 
 These names all refer to this project; do not treat them as separate things:
 
-- **Observability Migration Platform** — the product/repo name.
+- **Observability Migration Platform** — the product and GitHub repo name
+  (`elastic/observability-migration-platform`).
 - **`obs-migrate`** — the installable umbrella CLI (`grafana-migrate` and
-  `datadog-migrate` are the per-source entry points).
+  `datadog-migrate` are per-source compatibility entry points).
 - **`observability_migration`** — the Python package.
-- **`mig-to-kbn`** — the engine/upstream identity (and a repo mirror). See the
-  Upstream Boundary note in `CLAUDE.md`.
 
 ## Repo Pointers
 

@@ -1,4 +1,4 @@
-# mig-to-kbn panel verifier
+# obs-migrate panel verifier
 
 A 5-tier verification framework for migrated Grafana → Kibana dashboards. For every panel of a migrated dashboard, the verifier records the exact representation of the panel's query at every stage of the pipeline and surfaces drift between adjacent stages.
 
@@ -7,7 +7,7 @@ A 5-tier verification framework for migrated Grafana → Kibana dashboards. For 
 | Tier | Source | Purpose |
 | --- | --- | --- |
 | **T0** | `migration_report.json:panels[*].promql` | the original Grafana panel as authored |
-| **T1** | `migration_report.json:panels[*].esql` | what mig-to-kbn emitted |
+| **T1** | `migration_report.json:panels[*].esql` | what obs-migrate emitted |
 | **T2** | `<output>/yaml/<dash>.yaml` | the kb-dashboard-cli input |
 | **T3** | `<output>/compiled/<dash>/compiled_dashboards.ndjson` | the kb-dashboard-cli output, ready for upload |
 | **T4** | `GET /api/saved_objects/dashboard/<id>` (or HAR walker fallback) | what Kibana stores as the saved object |
@@ -36,7 +36,7 @@ KIBANA_URL=https://<cluster>.kb.us-central1.gcp.staging.elastic.cloud \
   bash parity-rig/verifier/bootstrap.sh
 ```
 
-Launches Chrome headed; SAML through once; the script saves the auth state to `~/.agent-browser/state/mig-to-kbn-verifier.json`. From then on every headless verifier run reuses it.
+Launches Chrome headed; SAML through once; the script saves the auth state to `~/.agent-browser/state/obs-migrate-verifier.json`. From then on every headless verifier run reuses it.
 
 ### Run the verifier against a migrated dashboard
 
@@ -44,7 +44,7 @@ Launches Chrome headed; SAML through once; the script saves the auth state to `~
 set -a; source serverless_creds.env; set +a
 
 obs-migrate verify-panels \
-  --migration-out /tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards \
+  --migration-out /tmp/obs-migrate-e2e/parity-out-<slug>/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
   --api-key "$KEY" \
@@ -60,7 +60,7 @@ Omit `--kibana-url`/`--es-url`/`--api-key`/`--dashboard-id` to run just T0..T3. 
 
 ```bash
 obs-migrate verify-panels \
-  --migration-out /tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards \
+  --migration-out /tmp/obs-migrate-e2e/parity-out-<slug>/dashboards \
   --output /tmp/verifier-<slug>.json
 ```
 
@@ -152,7 +152,7 @@ KIBANA_URL=$KIBANA_ENDPOINT bash parity-rig/verifier/bootstrap.sh
 
 # 1. tier comparison
 obs-migrate verify-panels \
-  --migration-out /tmp/mig-to-kbn-e2e/parity-out-$SLUG/dashboards \
+  --migration-out /tmp/obs-migrate-e2e/parity-out-$SLUG/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" --es-url "$ELASTICSEARCH_ENDPOINT" \
   --api-key "$KEY" --dashboard-id "$DASH_ID" \
   --output $OUT.json
@@ -188,6 +188,6 @@ The classifier's Markdown output ends up at `$OUT-classified.md` and surfaces th
 
 ## See also
 
-- [`docs/command-contract.md`](../../docs/command-contract.md) — canonical mig-to-kbn CLIs.
+- [`docs/command-contract.md`](../../docs/command-contract.md) — canonical obs-migrate CLIs.
 - [`parity-rig/RESULTS.md`](../RESULTS.md) — known translator gaps catalogue.
 - [`.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md`](../../.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md) — interactive panel debugging via Chrome DevTools MCP + agent-browser.

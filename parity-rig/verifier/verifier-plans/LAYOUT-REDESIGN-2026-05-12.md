@@ -9,7 +9,7 @@ Last updated: 2026-05-12
 The current Grafana → Kibana layout step is a single coordinate transform plus
 a clamp pass; there is no real layout algorithm. Audit of every migrated
 parity dashboard (see `parity-rig/verifier/verifier-reports/ALL-DASHBOARDS-2026-05-12.md`
-and the layout audit run on `/tmp/mig-to-kbn-e2e/parity-out-*/`) shows six
+and the layout audit run on `/tmp/obs-migrate-e2e/parity-out-*/`) shows six
 distinct visual-fidelity defects we can fix incrementally.
 
 We now have `agent-browser` wired in, which means **layout decisions can be

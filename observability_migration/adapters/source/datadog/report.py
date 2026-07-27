@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from observability_migration import __version__
 from observability_migration.core.reporting.summary_md import (
     AttentionItem,
     DashboardRow,
@@ -318,7 +319,7 @@ def save_detailed_report(
     """Save a detailed JSON report."""
     report: dict[str, Any] = {
         "tool": "datadog-to-kibana-migration",
-        "version": "0.1.0",
+        "version": __version__,
         "dashboards": [],
         "summary": {},
     }

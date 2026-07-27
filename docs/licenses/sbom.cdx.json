@@ -3540,17 +3540,17 @@
         {
           "comment": "from pyproject urls: Issues",
           "type": "issue-tracker",
-          "url": "https://github.com/elastic/mig-to-kbn/issues"
+          "url": "https://github.com/elastic/observability-migration-platform/issues"
         },
         {
           "comment": "from pyproject urls: Repository",
           "type": "vcs",
-          "url": "https://github.com/elastic/mig-to-kbn"
+          "url": "https://github.com/elastic/observability-migration-platform"
         },
         {
           "comment": "from pyproject urls: Homepage",
           "type": "website",
-          "url": "https://github.com/elastic/mig-to-kbn"
+          "url": "https://github.com/elastic/observability-migration-platform"
         }
       ],
       "licenses": [
@@ -3561,9 +3561,9 @@
           }
         }
       ],
-      "name": "obs-migrate",
+      "name": "elastic-observability-migration",
       "type": "application",
-      "version": "0.1.0"
+      "version": "0.4.0"
     },
     "properties": [
       {

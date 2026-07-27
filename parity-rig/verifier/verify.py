@@ -5,7 +5,7 @@ of its query and report any divergence.
 The 5 representations:
 
   T0: source PromQL    — what the Grafana panel declared
-  T1: translator out   — what mig-to-kbn emitted (migration_report.json `esql`)
+  T1: translator out   — what obs-migrate emitted (migration_report.json `esql`)
   T2: YAML on disk     — what was written to <output-dir>/dashboards/yaml/*.yaml
   T3: compiled NDJSON  — what `kb-dashboard-cli compile` produced
   T4: cluster Lens     — what Kibana actually has saved (per /internal/dashboards/app/<id>)
@@ -43,7 +43,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parent.parent.parent  # repo root
-PARITY_OUTPUT_PREFIX = "/tmp/mig-to-kbn-e2e/parity-out-"
+PARITY_OUTPUT_PREFIX = "/tmp/obs-migrate-e2e/parity-out-"
 
 
 # Optional ANSI colour helpers — disabled when stdout isn't a TTY.
@@ -555,7 +555,7 @@ def _resolve_dashboard_id(slug: str) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--slug", required=True, help="Local output slug under /tmp/mig-to-kbn-e2e/parity-out-<slug>")
+    parser.add_argument("--slug", required=True, help="Local output slug under /tmp/obs-migrate-e2e/parity-out-<slug>")
     parser.add_argument("--dashboard", help="Kibana dashboard ID (auto-resolved from compiled NDJSON if omitted)")
     parser.add_argument("--kibana-url", default=os.environ.get("KIBANA_ENDPOINT", ""))
     parser.add_argument("--es-url", default=os.environ.get("ELASTICSEARCH_ENDPOINT", ""))

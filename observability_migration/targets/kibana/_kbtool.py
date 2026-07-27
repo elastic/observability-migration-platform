@@ -3,7 +3,7 @@
 
 """Resolve how to invoke the external kb-dashboard tooling.
 
-Prefers a locally-installed console script (the ``obs-migrate[kibana]`` extra),
+Prefers a locally-installed console script (the ``elastic-observability-migration[kibana]`` extra),
 falls back to a pinned ``uvx`` invocation, and otherwise raises a clear,
 actionable error instead of a raw shell failure.
 """
@@ -82,7 +82,7 @@ def tool_argv(tool: str) -> list[str]:
 
     raise KbToolUnavailableError(
         f"{tool} is not available. Install the Kibana tools with "
-        f'`pip install "obs-migrate[kibana]"` (Python 3.12+), or install `uv` '
+        f'`pip install "elastic-observability-migration[kibana]"` (Python 3.12+), or install `uv` '
         f"so the pinned tool can be fetched via uvx."
     )
 

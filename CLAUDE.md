@@ -1,4 +1,4 @@
-# CLAUDE.md — mig-to-kbn
+# CLAUDE.md — Observability Migration Platform
 
 Claude-specific guidance. For automation/agent rules see `AGENTS.md`. For public docs see `docs/README.md`.
 
@@ -7,12 +7,12 @@ Claude-specific guidance. For automation/agent rules see `AGENTS.md`. For public
 This repo (the **Observability Migration Platform**, CLI `obs-migrate`) is the
 canonical source for the migration **engine** — `grafana-migrate`,
 `datadog-migrate`, PromQL/Datadog translation, and the shared Kibana
-YAML/compile path. **`mig-to-kbn`** is that engine's upstream identity; treat
-this repo as the single source of truth for it. (See the Naming note in
-`AGENTS.md`.)
+YAML/compile path. Treat this repository as the single source of truth.
+(See the Naming note in `AGENTS.md`.)
 
 - Engine fixes and features belong in **Issues/PRs on this repo**, not in downstream forks.
-- The vendored copy at `validation/external_assets/dashboard-alert-migration/mig-to-kbn/` is a **snapshot**. Changes there should be bumps via `validation/external_assets/dashboard-alert-migration/scripts/update_mig_to_kbn.sh`, not long-lived forks.
+- Downstream vendored snapshots should be refreshed from this repo rather than
+  maintained as long-lived forks.
 
 ## Project Conventions
 

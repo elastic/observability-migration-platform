@@ -1,6 +1,6 @@
 ---
 name: evaluate-o11y-permissions
-description: Use when the user asks whether their credentials/API key has the right permissions, roles, or privileges to export from their source or to import dashboards / create alert rules into Kibana, or wants to check access before committing to a migration — verifies the credentials have what an obs-migrate / mig-to-kbn migration needs end-to-end — read/export on the source (Grafana/Datadog) and write on the Elastic/Kibana target.
+description: Use when the user asks whether their credentials/API key has the right permissions, roles, or privileges to export from their source or to import dashboards / create alert rules into Kibana, or wants to check access before committing to a migration — verifies the credentials have what an obs-migrate migration needs end-to-end — read/export on the source (Grafana/Datadog) and write on the Elastic/Kibana target.
 ---
 
 # Evaluate migration permissions (source + target)

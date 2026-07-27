@@ -95,7 +95,7 @@ Both gaps reported in the previous run were addressed:
 
 `http_requests_total{...status=~"4.."} or http_requests_total{...5.."}`
 references a counter as an instant vector. PromQL returns the raw
-cumulative value (e.g. 7500). mig-to-kbn wraps any counter reference
+cumulative value (e.g. 7500). obs-migrate wraps any counter reference
 in `AVG(RATE(metric, default_window))` because:
 
 - A panel labelled "4xx or 5xx by request" plotting a cumulative
@@ -129,7 +129,7 @@ documented behaviour, not a bug.
   almost all are functions-on-gauges (the synthetic data doesn't
   carry `time_series_metric: counter` for every metric the dashboards
   expect) or binary ops between two instant vectors (`A / B`). These
-  are upstream gaps that mig-to-kbn could either work around (by
+  are upstream gaps that obs-migrate could either work around (by
   falling back to ES|QL translation more aggressively) or wait for
   Elastic to fix.
 

@@ -23,7 +23,7 @@ command inventory and supported invocation patterns, use
 
 These migrate the bundled source dashboards against a real serverless cluster.
 They expect `serverless_creds.env` in the repo root and a `.venv` with the
-package installed. Outputs land under `/tmp/mig-to-kbn-e2e/` (Grafana) and
+package installed. Outputs land under `/tmp/obs-migrate-e2e/` (Grafana) and
 `e2e_datadog_run/` (Datadog).
 
 - `run_e2e_grafana.sh` — migrate all bundled Grafana dashboards (+ optional upload)

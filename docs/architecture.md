@@ -21,7 +21,7 @@ canonical asset contracts, read `docs/architecture/asset-model.md`.
 The repo uses three related names:
 
 - **Product / docs name**: Observability Migration Platform
-- **Installable distribution**: `obs-migrate`
+- **Installable distribution**: `elastic-observability-migration`
 - **Importable Python package**: `observability_migration`
 
 Current runtime surfaces:

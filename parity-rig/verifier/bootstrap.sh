@@ -13,8 +13,8 @@
 set -euo pipefail
 
 KIBANA_URL="${KIBANA_URL:?KIBANA_URL is required (e.g. https://<cluster>.kb.us-central1.gcp.staging.elastic.cloud)}"
-PROFILE_DIR="${VERIFIER_PROFILE_DIR:-$HOME/.agent-browser/profiles/mig-to-kbn-verifier}"
-STATE_FILE="${VERIFIER_STATE_FILE:-$HOME/.agent-browser/state/mig-to-kbn-verifier.json}"
+PROFILE_DIR="${VERIFIER_PROFILE_DIR:-$HOME/.agent-browser/profiles/obs-migrate-verifier}"
+STATE_FILE="${VERIFIER_STATE_FILE:-$HOME/.agent-browser/state/obs-migrate-verifier.json}"
 WAIT_SECONDS="${VERIFIER_LOGIN_WAIT_SECONDS:-120}"
 
 mkdir -p "$PROFILE_DIR" "$(dirname "$STATE_FILE")"

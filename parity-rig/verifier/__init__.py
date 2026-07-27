@@ -1,11 +1,11 @@
-"""mig-to-kbn panel-verification framework.
+"""obs-migrate panel-verification framework.
 
 A 5-tier comparison pipeline that records, for every panel of a migrated
 dashboard, the exact representation of its query at each stage of the
 pipeline:
 
     T0  source PromQL  (the Grafana panel as authored)
-    T1  translator out (what mig-to-kbn emitted, from migration_report.json)
+    T1  translator out (what obs-migrate emitted, from migration_report.json)
     T2  YAML on disk   (kb-dashboard-cli input)
     T3  compiled NDJSON (kb-dashboard-cli output, ready for upload)
     T4  cluster Lens   (what Kibana stores as the saved object)

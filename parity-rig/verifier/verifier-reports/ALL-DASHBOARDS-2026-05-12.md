@@ -123,7 +123,7 @@ previous full Node Exporter run.
 ## How to reproduce
 
 ```bash
-cd /Users/subhamsarkar/mig-to-kbn
+cd /Users/subhamsarkar/observability-migration-platform
 source serverless_creds.env
 
 for entry in \
@@ -136,7 +136,7 @@ for entry in \
   slug=${entry%%:*}
   dash_id=${entry##*:}
   obs-migrate verify-panels \
-    --migration-out /tmp/mig-to-kbn-e2e/parity-out-$slug/dashboards \
+    --migration-out /tmp/obs-migrate-e2e/parity-out-$slug/dashboards \
     --kibana-url "$KIBANA_ENDPOINT" \
     --es-url    "$ELASTICSEARCH_ENDPOINT" \
     --api-key   "$KEY" \

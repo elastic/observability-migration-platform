@@ -27,7 +27,7 @@ set -euo pipefail
 
 REPO="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 WINDOW_MINUTES=10
-REPORT_PATH="/tmp/mig-to-kbn-e2e/parity-native-profile/migration_report.json"
+REPORT_PATH="/tmp/obs-migrate-e2e/parity-native-profile/migration_report.json"
 
 # ---------------------------------------------------------------------------
 # Parse args
@@ -87,7 +87,7 @@ fi
 #         SchemaResolver profile.
 # ---------------------------------------------------------------------------
 SRC="$REPO/parity-rig/grafana/dashboards/express-prometheus-middleware.json"
-OUT_DIR="/tmp/mig-to-kbn-e2e/parity-native-profile"
+OUT_DIR="/tmp/obs-migrate-e2e/parity-native-profile"
 TMP_INPUT="$(mktemp -d "${TMPDIR:-/tmp}/parity-native-input.XXXXXX")"
 
 printf '=== Step 1: Migrating express-prometheus (default native PROMQL path) ===\n'

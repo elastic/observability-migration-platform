@@ -7,7 +7,7 @@ PYTHON := .venv/bin/python
 KIBANA_DASHBOARDS_API_SCHEMA_URL ?=
 
 .PHONY: help sync licenses test test-e2e lint typecheck check-native-schema \
-	setup-browser test-interactions interaction-audit-local
+	setup-browser test-interactions interaction-audit-local bump-version
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -16,7 +16,21 @@ help: ## List available targets
 sync: ## Sync the dev virtualenv from uv.lock
 	uv sync --locked --all-extras
 
+bump-version: ## Bump version (VERSION=X.Y.Z), refresh uv.lock, and license/SBOM artifacts
+	@test -n "$(VERSION)" || (echo "USAGE: make bump-version VERSION=X.Y.Z"; exit 2)
+	@if [ -x "$(PYTHON)" ]; then \
+	  $(PYTHON) scripts/bump_version.py "$(VERSION)"; \
+	else \
+	  python3 scripts/bump_version.py "$(VERSION)"; \
+	fi
+	@if [ "$(SKIP_LICENSES)" = "1" ]; then \
+	  echo "SKIP_LICENSES=1: left docs/licenses unchanged (CI will fail if SBOM drifts)"; \
+	else \
+	  $(MAKE) licenses; \
+	fi
+
 licenses: ## Regenerate docs/licenses/dependencies.md and sbom.cdx.json
+	@rm -rf ./*.egg-info
 	UV_PROJECT_ENVIRONMENT=.venv-licensing \
 	  uv sync --locked --python 3.11 --all-extras
 	.venv-licensing/bin/python scripts/check_licenses.py --write-report
@@ -24,6 +38,7 @@ licenses: ## Regenerate docs/licenses/dependencies.md and sbom.cdx.json
 	  --output-reproducible \
 	  --pyproject pyproject.toml \
 	  -o docs/licenses/sbom.cdx.json
+	@echo "licenses + SBOM refreshed"
 
 test: sync ## Run unit tests (excludes e2e)
 	$(PYTHON) -m pytest tests/ --ignore=tests/e2e/

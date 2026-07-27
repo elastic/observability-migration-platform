@@ -78,7 +78,7 @@ dashboards.
 ## How to reproduce
 
 ```bash
-cd /Users/subhamsarkar/mig-to-kbn
+cd /Users/subhamsarkar/observability-migration-platform
 source serverless_creds.env
 
 bash /tmp/run-all-visual.sh
@@ -87,7 +87,7 @@ bash /tmp/run-all-visual.sh
 Requires:
 - parity-rig stack running locally (`docker compose up -d` in `parity-rig/`)
 - `agent-browser` state bootstrapped (`bash parity-rig/verifier/bootstrap.sh`)
-- Already-migrated dashboards under `/tmp/mig-to-kbn-e2e/parity-out-*/`
+- Already-migrated dashboards under `/tmp/obs-migrate-e2e/parity-out-*/`
 
 ## What this baseline is for
 
