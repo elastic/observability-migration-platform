@@ -110,7 +110,6 @@ compatibility aliases. Prefer `obs-migrate`.
 | --- | --- |
 | [`docs/README.md`](docs/README.md) | Docs index |
 | [`docs/command-contract.md`](docs/command-contract.md) | Canonical CLI commands and install detail |
-| [`docs/known-limitations.md`](docs/known-limitations.md) | Known gaps |
 | [`docs/architecture.md`](docs/architecture.md) | How the pipeline fits together |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev setup, releasing, and PR expectations |
 | [`SUPPORT.md`](SUPPORT.md) | Getting help |
