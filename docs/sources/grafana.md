@@ -274,8 +274,9 @@ controls:
 Load a rule pack with:
 
 ```bash
-.venv/bin/grafana-migrate \
-  --source files \
+obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
   --input-dir infra/grafana/dashboards \
   --output-dir migration_output \
   --rules-file my-rule-pack.yaml \

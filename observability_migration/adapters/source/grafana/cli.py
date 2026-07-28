@@ -457,7 +457,7 @@ def parse_args(argv: list[str] | None = None):
         help=(
             "Compile YAML to Kibana NDJSON via kb-dashboard-cli. Off by default: "
             "the typed Dashboards API upload maps straight from the YAML/native "
-            "IR and never needs the compiled NDJSON. Implied by --legacy-import."
+            "IR and never needs the compiled NDJSON. Implied by --legacy-import when combined with --upload."
         ),
     )
     parser.add_argument(

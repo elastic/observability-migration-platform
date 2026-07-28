@@ -350,10 +350,11 @@ class KibanaTargetAdapter(TargetAdapter):
                 )
             ]
             # Only a genuine payload rejection degrades to the legacy compiler
-            # path. A "conflict" (409) is a cluster-global saved-object id
-            # collision from another space, which the legacy _import cannot
-            # resolve -- falling back would only re-run kb-dashboard-cli for
-            # nothing, so it is reported as a terminal, actionable failure.
+            # path. A "conflict" (409) from the native PUT is NOT retried here:
+            # it is reported as a terminal failure so the operator can decide
+            # whether to use --legacy-import (which calls _import?overwrite=true
+            # and can overwrite same-space [DELETED] placeholders) or to
+            # investigate a cross-space id collision manually.
             if results[0].status == "rejected":
                 _fallback(str(yaml_file))
         else:

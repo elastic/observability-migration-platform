@@ -28,7 +28,7 @@ Current runtime surfaces:
 
 | Surface | Entry point | Purpose |
 |---|---|---|
-| Unified CLI | `.venv/bin/obs-migrate` or `python -m observability_migration` | Source-agnostic CLI with `migrate`, `compile`, `upload`, `cluster`, and `extensions` subcommands |
+| Unified CLI | `.venv/bin/obs-migrate` or `python -m observability_migration` | Source-agnostic CLI with `migrate`, `compile`, `upload`, `cluster`, `verify`, `compare`, `schema-report`, `audit-rules`, `verify-alert-rules`, `seed-sample-data`, `remove-sample-data`, `metric-map`, `list-samples`, and `extensions` subcommands |
 | Grafana CLI | `.venv/bin/grafana-migrate` or `python -m observability_migration.adapters.source.grafana.cli` | Full Grafana migration pipeline |
 | Datadog CLI | `.venv/bin/datadog-migrate` or `python -m observability_migration.adapters.source.datadog.cli` | Datadog extraction, preflight, translation, report, and optional compile |
 | Grafana smoke validator | `.venv/bin/grafana-validate-uploaded` or `python -m observability_migration.adapters.source.grafana.validate_uploaded_dashboards` | Post-upload Kibana saved-object validation |
@@ -69,7 +69,7 @@ flowchart LR
         ir["Build QueryIR / VisualIR / OperationalIR<br/>Assemble DashboardIR (Grafana + Datadog)"]
         emit["Derive native Dashboards API payload + YAML<br/>from DashboardIR"]
         validate[Optional runtime validation]
-        compile[Lint and compile]
+        compile["Lint YAML; opt-in NDJSON compile<br/>(--compile / --legacy-import)"]
         verify[Verification and reporting]
     end
 
@@ -86,24 +86,29 @@ flowchart LR
     ir --> emit
     emit --> validate
     emit --> compile
+    emit -->|"native PUT /api/dashboards/{id}<br/>(default upload path)"| kb
     validate --> compile
-    compile --> verify
     validate --> verify
     validate --> es
-    compile --> kb
+    compile --> verify
+    compile -->|"--legacy-import:<br/>_import?overwrite=true"| kb
     kb --> smoke
     es --> smoke
 ```
 
 Generated artifacts typically include:
 
-- `yaml/*.yaml`
-- `compiled/*/compiled_dashboards.ndjson`
+- `dashboards/native/<stem>.native.json` — exact typed Dashboards API payload (written unconditionally every run)
+- `dashboards/ir/<stem>.ir.json` — semantic `DashboardIR` export (written unconditionally every run)
+- `dashboards/native/index.json` — index over every native artifact in the run
+- `dashboards/yaml/<stem>.yaml` — kb-dashboard-core YAML (for lint and legacy import)
+- `dashboards/compiled/<stem>/compiled_dashboards.ndjson` — NDJSON (only when `--compile` is passed)
 - `migration_report.json`
 - `migration_manifest.json`
 - `rollout_plan.json`
 - `verification_packets.json` for Grafana and Datadog runs
 - `preflight_report.json` and `required_target_contract.json` in Grafana preflight mode
+- `target_readiness_contract.json` in Datadog preflight mode
 - `upload_smoke_report.json` or `uploaded_dashboard_smoke_report.json` from smoke validation
 
 ## Package Map
@@ -139,6 +144,8 @@ Generated artifacts typically include:
 | `observability_migration/core/reporting/report.py` | Shared result dataclasses and report helpers |
 | `observability_migration/core/verification/comparators.py` | Comparator helpers and verification support types |
 | `observability_migration/targets/kibana/emit/` | Shared Kibana YAML emission helpers |
+| `observability_migration/targets/kibana/native_artifacts.py` | Writes `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` — the primary Dashboard-as-Code review artifacts, unconditional on every dashboard run |
+| `observability_migration/targets/kibana/dashboards_api.py` | Typed Kibana Dashboards API (`PUT /api/dashboards/{id}`) — default upload path |
 | `observability_migration/targets/kibana/compile.py` | Shared compile, upload, lint, layout-validation, and YAML-sync helpers |
 
 ## Architecture By Layer
@@ -147,13 +154,14 @@ Generated artifacts typically include:
 
 `observability_migration/app/cli.py` is the source-agnostic entry point. It
 imports the registered adapters, exposes `migrate`, `compile`, `upload`,
-`cluster`, and `extensions`, and dispatches to the dedicated Grafana or
+`cluster`, `verify`, `compare`, `schema-report`, `audit-rules`,
+`verify-alert-rules`, `seed-sample-data`, `remove-sample-data`, `metric-map`,
+`list-samples`, and `extensions`, and dispatches to the dedicated Grafana or
 Datadog workflows.
 
 For live extraction, unified `migrate --input-mode api` dispatches into the
-source-specific API extractors. The unified CLI currently parses `--include`,
-but Grafana and Datadog handlers do not use it as source-asset selection in
-either `files` or `api` mode.
+source-specific API extractors. Asset selection is controlled with `--assets`
+(`dashboards`, `alerts`, or `all`).
 
 ### Source Adapters
 
@@ -281,7 +289,9 @@ The shared target runtime is centered on `targets/kibana/`:
 - `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate compile/upload` and the Datadog smoke path
 - `compile.py` wraps YAML lint, optional `kb-dashboard-cli` compile (pinned `uvx` fallback), compiled-layout validation, upload helpers, and post-validation IR rebuild / YAML sync
 - `dashboards_api.py` maps `DashboardIR` / YAML to the typed Dashboards API and is the default upload path
-- `native_artifacts.py` persists reviewed `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` artifacts for two-step review/upload workflows
+- `native_artifacts.py` writes `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` unconditionally on every dashboard run — these are the primary review artifacts for the two-step migrate → review → upload workflow
+- `alerting.py` Kibana Serverless alerting and connector API client (used by `--create-alert-rules` and `verify-alert-rules`)
+- `smoke_integration.py` merges Kibana smoke-test results back into migration result objects
 - `smoke.py` inspects uploaded saved objects, runs ES|QL runtime checks, and supports browser audits/screenshots
 - `render_audit.py` / `render_audit_driver.py` prove panels actually render in Kibana at default state
 - `interaction_audit.py`, `interaction_scenarios.py`, `interaction_driver.py`, and
