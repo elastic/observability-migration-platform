@@ -1724,9 +1724,77 @@ class TestDoctorSubcommand(unittest.TestCase):
         self.assertIn("kb-dashboard-cli", out)
         self.assertIn("kb-dashboard-lint", out)
         self.assertIn("ready.", out)
-        self.assertIn("next steps:", out)
+        self.assertIn("next steps", out)
         self.assertIn("list-samples", out)
         self.assertIn("migrate", out)
+
+    def test_doctor_followup_cmd_prefers_path_when_bare_command_missing(self):
+        # Issue #254: Ready Next steps must not print a bare obs-migrate when
+        # that console script is not on PATH (typical after uvx).
+        with mock.patch("shutil.which", return_value=None):
+            with mock.patch.object(sys, "argv", ["pytest-runner"]):
+                cmd = app_cli._doctor_followup_cmd()
+        self.assertEqual(
+            cmd,
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate",
+        )
+
+    def test_doctor_followup_cmd_ignores_uvx_cache_paths(self):
+        cache_script = (
+            Path.home()
+            / ".cache"
+            / "uv"
+            / "archive-v0"
+            / "hash"
+            / "bin"
+            / "obs-migrate"
+        )
+        with mock.patch("shutil.which", return_value=None):
+            with mock.patch.object(sys, "argv", [str(cache_script)]):
+                cmd = app_cli._doctor_followup_cmd()
+        self.assertEqual(
+            cmd,
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate",
+        )
+
+    def test_doctor_followup_cmd_reuses_explicit_venv_console_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / ".venv" / "bin"
+            bin_dir.mkdir(parents=True)
+            (root / ".venv" / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+            script = bin_dir / "obs-migrate"
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            with mock.patch("shutil.which", return_value=None):
+                with mock.patch.object(sys, "argv", [str(script)]):
+                    old_cwd = Path.cwd()
+                    try:
+                        import os
+
+                        os.chdir(root)
+                        cmd = app_cli._doctor_followup_cmd()
+                    finally:
+                        os.chdir(old_cwd)
+        self.assertEqual(cmd, str(Path(".venv") / "bin" / "obs-migrate"))
+
+    def test_doctor_ready_next_steps_use_followup_launcher(self):
+        buf = io.StringIO()
+        with mock.patch.object(
+            app_cli,
+            "_doctor_followup_cmd",
+            return_value="uvx --from 'elastic-observability-migration[all]' obs-migrate",
+        ):
+            with redirect_stdout(buf):
+                with self.assertRaises(SystemExit) as ctx:
+                    app_cli.main(["doctor"])
+        self.assertEqual(ctx.exception.code, 0)
+        out = buf.getvalue()
+        self.assertIn("reuse the same launcher", out.lower())
+        self.assertIn(
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate list-samples",
+            out,
+        )
+        self.assertNotRegex(out, r"(?m)^  obs-migrate list-samples$")
 
     def test_root_help_mentions_single_cli_quick_start(self):
         parser = app_cli._build_parser()

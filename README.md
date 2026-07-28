@@ -145,7 +145,7 @@ compatibility aliases. Prefer `obs-migrate`.
 | Area | Detail |
 |------|--------|
 | OS | macOS and Linux |
-| Python | 3.11+ |
+| Python | 3.11+ (tested on 3.11–3.13) |
 | Kibana | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
 | Grafana | Dashboard JSON v1; unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
 | Datadog | Dashboards and monitors via the public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |

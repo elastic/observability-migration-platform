@@ -72,6 +72,7 @@ GitHub tag fallback (never `@main`):
 
 ```bash
 PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+uvx --from "$PKG" obs-migrate doctor
 ```
 
 Example pins above are kept in lockstep with the released package version. The
@@ -104,6 +105,7 @@ above the tested range — pass `--python 3.13` to pin a CI-matrix interpreter.
 Activate the venv once per shell to get the bare command:
 
 ```bash
+PKG='elastic-observability-migration[all]'
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "$PKG"
@@ -124,6 +126,11 @@ Setting up a repo checkout for development? Use `uv sync --locked --all-extras`
 If `obs-migrate` is not found after install, see
 [If you see `command not found: obs-migrate`](#if-you-see-command-not-found-obs-migrate)
 below.
+
+Every example below assumes `obs-migrate` is on `PATH` (an activated
+virtualenv, a `pipx` / `uv tool` install, or the `uvx --from "$PKG"` prefix
+from the section above). If you see `command not found`, use the same
+troubleshooting section.
 
 Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
 `obs-migrate upload --legacy-import`) resolve the tool **installed-first**:

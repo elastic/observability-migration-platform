@@ -206,12 +206,36 @@ class CommandContractDocTests(unittest.TestCase):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
         self.assertIn("same launcher", text)
+        # Body examples stay bare; keep the PATH/launcher assumption so readers
+        # who jump past Install do not reintroduce issue #254.
+        self.assertIn(
+            "Every example below assumes `obs-migrate` is on `PATH`",
+            text,
+        )
+        # Jump-to-section install blocks must define PKG before using it.
+        self.assertIn(
+            "PKG='elastic-observability-migration[all]'\n"
+            "python3 -m venv .venv",
+            text,
+        )
+        self.assertIn(
+            "PKG='elastic-observability-migration[all]@git+https://"
+            "github.com/elastic/observability-migration-platform.git@v0.4.0rc1'\n"
+            'uvx --from "$PKG" obs-migrate doctor',
+            text,
+        )
 
         section = command_not_found_section(text)
         self.assertNotIn("$PKG", section)
         self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
         self.assertIn("console script, not a global binary", section)
         self.assertIn("uv tool install 'elastic-observability-migration[all]'", section)
+        # Parity with the README safety-net: the portable uvx remedy must be
+        # spelled out in full inside this section (fresh shell, no PKG).
+        self.assertIn(
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate doctor",
+            section,
+        )
 
     def test_operator_docs_in_page_anchors_resolve(self):
         # The `command not found` section is reached through an in-page link, so

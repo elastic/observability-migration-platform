@@ -41,16 +41,14 @@ command -v obs-migrate
 python3 --version
 ```
 
-Then run doctor with whichever form exists:
-
-```bash
-obs-migrate doctor
-```
-
-or:
+Then run doctor with the recommended launcher first (uvx never needs
+`obs-migrate` on `PATH`). Only use the bare command when Step 0 already found
+it on `PATH`:
 
 ```bash
 uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# or, if `command -v obs-migrate` succeeded above:
+# obs-migrate doctor
 ```
 
 Interpret:
