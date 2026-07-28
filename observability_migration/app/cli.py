@@ -227,7 +227,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Compile generated YAML to legacy NDJSON. Optional local/debug artifact; "
             "not required for the typed Dashboards API upload path. Implied by "
-            "--legacy-import."
+            "--legacy-import when combined with --upload."
         ),
     )
     migrate.add_argument(
@@ -246,7 +246,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Deploy dashboards via the legacy kb-dashboard-cli saved-objects "
             "import instead of the default typed Kibana Dashboards API "
-            "(POST /api/dashboards). The native API is used by default; this "
+            "(PUT /api/dashboards/{id}). The native API is used by default; this "
             "flag forces the older compile+import path."
         ),
     )
