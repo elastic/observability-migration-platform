@@ -38,8 +38,7 @@ uvx --from "$PKG" obs-migrate list-samples
 
 `doctor` exit code `0` means Ready; otherwise it prints what to fix.
 
-Each entry in the `list-samples` output includes a `"run"` field with the exact
-migrate command. Prefix it with `uvx --from "$PKG"` and run it:
+Copy an `input_dir` path from the `list-samples` output and try an offline migrate:
 
 ```bash
 uvx --from "$PKG" obs-migrate migrate \
@@ -161,4 +160,9 @@ listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Trademarks
 
-Grafana is a trademark of Raintank, Inc. d/b/a Grafana Labs. Datadog is a trademark of Datadog, Inc. Prometheus and Kubernetes are trademarks of The Linux Foundation. Kibana and Elastic are trademarks of Elasticsearch B.V. All other trademarks are the property of their respective owners. Use of these names is solely for interoperability and identification and does not imply affiliation or endorsement.
+Grafana is a trademark of Raintank, Inc. d/b/a Grafana Labs. Datadog is a
+trademark of Datadog, Inc. Prometheus and Kubernetes are trademarks of
+The Linux Foundation. Kibana and Elastic are trademarks of Elasticsearch B.V.
+All other trademarks are the property of their respective owners.
+Use of these names is solely for interoperability and identification
+and does not imply affiliation or endorsement.
