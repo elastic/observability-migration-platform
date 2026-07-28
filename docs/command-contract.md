@@ -63,7 +63,7 @@ Install from PyPI (recommended):
 
 ```bash
 PKG='elastic-observability-migration[all]'
-# Optional pin, e.g. PKG='elastic-observability-migration[all]==0.4.0rc1'
+# Optional pin, e.g. PKG='elastic-observability-migration[all]==1.0.0'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples
 ```
@@ -71,7 +71,7 @@ uvx --from "$PKG" obs-migrate list-samples
 GitHub tag fallback (never `@main`):
 
 ```bash
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v1.0.0'
 uvx --from "$PKG" obs-migrate doctor
 ```
 

@@ -30,7 +30,7 @@ available together.
 
 ```bash
 # Pin when you want a fixed release, e.g.
-# PKG='elastic-observability-migration[all]==0.4.0rc1'
+# PKG='elastic-observability-migration[all]==1.0.0'
 PKG='elastic-observability-migration[all]'
 
 uvx --from "$PKG" obs-migrate doctor
@@ -127,7 +127,7 @@ python3 -m venv .venv
 **GitHub tag fallback** (only if PyPI is unreachable; never `@main`):
 
 ```bash
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v1.0.0'
 uvx --from "$PKG" obs-migrate doctor
 ```
 

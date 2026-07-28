@@ -220,7 +220,7 @@ class CommandContractDocTests(unittest.TestCase):
         )
         self.assertIn(
             "PKG='elastic-observability-migration[all]@git+https://"
-            "github.com/elastic/observability-migration-platform.git@v0.4.0rc1'\n"
+            "github.com/elastic/observability-migration-platform.git@v1.0.0'\n"
             'uvx --from "$PKG" obs-migrate doctor',
             text,
         )

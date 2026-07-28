@@ -90,7 +90,7 @@ command -v uvx
 
 ```bash
 PKG='elastic-observability-migration[all]'
-# Optional pin: PKG='elastic-observability-migration[all]==0.4.0rc1'
+# Optional pin: PKG='elastic-observability-migration[all]==1.0.0'
 uvx --from "$PKG" obs-migrate doctor
 uvx --from "$PKG" obs-migrate list-samples
 ```
@@ -148,7 +148,7 @@ default is above the tested 3.11–3.13 range.
 Only if PyPI is unreachable:
 
 ```bash
-PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v1.0.0'
 uvx --from "$PKG" obs-migrate doctor
 ```
 
