@@ -698,6 +698,7 @@ def _compile_all_dashboards(
     compiled_dir.mkdir(parents=True, exist_ok=True)
 
     for dr in results:
+        dr.compile_attempted = True
         if not dr.yaml_path:
             continue
         stem = Path(dr.yaml_path).stem

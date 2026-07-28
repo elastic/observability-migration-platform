@@ -471,6 +471,7 @@ class DashboardResult:
     ir_artifact_path: str = ""
     compiled: bool = False
     compile_error: str = ""
+    compile_attempted: bool = False
     layout_checked: bool = False
     layout_error: str = ""
     upload_attempted: bool = False

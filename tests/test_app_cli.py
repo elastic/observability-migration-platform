@@ -1334,7 +1334,21 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
         try:
             app_cli._run_grafana_migration(args)
-            self.assertIn("--compile", sys.argv)
+            self.assertEqual(sys.argv.count("--compile"), 1)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_omits_compile_flag_by_default(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "grafana"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+            self.assertNotIn("--compile", sys.argv)
         finally:
             sys.argv = original_argv
 
@@ -1427,6 +1441,34 @@ class TestUnifiedCliRouting(unittest.TestCase):
             app_cli._run_datadog_migration(args)
             self.assertNotIn("--include", sys.argv)
             self.assertNotIn("dashboards,monitors", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_forwards_compile_flag(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "datadog", "--compile"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertIn("--compile", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_run_datadog_migration_omits_compile_flag_by_default(self, mock_main):
+        parser = app_cli._build_parser()
+        args = parser.parse_args(["migrate", "--source", "datadog"])
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_datadog_migration(args)
+            self.assertNotIn("--compile", sys.argv)
         finally:
             sys.argv = original_argv
 

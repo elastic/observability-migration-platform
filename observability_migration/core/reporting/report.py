@@ -452,7 +452,8 @@ def print_report(results, compile_results, field_discovery=None):
     print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
         print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
-    print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
+    if compile_results:
+        print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
@@ -467,7 +468,7 @@ def print_report(results, compile_results, field_discovery=None):
     print("─" * 70)
 
     for r in results:
-        comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "?"
+        comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "—"
         rows_for_dashboard = _row_count(r)
         panels_for_dashboard = r.total_panels - rows_for_dashboard
         skip_for_dashboard = r.skipped - rows_for_dashboard
@@ -538,7 +539,9 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "requires_manual": sum(r.requires_manual for r in results),
             "not_feasible": sum(r.not_feasible for r in results),
             "skipped": sum(r.skipped for r in results),
+            "compile_attempted": bool(compile_results),
             "compiled_ok": sum(1 for _, ok, _ in compile_results if ok),
+            "compiled_total": len(compile_results),
             "uploaded_ok": sum(1 for r in results if r.uploaded),
             "upload_attempted": sum(1 for r in results if r.upload_attempted),
             "yaml_lint_ok": sum(1 for r in results if build_runtime_summary(r)["yaml_lint"]["status"] == "pass"),

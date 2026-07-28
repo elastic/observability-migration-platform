@@ -138,7 +138,8 @@ install the Kibana tools into the same environment with
 `pip install "elastic-observability-migration[kibana]"` (requires Python
 3.12+), otherwise the runtime falls back to a pinned `uvx`, which requires `uv`
 on `PATH`. The default typed Dashboards API upload path does **not** need
-`kb-dashboard-cli`; YAML lint and compiled-layout validation run in-process.
+`kb-dashboard-cli`; YAML lint runs in-process, and compiled-layout validation
+runs in-process only when compilation is requested.
 Run `obs-migrate doctor` (or `uvx --from "$PKG" obs-migrate doctor`) to see which path is active.
 
 Datadog live API extraction (`--input-mode api` on either the unified or

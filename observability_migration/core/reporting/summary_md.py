@@ -209,11 +209,17 @@ def _truncate(text: str, limit: int = _QUERY_TRUNCATE) -> str:
 
 
 def _verdict(totals: SummaryTotals) -> str:
-    if totals.compiled_ok < totals.compiled_total:
+    if totals.compiled_total and totals.compiled_ok < totals.compiled_total:
         return "❌"
     if totals.not_feasible or totals.manual or totals.red:
         return "⚠️"
     return "✅"
+
+
+def _compile_run_phrase(totals: SummaryTotals) -> str:
+    if totals.compiled_total:
+        return f"{totals.compiled_ok}/{totals.compiled_total} compiled"
+    return "compilation not run"
 
 
 def _plural(noun: str, n: int) -> str:
@@ -231,7 +237,7 @@ def render_markdown(view: SummaryView) -> str:
     run_bit = f"`{view.run_id}` · " if view.run_id else ""
     lines.append(
         f"**Run** {run_bit}{when} · {t.dashboards} "
-        f"{_plural('dashboard', t.dashboards)} · {t.compiled_ok}/{t.compiled_total} compiled"
+        f"{_plural('dashboard', t.dashboards)} · {_compile_run_phrase(t)}"
     )
     lines.append("")
     verdict = _verdict(t)

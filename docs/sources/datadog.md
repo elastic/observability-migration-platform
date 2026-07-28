@@ -40,7 +40,7 @@ Datadog-specific field/filter handling.
 | Template variables | Kibana dashboard controls emitted; query-level semantics still approximate |
 | Events / markers | Preserved in normalization, not emitted as first-class target assets |
 | Links / drilldowns | Not yet first-class |
-| Compilation | Opt-in via `--compile` (implied by `--legacy-import`); typed-API upload does not need NDJSON |
+| Compilation | Opt-in via `--compile` (implied by `--legacy-import` when combined with `--upload`); typed-API upload does not need NDJSON |
 | Preflight | Capability-aware field safety checks with live `_field_caps` |
 | Upload | First-class `--upload` or shared `obs-migrate upload` |
 | Validation / smoke | First-class `--validate --es-url` and post-upload `--smoke` |

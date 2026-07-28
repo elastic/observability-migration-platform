@@ -65,6 +65,7 @@ for entry in "${DASHBOARDS[@]}"; do
        --es-api-key "$KEY" \
        --data-view metrics-express.prometheus-parity \
        --esql-index metrics-express.prometheus-parity \
+       --compile \
        --upload \
        --kibana-url "$KIBANA_ENDPOINT" \
        --kibana-api-key "$KEY" \

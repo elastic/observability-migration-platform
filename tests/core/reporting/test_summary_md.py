@@ -88,6 +88,19 @@ class RenderCleanRunTests(unittest.TestCase):
         self.assertNotIn("Warnings", md)
         self.assertNotIn("Non-panel gaps", md)
 
+    def test_no_compile_run_reports_compilation_not_run(self):
+        view = _clean_view()
+        view.totals.compiled_ok = 0
+        view.totals.compiled_total = 0
+        for dashboard in view.dashboards:
+            dashboard.compiled = False
+
+        md = render_markdown(view)
+
+        self.assertIn("compilation not run", md)
+        self.assertNotIn("0/0 compiled", md)
+        self.assertNotIn("Blocking errors", md)
+
 
 def _mixed_view() -> SummaryView:
     return SummaryView(
@@ -317,6 +330,27 @@ class GrafanaAdapterTests(unittest.TestCase):
         )
         # Per-dashboard row carries risk from the review queue
         self.assertEqual(view.dashboards[0].risk_score, 13)
+
+    def test_build_view_with_skipped_compile_reports_compilation_not_run(self):
+        from observability_migration.core.reporting.report import (
+            build_summary_view as build_grafana_summary_view,
+        )
+
+        result = self._result()
+        result.compiled = False
+        view = build_grafana_summary_view(
+            [result],
+            [],
+            review_queue=[],
+            gap_data={},
+            run_id="r-no-compile",
+        )
+        md = render_markdown(view)
+
+        self.assertEqual(view.totals.compiled_ok, 0)
+        self.assertEqual(view.totals.compiled_total, 0)
+        self.assertIn("compilation not run", md)
+        self.assertNotIn("0/0 compiled", md)
 
 
 if __name__ == "__main__":

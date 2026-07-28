@@ -85,7 +85,8 @@ $VENV -m observability_migration.adapters.source.grafana.cli \
   --input-dir "$INPUT_DIR" \
   --output-dir "$OUTPUT_DIR" \
   --data-view "$DATA_VIEW" \
-  --esql-index "$ESQL_INDEX"
+  --esql-index "$ESQL_INDEX" \
+  --compile
 
 if [ "$SKIP_DATA" = false ]; then
   echo ""
