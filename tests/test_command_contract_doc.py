@@ -24,6 +24,32 @@ REMEDIATE_FIELD_GAPS_SKILL = ROOT / ".cursor" / "skills" / "remediate-field-mapp
 REVIEW_ALERTS_SKILL = ROOT / ".cursor" / "skills" / "review-and-enable-migrated-alerts" / "SKILL.md"
 UNDERSTAND_SCHEMA_SKILL = ROOT / ".cursor" / "skills" / "understand-source-schema" / "SKILL.md"
 PREPARE_TARGET_TELEMETRY_SKILL = ROOT / ".cursor" / "skills" / "prepare-target-telemetry" / "SKILL.md"
+INSTALL_OBS_MIGRATE_SKILL = ROOT / ".cursor" / "skills" / "install-obs-migrate" / "SKILL.md"
+
+COMMAND_NOT_FOUND_HEADING = "### If you see `command not found: obs-migrate`"
+
+
+def command_not_found_section(text: str) -> str:
+    """Return only the `command not found` section of a doc.
+
+    Scoping matters here: the surrounding pages already contain `$PKG` forms
+    and launcher prose, so unscoped assertions would pass on Quick Start text
+    even if the troubleshooting block itself were wrong.
+    """
+    _, found, rest = text.partition(COMMAND_NOT_FOUND_HEADING)
+    assert found, f"missing heading: {COMMAND_NOT_FOUND_HEADING}"
+    # Stop at the next `##`/`###` heading so the scope cannot silently widen to
+    # end-of-file, or swallow a sibling subsection added later. Single `#` is
+    # excluded on purpose: shell comments inside the code blocks start with it.
+    end = re.search(r"(?m)^#{2,3} ", rest)
+    return rest[: end.start()] if end else rest
+
+
+def github_anchor(heading: str) -> str:
+    """Approximate GitHub's in-page slug for a Markdown heading."""
+    slug = heading.lstrip("#").strip().lower()
+    slug = re.sub(r"[^\w\- ]", "", slug)  # drops backticks, colons, parentheses
+    return slug.replace(" ", "-")
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -138,6 +164,106 @@ class CommandContractDocTests(unittest.TestCase):
         text = ROOT_README.read_text(encoding="utf-8")
         self.assertNotIn("--yaml-dir migration_output/yaml", text)
         self.assertNotIn("--output-dir migration_output/compiled", text)
+
+    def test_root_readme_documents_obs_migrate_invocation_safety_net(self):
+        """Issue #254: bare obs-migrate without a launcher looks "broken"."""
+        text = ROOT_README.read_text(encoding="utf-8")
+        self.assertIn('uvx --from "$PKG" obs-migrate doctor', text)
+        self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
+        self.assertIn("You do not need to clone this repository", text)
+        self.assertIn("Always reuse the same launcher", text)
+        # `doctor` still warns on 3.14+ (see `app/cli.py`), so the landing page
+        # must keep the tested range rather than a bare "3.11 or newer".
+        self.assertIn("tested on 3.11–3.13", text)
+        # A launcher the docs name as a fix must also be a launcher the docs
+        # teach, with a runnable command.
+        self.assertIn("uv tool install 'elastic-observability-migration[all]'", text)
+
+        section = command_not_found_section(text)
+        # Readers reach this section from a *new* shell, where `PKG` from the
+        # Quick Start block is gone, so every command must run as written.
+        self.assertNotIn("$PKG", section)
+        self.assertIn(
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate doctor",
+            section,
+        )
+        self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
+        # The explicit-path launcher belongs in the remedy list itself: it is
+        # the only one that needs neither an activate nor `uv`.
+        self.assertIn(".venv/bin/obs-migrate doctor", section)
+        # `pipx` / `uv tool` installs also yield a working bare command, so the
+        # section must offer that instead of implying a bare command never works.
+        self.assertIn("uv tool install", section)
+
+        # Operator-first policy (AGENTS.md): the landing page routes
+        # contributors to CONTRIBUTING.md rather than teaching repo-checkout
+        # commands. Relax the policy before relaxing these bans.
+        self.assertNotIn("make bump-version", text)
+        self.assertNotIn("make sync", text)
+        self.assertNotIn("Contributor checkout", text)
+
+    def test_command_contract_documents_obs_migrate_invocation_safety_net(self):
+        text = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
+        self.assertIn("same launcher", text)
+        # Body examples stay bare; keep the PATH/launcher assumption so readers
+        # who jump past Install do not reintroduce issue #254.
+        self.assertIn(
+            "Every example below assumes `obs-migrate` is on `PATH`",
+            text,
+        )
+        # Jump-to-section install blocks must define PKG before using it.
+        self.assertIn(
+            "PKG='elastic-observability-migration[all]'\n"
+            "python3 -m venv .venv",
+            text,
+        )
+        self.assertIn(
+            "PKG='elastic-observability-migration[all]@git+https://"
+            "github.com/elastic/observability-migration-platform.git@v0.4.0rc1'\n"
+            'uvx --from "$PKG" obs-migrate doctor',
+            text,
+        )
+
+        section = command_not_found_section(text)
+        self.assertNotIn("$PKG", section)
+        self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
+        self.assertIn("console script, not a global binary", section)
+        self.assertIn("uv tool install 'elastic-observability-migration[all]'", section)
+        # Parity with the README safety-net: the portable uvx remedy must be
+        # spelled out in full inside this section (fresh shell, no PKG).
+        self.assertIn(
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate doctor",
+            section,
+        )
+
+    def test_operator_docs_in_page_anchors_resolve(self):
+        # The `command not found` section is reached through an in-page link, so
+        # a heading reword must not silently leave a dangling anchor.
+        for path in (ROOT_README, COMMAND_CONTRACT):
+            text = path.read_text(encoding="utf-8")
+            slugs = {github_anchor(h) for h in re.findall(r"(?m)^#{1,6} .+$", text)}
+            for link in re.findall(r"\]\(#([^)]+)\)", text):
+                self.assertIn(
+                    link,
+                    slugs,
+                    msg=f"{path.name}: in-page link #{link} has no matching heading",
+                )
+        contract = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn(f"](#{github_anchor(COMMAND_NOT_FOUND_HEADING)})", contract)
+
+    def test_install_skill_documents_the_invocation_safety_net(self):
+        # `check_skill_mirror.py` only proves the three copies match each
+        # other, so without a content assertion all of them can drift away
+        # from the fix together and still pass.
+        text = INSTALL_OBS_MIGRATE_SKILL.read_text(encoding="utf-8")
+        self.assertIn("command not found: obs-migrate", text)
+        self.assertIn("only resolves when its install location is on `PATH`", text)
+        self.assertIn("source .venv/bin/activate", text)
+        self.assertIn(".venv/bin/obs-migrate", text)
+        # The triage table is what an agent reads first, so it must cover the
+        # missing-launcher case and not only a missing `uv`.
+        self.assertIn("but `uvx` works", text)
 
     def test_alerting_examples_readme_uses_split_alert_artifact_paths(self):
         text = ALERTING_EXAMPLES_README.read_text(encoding="utf-8")

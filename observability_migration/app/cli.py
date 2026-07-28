@@ -14,6 +14,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -863,7 +864,6 @@ def _run_doctor() -> int:
     """
     import importlib.util
     import platform
-    import shutil
 
     from observability_migration import __version__
     from observability_migration._version import read_project_version
@@ -990,19 +990,43 @@ def _run_doctor() -> int:
 
     print()
     print("Ready.")
-    print("Next steps:")
-    print("  obs-migrate list-samples")
+    print("Next steps (reuse the same launcher you used for doctor):")
+    cmd = _doctor_followup_cmd()
+    print(f"  {cmd} list-samples")
     print(
-        "  obs-migrate migrate --source grafana --input-mode files "
+        f"  {cmd} migrate --source grafana --input-mode files "
         "--input-dir <dir> --output-dir ./out"
     )
     print("  # Review ./out/dashboards/native/*.native.json, then upload:")
     print(
-        "  obs-migrate upload --artifact-dir ./out/dashboards "
+        f"  {cmd} upload --artifact-dir ./out/dashboards "
         "--kibana-url <url> --kibana-api-key <key>"
     )
     print(f"Full reference: {_DOCS_URL}")
     return 0
+
+
+def _doctor_followup_cmd() -> str:
+    """Return the launcher obs-migrate was invoked with, so Next steps are copy-pasteable."""
+    which = shutil.which("obs-migrate")
+    if which:
+        return "obs-migrate"
+
+    prog = Path(sys.argv[0]).expanduser()
+    try:
+        prog = prog.resolve()
+    except OSError:
+        pass
+    if prog.name in {"obs-migrate", "grafana-migrate", "datadog-migrate"}:
+        # Persistent venv layout: …/<env>/bin/obs-migrate next to pyvenv.cfg.
+        # Skip uvx/tool cache paths, which are not a stable operator launcher.
+        if (prog.parent.parent / "pyvenv.cfg").is_file():
+            try:
+                return str(prog.relative_to(Path.cwd()))
+            except ValueError:
+                return str(prog)
+
+    return "uvx --from 'elastic-observability-migration[all]' obs-migrate"
 
 
 def _run_verify_panels(args: Any) -> None:

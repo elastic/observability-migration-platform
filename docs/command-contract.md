@@ -45,15 +45,16 @@ tooling install together. The older `grafana-migrate` / `datadog-migrate`
 commands remain as compatibility aliases.
 
 **Platforms:** macOS and Linux are supported. CI runs on Ubuntu; packaging is
-also smoke-tested on macOS. Windows is not supported. See `README.md`
-Compatibility for the full matrix.
+also smoke-tested on macOS. Windows is not supported.
 
-**Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13). Prefer
-`elastic-observability-migration[all]` on first-time machines so Grafana, Datadog, and Kibana
-tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
-`uvx` fallback. Run `obs-migrate doctor` after install — it checks Python,
-required imports, extras, and compile tools, and exits non-zero if something
-blocking is missing.
+**Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13; 3.10 and older are
+rejected, and 3.14+ works but is not in the CI matrix yet — doctor prints a note,
+not a failure). On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
+fallback. After install, run doctor with the **same launcher** you will use for
+migrate — `uvx --from 'elastic-observability-migration[all]' obs-migrate doctor` if you are staying on `uvx`, or
+a bare `obs-migrate doctor` once the install location is on `PATH`.
+Doctor checks Python, required imports, extras, and compile tools, and exits
+non-zero if something blocking is missing.
 
 ### Recommended (operators): `uvx` + `[all]`
 
@@ -71,17 +72,43 @@ GitHub tag fallback (never `@main`):
 
 ```bash
 PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observability-migration-platform.git@v0.4.0rc1'
+uvx --from "$PKG" obs-migrate doctor
 ```
 
 Example pins above are kept in lockstep with the released package version. The
 PyPI badge on the README always shows the latest published version.
 
-### Persistent pip install
+### Persistent tool install (bare `obs-migrate` in every shell)
+
+Use this when you want `obs-migrate` on `PATH` permanently instead of prefixing
+every command with `uvx --from`:
 
 ```bash
+uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
+obs-migrate doctor
+```
+
+The shim lands in `~/.local/bin` (`uv tool dir --bin` prints the real
+location). `uv` cannot modify the `PATH` of the shell that invoked it — it only
+warns that the directory is missing — so the `export` above is what makes the
+bare command work *now*; run `uv tool update-shell` once so new shells get it
+without the export.
+`pipx install 'elastic-observability-migration[all]'` behaves the same way.
+Upgrade with `uv tool upgrade elastic-observability-migration`.
+
+`uv tool install` resolves against your newest available Python, which can be
+above the tested range — pass `--python 3.13` to pin a CI-matrix interpreter.
+
+### Persistent pip install
+
+Activate the venv once per shell to get the bare command:
+
+```bash
+PKG='elastic-observability-migration[all]'
 python3 -m venv .venv
 source .venv/bin/activate
-pip install "elastic-observability-migration[all]"
+pip install "$PKG"
 obs-migrate doctor
 ```
 
@@ -92,9 +119,18 @@ pip install ".[all]"
 obs-migrate doctor
 ```
 
+Setting up a repo checkout for development? Use `uv sync --locked --all-extras`
+(or `make sync`) and `uv run obs-migrate doctor`. See
+[`contributing/dev-commands.md`](contributing/dev-commands.md).
+
+If `obs-migrate` is not found after install, see
+[If you see `command not found: obs-migrate`](#if-you-see-command-not-found-obs-migrate)
+below.
+
 Every example below assumes `obs-migrate` is on `PATH` (an activated
-virtualenv, a `pipx`/`uv tool` install, or the `uvx --from "$PKG"` prefix from
-the section above).
+virtualenv, a `pipx` / `uv tool` install, or the `uvx --from "$PKG"` prefix
+from the section above). If you see `command not found`, use the same
+troubleshooting section.
 
 Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
 `obs-migrate upload --legacy-import`) resolve the tool **installed-first**:
@@ -103,7 +139,7 @@ install the Kibana tools into the same environment with
 3.12+), otherwise the runtime falls back to a pinned `uvx`, which requires `uv`
 on `PATH`. The default typed Dashboards API upload path does **not** need
 `kb-dashboard-cli`; YAML lint and compiled-layout validation run in-process.
-Run `obs-migrate doctor` to see which path is active.
+Run `obs-migrate doctor` (or `uvx --from "$PKG" obs-migrate doctor`) to see which path is active.
 
 Datadog live API extraction (`--input-mode api` on either the unified or
 dedicated CLI; legacy dedicated spelling `--source api` also works) requires
@@ -115,6 +151,36 @@ pip install "elastic-observability-migration[datadog]"
 
 Setting up a repo checkout for development instead? See
 [`contributing/dev-commands.md`](contributing/dev-commands.md).
+
+### If you see `command not found: obs-migrate`
+
+`obs-migrate` is a console script, not a global binary: it is only callable as
+a bare command when its install location is on `PATH`. That happens after
+`source .venv/bin/activate`, or after a `pipx install` / `uv tool install`
+([Persistent tool install](#persistent-tool-install-bare-obs-migrate-in-every-shell)).
+Otherwise, prefix it with a launcher.
+
+Pick **one** of these, matching how you installed:
+
+```bash
+# uvx, no install step (works in any shell)
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+
+# persistent virtualenv: activate once per shell, then use the bare command.
+# The path is relative — run it from the directory holding the virtualenv.
+source .venv/bin/activate && obs-migrate doctor
+
+# permanent bare command, no prefix and no activate. The export is required in
+# the shell you install from, because the install cannot change its PATH.
+uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
+obs-migrate doctor
+```
+
+A fresh shell does not remember the previous shell's activation or `PKG`
+value, so re-activate (or re-export `PKG`) before reusing the examples in this
+document. A tool install is the only one of the three that survives a new
+shell on its own, and only after `uv tool update-shell`.
 
 ## Before Elastic / Kibana
 
