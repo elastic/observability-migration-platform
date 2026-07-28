@@ -118,7 +118,7 @@ controls:
 obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
 ```
 
-The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates). `extensions` and `--suggest-rule-pack-out` are shipped in the package.
+The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates; `grafana-migrate` only — unrecognized on `obs-migrate migrate`). `obs-migrate extensions` and `grafana-migrate --suggest-rule-pack-out` are shipped in the package.
 
 **Datadog** — pick a built-in `--field-profile {otel,prometheus,prometheus_native,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
 

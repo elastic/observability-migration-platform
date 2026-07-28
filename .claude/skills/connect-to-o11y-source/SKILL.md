@@ -28,11 +28,11 @@ uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
 - There is **no dedicated `ping`/`connect` command**. The smallest real proof of connectivity is a **live API extraction run** (`--input-mode api` on `obs-migrate`, or `--source api` on the dedicated CLIs), which makes authenticated HTTP calls to the vendor.
 - Credentials come from **environment variables** (export them in the shell, or keep them in a local env file you `source`). Datadog also accepts `--env-file`.
 - `--list-dashboards` is **target-side (Kibana), not source-side.** It lists dashboards *in Kibana* and needs `--kibana-url`. Do **not** use it to test a Grafana/Datadog connection.
-- A connectivity check is a **source-only** operation: do not add target flags like `--es-url`, `--kibana-url`, `--data-view`, or `--field-profile`. Set `KIBANA_URL=` in the shell to suppress any default local-Kibana preflight.
+- A connectivity check is a **source-only** operation: do not add target flags like `--es-url`, `--kibana-url`, `--data-view`, or `--field-profile`. Source-only runs never contact Kibana, so there is no Kibana preflight to suppress.
 
 ## Grafana
 
-Credentials are **flag-first with env fallback** (each flag defaults to its env var, matching how Elasticsearch/Kibana creds work): `--grafana-url` (env `GRAFANA_URL`) plus **either** `--grafana-user` + `--grafana-pass` (env `GRAFANA_USER` / `GRAFANA_PASS`, HTTP basic auth) **or** a bearer token via `--grafana-token` (env `GRAFANA_TOKEN`).
+Credentials are **flag-first with env fallback**: `--grafana-url` (env `GRAFANA_URL`), `--grafana-user` (env `GRAFANA_USER`), `--grafana-pass` (env `GRAFANA_PASS`). For token auth: `grafana-migrate --grafana-token` auto-reads `GRAFANA_TOKEN`; `obs-migrate migrate --grafana-token` does **not** — pass the token explicitly: `--grafana-token "$GRAFANA_TOKEN"`.
 
 ```bash
 # Option A — environment variables
@@ -43,7 +43,7 @@ export GRAFANA_USER="..." GRAFANA_PASS="..."   # or a token below
 Verify reachability (source-only live extraction to a throwaway dir):
 
 ```bash
-KIBANA_URL= obs-migrate migrate \
+obs-migrate migrate \
   --source grafana --input-mode api \
   --output-dir /tmp/grafana_connect_check \
   --assets dashboards
@@ -53,7 +53,7 @@ KIBANA_URL= obs-migrate migrate \
 Option B — pass connection details as flags instead of exporting env vars (useful in CI or when juggling multiple instances):
 
 ```bash
-KIBANA_URL= obs-migrate migrate \
+obs-migrate migrate \
   --source grafana --input-mode api \
   --grafana-url "https://grafana.example.com" \
   --grafana-user "$GF_USER" --grafana-pass "$GF_PASS" \
@@ -77,7 +77,7 @@ export DD_API_KEY="..." DD_APP_KEY="..." DD_SITE="datadoghq.com"
 Verify reachability:
 
 ```bash
-KIBANA_URL= obs-migrate migrate \
+obs-migrate migrate \
   --source datadog --input-mode api \
   --output-dir /tmp/dd_connect_check \
   --assets dashboards
@@ -97,12 +97,12 @@ Two TLS knobs apply across the migration/upload/connectivity paths the tool driv
 
 ```bash
 # Internal CA (verification stays on) while checking Grafana over TLS:
-KIBANA_URL= obs-migrate migrate --source grafana --input-mode api \
+obs-migrate migrate --source grafana --input-mode api \
   --output-dir /tmp/grafana_connect_check --assets dashboards \
   --ca-cert /etc/ssl/corp-ca.pem
 
 # Last resort for a self-signed lab cluster (verification OFF):
-KIBANA_URL= obs-migrate migrate --source grafana --input-mode api \
+obs-migrate migrate --source grafana --input-mode api \
   --output-dir /tmp/grafana_connect_check --assets dashboards \
   --insecure
 ```
