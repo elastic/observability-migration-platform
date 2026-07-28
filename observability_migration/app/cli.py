@@ -14,6 +14,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -863,7 +864,6 @@ def _run_doctor() -> int:
     """
     import importlib.util
     import platform
-    import shutil
 
     from observability_migration import __version__
     from observability_migration._version import read_project_version
@@ -1007,16 +1007,7 @@ def _run_doctor() -> int:
 
 
 def _doctor_followup_cmd() -> str:
-    """Return a copy-pasteable ``obs-migrate`` invocation for doctor Next steps.
-
-    Bare ``obs-migrate`` only works when that console script is on ``PATH``.
-    Ephemeral ``uvx`` runs typically are not, so falling back to a spelled-out
-    ``uvx --from …`` avoids reintroducing the #254 command-not-found footgun.
-    When the user invoked a persistent venv path (``.venv/bin/obs-migrate``),
-    reuse that path so Next steps match how doctor was just run.
-    """
-    import shutil
-
+    """Return the launcher obs-migrate was invoked with, so Next steps are copy-pasteable."""
     which = shutil.which("obs-migrate")
     if which:
         return "obs-migrate"
