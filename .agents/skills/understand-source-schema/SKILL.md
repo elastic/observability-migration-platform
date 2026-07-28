@@ -45,7 +45,7 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 **Assets first is supported.** Choose `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, or `passthrough` from the intended ingest route, migrate the assets, ingest first, then rerun with `--es-url` and `--preflight`; `_field_caps` verifies the planned fields rather than defining the plan. Before that, `unknown` field status means verification is pending. Live `--es-url` also probes `esql_named_param_binding` and native `PROMQL` support (`--translation-mode`).
 
-**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (metric tag → ES field), optional `log_tag_map` (log attribute → ES field), plus `metric_prefix`/`tag_prefix` for unmapped metric names/tags. Built-ins: `otel` (default), `prometheus` (Metricbeat `prometheus.metrics.*` — Grafana twin `prometheus_metrics`), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. The Prometheus profiles apply their label prefixes to metric queries but keep ECS/OTel fields for log queries. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `docs/sources/grafana.md` and `docs/sources/datadog.md` for the full tables.
+**Datadog** uses **field profiles** (`--field-profile`): `metric_map` (explicit metric overrides), `tag_map` (metric tag → ES field), optional `log_tag_map` (log attribute → ES field), plus `metric_prefix`/`tag_prefix` for unmapped metric names/tags. Built-ins: `otel` (default), `prometheus` (Metricbeat `prometheus.metrics.*` — Grafana twin `prometheus_metrics`), `prometheus_native` (ES `/_prometheus`), `elastic_agent`, `passthrough`. The Prometheus profiles apply their label prefixes to metric queries but keep ECS/OTel fields for log queries. Datadog has **no `auto`** — always pick an explicit plan, then verify with `--es-url`. See `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md` and `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/datadog.md` for the full tables.
 
 ## Get the mapping for the user's own dashboards
 
@@ -66,7 +66,7 @@ obs-migrate migrate \
   --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
 ```
 
-(Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below. For Prometheus, set `--esql-index` to the metrics query/discovery stream even when `--data-view` differs as the Kibana UI bind (`docs/command-contract.md` → Target index flags).
+(Have exported JSON instead of API access? Use `--input-mode files --input-dir <their-dashboards-dir>`.) `--es-url` is what makes the field-existence (`confirmed`/`missing`) check meaningful; `--preflight` writes the contract artifacts below. For Prometheus, set `--esql-index` to the metrics query/discovery stream even when `--data-view` differs as the Kibana UI bind (`https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Target index flags).
 
 ## Get the purpose-built per-panel mapping table (start here)
 
@@ -118,7 +118,7 @@ controls:
 obs-migrate migrate --source grafana ... --rules-file custom-rule-pack.yaml
 ```
 
-The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates). `extensions` and `--suggest-rule-pack-out` are shipped in the package.
+The CLI can also suggest a starter pack from validation failures via `--suggest-rule-pack-out <path>` (writes auto-detected label candidates; `grafana-migrate` only — unrecognized on `obs-migrate migrate`). `obs-migrate extensions` and `grafana-migrate --suggest-rule-pack-out` are shipped in the package.
 
 **Datadog** — pick a built-in `--field-profile {otel,prometheus,prometheus_native,elastic_agent,passthrough}` or pass a custom YAML profile path (`metric_map`/`tag_map`). Emit a starter with `obs-migrate extensions --source datadog --template-out custom-field-profile.yaml`.
 
@@ -134,7 +134,7 @@ The CLI can also suggest a starter pack from validation failures via `--suggest-
 
 - `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `obs-migrate schema-report --help` — the per-panel source→target table command (shipped in the package).
-- `docs/sources/grafana.md` (SchemaResolver + rule packs + Current Boundaries) and `docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md` (SchemaResolver + rule packs + Current Boundaries) and `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/datadog.md` (field profiles) — the full mapping tables (online docs / repo).
 - `prepare-target-telemetry` skill — choose ingest route / `--esql-index` before data exists.
 - `assess-migration-readiness` skill — `missing` fields/metrics show up there as blockers/actions.
 - `explain-migration-gaps` skill — approximation warnings (e.g. histogram assume+warn) vs mapping bugs.

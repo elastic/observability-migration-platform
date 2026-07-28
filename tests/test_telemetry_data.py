@@ -1373,6 +1373,48 @@ class IngestAccountingTests(unittest.TestCase):
         self.assertEqual(summary.ok, 5)
 
 
+class ContractLookbackSeedTests(unittest.TestCase):
+    """Seed windows must cover ``minimum_lookback`` so week-over-week panels
+    are not empty when the CLI only asked for a few recent hours."""
+
+    def test_generate_documents_extends_window_to_contract_lookback(self):
+        now = datetime.datetime(2026, 7, 28, 12, 0, tzinfo=datetime.UTC)
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "minimum_lookback": "14 days",
+                    "fields": {
+                        "nginx_net_request_per_s": {
+                            "role": "metric",
+                            "metric_kind": "gauge",
+                        },
+                        "service.name": {"role": "dimension"},
+                    },
+                    "required_values": {"service.name": ["nginx"]},
+                }
+            }
+        }
+
+        docs = list(
+            generate_documents(
+                contract,
+                now=now,
+                data_hours=3,
+                interval_sec=3600,
+                max_combinations=2,
+            )
+        )
+        timestamps = sorted(
+            datetime.datetime.fromisoformat(d["@timestamp"].replace("Z", "+00:00"))
+            for _, d in docs
+        )
+        span_hours = (timestamps[-1] - timestamps[0]).total_seconds() / 3600.0
+        # Must reach well beyond the 3h request into the 14-day lookback window.
+        self.assertGreaterEqual(span_hours, 13 * 24)
+        # But must not explode into millions of docs: long lookback is sparse.
+        self.assertLess(len(docs), 500)
+
+
 if __name__ == "__main__":
     unittest.main()
 

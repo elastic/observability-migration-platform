@@ -153,7 +153,8 @@ export ELASTICSEARCH_ENDPOINT="https://...es..." KIBANA_ENDPOINT="https://...kbn
 
 # Dashboards: re-run Step 1 appending live discovery, review native artifacts, then upload:
 #   ...append: --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
-#   Review: selected_out/dashboards/native/*.native.json
+#   Review: selected_out/dashboards/native/*.native.json  (upload payload; edits honored)
+#           selected_out/dashboards/ir/*.ir.json          (translator decisions; inspection-only)
 obs-migrate upload \
   --artifact-dir selected_out/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" \
@@ -183,7 +184,7 @@ obs-migrate migrate \
 ## Step 3 — Confirm the selection landed
 
 - **Dashboards:** read `selected_out/dashboards/migration_summary.md` (verdict, scorecard, per-dashboard table, must-fix worklist); drill into `selected_out/dashboards/migration_manifest.json` (`dashboards[]`, `panels[].status`, `panels[].reasons`). Confirm the count matches what you selected. Treat `migrated_with_warnings` as reviewed approximations unless the reason says otherwise (`explain-migration-gaps`).
-- **Post-upload checks (recommended):** `--smoke` / `grafana-validate-uploaded`, `obs-migrate compare` or `validate-side-by-side`, and render audit when the question is "does Lens actually render?" (`docs/testing.md`).
+- **Post-upload checks (recommended):** `--smoke` / `grafana-validate-uploaded`, `obs-migrate compare` or `validate-side-by-side`, and render audit when the question is "does Lens actually render?" (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
 - **Alerts:** the rule-creation summary is `selected_out/alerts/monitor_rule_upload_results.json` (Datadog) or `selected_out/alerts/alert_rule_upload_results.json` (Grafana). Then `obs-migrate audit-rules --kibana-url ... --kibana-api-key ...` lists the migrated rules in Kibana and reports which are enabled.
 
 ## Honest limits (tell the user)
@@ -213,4 +214,4 @@ obs-migrate migrate \
 - `explain-migration-gaps` skill — warn vs rebuild triage after the selection lands.
 - `revert-migration` skill — remove the selected assets if the user changes their mind.
 - `obs-migrate migrate --help` — authoritative selector list for the installed version.
-- `docs/command-contract.md` — asset-scope contract, selectors, and artifact paths (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — asset-scope contract, selectors, and artifact paths (online docs / repo).

@@ -62,7 +62,7 @@ Skip panels whose status is clean (`migrated` on Grafana, `ok` on Datadog). When
 
 ## Known acceptable approximations (Grafana)
 
-Treat these as **explained warnings**, not automatic rebuild work. Canonical detail: `docs/sources/grafana.md` → Current Boundaries.
+Treat these as **explained warnings**, not automatic rebuild work. Canonical detail: `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md` → Current Boundaries.
 
 | Pattern in `reasons` / query | What the engine did | Tell the operator |
 |---|---|---|
@@ -104,7 +104,7 @@ obs-migrate remove-sample-data \
 - **Datadog has no `review_explanation` or `transformation_redesign_tasks` equivalent.** Datadog panels carry `warnings` and `semantic_losses` instead; reason rebuild steps from `reasons`, `warnings`, `semantic_losses`, and `target_candidates`.
 - **When rich fields are absent**, derive rebuild guidance from `panels[].reasons` plus `recommended_target` / `target_candidates` and the source query in the verification packet — do not invent a migration path the engine did not suggest.
 - **Never invent a feasible path for a genuinely `not_feasible` panel.** Say it needs a redesign and why (from `reasons` and semantic-loss notes). `blocked` on Datadog similarly means the engine could not proceed — treat as full manual rebuild, not a tweak.
-- **This skill does not prove panels render correctly** — empty uploaded panels may be missing telemetry, not a translation bug. Overall coverage counts are `report-migration-coverage`; numerical proof for panels that did migrate is `validate-side-by-side`. For UI render truth (`render_error` vs `field_gap` / `data_gap`), hand off to `debug-uploaded-kibana-dashboard` / render audit (`docs/testing.md`).
+- **This skill does not prove panels render correctly** — empty uploaded panels may be missing telemetry, not a translation bug. Overall coverage counts are `report-migration-coverage`; numerical proof for panels that did migrate is `validate-side-by-side`. For UI render truth (`render_error` vs `field_gap` / `data_gap`), hand off to `debug-uploaded-kibana-dashboard` / render audit (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
 - **Do not treat every `migrated_with_warnings` / Datadog `warning` as rebuild work.** Many are accepted approximations (table above); explain them, then ask whether the operator accepts the fidelity trade-off.
 
 ## See also
@@ -113,6 +113,6 @@ obs-migrate remove-sample-data \
 - `report-migration-coverage` skill — shareable coverage summary and manual-effort buckets from `summary` counts.
 - `validate-side-by-side` skill — prove migrated panels match source numerically.
 - `debug-uploaded-kibana-dashboard` skill — classify empty/wrong UI renders after upload.
-- `docs/sources/grafana.md` — Current Boundaries (approximations vs hard stops).
-- `docs/command-contract.md` — artifact paths and migrate flags for the installed version.
-- `docs/testing.md` — render-audit and layered verifier gates.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md` — Current Boundaries (approximations vs hard stops).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — artifact paths and migrate flags for the installed version.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — render-audit and layered verifier gates.

@@ -34,7 +34,7 @@ obs-migrate compare \
   --report-out <output-dir>/dashboards/comparison_report.json
 ```
 
-`--es-url` / `--api-key` default to `ELASTICSEARCH_ENDPOINT|ES_URL` and `KEY`. Repeat `--artifact-dir` to merge multiple migrate runs. Add `--ca-cert` / `--insecure` for TLS, and tune `--index`, `--step-seconds`, `--window-minutes`, or `--report-out` when the default oracle window does not match the dashboard. Full flag list and defaults: `docs/command-contract.md`.
+`--es-url` / `--api-key` default to `ELASTICSEARCH_ENDPOINT|ES_URL` and `KEY`. Repeat `--artifact-dir` to merge multiple migrate runs. Add `--ca-cert` / `--insecure` for TLS, and tune `--index`, `--step-seconds`, `--window-minutes`, or `--report-out` when the default oracle window does not match the dashboard. Full flag list and defaults: `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md`.
 
 Optional package-native scorecard that also runs emitted-query acceptance (and optionally compare in-process):
 
@@ -103,7 +103,7 @@ Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the 
 - `obs-migrate verify` (emitted-query acceptance + optional `--compare`)
 - `grafana-validate-uploaded` and/or open the dashboard in Kibana view mode
 - `debug-uploaded-kibana-dashboard` for a single broken panel
-- Optional lab/repo gates listed by `obs-migrate verify` and in `docs/testing.md` — not required for the normal operator path
+- Optional lab/repo gates listed by `obs-migrate verify` and in `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — not required for the normal operator path
 
 ## Honest limits / Do NOT
 
@@ -119,7 +119,7 @@ Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the 
 - `explain-migration-gaps` skill — why a panel did not migrate cleanly and how to rebuild it.
 - `debug-uploaded-kibana-dashboard` skill — UI render failures after upload.
 - `prepare-production-cutover` skill — go/no-go using compare + render-audit + coverage.
-- `obs-migrate seed-sample-data` / `obs-migrate remove-sample-data` — optional deterministic data setup and teardown (`docs/command-contract.md`).
+- `obs-migrate seed-sample-data` / `obs-migrate remove-sample-data` — optional deterministic data setup and teardown (`https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md`).
 - For Datadog, `obs-migrate migrate --source datadog --source-execution --validate` fills the verification packets' `source_execution`/`comparison` blocks so a later `obs-migrate compare` can emit `SOURCE_*` verdicts (needs DD creds and comparable telemetry on both sides).
-- `docs/command-contract.md` — full compare, seed, and remove flag reference for the installed version.
-- `docs/testing.md` — layered verifier and render-audit gates.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — full compare, seed, and remove flag reference for the installed version.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — layered verifier and render-audit gates.

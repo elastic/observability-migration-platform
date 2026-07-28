@@ -72,4 +72,4 @@ State the counts from `summary` (and skipped from `panels[]` when relevant) and 
 - `explain-migration-gaps` skill — turn each panel `reason` into manual rebuild guidance.
 - `validate-side-by-side` skill — prove migrated panels match source numerically.
 - `debug-uploaded-kibana-dashboard` skill — empty/wrong UI after upload.
-- `docs/command-contract.md` — artifact paths and migrate flags for the installed version.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — artifact paths and migrate flags for the installed version.

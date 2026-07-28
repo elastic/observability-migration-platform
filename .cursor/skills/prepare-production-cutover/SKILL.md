@@ -30,10 +30,10 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 |---|---|
 | Asset scope | `<output-dir>/run_summary.json` (`ran.dashboards`, `ran.alerts`) |
 | Dashboard coverage | `report-migration-coverage` over `<output-dir>/dashboards/migration_summary.md` and `migration_manifest.json` |
-| Native review artifacts | `<output-dir>/dashboards/native/*.native.json` (typed upload payload; `dashboard_id` for deep links / revert) |
+| Native review artifacts | `<output-dir>/dashboards/native/*.native.json` (typed upload payload; `dashboard_id` for deep links / revert); `<output-dir>/dashboards/ir/*.ir.json` (translator decisions, inspection-only) |
 | Numeric/structural parity | `validate-side-by-side` / `obs-migrate compare` over comparison report |
 | Live ES\|QL / runtime emptiness (operator) | `obs-migrate verify` (optional `--compare`) and/or `grafana-validate-uploaded` on critical uploaded dashboards |
-| UI render truth (optional deeper) | Browser check in Kibana view mode; full render-audit / `verifier.*` gates in `docs/testing.md` are lab/repo extras — not required to issue a go/no-go for most operators |
+| UI render truth (optional deeper) | Browser check in Kibana view mode; full render-audit / `verifier.*` gates in `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` are lab/repo extras — not required to issue a go/no-go for most operators |
 | Gap explanations | `explain-migration-gaps` for warned / manual / not_feasible / compare `FAIL` / `SKIP` / unexpected `STRUCTURAL` or `SOURCE_DRIFT` |
 | Alert rule safety | `review-and-enable-migrated-alerts` over `<output-dir>/alerts/*_comparison_results.json` and rule-upload results; live `obs-migrate audit-rules` |
 | Back-out path | `revert-migration` for dashboard ids and migrated alert rules |
@@ -87,5 +87,5 @@ Rollback: dashboards by id via revert-migration (Serverless [DELETED] placeholde
 - `prepare-target-telemetry` — field profile / seed before claiming empty panels are bugs.
 - `review-and-enable-migrated-alerts` — alert-rule review and enablement.
 - `revert-migration` — target-side rollback.
-- `docs/testing.md` — layered verifier + render-audit gates.
-- `docs/command-contract.md` — verify / upload / compare commands.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — layered verifier + render-audit gates.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — verify / upload / compare commands.

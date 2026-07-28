@@ -98,7 +98,7 @@ Per-panel drill-down: `readiness_out/dashboards/migration_manifest.json` → `pa
 
 ## How to judge confidence (tell the user)
 
-High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional. Yellow/Red gates, `metrics_missing`, or `datasource_audit.non_migratable_panels` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully). Preflight does **not** prove Lens UI render; for that, use render audit / `validate-side-by-side` after a try-one upload (`docs/testing.md`).
+High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional. Yellow/Red gates, `metrics_missing`, or `datasource_audit.non_migratable_panels` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully). Preflight does **not** prove Lens UI render; for that, use render audit / `validate-side-by-side` after a try-one upload (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
 
 ## Do NOT
 
@@ -117,5 +117,5 @@ High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers
 - `explain-migration-gaps` skill — warned vs blocked panel triage.
 - `prepare-production-cutover` skill — final go/no-go after validation gates.
 - `obs-migrate migrate --help` / `grafana-migrate --help` — confirm `--preflight`, `--es-url`, `--prometheus-url`, `--loki-url` for the installed version.
-- `docs/command-contract.md` — preflight/validation flags and artifacts (online docs / repo).
-- `docs/testing.md` — layered verifier / render-audit gates beyond preflight.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — preflight/validation flags and artifacts (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — layered verifier / render-audit gates beyond preflight.

@@ -66,7 +66,7 @@ obs-migrate migrate \
 
 If the user only has live Grafana access, have them export the single dashboard's JSON (Grafana UI: *Share → Export → Save to file*, or the `/api/dashboards/uid/<uid>` endpoint) into an otherwise empty directory, then run the files command above. Do not pretend an API id selector exists for Grafana.
 
-Use `--assets dashboards` here — a single-dashboard trial is about the dashboard. (Alerts are a separate Phase D skill.) For Prometheus fidelity, set `--esql-index` to the metrics data stream even when `--data-view` differs as the Kibana UI bind (see `docs/command-contract.md` → Target index flags).
+Use `--assets dashboards` here — a single-dashboard trial is about the dashboard. (Alerts are a separate Phase D skill.) For Prometheus fidelity, set `--esql-index` to the metrics data stream even when `--data-view` differs as the Kibana UI bind (see `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Target index flags).
 
 ## Step 2 — Add the target and upload
 
@@ -99,7 +99,7 @@ Optional one-shot: append `--upload --kibana-url … --kibana-api-key …` to th
 1. **Read the verdict first:** `try_one_out/dashboards/migration_summary.md` — human-readable verdict, scorecard, per-panel table, and must-fix worklist for the one dashboard.
 2. **Drill per panel:** `try_one_out/dashboards/migration_manifest.json` → `panels[].status`, `panels[].grafana_type` (Datadog: `datadog_widget_type`), `panels[].reasons`, and `panels[].verification_packet.semantic_gate`. Expect `migrated_with_warnings` for accepted approximations (e.g. `histogram_quantile` → `PERCENTILE`); hand those to `explain-migration-gaps` rather than treating them as hard failures.
 3. **Open both dashboards:** the original in Grafana/Datadog and the uploaded one in Kibana, panel by panel. Compare numbers, series count, and shape.
-4. **Optional stronger gates:** `obs-migrate compare` / `validate-side-by-side` for numeric parity; `--smoke` on migrate or `grafana-validate-uploaded` for saved-object checks; render audit (`docs/testing.md`) for Lens render truth.
+4. **Optional stronger gates:** `obs-migrate compare` / `validate-side-by-side` for numeric parity; `--smoke` on migrate or `grafana-validate-uploaded` for saved-object checks; render audit (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`) for Lens render truth.
 5. **For any panel that looks wrong or empty in Kibana**, hand off to the `debug-uploaded-kibana-dashboard` skill — it captures the exact ES|QL Kibana is running and classifies the failure (`render_error` vs `field_gap` / `data_gap`).
 
 ## Honest limits (tell the user)
@@ -127,4 +127,4 @@ Optional one-shot: append `--upload --kibana-url … --kibana-api-key …` to th
 - `debug-uploaded-kibana-dashboard` skill — diagnose a single broken uploaded panel.
 - `revert-migration` skill — remove generated assets; or `obs-migrate cluster delete-dashboards --dashboard-ids <id>` for the one uploaded dashboard.
 - `obs-migrate upload --help`, `obs-migrate migrate --help` — confirm flags for the installed version.
-- `docs/command-contract.md` — upload, cluster, and live-extraction flags and artifacts (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — upload, cluster, and live-extraction flags and artifacts (online docs / repo).

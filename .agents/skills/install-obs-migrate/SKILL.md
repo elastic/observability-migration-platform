@@ -30,7 +30,7 @@ Do **not** use this skill for vendor/Elastic credentials — that is
 
 - **macOS and Linux** only. Windows is not supported.
 - **Python 3.11+** required (3.12+ preferred for in-venv Kibana compile tools).
-- Canonical docs: `docs/command-contract.md` → Install And Setup; `README.md`.
+- Canonical docs: `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Install And Setup; `README.md`.
 
 ## Step 0 — Detect current state
 
@@ -166,6 +166,6 @@ fine. Legacy `--compile` / `--legacy-import` prefer an in-venv
 
 - `connect-to-o11y-source` — credentials and live source proof after install.
 - `evaluate-o11y-permissions` — Elastic/Kibana key capabilities.
-- `docs/command-contract.md` — Install And Setup (canonical).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — Install And Setup (canonical).
 - `README.md` — short operator install.
 - PyPI: https://pypi.org/project/elastic-observability-migration/

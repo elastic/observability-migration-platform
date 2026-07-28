@@ -393,7 +393,7 @@ artifact root. Useful flags:
 
 | Flag | Meaning |
 |---|---|
-| `--data-hours` | Hours of synthetic data to generate. Defaults to 2. Falls back to `DATA_HOURS` env. |
+| `--data-hours` | Dense recent window of synthetic data (hours). Defaults to 2. Falls back to `DATA_HOURS` env. When a dashboard contract's `minimum_lookback` is longer (for example week-over-week panels that query `NOW() - 14 days`), the seeder also emits sparse hourly points across that older span so historical windows are non-empty without exploding document count at the dense interval. |
 | `--interval-sec` | Seconds between samples. Defaults to 60. Falls back to `INTERVAL_SEC` env. |
 | `--batch-docs` | Documents per bulk request. Defaults to 5000. Falls back to `BATCH_DOC_LIMIT` env. |
 | `--max-combinations` | Maximum dimension combinations per stream per timestamp. Defaults to 12. Falls back to `MAX_COMBINATIONS` env. Lower this for very high-cardinality contracts. |

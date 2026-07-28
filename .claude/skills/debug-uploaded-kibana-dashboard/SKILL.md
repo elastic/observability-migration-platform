@@ -64,6 +64,7 @@ On Elastic Serverless, a raw `GET /api/dashboards/dashboard/<id>` may 404 even w
 | `dashboards/migration_summary.md` | Must-fix / scorecard |
 | `dashboards/migration_manifest.json` | Per-panel `status`, `reasons`, warnings |
 | `dashboards/native/*.native.json` | Uploaded shape + `dashboard_id` |
+| `dashboards/ir/*.ir.json` | Translator decisions (inspection-only; not re-ingested by CLI) |
 | `dashboards/verification_packets.json` | Source vs translated query context |
 | `dashboards/schema_change_report.md` | Field mapping table |
 | `target_readiness_contract.json` (Datadog) / `required_target_contract.json` (Grafana) | Missing vs confirmed fields |
@@ -125,7 +126,7 @@ These help when an agent or lab environment is available; **do not block the ope
 
 - Browser DevTools / screenshots while signed into Kibana (capture the Lens `/_query` body if validate did not).  
 - `obs-migrate verify` for emitted-query acceptance.  
-- Repo-only gates (`verify-panels`, `parity-rig`, render-audit scripts) — see `docs/testing.md` if you have a checkout; bare `uvx` does not include those harnesses.
+- Repo-only gates (`verify-panels`, `parity-rig`, render-audit scripts) — see `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` if you have a checkout; bare `uvx` does not include those harnesses.
 
 ## Do NOT
 
@@ -142,5 +143,5 @@ These help when an agent or lab environment is available; **do not block the ope
 - `explain-migration-gaps` — warnings and rebuild guidance.  
 - `validate-side-by-side` — numeric/structural parity (`obs-migrate compare`).  
 - `revert-migration` — remove a bad upload.  
-- `docs/command-contract.md` — `upload`, `grafana-validate-uploaded`, `verify`.  
-- `docs/testing.md` — layered gates (including optional lab/repo tools).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — `upload`, `grafana-validate-uploaded`, `verify`.  
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — layered gates (including optional lab/repo tools).
