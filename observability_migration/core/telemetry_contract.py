@@ -16,6 +16,15 @@ import yaml
 
 _IDENT_RE = r"(?:`[^`]+`|[A-Za-z_][\w.-]*)"
 
+# Scalar casts the translator wraps around filter fields (e.g. Datadog log
+# attributes compared as strings). The underlying column is still required in
+# the target index / seed contract — strip these wrappers before extraction so
+# ``TO_STRING(http.status_code) == "404"`` yields dimension ``http.status_code``.
+_SCALAR_CAST_RE = re.compile(
+    rf"\bTO_(?:STRING|LONG|INTEGER|INT|DOUBLE|BOOLEAN|DATETIME|VERSION)\(\s*({_IDENT_RE})\s*\)",
+    re.IGNORECASE,
+)
+
 # Tokens that are not real telemetry fields. They appear in extracted
 # query text either as ES|QL command keywords, translator scaffolding
 # aliases, or aggregation column names that the schema-report should
@@ -1286,6 +1295,15 @@ def _extract_keyword_multifields(query: str) -> set[str]:
     return bases
 
 
+def _unwrap_scalar_casts(query: str) -> str:
+    """Replace ``TO_STRING(field)`` / similar casts with the bare field name."""
+    previous = None
+    while previous != query:
+        previous = query
+        query = _SCALAR_CAST_RE.sub(r"\1", query)
+    return query
+
+
 def _extract_dimensions(query: str) -> set[str]:
     dimensions: set[str] = set()
     if query.startswith("CONTROL ") or query.startswith("FILTER "):
@@ -1294,6 +1312,7 @@ def _extract_dimensions(query: str) -> set[str]:
         if not _should_skip_field(field_name):
             dimensions.add(field_name)
         return dimensions
+    query = _unwrap_scalar_casts(query)
     metrics = set(_extract_metrics(query))
     derived_aliases = _eval_assigned_names(query) | _stats_derived_assigned_names(query)
     where_pattern = re.compile(
@@ -1437,6 +1456,7 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
             target = patterns if "~" in operator else values
             _append_required(target, _normalize_field(field_name), value)
         return values, patterns
+    query = _unwrap_scalar_casts(query)
     comparison_re = re.compile(
         rf"({_IDENT_RE})\s*(==|!=)\s*\"([^\"]*)\""
         rf"|({_IDENT_RE})\s*(NOT\s+RLIKE|RLIKE|NOT\s+LIKE|LIKE)\s*\"([^\"]*)\"",

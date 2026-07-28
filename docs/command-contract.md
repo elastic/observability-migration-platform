@@ -1186,6 +1186,12 @@ templates/streams, and `--rules-file`/`--prometheus-url` to supply authoritative
 metric kinds. Progress (batch-flush counts, bulk-retry/split notices) prints to
 stderr as the ingest runs; pass `--quiet` to suppress it.
 
+`--data-hours` is the dense recent window. When a dashboard contract's
+`minimum_lookback` is longer (for example week-over-week panels that query
+`NOW() - 14 days`), the seeder automatically extends the older span with
+sparse hourly points so those historical windows are non-empty without
+exploding document count at the dense interval.
+
 #### Seeding more than one source at once
 
 When validating Grafana and Datadog dashboards against the same cluster, keep

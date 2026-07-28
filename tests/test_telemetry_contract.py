@@ -2799,6 +2799,57 @@ class KeywordMultifieldTests(unittest.TestCase):
         self.assertNotIn("?interval", rendered)
         self.assertNotIn("value= (interaction_value)", rendered)
 
+    def test_contract_extracts_fields_wrapped_in_to_string_casts(self):
+        """Log filters like ``TO_STRING(http.status_code) == "404"`` must still
+        seed the underlying field — otherwise ES|QL fails with Unknown column.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "nginx.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "NGINX",
+                                "panels": [
+                                    {
+                                        "title": "Error logs",
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                "| WHERE @timestamp >= ?_tstart "
+                                                "AND @timestamp <= ?_tend "
+                                                "AND service.name == \"nginx\" "
+                                                "AND ((TO_STRING(http.status_code) == \"404\" "
+                                                "OR TO_STRING(http.status_code) == \"500\"))\n"
+                                                "| SORT @timestamp DESC\n"
+                                                "| KEEP @timestamp, message, log.level, "
+                                                "service.name, host.name\n"
+                                                "| LIMIT 100"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        logs = contract["streams"]["logs-*"]
+        self.assertIn("http.status_code", logs["fields"])
+        self.assertEqual(logs["fields"]["http.status_code"]["role"], "dimension")
+        self.assertEqual(
+            set(logs["required_values"]["http.status_code"]),
+            {"404", "500"},
+        )
+        self.assertIn("nginx", logs["required_values"]["service.name"])
+
 
 if __name__ == "__main__":
     unittest.main()
