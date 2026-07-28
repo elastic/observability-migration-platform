@@ -65,17 +65,22 @@ For your own assets, use the same `migrate` command with exported JSON
 index flags (`--data-view` / `--esql-index`), and the full flag reference:
 [`docs/command-contract.md`](docs/command-contract.md).
 
-Always reuse the same launcher as `doctor` (`uvx --from "$PKG" …`). Bare
-`obs-migrate` is only on `PATH` after a persistent venv install **and**
-`source .venv/bin/activate`.
+Always reuse the same launcher as `doctor` (`uvx --from "$PKG" …`). `PKG` only
+lives in the shell you set it in, so re-export it in a new terminal.
 
 ### If you see `command not found: obs-migrate`
 
-There is no global binary. Use one of:
+`obs-migrate` is a console script, not a global binary: a bare `obs-migrate`
+only works when its install location is on `PATH` — after
+`source .venv/bin/activate`, or a `pipx install` / `uv tool install`.
+Otherwise, prefix it with a launcher. Pick **one**:
 
 ```bash
-uvx --from "$PKG" obs-migrate doctor
-.venv/bin/obs-migrate doctor          # after a persistent venv install
+# uvx, no install step (package spelled out in full: a new shell has no
+# variables from the Quick Start block above)
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+
+# persistent virtualenv: activate once per shell, then use the bare command
 source .venv/bin/activate && obs-migrate doctor
 ```
 
@@ -114,7 +119,7 @@ compatibility aliases. Prefer `obs-migrate`.
 | OS | macOS and Linux |
 | Python | 3.11+ |
 | Kibana | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
-| Grafana | Dashboard JSON; unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
+| Grafana | Dashboard JSON v1; unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
 | Datadog | Dashboards and monitors via the public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |
 
 ## Documentation
@@ -126,6 +131,7 @@ compatibility aliases. Prefer `obs-migrate`.
 | [`docs/sources/grafana.md`](docs/sources/grafana.md) / [`datadog.md`](docs/sources/datadog.md) | Source-specific behavior |
 | [`docs/targets/kibana.md`](docs/targets/kibana.md) | Kibana target behavior |
 | [`SUPPORT.md`](SUPPORT.md) | Getting help |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Repo checkout and contributor setup |
 
 Bugs and feature requests:

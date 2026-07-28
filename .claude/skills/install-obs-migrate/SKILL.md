@@ -59,6 +59,7 @@ Interpret:
 |---|---|
 | `doctor` prints `Ready.` | Install is done — hand off to the calling skill |
 | `command not found: obs-migrate` and no `uv`/`uvx` | Install `uv`, then Step 1 |
+| `command not found: obs-migrate` but `uvx` works | The bare command was run without a launcher — re-run as `uvx --from "$PKG" obs-migrate …`, `.venv/bin/obs-migrate …`, or after `source .venv/bin/activate` |
 | Python `<3.11` | Install/use a newer Python (pyenv, python.org, Homebrew `python@3.12`), then retry |
 | doctor notes Datadog client not installed | Reinstall with `[datadog]` or `[all]` if the user needs Datadog **API** mode |
 | doctor Ready but kb-dashboard only via `uvx fallback` | Fine for default typed upload; keep `uv` on `PATH` on Python 3.11 |
@@ -110,12 +111,14 @@ python3 -m venv .venv
 # source .venv/bin/activate && obs-migrate doctor
 ```
 
-**Do not** run bare `obs-migrate` until the venv is activated. Prefer
-`.venv/bin/obs-migrate` (no activate) or keep using `uvx --from "$PKG" …`.
+A bare `obs-migrate` only resolves when its install location is on `PATH` —
+after `source .venv/bin/activate`, or a `pipx install` / `uv tool install`.
+Otherwise use a launcher: `.venv/bin/obs-migrate …` (explicit path, no
+activate) or `uvx --from "$PKG" …`.
 
-If the user hits `command not found: obs-migrate`, they skipped the launcher —
-point them at `uvx --from "$PKG" obs-migrate …`, `.venv/bin/obs-migrate …`, or
-`source .venv/bin/activate` first. See `README.md` → “If you see command not
+If the user hits `command not found: obs-migrate`, they most likely ran the
+bare command without one of those, in a shell where `PKG` may also be unset.
+Re-state the launcher in full. See `README.md` → “If you see command not
 found”.
 
 ### GitHub tag fallback (never `@main`)

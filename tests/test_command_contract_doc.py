@@ -24,6 +24,21 @@ REMEDIATE_FIELD_GAPS_SKILL = ROOT / ".cursor" / "skills" / "remediate-field-mapp
 REVIEW_ALERTS_SKILL = ROOT / ".cursor" / "skills" / "review-and-enable-migrated-alerts" / "SKILL.md"
 UNDERSTAND_SCHEMA_SKILL = ROOT / ".cursor" / "skills" / "understand-source-schema" / "SKILL.md"
 PREPARE_TARGET_TELEMETRY_SKILL = ROOT / ".cursor" / "skills" / "prepare-target-telemetry" / "SKILL.md"
+INSTALL_OBS_MIGRATE_SKILL = ROOT / ".cursor" / "skills" / "install-obs-migrate" / "SKILL.md"
+
+COMMAND_NOT_FOUND_HEADING = "### If you see `command not found: obs-migrate`"
+
+
+def command_not_found_section(text: str) -> str:
+    """Return only the `command not found` section of a doc.
+
+    Scoping matters here: the surrounding pages already contain `$PKG` forms
+    and launcher prose, so unscoped assertions would pass on Quick Start text
+    even if the troubleshooting block itself were wrong.
+    """
+    _, found, rest = text.partition(COMMAND_NOT_FOUND_HEADING)
+    assert found, f"missing heading: {COMMAND_NOT_FOUND_HEADING}"
+    return rest.split("\n## ", 1)[0]
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -142,23 +157,59 @@ class CommandContractDocTests(unittest.TestCase):
     def test_root_readme_documents_obs_migrate_invocation_safety_net(self):
         """Issue #254: bare obs-migrate without a launcher looks "broken"."""
         text = ROOT_README.read_text(encoding="utf-8")
-        self.assertIn("uvx --from \"$PKG\" obs-migrate doctor", text)
-        self.assertIn("### If you see `command not found: obs-migrate`", text)
-        self.assertIn("source .venv/bin/activate", text)
-        self.assertIn(".venv/bin/obs-migrate doctor", text)
+        self.assertIn('uvx --from "$PKG" obs-migrate doctor', text)
+        self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
         self.assertIn("You do not need to clone this repository", text)
         self.assertIn("Always reuse the same launcher", text)
-        # Operator README must not lead with contributor-only tooling.
+        # The explicit-path launcher must stay documented: it is the only one
+        # that needs neither an activate nor `uv`.
+        self.assertIn(".venv/bin/obs-migrate doctor", text)
+
+        section = command_not_found_section(text)
+        # Readers reach this section from a *new* shell, where `PKG` from the
+        # Quick Start block is gone, so every command must run as written.
+        self.assertNotIn("$PKG", section)
+        self.assertIn(
+            "uvx --from 'elastic-observability-migration[all]' obs-migrate doctor",
+            section,
+        )
+        self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
+        # `pipx` / `uv tool` installs also yield a working bare command, so the
+        # section must not claim a bare `obs-migrate` can never work.
+        self.assertIn("pipx install", section)
+        self.assertNotIn("There is no global binary", section)
+
+        # Operator-first policy (AGENTS.md): the landing page routes
+        # contributors to CONTRIBUTING.md rather than teaching repo-checkout
+        # commands. Relax the policy before relaxing these bans.
         self.assertNotIn("make bump-version", text)
         self.assertNotIn("make sync", text)
         self.assertNotIn("Contributor checkout", text)
 
     def test_command_contract_documents_obs_migrate_invocation_safety_net(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
-        self.assertIn("### If you see `command not found: obs-migrate`", text)
-        self.assertIn("source .venv/bin/activate && obs-migrate doctor", text)
-        self.assertIn("There is no global `obs-migrate` binary", text)
+        self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
         self.assertIn("same launcher", text)
+
+        section = command_not_found_section(text)
+        self.assertNotIn("$PKG", section)
+        self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
+        self.assertIn("console script, not a global binary", section)
+        self.assertIn("pipx install", section)
+        self.assertNotIn("There is no global `obs-migrate` binary", section)
+
+    def test_install_skill_documents_the_invocation_safety_net(self):
+        # `check_skill_mirror.py` only proves the three copies match each
+        # other, so without a content assertion all of them can drift away
+        # from the fix together and still pass.
+        text = INSTALL_OBS_MIGRATE_SKILL.read_text(encoding="utf-8")
+        self.assertIn("command not found: obs-migrate", text)
+        self.assertIn("only resolves when its install location is on `PATH`", text)
+        self.assertIn("source .venv/bin/activate", text)
+        self.assertIn(".venv/bin/obs-migrate", text)
+        # The triage table is what an agent reads first, so it must cover the
+        # missing-launcher case and not only a missing `uv`.
+        self.assertIn("but `uvx` works", text)
 
     def test_alerting_examples_readme_uses_split_alert_artifact_paths(self):
         text = ALERTING_EXAMPLES_README.read_text(encoding="utf-8")

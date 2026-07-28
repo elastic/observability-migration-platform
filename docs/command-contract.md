@@ -45,17 +45,17 @@ tooling install together. The older `grafana-migrate` / `datadog-migrate`
 commands remain as compatibility aliases.
 
 **Platforms:** macOS and Linux are supported. CI runs on Ubuntu; packaging is
-also smoke-tested on macOS. Windows is not supported. See `README.md`
-Compatibility for the full matrix.
+also smoke-tested on macOS. Windows is not supported.
 
-**Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13). Prefer
-`elastic-observability-migration[all]` on first-time machines so Grafana, Datadog, and Kibana
+**Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13; 3.10 and older are
+rejected). Prefer `elastic-observability-migration[all]` on first-time machines
+so Grafana, Datadog, and Kibana
 tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
 `uvx` fallback. After install, run doctor with the **same launcher** you will
-use for migrate (`uvx --from "$PKG" obs-migrate doctor`,
-`.venv/bin/obs-migrate doctor`, or bare `obs-migrate doctor` only after
-`source .venv/bin/activate`). Doctor checks Python, required imports, extras,
-and compile tools, and exits non-zero if something blocking is missing.
+use for migrate — `uvx --from "$PKG" obs-migrate doctor` if you are staying on
+`uvx`, or a bare `obs-migrate doctor` once the install location is on `PATH`.
+Doctor checks Python, required imports, extras, and compile tools, and exits
+non-zero if something blocking is missing.
 
 ### Recommended (operators): `uvx` + `[all]`
 
