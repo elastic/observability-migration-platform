@@ -10,14 +10,15 @@ Migrate Grafana and Datadog dashboards, alerts, and monitors into Kibana.
 Unsupported translations are marked for manual review instead of being
 silently dropped.
 
-**You do not need to clone this repository.** Install the CLI from PyPI and
-run **`obs-migrate`**.
+**You do not need to clone this repository.** Install
+[`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)
+from PyPI and run **`obs-migrate`**.
 
 ## Requirements
 
 | Need | Detail |
 |------|--------|
-| OS | macOS or Linux (Windows is not supported) |
+| OS | macOS and Linux (Windows untested) |
 | Python | 3.11 or newer (tested on 3.11–3.13) |
 | Installer | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` and `uvx`) |
 | Kibana | Elastic Serverless or Stack 9.5+ |
