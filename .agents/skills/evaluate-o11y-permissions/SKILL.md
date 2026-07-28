@@ -133,4 +133,4 @@ obs-migrate verify-alert-rules \
 - `connect-to-o11y-source` skill — source setup and reachability.
 - `obs-migrate verify-alert-rules --help` and `obs-migrate audit-rules --help` — the self-cleaning alert write proof and the read-only rule audit (shipped in the package).
 - `obs-migrate cluster --help` and `obs-migrate migrate --help` — authoritative target/alerting flags for the installed version.
-- `docs/command-contract.md` — `cluster` actions and the alert upload flow (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — `cluster` actions and the alert upload flow (online docs / repo).

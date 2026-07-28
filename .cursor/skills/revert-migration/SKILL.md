@@ -121,4 +121,4 @@ After reverting, the user can re-run the migration cleanly (e.g. via migrate-sel
 - `migrate-all-supported-assets` skill — re-run a full migration after a clean revert.
 - `review-and-enable-migrated-alerts` skill — audit/disable before delete when rules were enabled.
 - `obs-migrate cluster --help`, `obs-migrate delete-rules --help`, `obs-migrate audit-rules --help` — authoritative flags for the installed version.
-- `docs/command-contract.md` — cluster, delete-rules, and audit-rules contracts and the Serverless delete caveat (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — cluster, delete-rules, and audit-rules contracts and the Serverless delete caveat (online docs / repo).

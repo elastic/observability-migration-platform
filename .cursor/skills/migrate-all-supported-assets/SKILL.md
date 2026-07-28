@@ -75,7 +75,7 @@ obs-migrate migrate \
 ```
 
 - `--upload` pushes dashboards via the **typed Dashboards API** (in-memory / persisted `native/*.native.json` payloads). It does **not** require `kb-dashboard-cli` recompile for the default path; pass `--compile` / `--legacy-import` only when you intentionally want NDJSON/YAML compile artifacts. `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
-- Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect `full_out/dashboards/native/`, then `obs-migrate upload --artifact-dir full_out/dashboards`.
+- Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect `full_out/dashboards/native/*.native.json` (upload payload) and `full_out/dashboards/ir/*.ir.json` (translator decisions, inspection-only), then `obs-migrate upload --artifact-dir full_out/dashboards`.
 - Without `--create-alert-rules`, alert translation still writes `monitor_migration_results.json` (Datadog) / equivalent Grafana alert artifacts — **not** `monitor_rule_upload_results.json` / `alert_rule_upload_results.json` (those appear only when rules are created in Kibana).
 - File-based sources: swap `--input-mode api` for `--input-mode files --input-dir <dir>` pointing at all exported dashboard JSON.
 - **Custom-CA / self-signed clusters:** `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) verifies against a private CA; `--insecure` (env `OBS_MIGRATE_INSECURE`) skips verification for testing only. Both cover source, Elasticsearch, Kibana, and the Node upload step.
@@ -100,7 +100,7 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 1. State the **coverage**: how many dashboards/panels and rules migrated cleanly vs. warned vs. need rework, straight from the summary/report.
 2. For broken/empty uploaded panels, hand off to the `debug-uploaded-kibana-dashboard` skill (captures real ES|QL and classifies `render_error` vs field/data gaps).
 3. For warned or blocked panels, use `explain-migration-gaps` — it separates accepted approximations from redesign work.
-4. Stronger gates when staking a cutover claim: `obs-migrate verify` / `validate-side-by-side`, `verifier.live_validate`, `verifier.dashboards_api`, and **render audit** (`docs/testing.md`) — the last is the only gate for Lens accessor / "invalid column" / empty-state failures that ES|QL execution misses.
+4. Stronger gates when staking a cutover claim: `obs-migrate verify` / `validate-side-by-side`, `verifier.live_validate`, `verifier.dashboards_api`, and **render audit** (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`) — the last is the only gate for Lens accessor / "invalid column" / empty-state failures that ES|QL execution misses.
 5. Migrated rules are **disabled**; review with `obs-migrate audit-rules` before enabling (`review-and-enable-migrated-alerts`).
 
 ## Honest limits (tell the user)
@@ -130,5 +130,5 @@ The dashboards that **cannot** migrate appear as non-clean entries in `migration
 - `prepare-production-cutover` skill — go/no-go after the sweep + validation.
 - `revert-migration` skill — remove the generated dashboards/rules if the user backs out.
 - `obs-migrate migrate --help` — authoritative asset/upload flags for the installed version.
-- `docs/command-contract.md` — asset-scope contract and artifact descriptions (online docs / repo).
-- `docs/testing.md` — layered verifier and render-audit gates.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — asset-scope contract and artifact descriptions (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — layered verifier and render-audit gates.

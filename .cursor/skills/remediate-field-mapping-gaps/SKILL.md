@@ -30,7 +30,7 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 |---|---|
 | Empty uploaded panel / "No results found" | Use `debug-uploaded-kibana-dashboard` to capture the exact ES|QL Kibana is running, then compare its fields and filters to the artifacts below. Classify with render-audit taxonomy when available: `render_error` (bug) vs `field_gap` / `data_gap` / `unexpected_empty` (data readiness) |
 | Unknown column / missing field error | Read the field name from the Kibana/ES error and locate it in `required_target_contract.json` (Grafana), `target_readiness_contract.json` (Datadog), or the emitted query. For Grafana, also check `--esql-index` vs `--data-view` |
-| Values look wrong but data exists | First rule out **accepted approximations** (`explain-migration-gaps` / `docs/sources/grafana.md` Current Boundaries: `histogram_quantile` → `PERCENTILE`, histogram mean ratio-of-aggregates, multi-target fusion). Only then compare source vs translated fields in `verification_packets.json` / schema report |
+| Values look wrong but data exists | First rule out **accepted approximations** (`explain-migration-gaps` / `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md` Current Boundaries: `histogram_quantile` → `PERCENTILE`, histogram mean ratio-of-aggregates, multi-target fusion). Only then compare source vs translated fields in `verification_packets.json` / schema report |
 | Many panels fail the same way | Fix the rule pack / field profile / index flags and rerun; do not hand-edit every panel first |
 
 ## Package-native artifacts and commands
@@ -45,7 +45,7 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 ## Remediation loop
 
-1. **Prove it is a mapping / index / data issue** — confirm the target has data in the selected time range and **correct stream**. For Grafana Prometheus panels, wrong/missing `--esql-index` (query + discovery target) vs `--data-view` (Kibana UI bind) is the most common empty-panel cause — fix flags before rewriting rule packs (`docs/command-contract.md` → Target index flags). Empty data is not a mapping fix.
+1. **Prove it is a mapping / index / data issue** — confirm the target has data in the selected time range and **correct stream**. For Grafana Prometheus panels, wrong/missing `--esql-index` (query + discovery target) vs `--data-view` (Kibana UI bind) is the most common empty-panel cause — fix flags before rewriting rule packs (`https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Target index flags). Empty data is not a mapping fix.
 2. **Open the schema report** — read `<output-dir>/dashboards/schema_change_report.md` and find the row for the failing panel. Regenerate with `obs-migrate schema-report` only if you are combining old artifact dirs or rebuilding the report.
 3. **Check required fields** — open `required_target_contract.json` (Grafana) or `target_readiness_contract.json` (Datadog). Prioritize fields marked `missing` or `unknown`.
 4. **Compare three sources of truth** — source query fields/tags, translated ES|QL fields (prefer `native/*.native.json` / `ir/*.ir.json`), and Kibana's actual runtime query. If Kibana changed aliases or buckets, note that separately.
@@ -111,4 +111,4 @@ obs-migrate migrate --source datadog ... --field-profile custom-field-profile.ya
 - `debug-uploaded-kibana-dashboard` — capture Kibana's actual runtime query + render-audit taxonomy.
 - `validate-side-by-side` — compare translated results after remediation.
 - `try-one-source-dashboard` / `migrate-selected-assets` — rerun the smallest useful scope.
-- `docs/testing.md` — render-audit classifications.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md` — render-audit classifications.

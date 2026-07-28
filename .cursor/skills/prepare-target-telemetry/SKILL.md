@@ -74,7 +74,7 @@ How you plan to ship Prometheus into Elastic decides the field profile:
 
 - **`--esql-index`** — metrics query + schema-discovery target (`TS`/`FROM` / native `PROMQL index=…`). Required for Prometheus fidelity when the stream is not the default data-view pattern.
 - **`--data-view`** — Kibana UI / control bind; may differ from `--esql-index`.
-- See `docs/command-contract.md` → Target index flags **and** “Migrate-first vs data-first”. Wrong/missing `--esql-index` is the #1 reason migrated Prometheus panels query the wrong stream.
+- See `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Target index flags **and** “Migrate-first vs data-first”. Wrong/missing `--esql-index` is the #1 reason migrated Prometheus panels query the wrong stream.
 - **Migrate-first:** pick the concrete stream your ingest will create *before* migrating; empty panels until data lands are expected. **Data-first:** with `--es-url`, pin both flags away from a `metrics-*` wildcard, especially when several backends share it. `grafana-migrate` warns when the metrics target is still a wildcard (naming the streams it resolves to) or when a pinned target does not exist on the cluster, stays quiet once both flags point at an existing concrete stream, and records the same findings under `metrics_target` in `run_summary.json`. `datadog-migrate` has no such warning — check its metric index by hand.
 - `--logs-index` (default `logs-*`) does **not** inherit `--data-view`/`--esql-index`; set it too for dashboards that mix metrics and Loki panels.
 
@@ -143,4 +143,4 @@ obs-migrate remove-sample-data \
 - `assess-migration-readiness` — readiness verdict from migration artifacts.
 - `connect-to-o11y-source` — connect to Grafana/Datadog and Elastic endpoints.
 - `validate-side-by-side` — numeric parity once data is flowing.
-- `docs/command-contract.md` — `--field-profile`, `--esql-index`, seed/remove-sample-data.
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — `--field-profile`, `--esql-index`, seed/remove-sample-data.

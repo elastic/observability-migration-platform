@@ -130,4 +130,4 @@ Do not paste fabricated console output to the user. Report what actually printed
 
 - `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `obs-migrate migrate --help` — authoritative flag list for the installed version (`grafana-migrate` / `datadog-migrate --help` for aliases).
-- `docs/sources/grafana.md`, `docs/sources/datadog.md`, `docs/command-contract.md` — connection/auth and env-var reference (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/grafana.md`, `https://github.com/elastic/observability-migration-platform/blob/main/docs/sources/datadog.md`, `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — connection/auth and env-var reference (online docs / repo).

@@ -33,7 +33,9 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 Grafana via live API (use `--preflight` to also produce the datasource audit):
 
 ```bash
+# Basic auth:
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
+# Or token auth: export GRAFANA_URL="https://grafana.example.com" GRAFANA_TOKEN="..."
 obs-migrate migrate \
   --source grafana --input-mode api \
   --output-dir grafana_inventory \
@@ -94,4 +96,4 @@ Non-migratable datasources flagged today include InfluxDB, MySQL/Postgres/MSSQL,
 - `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `assess-migration-readiness` skill — what will vs. won't migrate.
 - `obs-migrate migrate --help` — confirm `--preflight`, `--select-*`, and asset flags for the installed version.
-- `docs/command-contract.md` — artifact descriptions (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — artifact descriptions (online docs / repo).
