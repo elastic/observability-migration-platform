@@ -57,6 +57,8 @@ from observability_migration.targets.kibana.alerting import (
     verify_emitted_rule_uploads,
 )
 
+_DOCS_URL = "https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md"
+
 _UPLOAD_SHAPE_HELP = (
     "Accepted input shapes: a directory of .yaml files, a dashboard artifact "
     "dir with a 'yaml/' child (for example "
@@ -114,7 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="obs-migrate",
         description=(
             "Migrate Grafana or Datadog observability assets into Kibana. "
-            "One CLI for install checks, samples, migrate, compile, and upload."
+            "One CLI for install checks, samples, migrate, upload, verify, and cluster ops."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -122,12 +124,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "  obs-migrate doctor\n"
             "  obs-migrate list-samples\n"
             "  obs-migrate migrate --source grafana --input-mode files "
-            "--input-dir ./dashboards --output-dir ./out --compile\n"
+            "--input-dir ./dashboards --output-dir ./out\n"
+            "  # Review ./out/dashboards/native/*.native.json, then:\n"
+            "  obs-migrate upload --artifact-dir ./out/dashboards "
+            "--kibana-url <url> --kibana-api-key <key>\n"
             "\n"
             "Prefer this `obs-migrate` entry point. The legacy "
             "`grafana-migrate` / `datadog-migrate` scripts remain as "
             "compatibility aliases.\n"
-            "Full command contract: docs/command-contract.md"
+            f"Full command reference: {_DOCS_URL}"
         ),
     )
     sub = parser.add_subparsers(dest="command")
@@ -220,12 +225,19 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument(
         "--compile", action="store_true",
         help=(
-            "Compile generated YAML to NDJSON. Grafana always compiles as part of "
-            "'obs-migrate migrate'; Datadog is now also compiled by default for "
-            "parity. The flag is kept for compatibility with the dedicated source CLIs."
+            "Compile generated YAML to legacy NDJSON. Optional local/debug artifact; "
+            "not required for the typed Dashboards API upload path. Implied by "
+            "--legacy-import."
         ),
     )
-    migrate.add_argument("--validate", action="store_true")
+    migrate.add_argument(
+        "--validate", action="store_true",
+        help=(
+            "Validate emitted ES|QL queries against Elasticsearch after translation. "
+            "Requires --es-url. Auto-applies safe query fixes and manualizes broken "
+            "ones. Works for both Grafana and Datadog."
+        ),
+    )
     migrate.add_argument("--upload", action="store_true")
     migrate.add_argument(
         "--legacy-import",
@@ -265,7 +277,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--plugin", action="append", default=[])
     migrate.add_argument("--polish-metadata", action="store_true")
-    migrate.add_argument("--preflight", action="store_true")
+    migrate.add_argument(
+        "--preflight", action="store_true",
+        help=(
+            "Run readiness checks before migration: probe target field capabilities "
+            "and write a readiness contract (Grafana: required_target_contract.json; "
+            "Datadog: target_readiness_contract.json). Requires --es-url for live "
+            "field discovery."
+        ),
+    )
     migrate.add_argument("--source-execution", action="store_true",
                          help="Execute each panel's source query against the live source API "
                               "(Datadog) to build source/target comparison packets")
@@ -974,13 +994,14 @@ def _run_doctor() -> int:
     print("  obs-migrate list-samples")
     print(
         "  obs-migrate migrate --source grafana --input-mode files "
-        "--input-dir <dir> --output-dir ./out --compile"
+        "--input-dir <dir> --output-dir ./out"
     )
+    print("  # Review ./out/dashboards/native/*.native.json, then upload:")
     print(
-        "  obs-migrate migrate --source datadog --input-mode files "
-        "--input-dir <dir> --output-dir ./out --compile"
+        "  obs-migrate upload --artifact-dir ./out/dashboards "
+        "--kibana-url <url> --kibana-api-key <key>"
     )
-    print("See docs/command-contract.md for upload, API mode, and verification.")
+    print(f"Full reference: {_DOCS_URL}")
     return 0
 
 
@@ -1210,7 +1231,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
         legacy_argv.extend(["--es-api-key", args.es_api_key])
-    legacy_argv.append("--compile")
+    if getattr(args, "compile", False):
+        legacy_argv.append("--compile")
     if args.validate:
         legacy_argv.append("--validate")
     if args.upload:

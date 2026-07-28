@@ -69,7 +69,17 @@ Copy a sample’s `input_dir` from the JSON output, then:
 uvx --from "$PKG" obs-migrate migrate \
   --source grafana --input-mode files \
   --input-dir "<sample-input_dir>" \
-  --output-dir ./out --assets dashboards --compile
+  --output-dir ./out --assets dashboards
+```
+
+Review the generated `./out/dashboards/native/*.native.json` artifacts (the
+exact typed Dashboards API payloads), then upload:
+
+```bash
+uvx --from "$PKG" obs-migrate upload \
+  --artifact-dir ./out/dashboards \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-api-key "$KEY"
 ```
 
 ### 3. Migrate your assets
