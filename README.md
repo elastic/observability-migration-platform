@@ -13,10 +13,6 @@ silently dropped.
 **You do not need to clone this repository.** Install the CLI from PyPI and
 run **`obs-migrate`**.
 
-Package:
-[`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)
-(pre-1.0).
-
 ## Requirements
 
 | Need | Detail |
@@ -24,6 +20,7 @@ Package:
 | OS | macOS or Linux (Windows is not supported) |
 | Python | 3.11 or newer (tested on 3.11–3.13) |
 | Installer | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` and `uvx`) |
+| Kibana | Elastic Serverless or Stack 9.5+ |
 
 Install with the `[all]` extra so Grafana, Datadog, and Kibana tooling are
 available together.
@@ -41,12 +38,13 @@ uvx --from "$PKG" obs-migrate list-samples
 
 `doctor` exit code `0` means Ready; otherwise it prints what to fix.
 
-Copy a sample’s `input_dir` from `list-samples`, then try an offline migrate:
+Each entry in the `list-samples` output includes a `"run"` field with the exact
+migrate command. Prefix it with `uvx --from "$PKG"` and run it:
 
 ```bash
 uvx --from "$PKG" obs-migrate migrate \
   --source grafana --input-mode files \
-  --input-dir "<sample-input_dir>" \
+  --input-dir "<input_dir from list-samples>" \
   --output-dir ./out --assets dashboards
 ```
 
@@ -111,8 +109,8 @@ obs-migrate doctor
 the real location) and warns when that directory is missing from `PATH`. It
 cannot change the `PATH` of the shell that invoked it, hence the `export`; run
 `uv tool update-shell` once so new shells pick it up too. `pipx install` works
-the same way. `uv` picks your newest Python, so add `--python 3.13` if that is
-above the tested range.
+the same way. `uv` picks your newest Python, so add `--python 3.13` to stay within
+the CI-tested range if your system Python is 3.14 or newer.
 
 **Persistent virtualenv** (optional; prefer `uvx` above for first runs):
 
@@ -140,16 +138,6 @@ those tools.
 The older `grafana-migrate` and `datadog-migrate` commands remain as
 compatibility aliases. Prefer `obs-migrate`.
 
-## Compatibility
-
-| Area | Detail |
-|------|--------|
-| OS | macOS and Linux |
-| Python | 3.11+ (tested on 3.11–3.13) |
-| Kibana | Elastic Serverless and ES\|QL-capable Stack — [`docs/targets/kibana.md`](docs/targets/kibana.md) |
-| Grafana | Dashboard JSON v1; unified alerting API — [`docs/sources/grafana.md`](docs/sources/grafana.md) |
-| Datadog | Dashboards and monitors via the public API — [`docs/sources/datadog.md`](docs/sources/datadog.md) |
-
 ## Documentation
 
 | Doc | Use when |
@@ -173,9 +161,4 @@ listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Trademarks
 
-Grafana is a trademark of Raintank, Inc. d/b/a Grafana Labs. Datadog is a
-trademark of Datadog, Inc. Prometheus and Kubernetes are trademarks of
-The Linux Foundation. Kibana and Elastic are trademarks of Elasticsearch
-B.V. All other trademarks are the property of their respective owners.
-Use of these names here is solely for interoperability and identification
-and does not imply affiliation or endorsement.
+Grafana is a trademark of Raintank, Inc. d/b/a Grafana Labs. Datadog is a trademark of Datadog, Inc. Prometheus and Kubernetes are trademarks of The Linux Foundation. Kibana and Elastic are trademarks of Elasticsearch B.V. All other trademarks are the property of their respective owners. Use of these names is solely for interoperability and identification and does not imply affiliation or endorsement.
