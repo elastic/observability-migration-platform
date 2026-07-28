@@ -51,7 +51,7 @@ also smoke-tested on macOS. Windows is not supported.
 rejected, and 3.14+ works but is not in the CI matrix yet — doctor prints a note,
 not a failure). On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
 fallback. After install, run doctor with the **same launcher** you will use for
-migrate — `uvx --from "$PKG" obs-migrate doctor` if you are staying on `uvx`, or
+migrate — `uvx --from 'elastic-observability-migration[all]' obs-migrate doctor` if you are staying on `uvx`, or
 a bare `obs-migrate doctor` once the install location is on `PATH`.
 Doctor checks Python, required imports, extras, and compile tools, and exits
 non-zero if something blocking is missing.
