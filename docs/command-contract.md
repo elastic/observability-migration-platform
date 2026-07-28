@@ -84,11 +84,15 @@ every command with `uvx --from`:
 
 ```bash
 uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
 obs-migrate doctor
 ```
 
-The shim lands in `~/.local/bin`; run `uv tool update-shell` once if that
-directory is not on your `PATH` yet.
+The shim lands in `~/.local/bin` (`uv tool dir --bin` prints the real
+location). `uv` cannot modify the `PATH` of the shell that invoked it — it only
+warns that the directory is missing — so the `export` above is what makes the
+bare command work *now*; run `uv tool update-shell` once so new shells get it
+without the export.
 `pipx install 'elastic-observability-migration[all]'` behaves the same way.
 Upgrade with `uv tool upgrade elastic-observability-migration`.
 
@@ -155,13 +159,12 @@ Pick **one** of these, matching how you installed:
 # uvx, no install step (works in any shell)
 uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
 
-# persistent virtualenv: activate once per shell, then use the bare command
+# persistent virtualenv: activate once per shell, then use the bare command.
+# The path is relative — run it from the directory holding the virtualenv.
 source .venv/bin/activate && obs-migrate doctor
 
-# permanent bare command after uv tool install:
-# uv tool install puts the shim in ~/.local/bin but cannot modify the current
-# shell's PATH — run uv tool update-shell (once, then open a new shell), or
-# add the export below and open a new terminal.
+# permanent bare command, no prefix and no activate. The export is required in
+# the shell you install from, because the install cannot change its PATH.
 uv tool install 'elastic-observability-migration[all]'
 export PATH="$HOME/.local/bin:$PATH"
 obs-migrate doctor
@@ -169,7 +172,8 @@ obs-migrate doctor
 
 A fresh shell does not remember the previous shell's activation or `PKG`
 value, so re-activate (or re-export `PKG`) before reusing the examples in this
-document.
+document. A tool install is the only one of the three that survives a new
+shell on its own, and only after `uv tool update-shell`.
 
 ## Before Elastic / Kibana
 

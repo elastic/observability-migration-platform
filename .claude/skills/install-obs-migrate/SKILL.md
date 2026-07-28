@@ -116,6 +116,10 @@ after `source .venv/bin/activate`, or a `pipx install` / `uv tool install`
 (next section). Otherwise use a launcher: `.venv/bin/obs-migrate …` (explicit
 path, no activate) or `uvx --from "$PKG" …`.
 
+Both venv launchers are relative paths. If the user is not in the directory
+that holds `.venv`, they get `no such file or directory` instead of
+`command not found` — have them `cd` there or use the absolute path.
+
 If the user hits `command not found: obs-migrate`, they most likely ran the
 bare command without one of those, in a shell where `PKG` may also be unset —
 so re-state the launcher with the package spelled out in full, e.g.
@@ -128,11 +132,16 @@ When the user wants `obs-migrate` on `PATH` for every shell:
 
 ```bash
 uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
 obs-migrate doctor
 ```
 
-The shim lands in `~/.local/bin`; `uv tool update-shell` once if that is not on
-`PATH`. `pipx install 'elastic-observability-migration[all]'` is equivalent.
+The shim lands in `~/.local/bin` (`uv tool dir --bin` prints the real path).
+Do not drop the `export`: `uv` cannot change the `PATH` of the shell that
+invoked it, so without it the very next `obs-migrate doctor` fails with the
+same `command not found` — `uv` only prints a warning. Run
+`uv tool update-shell` once so later shells work without the export.
+`pipx install 'elastic-observability-migration[all]'` is equivalent.
 `uv` resolves against the newest Python present, so add `--python 3.13` when the
 default is above the tested 3.11–3.13 range.
 

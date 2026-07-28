@@ -79,7 +79,8 @@ launcher. Pick the line matching how you installed:
 # full, because a new shell has no variables from the Quick Start above)
 uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
 
-# virtualenv, without activating it
+# virtualenv, without activating it — relative path, so run it from the
+# directory where you created the virtualenv
 .venv/bin/obs-migrate doctor
 
 # same virtualenv, activated once per shell — then the bare command works
@@ -87,10 +88,13 @@ source .venv/bin/activate && obs-migrate doctor
 ```
 
 The last two need a `.venv` you already created — see
-[Other install options](#other-install-options). If you want a bare
-`obs-migrate` in *every* shell with no prefix, install it as a tool
-(`uv tool install`, or `pipx install` if you prefer pipx); that is the first
-option below.
+[Other install options](#other-install-options) — and both resolve `.venv`
+against your current directory, so `cd` there first or use the full path.
+
+If you want a bare `obs-migrate` in *every* shell with no prefix, install it as
+a tool (`uv tool install`, or `pipx install` if you prefer pipx); that is the
+first option below. A tool install cannot put its shim directory on the `PATH`
+of the shell you run it in, so follow it with the `export` shown there.
 
 ## Other install options
 
@@ -99,13 +103,16 @@ for every shell, so no launcher prefix is needed:
 
 ```bash
 uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
 obs-migrate doctor
 ```
 
-`uv tool install` puts the shim in `~/.local/bin`; run `uv tool update-shell`
-once if that directory is not yet on your `PATH`. `pipx install` works the same
-way. `uv` picks your newest Python, so add `--python 3.13` if that is above the
-tested range.
+`uv tool install` puts the shim in `~/.local/bin` (`uv tool dir --bin` prints
+the real location) and warns when that directory is missing from `PATH`. It
+cannot change the `PATH` of the shell that invoked it, hence the `export`; run
+`uv tool update-shell` once so new shells pick it up too. `pipx install` works
+the same way. `uv` picks your newest Python, so add `--python 3.13` if that is
+above the tested range.
 
 **Persistent virtualenv** (optional; prefer `uvx` above for first runs):
 
