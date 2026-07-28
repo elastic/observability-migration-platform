@@ -48,12 +48,11 @@ commands remain as compatibility aliases.
 also smoke-tested on macOS. Windows is not supported.
 
 **Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13; 3.10 and older are
-rejected). Prefer `elastic-observability-migration[all]` on first-time machines
-so Grafana, Datadog, and Kibana
-tooling install together. On 3.11, keep `uv` on `PATH` for the kb-dashboard
-`uvx` fallback. After install, run doctor with the **same launcher** you will
-use for migrate — `uvx --from "$PKG" obs-migrate doctor` if you are staying on
-`uvx`, or a bare `obs-migrate doctor` once the install location is on `PATH`.
+rejected, and 3.14+ works but is not in the CI matrix yet — doctor prints a note,
+not a failure). On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
+fallback. After install, run doctor with the **same launcher** you will use for
+migrate — `uvx --from "$PKG" obs-migrate doctor` if you are staying on `uvx`, or
+a bare `obs-migrate doctor` once the install location is on `PATH`.
 Doctor checks Python, required imports, extras, and compile tools, and exits
 non-zero if something blocking is missing.
 
@@ -78,17 +77,33 @@ PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observa
 Example pins above are kept in lockstep with the released package version. The
 PyPI badge on the README always shows the latest published version.
 
+### Persistent tool install (bare `obs-migrate` in every shell)
+
+Use this when you want `obs-migrate` on `PATH` permanently instead of prefixing
+every command with `uvx --from`:
+
+```bash
+uv tool install 'elastic-observability-migration[all]'
+obs-migrate doctor
+```
+
+The shim lands in `~/.local/bin`; run `uv tool update-shell` once if that
+directory is not on your `PATH` yet.
+`pipx install 'elastic-observability-migration[all]'` behaves the same way.
+Upgrade with `uv tool upgrade elastic-observability-migration`.
+
+`uv tool install` resolves against your newest available Python, which can be
+above the tested range — pass `--python 3.13` to pin a CI-matrix interpreter.
+
 ### Persistent pip install
 
-Prefer the `.venv/bin/obs-migrate` prefix (no activate required), or activate
-the venv once per shell if you want the bare command:
+Activate the venv once per shell to get the bare command:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install "$PKG"
-.venv/bin/obs-migrate doctor
-# Or activate once per shell, then use bare obs-migrate:
-# source .venv/bin/activate && obs-migrate doctor
+source .venv/bin/activate
+pip install "$PKG"
+obs-migrate doctor
 ```
 
 From an unpacked release source archive, install the current directory instead:
@@ -98,36 +113,13 @@ pip install ".[all]"
 obs-migrate doctor
 ```
 
-With [`uv`](https://docs.astral.sh/uv/) for contributor / CI-style locked envs
-(`make sync`):
+Setting up a repo checkout for development? Use `uv sync --locked --all-extras`
+(or `make sync`) and `uv run obs-migrate doctor`. See
+[`contributing/dev-commands.md`](contributing/dev-commands.md).
 
-```bash
-uv sync --locked --all-extras
-uv run obs-migrate doctor
-# or: .venv/bin/obs-migrate doctor
-```
-
-### If you see `command not found: obs-migrate`
-
-There is no global `obs-migrate` binary. Do **not** run bare `obs-migrate`
-unless the venv is activated. Use one of:
-
-```bash
-uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
-.venv/bin/obs-migrate doctor
-source .venv/bin/activate && obs-migrate doctor
-uv run obs-migrate doctor   # contributor locked env after make sync
-```
-
-For contributor workflows, prefer `make sync` (the locked `uv` environment used
-by CI). If you are using a plain virtualenv directly, install the dev extra and
-enable local git hooks:
-
-```bash
-.venv/bin/pip install -e ".[all,dev]"
-.venv/bin/pre-commit install
-.venv/bin/pre-commit run --all-files
-```
+If `obs-migrate` is not found after install, see
+[If you see `command not found: obs-migrate`](#if-you-see-command-not-found-obs-migrate)
+below.
 
 Commands that invoke `kb-dashboard-cli` (notably `obs-migrate compile` and
 `obs-migrate upload --legacy-import`) resolve the tool **installed-first**:
@@ -148,6 +140,36 @@ pip install "elastic-observability-migration[datadog]"
 
 Setting up a repo checkout for development instead? See
 [`contributing/dev-commands.md`](contributing/dev-commands.md).
+
+### If you see `command not found: obs-migrate`
+
+`obs-migrate` is a console script, not a global binary: it is only callable as
+a bare command when its install location is on `PATH`. That happens after
+`source .venv/bin/activate`, or after a `pipx install` / `uv tool install`
+([Persistent tool install](#persistent-tool-install-bare-obs-migrate-in-every-shell)).
+Otherwise, prefix it with a launcher.
+
+Pick **one** of these, matching how you installed:
+
+```bash
+# uvx, no install step (works in any shell)
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+
+# persistent virtualenv: activate once per shell, then use the bare command
+source .venv/bin/activate && obs-migrate doctor
+
+# permanent bare command after uv tool install:
+# uv tool install puts the shim in ~/.local/bin but cannot modify the current
+# shell's PATH — run uv tool update-shell (once, then open a new shell), or
+# add the export below and open a new terminal.
+uv tool install 'elastic-observability-migration[all]'
+export PATH="$HOME/.local/bin:$PATH"
+obs-migrate doctor
+```
+
+A fresh shell does not remember the previous shell's activation or `PKG`
+value, so re-activate (or re-export `PKG`) before reusing the examples in this
+document.
 
 ## Before Elastic / Kibana
 

@@ -38,7 +38,18 @@ def command_not_found_section(text: str) -> str:
     """
     _, found, rest = text.partition(COMMAND_NOT_FOUND_HEADING)
     assert found, f"missing heading: {COMMAND_NOT_FOUND_HEADING}"
-    return rest.split("\n## ", 1)[0]
+    # Stop at the next `##`/`###` heading so the scope cannot silently widen to
+    # end-of-file, or swallow a sibling subsection added later. Single `#` is
+    # excluded on purpose: shell comments inside the code blocks start with it.
+    end = re.search(r"(?m)^#{2,3} ", rest)
+    return rest[: end.start()] if end else rest
+
+
+def github_anchor(heading: str) -> str:
+    """Approximate GitHub's in-page slug for a Markdown heading."""
+    slug = heading.lstrip("#").strip().lower()
+    slug = re.sub(r"[^\w\- ]", "", slug)  # drops backticks, colons, parentheses
+    return slug.replace(" ", "-")
 
 
 class CommandContractDocTests(unittest.TestCase):
@@ -161,9 +172,12 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertIn(COMMAND_NOT_FOUND_HEADING, text)
         self.assertIn("You do not need to clone this repository", text)
         self.assertIn("Always reuse the same launcher", text)
-        # The explicit-path launcher must stay documented: it is the only one
-        # that needs neither an activate nor `uv`.
-        self.assertIn(".venv/bin/obs-migrate doctor", text)
+        # `doctor` still warns on 3.14+ (see `app/cli.py`), so the landing page
+        # must keep the tested range rather than a bare "3.11 or newer".
+        self.assertIn("tested on 3.11–3.13", text)
+        # A launcher the docs name as a fix must also be a launcher the docs
+        # teach, with a runnable command.
+        self.assertIn("uv tool install 'elastic-observability-migration[all]'", text)
 
         section = command_not_found_section(text)
         # Readers reach this section from a *new* shell, where `PKG` from the
@@ -174,10 +188,12 @@ class CommandContractDocTests(unittest.TestCase):
             section,
         )
         self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
+        # The explicit-path launcher belongs in the remedy list itself: it is
+        # the only one that needs neither an activate nor `uv`.
+        self.assertIn(".venv/bin/obs-migrate doctor", section)
         # `pipx` / `uv tool` installs also yield a working bare command, so the
-        # section must not claim a bare `obs-migrate` can never work.
-        self.assertIn("pipx install", section)
-        self.assertNotIn("There is no global binary", section)
+        # section must offer that instead of implying a bare command never works.
+        self.assertIn("uv tool install", section)
 
         # Operator-first policy (AGENTS.md): the landing page routes
         # contributors to CONTRIBUTING.md rather than teaching repo-checkout
@@ -195,8 +211,22 @@ class CommandContractDocTests(unittest.TestCase):
         self.assertNotIn("$PKG", section)
         self.assertIn("source .venv/bin/activate && obs-migrate doctor", section)
         self.assertIn("console script, not a global binary", section)
-        self.assertIn("pipx install", section)
-        self.assertNotIn("There is no global `obs-migrate` binary", section)
+        self.assertIn("uv tool install 'elastic-observability-migration[all]'", section)
+
+    def test_operator_docs_in_page_anchors_resolve(self):
+        # The `command not found` section is reached through an in-page link, so
+        # a heading reword must not silently leave a dangling anchor.
+        for path in (ROOT_README, COMMAND_CONTRACT):
+            text = path.read_text(encoding="utf-8")
+            slugs = {github_anchor(h) for h in re.findall(r"(?m)^#{1,6} .+$", text)}
+            for link in re.findall(r"\]\(#([^)]+)\)", text):
+                self.assertIn(
+                    link,
+                    slugs,
+                    msg=f"{path.name}: in-page link #{link} has no matching heading",
+                )
+        contract = COMMAND_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn(f"](#{github_anchor(COMMAND_NOT_FOUND_HEADING)})", contract)
 
     def test_install_skill_documents_the_invocation_safety_net(self):
         # `check_skill_mirror.py` only proves the three copies match each

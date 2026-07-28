@@ -22,7 +22,7 @@ Package:
 | Need | Detail |
 |------|--------|
 | OS | macOS or Linux (Windows is not supported) |
-| Python | 3.11 or newer |
+| Python | 3.11 or newer (tested on 3.11–3.13) |
 | Installer | [`uv`](https://docs.astral.sh/uv/) on `PATH` (provides `uv` and `uvx`) |
 
 Install with the `[all]` extra so Grafana, Datadog, and Kibana tooling are
@@ -71,20 +71,41 @@ lives in the shell you set it in, so re-export it in a new terminal.
 ### If you see `command not found: obs-migrate`
 
 `obs-migrate` is a console script, not a global binary: a bare `obs-migrate`
-only works when its install location is on `PATH` — after
-`source .venv/bin/activate`, or a `pipx install` / `uv tool install`.
-Otherwise, prefix it with a launcher. Pick **one**:
+only works when its install location is on `PATH`. Otherwise, prefix it with a
+launcher. Pick the line matching how you installed:
 
 ```bash
-# uvx, no install step (package spelled out in full: a new shell has no
-# variables from the Quick Start block above)
+# uvx: works in any shell, nothing installed first (package spelled out in
+# full, because a new shell has no variables from the Quick Start above)
 uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
 
-# persistent virtualenv: activate once per shell, then use the bare command
+# virtualenv, without activating it
+.venv/bin/obs-migrate doctor
+
+# same virtualenv, activated once per shell — then the bare command works
 source .venv/bin/activate && obs-migrate doctor
 ```
 
+The last two need a `.venv` you already created — see
+[Other install options](#other-install-options). If you want a bare
+`obs-migrate` in *every* shell with no prefix, install it as a tool
+(`uv tool install`, or `pipx install` if you prefer pipx); that is the first
+option below.
+
 ## Other install options
+
+**Persistent bare command** — installs once and puts `obs-migrate` on `PATH`
+for every shell, so no launcher prefix is needed:
+
+```bash
+uv tool install 'elastic-observability-migration[all]'
+obs-migrate doctor
+```
+
+`uv tool install` puts the shim in `~/.local/bin`; run `uv tool update-shell`
+once if that directory is not yet on your `PATH`. `pipx install` works the same
+way. `uv` picks your newest Python, so add `--python 3.13` if that is above the
+tested range.
 
 **Persistent virtualenv** (optional; prefer `uvx` above for first runs):
 
