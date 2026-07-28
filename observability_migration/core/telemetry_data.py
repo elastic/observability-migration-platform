@@ -228,7 +228,13 @@ def generate_documents(
     now = now or datetime.datetime.now(datetime.UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.UTC)
-    timestamps = _document_timestamps(now, data_hours=data_hours, interval_sec=interval_sec)
+    lookback_hours = _contract_lookback_hours(contract)
+    timestamps = _document_timestamps(
+        now,
+        data_hours=data_hours,
+        interval_sec=interval_sec,
+        lookback_hours=lookback_hours,
+    )
     rng = random.Random(42)
     counter_state: dict[tuple[str, str, int], float] = {}
 
@@ -604,7 +610,17 @@ def _document_timestamps(
     *,
     data_hours: float,
     interval_sec: int,
+    lookback_hours: float = 0.0,
 ) -> list[datetime.datetime]:
+    """Build seed timestamps covering the requested recent window.
+
+    When ``lookback_hours`` exceeds ``data_hours`` (from a contract
+    ``minimum_lookback`` for week-over-week panels), also emit sparse older
+    points so those historical windows are non-empty without exploding the
+    document count at the dense ``interval_sec``.
+    """
+    data_hours = max(0.0, float(data_hours or 0.0))
+    lookback_hours = max(data_hours, float(lookback_hours or 0.0))
     total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
     timestamps = {
         now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
@@ -617,7 +633,30 @@ def _document_timestamps(
             dense_start + datetime.timedelta(seconds=idx * 60)
             for idx in range(dense_points)
         )
+    if lookback_hours > data_hours:
+        # Sparse older span: hourly (or coarser when interval_sec is larger).
+        sparse_interval = max(int(interval_sec), 3600)
+        older_start = now - datetime.timedelta(hours=lookback_hours)
+        recent_start = now - datetime.timedelta(hours=data_hours)
+        cursor = older_start
+        while cursor < recent_start:
+            timestamps.add(cursor)
+            cursor += datetime.timedelta(seconds=sparse_interval)
     return sorted(timestamps)
+
+
+def _contract_lookback_hours(contract: dict[str, Any]) -> float:
+    """Return the maximum ``minimum_lookback`` across streams, in hours."""
+    max_seconds = 0
+    for stream in (contract.get("streams") or {}).values():
+        if not isinstance(stream, dict):
+            continue
+        max_seconds = max(
+            max_seconds,
+            int(stream.get("_lookback_seconds") or 0),
+            _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
+        )
+    return max_seconds / 3600.0 if max_seconds else 0.0
 
 
 def _ensure_dimension_value_coverage(

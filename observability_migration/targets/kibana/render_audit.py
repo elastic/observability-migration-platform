@@ -50,6 +50,12 @@ _FIELD_ABSENCE_RE = re.compile(
     r"Unknown column|unknown field|invalid column|column name or index is invalid",
     re.IGNORECASE,
 )
+# Explicit ``Unknown column [field.name]`` / ``unknown field [field.name]`` —
+# filter fields (not just breakdowns) that ES rejected because they are absent.
+_UNKNOWN_COLUMN_NAME_RE = re.compile(
+    r"(?:Unknown column|unknown field)\s*\[([^\]]+)\]",
+    re.IGNORECASE,
+)
 
 # Console signatures that indicate a panel/query/render failure — specific enough
 # to exclude benign platform noise. A bare "kibana" keyword is intentionally NOT
@@ -436,12 +442,20 @@ def classify_panel(
         # a breakdown field is absent — never downgrade it (hunt #4).
         if available_fields is not None and _FIELD_ABSENCE_RE.search(text):
             avail = set(available_fields)
-            missing = [f for f in breakdown_fields if f and f not in avail]
+            named_missing = [
+                name
+                for name in _UNKNOWN_COLUMN_NAME_RE.findall(text)
+                if name and name not in avail
+            ]
+            breakdown_missing = [f for f in breakdown_fields if f and f not in avail]
+            missing = list(dict.fromkeys([*named_missing, *breakdown_missing]))
             if missing:
                 return PanelRenderResult(
                     title=title, status="error", error_class="field_gap",
-                    missing_fields=list(dict.fromkeys(missing)),
-                    detail=f"{markers[0]}; breakdown field(s) absent from target: {missing}",
+                    missing_fields=missing,
+                    detail=(
+                        f"{markers[0]}; field(s) absent from target: {missing}"
+                    ),
                 )
         return PanelRenderResult(
             title=title, status="error", error_class="render_error", detail=markers[0]
