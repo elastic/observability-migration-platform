@@ -16,7 +16,7 @@
 
 services:
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.0-SNAPSHOT
     container_name: redis-rig-es
     environment:
       - discovery.type=single-node
@@ -35,7 +35,7 @@ services:
       retries: 20
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:9.5.0
+    image: docker.elastic.co/kibana/kibana:9.5.0-SNAPSHOT
     container_name: redis-rig-kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
@@ -121,12 +121,14 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=1d
 
-  otelcol:
-    image: otel/opentelemetry-collector-contrib:0.106.0
-    container_name: redis-rig-otelcol
+  redis-scraper:
+    image: python:3.11-slim
+    container_name: redis-rig-scraper
     volumes:
-      - ./otelcol-config.yaml:/etc/otelcol/config.yaml:ro
-    command: ["--config=/etc/otelcol/config.yaml"]
+      - ./redis_scraper.py:/app/redis_scraper.py:ro
+    working_dir: /app
+    command: >
+      /bin/sh -c "pip install requests --quiet && python redis_scraper.py"
     networks:
       - redis-rig
     depends_on:
@@ -134,6 +136,7 @@ services:
         condition: service_healthy
       redis_exporter:
         condition: service_started
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana-oss:11.3.1

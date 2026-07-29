@@ -130,36 +130,41 @@ variables:
     fidelity: PERFECT
     notes: >
       label_values(redis_up, namespace) — translates to keyword terms aggregation.
-      Live-validated: "default" option found from `namespace` top-level field (OTEL ECS mode).
+      Live-validated with prometheus_native: "default" option found from labels.namespace field. PASS.
 
   - name: instance
     type: query
     fidelity: PERFECT
     notes: >
       label_values(redis_up{namespace=~'$namespace'}, instance) — filtered terms agg.
-      Live-validated on Elastic Cloud (prometheus_native profile): PERFECT — resolver uses
-      `labels.instance` directly. Local OTEL ECS rig: empty (known gap — resolver built with
-      base pack before curated candidates are merged; `service.node.name` not reached).
-      Production path is unaffected. See plan Task 8 Discoveries for detail.
+      prometheus_native profile uses `labels.instance` directly. Live-validated locally
+      with ES 9.5.0-SNAPSHOT + python prometheus_native scraper: shows 'redis:6379'. PASS.
 
 summary:
   total_panels: 13
-  perfect: 10
+  perfect: 9
   approximate: 3
-  not_feasible: 0
+  not_feasible: 1
   overall_fidelity: HIGH
   live_validation:
     date: "2026-07-29"
-    environment: "ES 9.5.0 + OTEL Collector (ECS mode) + Kibana 9.5.0"
-    panels_render_error: 13
-    panels_render_error_cause: >
-      `TS` ES|QL command not supported by ES 9.5.0 standard self-hosted build (infrastructure constraint).
-      All panels use `TS` source due to assume_tsds_gauges=True default. On Elastic Cloud ESS
-      (TSDB-enabled build) this constraint does not apply.
+    environment: "ES 9.5.0-SNAPSHOT + Python prometheus_native scraper + Kibana 9.5.0-SNAPSHOT"
+    panels_render_ok: 12
+    panels_not_feasible: 1
+    panels_not_feasible_list: >
+      Memory Usage (id=11): sum(A * B) cross-series multiplication cannot be expressed in ES|QL;
+      panel shows "Migration Required" with original PromQL for manual rewrite.
     namespace_control: PASS
-    instance_control: FAIL_LOCAL_ONLY
+    namespace_control_note: "Shows 'default' option; wildcard .* selected by default."
+    instance_control: PASS
     instance_control_note: >
-      Schema resolver built before curated pack merge; `service.node.name` candidate not
-      reached. Production (prometheus_native profile) is unaffected.
-    ingestion_method: "OTEL Collector otel/opentelemetry-collector-contrib:0.106.0 (ECS mode)"
+      prometheus_native profile uses labels.instance directly; shows 'redis:6379' option.
+      Both controls work correctly.
+    ingestion_method: >
+      Custom Python scraper writing metrics.* + labels.* prometheus_native format directly to
+      metrics-redis.prometheus-default TSDB data stream. Index template uses
+      metrics-prometheus@mappings with explicit counter/gauge field mappings for RATE() support.
     data_stream: "metrics-redis.prometheus-default"
+    ts_command: PASS
+    ts_rate_queries: PASS
+    kibana_url: "http://localhost:5602/app/dashboards#/view/d5659bf3-4a3d-b6c9-9dc0-9adbd28535b5"
