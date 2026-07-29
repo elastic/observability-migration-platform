@@ -124,8 +124,12 @@ class TestIssue316EsqlAdaptiveTbucket(unittest.TestCase):
 
 
 class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
-    def test_keeps_native_promql_when_target_supports_label_matcher_params(self):
-        """#319: stale #230 fallthrough must not win when the feature is supported."""
+    def test_falls_through_to_esql_even_when_target_supports_label_matcher_params(self):
+        """ES supports ?param in PromQL label matchers, but Kibana does not forward
+        dashboard control values as named params inside PROMQL command expressions.
+        The ES-side probe marks the feature supported, yet panels with control-bound
+        label matchers must still fall through to ES|QL so ?instance lands in a
+        WHERE clause that Kibana DOES bind. (#230 / #319)"""
         features = {
             PROMQL_LABEL_MATCHER_PARAMS: {
                 "supported": True,
@@ -143,9 +147,10 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         )
         self.assertIsNotNone(yaml_panel)
         query = yaml_panel["esql"]["query"]
-        self.assertTrue(query.startswith("PROMQL"), query)
-        self.assertIn("device=~?device_filtered", query)
-        self.assertNotIn("WHERE device", query)
+        # Must fall through to ES|QL regardless of PROMQL_LABEL_MATCHER_PARAMS,
+        # because Kibana does not inject control values into PROMQL expressions.
+        self.assertFalse(query.startswith("PROMQL"), query)
+        self.assertTrue(query.startswith("TS "), query)
 
     def test_still_falls_through_when_feature_unsupported(self):
         yaml_panel, _ = _translate(

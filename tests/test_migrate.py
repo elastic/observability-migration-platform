@@ -1061,9 +1061,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
 
     def test_panel_with_control_bound_label_matcher_routes_to_native_esql(self):
-        """Issue #319: when PromQL label-matcher params are supported, keep native
-        PROMQL with ``?var`` inside the matcher (ES/Kibana 9.5+). Issue #230's
-        ES|QL fallthrough remains only when the feature is unsupported.
+        """Issue #319 / #230: panels with control-bound label matchers must always
+        fall through to ES|QL RLIKE binding, even when PROMQL_LABEL_MATCHER_PARAMS
+        is supported at the ES level.
+
+        ES 9.5+ accepts ``?param`` inside PromQL label filters, but Kibana does
+        NOT forward dashboard control values as named params into the opaque PROMQL
+        expression string — it only injects ``?_tstart``/``?_tend`` at the command-
+        argument level.  Staying native PROMQL would leave ``?instance`` unbound.
         """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
@@ -1088,9 +1093,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         yaml_panel, _result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
 
-        self.assertIn("PROMQL", query)
-        self.assertIn("instance=~?instance", query)
-        self.assertNotIn("RLIKE ?instance", query)
+        # Must fall through to ES|QL RLIKE binding regardless of ES-side support.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("RLIKE ?instance", query)
+        self.assertNotIn("instance=~?instance", query)
 
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
@@ -1496,8 +1502,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("?host", rendered)
 
     def test_panel_template_label_matcher_binds_via_native_esql_when_feature_supported(self):
-        """Issue #319: with ``promql_label_matcher_params`` supported, keep native
-        PROMQL and rewrite ``$host`` → ``?host`` inside the matcher.
+        """Issue #319 / #230: with ``promql_label_matcher_params`` supported at the
+        ES level, panels with control-bound label matchers must still fall through to
+        ES|QL RLIKE binding — Kibana does not forward dashboard control values as
+        named params inside the PROMQL command's expression string.
         """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
@@ -1524,8 +1532,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "migrated")
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
-        self.assertIn("host=?host", query)
+        # Must fall through to ES|QL regardless of ES-side PROMQL_LABEL_MATCHER_PARAMS.
+        # The equality matcher ``host="$host"`` becomes ``host == ?host`` in ES|QL.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("?host", query)
+        self.assertNotIn("host=?host", query)  # not the native PROMQL ?param form
 
     def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
         self.seed_field_caps({
@@ -8008,12 +8019,15 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
-        includeAll must loosen to a regex match so the control's ``.*`` default
-        selects every series on first load (PR #133).
+        includeAll must fall through to ES|QL so Kibana can bind the control
+        via RLIKE (PR #133, issue #230, issue #319).
 
-        When ``promql_label_matcher_params`` is supported (#319), keep native
-        PROMQL with ``host=~?host`` (issue #230's ES|QL fallthrough only applies
-        when that feature is unsupported — see the companion test below)."""
+        ES 9.5+ accepts ``?param`` inside PromQL label filters, but Kibana only
+        injects ``?_tstart``/``?_tend`` at the PROMQL command-argument level and
+        does NOT forward dashboard control values as named params into the opaque
+        PromQL expression string.  Therefore panels with control-bound label
+        matchers must always route to ES|QL RLIKE binding regardless of whether
+        ``PROMQL_LABEL_MATCHER_PARAMS`` reports ES-side support."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -8061,9 +8075,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
 
         rendered = yaml.dump(doc)
-        self.assertIn("PROMQL", rendered)
-        self.assertIn("host=~?host", rendered)
-        self.assertNotIn("RLIKE ?host", rendered)
+        # Must fall through to ES|QL even when PROMQL_LABEL_MATCHER_PARAMS is
+        # supported — Kibana does not inject control values into PROMQL expressions.
+        self.assertNotIn("PROMQL", rendered)
+        self.assertIn("RLIKE ?host", rendered)
+        self.assertNotIn("host=~?host", rendered)
 
     def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
         """Issue #230: without PromQL label-matcher params, control-bound matchers

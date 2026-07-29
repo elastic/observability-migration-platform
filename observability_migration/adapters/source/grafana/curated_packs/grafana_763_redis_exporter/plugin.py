@@ -10,7 +10,17 @@ _MEMORY_RATIO_RE = re.compile(
 )
 
 
+_PACK_MARKER = "_grafana_763_redis_exporter"
+
+
 def register(api):
+    # Mark the curated RulePackConfig so rules below only fire when this pack
+    # is active.  The marker survives deepcopy into the merged pack returned by
+    # resolve_pack_for_dashboard but is absent from any unrelated RulePackConfig.
+    # This prevents the globally-registered rules from firing for other dashboards
+    # that happen to use the same PromQL expressions (e.g. gnet_id=11835).
+    setattr(api["rule_pack"], _PACK_MARKER, True)
+
     @api["query_classifiers"].register("redis_memory_ratio_unblock", priority=0)
     def redis_memory_ratio_unblock(context):
         """Clear not_feasible_reasons before fragment_guardrails/family_classifier run.
@@ -23,6 +33,8 @@ def register(api):
         here (priority=0, before fragment_guardrails at priority=1) so the translator
         at priority=0 can run.
         """
+        if not getattr(context.rule_pack, _PACK_MARKER, False):
+            return None
         if not _MEMORY_RATIO_RE.search(context.promql_expr or ""):
             return None
         frag = context.fragment
@@ -41,8 +53,11 @@ def register(api):
         scraper layout both metrics are written into the same document per label-set,
         so the ratio can be computed via EVAL within a single FROM query.
 
-        Only fires when both metric names appear in the same PromQL expression.
+        Only fires when this curated pack's RulePackConfig is active (pack marker set)
+        AND both metric names appear in the same PromQL expression.
         """
+        if not getattr(context.rule_pack, _PACK_MARKER, False):
+            return None
         if not _MEMORY_RATIO_RE.search(context.promql_expr or ""):
             return None
 

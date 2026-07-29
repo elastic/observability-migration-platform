@@ -2100,11 +2100,24 @@ def _translate_panel_native_promql(
             )
         return None
     # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
-    # used to force an ES|QL fallthrough (#230) because Kibana could not bind
-    # ``?param`` inside an opaque PROMQL command. When the target advertises
-    # ``promql_label_matcher_params`` (issue #319 / ES+Kibana 9.5+), keep native
-    # PROMQL and let ``_clean_promql_for_native`` rewrite ``$var`` → ``?var``.
-    # The unsupported case is already rejected by ``can_use_native_promql`` above.
+    # is rewritten to ``{instance=~?instance}`` inside the opaque PromQL string.
+    # ES 9.5+ accepts ``?param`` in PromQL label filters when the HTTP request
+    # supplies the param in its body — ``PROMQL_LABEL_MATCHER_PARAMS`` probes
+    # this ES-side capability.  However, Kibana does NOT forward dashboard
+    # control values as named params inside the PROMQL command's PromQL
+    # expression; it only injects ``?_tstart``/``?_tend`` at the command-
+    # argument level.  Keeping the panel native therefore leaves ``?instance``
+    # unbound and Kibana reports "Parameter [?instance] value not found".
+    # Fall through to ES|QL where the filter lands in ``WHERE … RLIKE ?instance``
+    # at the outer ES|QL level, which Kibana DOES bind correctly.
+    # Revisit when Kibana forwards control params into PROMQL expressions.
+    if _promql_label_matcher_has_template_variable(expr):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: Kibana does not forward dashboard control params "
+            "into PromQL label matchers (uses ES|QL RLIKE binding instead)",
+        )
+        return None
     # Pre-flight type check: if the source PromQL applies a counter-style
     # range function (``rate``/``irate``/``increase``) to a metric that
     # the target index has typed as gauge, the native PROMQL command will
@@ -2414,9 +2427,10 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        # Label-matcher template vars keep native PROMQL when
-        # ``promql_label_matcher_params`` is supported (#319); otherwise
-        # ``can_use_native_promql`` already returned above (#230).
+        # Kibana does not forward dashboard control params into the PROMQL
+        # command's PromQL string — fall through to ES|QL RLIKE binding.
+        if _promql_label_matcher_has_template_variable(expr):
+            return None
         regex_default = getattr(
             rule_pack, "_regex_default_param_names", frozenset()
         )
