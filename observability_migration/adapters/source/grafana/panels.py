@@ -4142,6 +4142,34 @@ def _build_multi_target_series_query(translations):
         if rebuilt is not None and len({spec.source_type for spec in rebuilt[1]}) == 1:
             plans, all_specs, warnings = rebuilt
 
+    # Dedup: when a formula target's intermediate spec and a simple target's spec
+    # both compute the same aggregation (same stats_expr, source_type, filters),
+    # rewrite the formula's plan.expr to use the simple-target alias directly and
+    # remove the redundant intermediate spec from all_specs.  This avoids emitting
+    # two identical STATS aggregations (e.g. two ``SUM(same_metric)`` under
+    # different internal aliases).
+    _simple_content: dict = {}  # (source_type, stats_expr, filters_key) -> alias
+    for _, _p in plans:
+        if len(_p.specs) == 1 and not _p.specs[0].eval_expr:
+            _s = _p.specs[0]
+            _key = (_s.source_type, _s.stats_expr, tuple(sorted(_s.filters or [])))
+            if _key not in _simple_content:
+                _simple_content[_key] = _s.alias
+    _formula_remap: dict = {}  # intermediate_alias -> canonical_simple_alias
+    for _, _p in plans:
+        if len(_p.specs) <= 1:
+            continue
+        for _spec in _p.specs:
+            _key = (_spec.source_type, _spec.stats_expr, tuple(sorted(_spec.filters or [])))
+            _canon = _simple_content.get(_key)
+            if _canon and _canon != _spec.alias:
+                _formula_remap[_spec.alias] = _canon
+    if _formula_remap:
+        for _, _p in plans:
+            for _old, _new in _formula_remap.items():
+                _p.expr = re.sub(rf"\b{re.escape(_old)}\b", _new, _p.expr)
+        all_specs = [_s for _s in all_specs if _s.alias not in _formula_remap]
+
     shared = _build_shared_measure_pipeline(base.index, all_specs)
     if not shared:
         return None
@@ -4155,6 +4183,7 @@ def _build_multi_target_series_query(translations):
     metric_label_hints: dict[str, str] = {}
     target_provenance: list[dict[str, str]] = []
     used_aliases = set()
+    _stats_renames: dict[str, str] = {}  # old_alias -> new_alias from inline-STATS opt
     for idx, (translation, plan) in enumerate(plans, start=1):
         alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
         raw_alias = translation.metadata.get("series_alias") or translation.output_metric_field or translation.metric_name or "series"
@@ -4206,12 +4235,27 @@ def _build_multi_target_series_query(translations):
                 renamed = parts[stats_idx].replace(f"{old_col} =", f"{new_col} =", 1)
                 if renamed != parts[stats_idx]:
                     parts[stats_idx] = renamed
+                    _stats_renames[plan.expr] = result_alias
                     metric_fields.append(result_alias)
                     metric_label_hints[result_alias] = raw_alias
                     continue
         parts.append(f"| EVAL {_esql_identifier(result_alias)} = {eval_expr}")
         metric_fields.append(result_alias)
         metric_label_hints[result_alias] = raw_alias
+
+    # Propagate inline-STATS renames to any formula EVALs that reference old aliases.
+    # The inline-STATS optimisation renames a STATS column to the legend alias but
+    # only skips the EVAL for *that* target; other targets that reference the old
+    # alias in their own EVAL expressions still need updating.
+    if _stats_renames:
+        for _i, _part in enumerate(parts):
+            if not _part.lstrip().startswith("| EVAL"):
+                continue
+            _updated = _part
+            for _old, _new in _stats_renames.items():
+                _updated = re.sub(rf"\b{re.escape(_old)}\b", _new, _updated)
+            if _updated != _part:
+                parts[_i] = _updated
 
     summary_mode = all(_summary_mode_from_metadata(translation.metadata) for translation, _ in plans)
     collapsed = None

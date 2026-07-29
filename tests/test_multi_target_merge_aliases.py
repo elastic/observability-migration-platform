@@ -527,3 +527,65 @@ def test_multi_target_simple_renames_folded_into_stats():
     assert "hits" in metric_fields
     assert "misses" in metric_fields
     assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_formula_and_simple_target_sharing_same_metric_deduplicates_stats():
+    """A formula target and a simple target that both aggregate the same metric
+    must not produce two identical STATS terms.
+
+    Example: ``not_expiring = keys - keys_expiring`` (formula, Target A) and
+    ``expiring = keys_expiring`` (simple, Target B).  Both require
+    ``SUM(keys_expiring)`` — only one STATS term should appear, and the formula
+    EVAL must reference the simple target's final alias directly.
+    """
+    panel = {
+        "id": 1,
+        "type": "timeseries",
+        "title": "Expiring vs Not-Expiring Keys",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": "sum(redis_db_keys) - sum(redis_db_keys_expiring)",
+                "legendFormat": "not expiring",
+                "refId": "A",
+            },
+            {
+                "expr": "sum(redis_db_keys_expiring)",
+                "legendFormat": "expiring",
+                "refId": "B",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = yaml_panel["esql"]["query"]
+
+    # SUM(redis_db_keys_expiring) must appear exactly once in the STATS line.
+    stats_line = next(
+        (line for line in query.splitlines() if "| STATS" in line), ""
+    )
+    # The field may be prefixed with "metrics." when a live ES resolver is used;
+    # assert on the bare name to keep the test resolver-agnostic.
+    assert stats_line.count("SUM(redis_db_keys_expiring)") == 1 or \
+           stats_line.count("SUM(metrics.redis_db_keys_expiring)") == 1, (
+        f"Duplicate SUM in STATS: {stats_line}"
+    )
+    # The formula EVAL must use the simple target's alias, not an internal alias.
+    assert "| EVAL not_expiring = " in query
+    eval_line = next(
+        line for line in query.splitlines()
+        if "not_expiring" in line and "EVAL" in line
+    )
+    assert "expiring" in eval_line, f"Formula EVAL should use 'expiring': {eval_line}"
+    # Ugly intermediate aliases must not appear anywhere.
+    assert "expiring_A_rhs" not in query
+    assert "expiring_B" not in query
+    assert structural_errors(check_esql_structure(query)) == []
