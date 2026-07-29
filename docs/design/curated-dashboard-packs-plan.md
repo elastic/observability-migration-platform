@@ -40,8 +40,8 @@
 | Task 5/6: Gap analysis | ✅ | offline | See Key Discoveries and fidelity_manifest.yaml for each pack |
 | Task 7: Redis 763 pack | ✅ | `feature/curated-packs-redis` | `pack.yaml` + `fidelity_manifest.yaml` — all 13 panels classified |
 | Task 7+: Redis 18405 + 18406 packs | ✅ | `feature/curated-packs-redis` | Both packs; 9 panels each |
-| Task 8: Docker live validation | ✅ | `release/v1.0.0` | OTEL Collector replaces Prometheus remote_write; TS ES|QL blocked by ES 9.0.1 infra; namespace control OK; instance control gap documented |
-| Task 9: Final docs | ✅ | `release/v1.0.0` | See Discoveries from Task 9 |
+| Task 8: Docker live validation | ✅ | `feat/curated-dashboard-packs` | OTEL Collector replaces Prometheus remote_write; TS ES|QL blocked by ES 9.5.0 self-hosted; namespace control OK; instance control gap documented |
+| Task 9: Final docs | ✅ | `feat/curated-dashboard-packs` | See Discoveries from Task 9 |
 
 ### Actual test command used
 ```bash
@@ -1370,8 +1370,8 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Discoveries from Task 8 (2026-07-29 — live Docker validation):**
 
-**Infrastructure finding — `/_prometheus/metrics` not available in ES 9.0.1 self-hosted:**
-The Docker rig originally used Prometheus `remote_write` to push metrics to ES via the `/_prometheus/metrics` endpoint. This endpoint exists only in Elastic Cloud / Serverless; ES 9.0.1 self-hosted returns EOF. Fix: replaced the Prometheus remote_write pipeline with an OpenTelemetry Collector (`otel/opentelemetry-collector-contrib:0.106.0`) that scrapes `redis_exporter` directly and pushes to ES via `_bulk` using the `elasticsearch` exporter in ECS mapping mode. New files: `parity-rig/curated/grafana_763_redis_exporter/otelcol-config.yaml`. The `prometheus.yml` remote_write block was removed.
+**Infrastructure finding — `/_prometheus/metrics` not available in ES 9.5.0 self-hosted:**
+The Docker rig originally used Prometheus `remote_write` to push metrics to ES via the `/_prometheus/metrics` endpoint. This endpoint exists only in Elastic Cloud / Serverless; ES 9.5.0 self-hosted returns EOF. Fix: replaced the Prometheus remote_write pipeline with an OpenTelemetry Collector (`otel/opentelemetry-collector-contrib:0.106.0`) that scrapes `redis_exporter` directly and pushes to ES via `_bulk` using the `elasticsearch` exporter in ECS mapping mode. New files: `parity-rig/curated/grafana_763_redis_exporter/otelcol-config.yaml`. The `prometheus.yml` remote_write block was removed.
 
 **Data stream and data view setup:**
 OTEL ECS mode writes to `metrics-redis.prometheus-default` (`data_stream.dataset=redis.prometheus`). The compiled Kibana NDJSON references data views by ID — must create the data view with the exact ID `metrics-redis.prometheus-default` (not an auto-generated UUID). Creating through Kibana UI with `PUT /api/data_views/data_view` with `{"id": "metrics-redis.prometheus-default", ...}` resolves the import error.
@@ -1384,8 +1384,8 @@ OTEL ECS mode writes to `metrics-redis.prometheus-default` (`data_stream.dataset
 - `redis_commands_total`, `redis_memory_used_bytes`, etc. — all metrics present as top-level fields
 - **NOT present**: `service.instance.id`, `labels.instance`, `host.name`
 
-**`TS` ES|QL command not available in ES 9.0.1 standard build:**
-All panels fail with `Couldn't parse Elasticsearch ES|QL query. Error: line 1:1: mismatched input 'TS' expecting {'explain', 'row', 'from', 'show'}`. This is an ES build constraint: `TS` (TSDB time-series source) is a TSDB-specific ES|QL command not parsed by ES 9.0.1's standard build. Production Elastic Cloud / ESS runs TSDB-enabled builds where `TS` is available. `assume_tsds_gauges: True` (the default) causes all metrics to use `TS` rather than `FROM`. This is an **infrastructure constraint, not a translation bug** — confirmed at parser level, not execution.
+**`TS` ES|QL command not available in ES 9.5.0 standard build:**
+All panels fail with `Couldn't parse Elasticsearch ES|QL query. Error: line 1:1: mismatched input 'TS' expecting {'explain', 'row', 'from', 'show'}`. This is an ES build constraint: `TS` (TSDB time-series source) is a TSDB-specific ES|QL command not parsed by ES 9.5.0's standard build. Production Elastic Cloud / ESS runs TSDB-enabled builds where `TS` is available. `assume_tsds_gauges: True` (the default) causes all metrics to use `TS` rather than `FROM`. This is an **infrastructure constraint, not a translation bug** — confirmed at parser level, not execution.
 
 **namespace control — working correctly:**
 `namespace` dropdown showed "default" option with 1 active filter. The control queries the `namespace` top-level field (the OTEL ECS fallback candidate in the updated `pack.yaml`) and correctly finds the value. Selecting it filtered the dashboard.
@@ -1394,7 +1394,7 @@ All panels fail with `Couldn't parse Elasticsearch ES|QL query. Error: line 1:1:
 `instance` dropdown showed "No options found" / 0 options. Root cause: the `SchemaResolver` is built once with the base `RulePackConfig` before per-dashboard curated packs are applied. `_build_discovered_mappings()` uses `PROM_TO_OTEL_CANDIDATES` (the base pack candidates), which lists `['service.instance.id', 'host.name', 'host.ip']` for `instance` — none of which are present in OTEL ECS data. The curated `pack.yaml` adds `service.node.name` as a candidate, but the resolver is already built and never re-ran with the curated candidates. The control query therefore uses `service.instance.id` (first candidate, not present) and returns no results.
 
 **Impact of instance control gap:**
-- **Local validation rig (ES 9.0.1 + OTEL ECS):** instance control empty
+- **Local validation rig (ES 9.5.0 + OTEL ECS):** instance control empty
 - **Production (prometheus_native profile):** resolver uses `labels.instance` directly (bypassing candidates entirely) — unaffected. The `prometheus_native` profile is the standard Elastic Cloud Prometheus integration target.
 - **Remediation (future improvement):** Pass curated pack `label_candidates` into the schema resolver at resolve time, or rebuild `_discovered_mappings` after curated pack merge. Filed as a known improvement; does not block the current pack release since the production path is unaffected.
 
@@ -1477,11 +1477,11 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Discoveries from Task 9 (2026-07-29 — live gate validation):**
 
-**ES|QL render results (ES 9.0.1 local rig):**
+**ES|QL render results (ES 9.5.0 local rig):**
 - `render_error`: 13/13 panels — all fail with `mismatched input 'TS'` parser error (infrastructure constraint; see Task 8 discoveries)
 - `field_gap`: 0 (no field-missing errors — fields exist once TS is resolved)
 - `data_gap`: n/a (blocked at parse stage)
-- **Root cause is infrastructure (ES 9.0.1 doesn't support `TS`), NOT a translation bug.** The same migration output uploaded to Elastic Cloud ESS would parse and execute correctly.
+- **Root cause is infrastructure (ES 9.5.0 doesn't support `TS`), NOT a translation bug.** The same migration output uploaded to Elastic Cloud ESS would parse and execute correctly.
 
 **Controls / interaction audit (local rig):**
 - `namespace` control: PASS — "default" option found and filterable; control queries `namespace` top-level field
@@ -1493,7 +1493,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 **make test / make lint / make typecheck:** all passed (5136 tests, 0 failures, clean lint and typecheck) as of 2026-07-29.
 
 **Remaining known issues (not blocking pack release):**
-1. `TS` ES|QL support requires production Elastic Cloud — local ES 9.0.1 rig is permanently blocked at parser level
+1. `TS` ES|QL support requires production Elastic Cloud — local ES 9.5.0 rig is permanently blocked at parser level
 2. `instance` control empty in OTEL ECS ingestion mode — resolver gap (curated pack candidates not reaching `_build_discovered_mappings`); production `prometheus_native` profile unaffected
 3. These are documented infrastructure/architecture gaps, not migration correctness bugs
 
@@ -1598,7 +1598,7 @@ Review the output. Counters ending in `_total`, `_bucket`, `_count`, `_sum` are 
 3. `irate()` maps to `IRATE` in ES|QL — the counter classification in `metric_kinds` is what enables this.
 4. `instance` label → `service.instance.id`, `job` → `service.name` is the standard OTel mapping for Prometheus exporters.
 5. Layout: stat panels need to be roughly 2× wider in Kibana than in Grafana for comfortable display. The 48-col grid gives you more granular control.
-6. **OTEL Collector replaces Prometheus remote_write for local rigs:** ES 9.0.1 self-hosted doesn't have `/_prometheus/metrics`. Use `otel/opentelemetry-collector-contrib` with the `elasticsearch` exporter (ECS mapping mode) + `resource` processor to set `data_stream.*` attributes. The data stream name is `metrics-{dataset}-{namespace}`.
+6. **OTEL Collector replaces Prometheus remote_write for local rigs:** ES 9.5.0 self-hosted doesn't have `/_prometheus/metrics`. Use `otel/opentelemetry-collector-contrib` with the `elasticsearch` exporter (ECS mapping mode) + `resource` processor to set `data_stream.*` attributes. The data stream name is `metrics-{dataset}-{namespace}`.
 7. **Kibana data view ID must match compiled NDJSON:** The compiled dashboard NDJSON embeds data view references by ID. If importing fails with "missing references", delete the auto-ID data view and recreate it with the exact ID used in the NDJSON (e.g. `metrics-redis.prometheus-default`).
-8. **`TS` ES|QL command needs TSDB-enabled ES:** `assume_tsds_gauges=True` (default) means all metrics use `TS` source. Local ES 9.0.1 standard build rejects `TS` at the parser level. Production Elastic Cloud / ESS supports it. Do not use local ES 9.0.1 to validate panel rendering.
+8. **`TS` ES|QL command needs TSDB-enabled ES:** `assume_tsds_gauges=True` (default) means all metrics use `TS` source. Local ES 9.5.0 standard build rejects `TS` at the parser level. Production Elastic Cloud / ESS supports it. Do not use local ES 9.5.0 to validate panel rendering.
 9. **Schema resolver built before curated pack merge:** `SchemaResolver._build_discovered_mappings()` runs with the base pack candidates, not the per-dashboard curated candidates. Adding custom `label_candidates` to `pack.yaml` helps the CLI translation layer but doesn't reach the resolver's field-cap discovery. The `prometheus_native` production profile is unaffected (uses `labels.instance` directly).

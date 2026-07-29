@@ -150,10 +150,10 @@ summary:
   overall_fidelity: HIGH
   live_validation:
     date: "2026-07-29"
-    environment: "ES 9.0.1 + OTEL Collector (ECS mode) + Kibana 9.0.1"
+    environment: "ES 9.5.0 + OTEL Collector (ECS mode) + Kibana 9.5.0"
     panels_render_error: 13
     panels_render_error_cause: >
-      `TS` ES|QL command not supported by ES 9.0.1 standard build (infrastructure constraint).
+      `TS` ES|QL command not supported by ES 9.5.0 standard self-hosted build (infrastructure constraint).
       All panels use `TS` source due to assume_tsds_gauges=True default. On Elastic Cloud ESS
       (TSDB-enabled build) this constraint does not apply.
     namespace_control: PASS
