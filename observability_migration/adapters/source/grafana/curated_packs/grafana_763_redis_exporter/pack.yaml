@@ -33,15 +33,24 @@ query:
 
   # --- Prometheus label → OTel/Elastic field candidates -----------------
   # Listed in resolution priority order (first match wins).
+  # prometheus_native layout (default for redis_exporter scrapes) stores all
+  # Prometheus labels under labels.<name>.  Those candidates are listed first
+  # so offline migrations produce the correct field name without needing a
+  # live ES field-caps probe.  In live mode the source-faithful shortcut in
+  # SchemaResolver already returns labels.<name> for prometheus_native indices,
+  # so these candidates only matter for the offline fallback path.
   label_candidates:
     instance:
-      - service.instance.id
+      - labels.instance     # prometheus_native (primary for redis_exporter)
+      - service.instance.id # OTel ECS mode
       - service.node.name   # OTel ECS mode: prometheus `instance` label -> service.node.name
       - host.name
     job:
-      - service.name
+      - labels.job          # prometheus_native
+      - service.name        # OTel ECS mode
     namespace:
-      - service.namespace
+      - labels.namespace    # prometheus_native
+      - service.namespace   # OTel ECS mode
       - namespace           # OTel ECS mode: prometheus `namespace` label stored as top-level field
     cmd:
       - labels.cmd
