@@ -1,0 +1,163 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Redis 763 curated-pack validation rig
+# Usage:
+#   cd parity-rig/curated/grafana_763_redis_exporter
+#   docker compose up -d --wait
+#
+# Ports (non-conflicting with the main parity rig):
+#   9201 → Elasticsearch
+#   5602 → Kibana
+#   3001 → Grafana
+#   9091 → Prometheus
+#   9122 → redis_exporter
+#   6380 → Redis
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.1
+    container_name: redis-rig-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - xpack.license.self_generated.type=trial
+    ports:
+      - "9201:9200"
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.0.1
+    container_name: redis-rig-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+      - SERVER_NAME=kibana
+    ports:
+      - "5602:5601"
+    networks:
+      - redis-rig
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5601/api/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-rig-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Seed some activity so panels show data
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+
+  redis-load:
+    image: redis:7-alpine
+    container_name: redis-rig-load
+    networks:
+      - redis-rig
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          for i in $(seq 1 50); do
+            redis-cli -h redis SET "key:$i" "value:$i" EX 300 > /dev/null
+            redis-cli -h redis GET "key:$i" > /dev/null
+            redis-cli -h redis GET "key:missing:$i" > /dev/null
+          done
+          sleep 5
+        done
+
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-rig-exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    ports:
+      - "9122:9121"
+    networks:
+      - redis-rig
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: redis-rig-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    networks:
+      - redis-rig
+    depends_on:
+      - redis_exporter
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.106.0
+    container_name: redis-rig-otelcol
+    volumes:
+      - ./otelcol-config.yaml:/etc/otelcol/config.yaml:ro
+    command: ["--config=/etc/otelcol/config.yaml"]
+    networks:
+      - redis-rig
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redis_exporter:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana-oss:11.3.1
+    container_name: redis-rig-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SERVER_HTTP_PORT=3000
+    volumes:
+      - ./grafana_provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - redis-rig
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+networks:
+  redis-rig:
+    driver: bridge

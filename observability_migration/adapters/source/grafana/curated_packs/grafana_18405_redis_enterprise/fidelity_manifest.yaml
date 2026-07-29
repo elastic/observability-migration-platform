@@ -1,0 +1,120 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 18405 (Redis Enterprise: Cluster Status)
+# https://grafana.com/grafana/dashboards/18405-redis-enterprise-cluster-status/
+#
+# All panels are stat type. Layout: Grafana 24-col → Kibana 48-col (2× scale)
+
+schema_version: 1
+gnet_id: 18405
+gnet_revision: 1
+dashboard_title: "Redis Enterprise: Cluster Status"
+
+panels:
+  - id: 77
+    title: "Database Count"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "count(bdb_up) — simple gauge count; ES|QL COUNT(*) equivalent"
+    grafana_grid: {x: 0, y: 1, w: 8, h: 5}
+    kibana_grid: {x: 0, y: 0, w: 16, h: 6}
+
+  - id: 79
+    title: "Used Memory"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "sum(bdb_used_memory) — gauge sum"
+    grafana_grid: {x: 8, y: 1, w: 8, h: 5}
+    kibana_grid: {x: 16, y: 0, w: 16, h: 6}
+
+  - id: 88
+    title: "Throughput"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "sum(bdb_total_req) — gauge already in ops/sec; no rate needed"
+    grafana_grid: {x: 16, y: 1, w: 8, h: 5}
+    kibana_grid: {x: 32, y: 0, w: 16, h: 6}
+
+  - id: 4
+    title: "Memory Usage"
+    grafana_type: stat
+    fidelity: APPROXIMATE
+    notes: >
+      Ratio formula (bdb_used_memory / bdb_memory_limit). Native PromQL preserves exact
+      semantics. ES|QL fallback shows used_memory and memory_limit as separate stats.
+    grafana_grid: {x: 0, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 0, y: 6, w: 8, h: 6}
+
+  - id: 9
+    title: "Latency"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "bdb_avg_latency scalar — direct gauge read filtered by cluster + bdb"
+    grafana_grid: {x: 4, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 8, y: 6, w: 8, h: 6}
+
+  - id: 7
+    title: "Total Operations"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "bdb_total_req filtered by cluster + bdb — gauge ops/sec value"
+    grafana_grid: {x: 8, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 16, y: 6, w: 8, h: 6}
+
+  - id: 12
+    title: "Expiration"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "bdb_expired_objects — gauge, expired objects per second"
+    grafana_grid: {x: 12, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 24, y: 6, w: 8, h: 6}
+
+  - id: 5
+    title: "Key Count"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "scalar(bdb_no_of_keys) — scalar() dropped in translation; becomes single-value stat"
+    grafana_grid: {x: 16, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 32, y: 6, w: 8, h: 6}
+
+  - id: 6
+    title: "Connection Count"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "scalar(bdb_conns) — scalar() dropped; single-value stat"
+    grafana_grid: {x: 20, y: 7, w: 4, h: 4}
+    kibana_grid: {x: 40, y: 6, w: 8, h: 6}
+
+variables:
+  - name: cluster
+    type: query
+    fidelity: PERFECT
+    notes: "label_values(bdb_up, cluster)"
+
+  - name: bdb
+    type: query
+    fidelity: PERFECT
+    notes: "label_values(bdb_up{cluster=~'$cluster'}, bdb)"
+
+  - name: status
+    type: custom
+    fidelity: PERFECT
+    notes: "static custom variable"
+
+  - name: newStatus
+    type: custom
+    fidelity: PERFECT
+    notes: "static custom variable"
+
+  - name: aggregation
+    type: custom
+    fidelity: PERFECT
+    notes: "static custom variable for aggregation period"
+
+summary:
+  total_panels: 9
+  perfect: 8
+  approximate: 1
+  not_feasible: 0
+  overall_fidelity: HIGH

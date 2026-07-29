@@ -277,6 +277,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     migrate.add_argument("--plugin", action="append", default=[])
+    migrate.add_argument(
+        "--no-curated-packs",
+        action="store_true",
+        default=False,
+        dest="no_curated_packs",
+        help=(
+            "Disable automatic curated-pack loading for known Grafana community dashboards "
+            "(gnetId-matched bundles that improve migration fidelity out of the box). "
+            "By default curated packs are merged automatically; --rules-file always wins."
+        ),
+    )
     migrate.add_argument("--polish-metadata", action="store_true")
     migrate.add_argument(
         "--preflight", action="store_true",
@@ -1170,6 +1181,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--metric-map-file", mmf])
     for pl in args.plugin:
         legacy_argv.extend(["--plugin", pl])
+    if getattr(args, "no_curated_packs", False):
+        legacy_argv.append("--no-curated-packs")
     if args.polish_metadata:
         legacy_argv.append("--polish-metadata")
     if args.preflight:

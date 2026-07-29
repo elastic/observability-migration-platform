@@ -1,0 +1,36 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 18405
+# https://grafana.com/grafana/dashboards/18405-redis-enterprise-cluster-status/
+#
+# Source: Redis Enterprise Prometheus endpoint (bdb_* metrics)
+# Panels: 9 stat panels — 8 PERFECT, 1 APPROXIMATE (memory-usage ratio)
+# Note: Redis Enterprise exports rate metrics (bdb_total_req) as Prometheus gauges
+#       (already ops/sec); no rate() needed in PromQL or ES|QL.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  # All bdb_* metrics are Prometheus gauges from Redis Enterprise.
+  # bdb_total_req is a pre-computed ops/sec rate; classify as gauge so
+  # ES|QL translation reads the raw value without applying an extra rate.
+  metric_kinds:
+    bdb_up: gauge
+    bdb_used_memory: gauge
+    bdb_memory_limit: gauge
+    bdb_total_req: gauge
+    bdb_avg_latency: gauge
+    bdb_expired_objects: gauge
+    bdb_no_of_keys: gauge
+    bdb_conns: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  label_candidates:
+    cluster:
+      - service.name
+      - labels.cluster
+    bdb:
+      - db.name
+      - labels.bdb

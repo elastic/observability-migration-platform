@@ -115,7 +115,7 @@ from .preflight import (
     save_preflight_report,
 )
 from .rollout import build_rollout_plan, generate_review_queue, save_rollout_plan
-from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files
+from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files, resolve_pack_for_dashboard
 from .runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
     PROMQL_COMMAND_V0,
@@ -307,6 +307,18 @@ def parse_args(argv: list[str] | None = None):
         action="append",
         default=[],
         help="Optional Python plugin file exposing register(api)",
+    )
+    parser.add_argument(
+        "--no-curated-packs",
+        action="store_true",
+        default=False,
+        dest="no_curated_packs",
+        help=(
+            "Disable automatic curated-pack loading for known Grafana community dashboards. "
+            "By default, when a dashboard is identified by its gnetId, a bundled curated pack "
+            "is merged in automatically (user --rules-file always wins on collision). "
+            "Set this flag to skip curated packs and use only the base rule pack."
+        ),
     )
     parser.add_argument(
         "--print-rule-catalog",
@@ -2305,12 +2317,20 @@ def main(argv: list[str] | None = None):
             dashboard_uid=str(dashboard.get("uid") or ""),
             used_stems=used_dashboard_stems,
         )
+        dashboard_pack = resolve_pack_for_dashboard(
+            dashboard,
+            rule_pack,
+            no_curated=getattr(args, "no_curated_packs", False),
+        )
+        if dashboard_pack is not rule_pack:
+            gnet_id = dashboard.get("gnetId", "?")
+            print(f"  [curated pack] gnetId={gnet_id} — applying bundled curated rules")
         result, yaml_path = _translate_dashboard_resilient(
             dashboard,
             yaml_dir,
             datasource_index=args.data_view,
             esql_index=args.esql_index or args.data_view,
-            rule_pack=rule_pack,
+            rule_pack=dashboard_pack,
             resolver=resolver,
             output_stem=output_stem,
         )

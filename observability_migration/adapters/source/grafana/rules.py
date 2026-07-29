@@ -301,6 +301,125 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
     return pack
 
 
+def _curated_pack_dir() -> Path:
+    from observability_migration.adapters.source.grafana import curated_packs as _cp_module
+    return Path(_cp_module.__file__).parent
+
+
+def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
+    """Load the curated RulePackConfig for a dashboard, or None if not registered."""
+    from observability_migration.adapters.source.grafana.curated_packs import find_curated_pack
+
+    gnet_id = dashboard.get("gnetId")
+    if gnet_id is not None:
+        try:
+            gnet_id = int(gnet_id)
+        except (TypeError, ValueError):
+            gnet_id = None
+
+    title = str(dashboard.get("title") or "")
+    tags = list(dashboard.get("tags") or [])
+
+    entry = find_curated_pack(gnet_id=gnet_id, title=title, tags=tags)
+    if entry is None:
+        return None
+
+    pack_dir = _curated_pack_dir() / str(entry["path"])
+    pack_yaml = pack_dir / "pack.yaml"
+    plugin_py = pack_dir / "plugin.py"
+
+    pack = load_rule_pack_files([str(pack_yaml)] if pack_yaml.exists() else [])
+    if plugin_py.exists():
+        load_python_plugins([str(plugin_py)], pack)
+
+    return pack
+
+
+def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> RulePackConfig:
+    """Build a composed pack: curated as the base layer, user pack wins on collision."""
+    import copy
+    result = copy.deepcopy(curated)
+
+    _defaults = RulePackConfig()
+
+    # Scalars: user wins if they differ from the default
+    for field_name in (
+        "default_rate_window", "default_gauge_agg", "ts_time_filter", "from_time_filter",
+        "ts_bucket", "from_bucket", "logs_index", "metrics_dataset_filter",
+        "logs_dataset_filter", "logs_message_field", "logs_timestamp_field", "logs_limit",
+        "native_promql", "assume_tsds_gauges",
+    ):
+        user_val = getattr(user, field_name)
+        default_val = getattr(_defaults, field_name)
+        if user_val != default_val:
+            setattr(result, field_name, user_val)
+
+    # Dicts: user keys win
+    result.metric_kinds.update(user.metric_kinds)
+    result.metric_map.update(user.metric_map)
+    result.label_rewrites.update(user.label_rewrites)
+    result.panel_type_overrides.update(user.panel_type_overrides)
+    result.control_field_overrides.update(user.control_field_overrides)
+
+    # Lists: append-unique; user entries take precedence by appearing first
+    for item in user.not_feasible_patterns:
+        if item not in result.not_feasible_patterns:
+            result.not_feasible_patterns.append(item)
+    for item in user.warning_patterns:
+        if item not in result.warning_patterns:
+            result.warning_patterns.append(item)
+    for suffix in user.counter_suffixes:
+        _append_unique(result.counter_suffixes, suffix)
+    for suffix in user.info_metric_suffixes:
+        _append_unique(result.info_metric_suffixes, suffix)
+    for skip_type in user.skip_panel_types:
+        _append_unique(result.skip_panel_types, skip_type)
+
+    # label_candidates: user values prepend (higher resolution priority)
+    for label, candidates in user.label_candidates.items():
+        bucket = result.label_candidates.setdefault(label, [])
+        for c in reversed(candidates):
+            if c not in bucket:
+                bucket.insert(0, c)
+
+    for item in user.ignored_labels:
+        _append_unique(result.ignored_labels, item)
+    for item in user.index_rewrites:
+        if item not in result.index_rewrites:
+            result.index_rewrites.append(item)
+
+    # Runtime state: carry over from user pack (validator, stats, features)
+    result.native_promql_validator = user.native_promql_validator
+    result.native_validation_stats = user.native_validation_stats
+    result.runtime_features = {**result.runtime_features, **user.runtime_features}
+
+    return result
+
+
+def resolve_pack_for_dashboard(
+    dashboard: dict[str, Any],
+    base_pack: RulePackConfig,
+    *,
+    no_curated: bool = False,
+) -> RulePackConfig:
+    """Return a per-dashboard composed RulePackConfig.
+
+    Resolution order (each layer wins over the prior):
+      RulePackConfig defaults → curated pack → base_pack (user --rules-file)
+
+    Returns base_pack unchanged (same object) when no curated pack matches
+    or no_curated=True — zero cost for unregistered dashboards.
+    """
+    if no_curated:
+        return base_pack
+
+    curated = _load_curated_pack_for(dashboard)
+    if curated is None:
+        return base_pack
+
+    return _merge_curated_into_base(curated, base_pack)
+
+
 def build_rule_catalog(rule_pack: RulePackConfig) -> dict[str, Any]:
     registries = {
         "query_preprocessors": QUERY_PREPROCESSORS,
@@ -486,4 +605,5 @@ __all__ = [
     "build_rule_pack_template",
     "load_python_plugins",
     "load_rule_pack_files",
+    "resolve_pack_for_dashboard",
 ]

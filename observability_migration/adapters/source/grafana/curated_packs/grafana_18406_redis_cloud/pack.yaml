@@ -1,0 +1,33 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 18406
+# https://grafana.com/grafana/dashboards/18406-redis-cloud-subscription-status/
+#
+# Source: Redis Cloud Prometheus endpoint (bdb_* metrics, RLEC)
+# Panels: 9 stat panels — 8 PERFECT, 1 APPROXIMATE (memory-usage ratio)
+# Metric schema is identical to 18405 (Redis Enterprise); bdb_* metrics
+# are Prometheus gauges (pre-computed rates where applicable).
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  metric_kinds:
+    bdb_up: gauge
+    bdb_used_memory: gauge
+    bdb_memory_limit: gauge
+    bdb_total_req: gauge
+    bdb_avg_latency: gauge
+    bdb_expired_objects: gauge
+    bdb_no_of_keys: gauge
+    bdb_conns: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  label_candidates:
+    cluster:
+      - service.name
+      - labels.cluster
+    bdb:
+      - db.name
+      - labels.bdb

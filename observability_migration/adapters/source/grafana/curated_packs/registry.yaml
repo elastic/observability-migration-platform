@@ -1,0 +1,40 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated dashboard pack registry.
+# Each entry maps a Grafana community dashboard (identified by gnetId) to a
+# bundled pack that improves migration fidelity beyond the general pipeline.
+#
+# Detection order at migration time:
+#   1. Exact gnetId match (preferred — reliable even when title differs)
+#   2. title_hint + tags_hint fallback (for dashboards where gnetId was stripped on import)
+#
+# To add a new pack: follow the Curation Playbook in docs/design/curated-dashboard-packs-plan.md.
+
+packs:
+  - gnet_id: 763
+    name: grafana_763_redis_exporter
+    title_hint: "Redis Dashboard for Prometheus Redis Exporter 1.x"
+    tags_hint: ["redis", "prometheus"]
+    path: grafana_763_redis_exporter
+    gnet_revision: 6
+    dashboard_sha256: "dcee8585ef010e7569dab8c776e48e3a6ee5ebe9c03a1510891488b714faeb44"
+    description: "Redis open-source (oliver006/redis_exporter) — counter/gauge classification, label map, layout"
+
+  - gnet_id: 18405
+    name: grafana_18405_redis_enterprise
+    title_hint: "Redis Enterprise: Cluster Status"
+    tags_hint: []
+    path: grafana_18405_redis_enterprise
+    gnet_revision: 1
+    dashboard_sha256: "b5c96cbc62efe9d76ea43d9214a896aacab8e5de4b31d71b957328c262b1946d"
+    description: "Redis Enterprise cluster monitoring (bdb_* Prometheus metrics) — stat panels, cluster/db variables"
+
+  - gnet_id: 18406
+    name: grafana_18406_redis_cloud
+    title_hint: "Redis Cloud: Subscription Status"
+    tags_hint: ["RLEC"]
+    path: grafana_18406_redis_cloud
+    gnet_revision: 2
+    dashboard_sha256: "b5f9f8b76ade994accd6cecd9a9c32f22e5e8ae46aa889a53bc9723db28a0ec9"
+    description: "Redis Cloud subscription monitoring (bdb_* Prometheus metrics) — stat panels, cluster/bdb variables"

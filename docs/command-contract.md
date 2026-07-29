@@ -789,7 +789,11 @@ customization:
 
 - Grafana: `--rules-file` for label rewrites, metric kinds, panel overrides, and
   optional embedded `query.metric_map` (overridden by `--metric-map-file` on
-  duplicate keys).
+  duplicate keys). When a dashboard carries a `gnetId` that matches a bundled
+  curated pack (e.g. Redis 763, Redis Enterprise 18405, Redis Cloud 18406), the
+  pack is merged in automatically beneath the user `--rules-file` so the user
+  always wins on collision. Pass `--no-curated-packs` to skip all curated packs
+  and use only the base rule pack.
 - Datadog: YAML `--field-profile path.yaml` for a full custom profile
   (`metric_index`, `tag_map`, prefixes, embedded `metric_map`). `--metric-map-file`
   still overrides embedded `metric_map` entries for duplicate keys.

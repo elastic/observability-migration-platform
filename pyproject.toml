@@ -91,6 +91,7 @@ include = ["observability_migration*"]
 
 [tool.setuptools.package-data]
 "observability_migration.sample_dashboards" = ["**/*.json"]
+"observability_migration.adapters.source.grafana.curated_packs" = ["registry.yaml", "**/*.yaml"]
 
 # ---------- Linting (ruff) ----------
 [tool.ruff]
