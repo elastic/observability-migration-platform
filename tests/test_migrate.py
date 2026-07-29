@@ -5911,6 +5911,27 @@ class TranslatorRegressionTests(unittest.TestCase):
         q = translated.esql_query or ""
         self.assertIn("SORT time_bucket ASC", q)
 
+    def test_histogram_quantile_stat_panel_collapses_to_scalar(self):
+        # histogram_quantile on a stat panel must not include time_bucket in output.
+        expr = "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        if translated.feasibility == "not_feasible":
+            return  # no field caps → not_feasible; skip
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_histogram_quantile_timeseries_panel_keeps_time_bucket(self):
+        # histogram_quantile on a timeseries panel must keep time_bucket.
+        expr = "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+        translated = self.translate(expr, panel_type="timeseries")
+        if translated.feasibility == "not_feasible":
+            return
+        if "time_bucket" in (translated.output_group_fields or []):
+            q = translated.esql_query or ""
+            self.assertIn("SORT time_bucket ASC", q)
+
     def test_join_binary_expr_lhs_stat_panel_collapses_to_scalar(self):
         # join_family_rule * path where left_frag is itself a binary_expr
         # (A - B) * on(...) group_left C. For stat panels the collapsed output
