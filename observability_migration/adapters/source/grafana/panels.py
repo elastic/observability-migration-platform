@@ -4260,7 +4260,11 @@ def _build_multi_target_series_query(translations):
     summary_mode = all(_summary_mode_from_metadata(translation.metadata) for translation, _ in plans)
     collapsed = None
     if summary_mode and plans[0][1].specs:
-        collapsed = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
+        _panel_type = plans[0][0].panel_type if plans else ""
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group_fields, metric_fields,
+            keep_time_bucket=_panel_type in {"table", "table-old"},
+        )
     if collapsed is None:
         # The KEEP is dropped downstream by _strip_dotted_group_keep when a
         # grouping field is dotted (avoids an ES|QL "Output has changed" error).

@@ -4606,8 +4606,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("LAST(A, time_bucket)", collapsed)
         self.assertNotIn("LAST(B, time_bucket)", collapsed)
         self.assertNotIn("LAST(C, time_bucket)", collapsed)
-        # Must still collapse to one row per time_bucket.
-        self.assertIn("time_bucket = MAX(time_bucket)", collapsed)
+        # Must still collapse using a null-safe aggregate (MAX, not LAST).
+        self.assertIn("A = MAX(A)", collapsed)
 
     def test_native_promql_empty_legendformat_does_not_dump_ts_tuple(self):
         """When a Grafana panel uses native PROMQL and has no
@@ -9632,15 +9632,17 @@ class TranslatorRegressionTests(unittest.TestCase):
             translation_hints={"summary_mode": True},
         )
         self.assertIn("BY time_bucket = TBUCKET(5 minute)", translated.esql_query)
-        self.assertIn("| SORT time_bucket ASC", translated.esql_query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
+        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
+        # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)",
+            "| STATS computed_value = MAX(computed_value)",
             translated.esql_query,
         )
+        self.assertNotIn("time_bucket = MAX(time_bucket)", translated.esql_query)
         self.assertNotIn("| SORT time_bucket DESC", translated.esql_query)
         self.assertNotIn("| LIMIT 1", translated.esql_query)
-        self.assertIn("| KEEP time_bucket, computed_value", translated.esql_query)
+        self.assertIn("| KEEP computed_value", translated.esql_query)
         self.assertEqual(translated.output_group_fields, [])
 
     def test_bargauge_rate_summary_collapses_timeseries_bucket(self):
@@ -9852,15 +9854,17 @@ class TranslatorRegressionTests(unittest.TestCase):
         # Dashboard panels use adaptive TBUCKET (issue #316); summary gauges still
         # collapse over that bucket with a null-safe MAX reduction.
         self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)", query)
-        self.assertIn("| SORT time_bucket ASC", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
+        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
+        # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_cpu_seconds_total = MAX(node_cpu_seconds_total)",
+            "| STATS node_cpu_seconds_total = MAX(node_cpu_seconds_total)",
             query,
         )
+        self.assertNotIn("time_bucket = MAX(time_bucket)", query)
         self.assertNotIn("| SORT time_bucket DESC", query)
         self.assertNotIn("| LIMIT 1", query)
-        self.assertIn("| KEEP time_bucket, node_cpu_seconds_total", query)
+        self.assertIn("| KEEP node_cpu_seconds_total", query)
 
     def test_translation_exposes_query_ir(self):
         translated = self.translate('sum(rate(foo_total{job="api"}[5m])) by (instance)')

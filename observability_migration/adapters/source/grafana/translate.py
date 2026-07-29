@@ -1921,7 +1921,10 @@ def binary_expr_family_rule(context):
             context.source_type = plan.specs[0].source_type
             collapsed = None
             if _summary_mode_from_metadata(context.metadata):
-                collapsed = _collapse_summary_ts_query(parts, output_group_fields, [result_alias])
+                collapsed = _collapse_summary_ts_query(
+                    parts, output_group_fields, [result_alias],
+                    keep_time_bucket=context.panel_type in {"table", "table-old"},
+                )
             if collapsed is None:
                 parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
                 if "time_bucket" in output_group_fields:
@@ -2331,7 +2334,10 @@ def scaled_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, context.output_group_fields, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, context.output_group_fields, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(context.output_group_fields, final_alias)}")
@@ -2872,7 +2878,10 @@ def range_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")
@@ -3233,7 +3242,10 @@ def simple_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")
@@ -3371,7 +3383,10 @@ def simple_metric_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")

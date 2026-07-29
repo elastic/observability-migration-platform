@@ -3254,15 +3254,17 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel["targets"][0]["range"] = False
         _yaml_panel, result = _translate_panel(panel, rule_pack=rp)
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
-        self.assertIn("| SORT time_bucket ASC", result.esql_query)
         # ``MAX(node_load1)`` replaces the previous
         # ``LAST(node_load1, time_bucket)`` so the collapse is null-safe
         # across multi-target TS queries; behaviour for this
         # single-series case is identical.
+        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
+        # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_load1 = MAX(node_load1)",
+            "| STATS node_load1 = MAX(node_load1)",
             result.esql_query,
         )
+        self.assertNotIn("time_bucket = MAX(time_bucket)", result.esql_query)
         self.assertNotIn("| SORT time_bucket DESC", result.esql_query)
         self.assertNotIn("| LIMIT 1", result.esql_query)
 

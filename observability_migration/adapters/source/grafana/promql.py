@@ -3489,7 +3489,7 @@ def _grouping_parts(bucket_expr, group_fields, frag=None):
     return by_parts, output_group_fields
 
 
-def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
+def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_time_bucket=False):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
         return None
     group_fields = list(output_group_fields[1:])
@@ -3518,11 +3518,23 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
         return group_fields
     if output_group_fields != ["time_bucket"]:
         return None
-    parts.append("| SORT time_bucket ASC")
-    parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
-    parts.append(
-        "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
-    )
+    # MAX is order-independent; the pre-collapse sort is a no-op in all cases.
+    if keep_time_bucket:
+        # Table panels surface time_bucket as a date breakdown for the operator;
+        # keep it in the output. The trailing sort added by _ensure_bucket_sort
+        # on the 1-row result is harmless.
+        parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
+        parts.append(
+            "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
+        )
+    else:
+        # Scalar panels (stat/gauge/bargauge/piechart) don't need time_bucket in
+        # the output. Omitting it prevents _ensure_bucket_sort from appending a
+        # redundant trailing sort on the already-collapsed single-row result.
+        parts.append(f"| STATS {reduced}")
+        parts.append(
+            "| KEEP " + ", ".join(_esql_identifier(f) for f in keep_fields)
+        )
     return []
 
 
