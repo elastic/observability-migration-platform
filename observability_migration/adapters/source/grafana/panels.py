@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 import yaml
@@ -998,17 +998,14 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     if new_bucket is None or new_bucket == rule_pack.ts_bucket:
         return rule_pack
     updated = replace(rule_pack, ts_bucket=new_bucket)
-    # ``replace`` only copies dataclass fields; preserve dynamic attributes the
-    # CLI / tests hang on the pack (regex defaults, validators, runtime notes).
-    for attr in (
-        "_regex_default_param_names",
-        "_late_bound_group_var_choices",
-        "runtime_features",
-        "native_promql_validator",
-        "_runtime_feature_notes",
-    ):
-        if hasattr(rule_pack, attr):
-            setattr(updated, attr, getattr(rule_pack, attr))
+    # ``replace`` only copies dataclass fields; propagate all dynamic attributes
+    # (plugin pack markers, regex defaults, validators, runtime notes, etc.) so
+    # that plugins whose marker-checks use ``context.rule_pack`` still fire after
+    # a per-panel bucket adjustment.
+    _field_names = {f.name for f in fields(rule_pack)}
+    for attr, val in vars(rule_pack).items():
+        if attr not in _field_names:
+            setattr(updated, attr, val)
     return updated
 
 # Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /

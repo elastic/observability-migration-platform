@@ -34,11 +34,11 @@ panels:
     grafana_type: gauge
     fidelity: APPROXIMATE
     notes: >
-      Ratio formula sum(100 * used / max). Co-located ES|QL EVAL computes the ratio
-      within a single FROM query (both metrics land in the same prometheus_native document
-      per label-set from the redis_scraper). Requires --translation-mode esql on migration;
-      native PROMQL mode does not support ?instance named params inside PromQL label filters.
-      Panel shows empty when Redis maxmemory=0 (no limit configured).
+      Ratio formula sum(100 * used / max). Co-located ES|QL EVAL (plugin.py) computes
+      the ratio within a single FROM query (both metrics land in the same prometheus_native
+      document per label-set from the redis_scraper). Panel shows empty when Redis
+      maxmemory=0 (no limit configured). APPROXIMATE because the co-location assumption
+      could fail on non-standard scrapers; semantically correct for the default layout.
     grafana_grid: {x: 5, y: 0, w: 3, h: 7}
     kibana_grid: {x: 16, y: 0, w: 10, h: 6}
 
@@ -69,8 +69,14 @@ panels:
   - id: 10
     title: "Network I/O"
     grafana_type: timeseries
-    fidelity: PERFECT
-    notes: "rate of net_input_bytes_total and net_output_bytes_total"
+    fidelity: APPROXIMATE
+    notes: >
+      Two-series line chart: input and output byte rates. The Grafana legendFormat uses
+      {{ input }} and {{ output }} which are NOT real Prometheus labels; plugin.py
+      (redis_network_io_legend_fix classifier) removes the phantom group-by so both
+      targets fuse into a single STATS query. WHERE uses OR logic to include documents
+      with either metric present. APPROXIMATE because the WHERE OR filter requires both
+      metrics to be discoverable in the index but reads them from co-located documents.
     grafana_grid: {x: 12, y: 7, w: 12, h: 7}
     kibana_grid: {x: 32, y: 6, w: 16, h: 8}
 
@@ -85,10 +91,12 @@ panels:
   - id: 13
     title: "Expiring vs Not-Expiring Keys"
     grafana_type: timeseries
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
-      Subtraction formula (db_keys - db_keys_expiring). Native PromQL is exact.
-      ES|QL fallback emits each series separately; subtraction is not supported inline.
+      Two-series stacked area: not-expiring (db_keys - db_keys_expiring) and expiring keys.
+      ES|QL EVAL computes the subtraction within the STATS pipeline per time bucket and
+      instance — mathematically equivalent to the PromQL binary subtraction since both
+      gauge metrics are co-located in the same prometheus_native document per label-set.
     grafana_grid: {x: 12, y: 14, w: 12, h: 7}
     kibana_grid: {x: 16, y: 14, w: 16, h: 8}
 
@@ -111,11 +119,12 @@ panels:
   - id: 20
     title: "Avg Time Spent by Command"
     grafana_type: timeseries
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
-      Division formula (duration_total / commands_total) by cmd. Native PromQL is exact.
-      ES|QL fallback emits denominator/numerator separately — average latency per command
-      cannot be reconstructed without per-bucket division.
+      Per-cmd average latency: SUM(IRATE(duration_total)) / SUM(IRATE(commands_total)) per
+      time bucket and cmd label. ES|QL EVAL computes the division after STATS — equivalent
+      to the PromQL binary division since both counter metrics are co-located and aggregated
+      by the same cmd grouping key.
     grafana_grid: {x: 0, y: 28, w: 12, h: 7}
     kibana_grid: {x: 16, y: 22, w: 16, h: 8}
 
@@ -145,8 +154,8 @@ variables:
 
 summary:
   total_panels: 13
-  perfect: 9
-  approximate: 4
+  perfect: 11
+  approximate: 2
   not_feasible: 0
   overall_fidelity: HIGH
   live_validation:
@@ -155,7 +164,12 @@ summary:
     panels_render_ok: 13
     panels_not_feasible: 0
     migration_flags: "--translation-mode esql (required; native PROMQL mode fails on ?instance params in PromQL label filters)"
-    plugin: "curated_packs/grafana_763_redis_exporter/plugin.py — handles Memory Usage via co-located EVAL query"
+    plugin: >
+      curated_packs/grafana_763_redis_exporter/plugin.py —
+      (1) Memory Usage: co-located EVAL query for used/max ratio;
+      (2) Network I/O: removes phantom {{ input }}/{{ output }} label group-by so both
+      series fuse correctly;
+      (3) resolver copy_with_pack fix ensures curated label_candidates apply to all panels.
     namespace_control: PASS
     namespace_control_note: "Shows 'default' option; wildcard .* selected by default."
     instance_control: PASS

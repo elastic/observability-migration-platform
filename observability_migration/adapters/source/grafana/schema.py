@@ -160,6 +160,19 @@ class SchemaResolver:
         self._metric_map_warnings: list[str] = []
         self._metric_map_applied: dict[str, str] = {}
 
+    def copy_with_pack(self, rule_pack) -> "SchemaResolver":
+        """Return a new resolver sharing this resolver's ES field cache but using a different rule_pack.
+
+        Used when a per-dashboard curated pack supplies different label_candidates than the
+        base pack the shared resolver was built with.  The ES field cache is reused to avoid
+        a second network round-trip, but the new resolver is otherwise independent.
+        """
+        clone = SchemaResolver.__new__(SchemaResolver)
+        clone.__dict__.update(self.__dict__)
+        clone._rule_pack = rule_pack
+        clone._cooccurrence_cache = {}
+        return clone
+
     def metric_map_gaps(self) -> list[str]:
         return list(self._metric_map_gaps)
 

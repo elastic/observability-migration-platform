@@ -5,7 +5,7 @@
 # https://grafana.com/grafana/dashboards/763-redis-dashboard-for-prometheus-redis-exporter-1-x/
 #
 # Source: oliver006/redis_exporter  (Prometheus scrape)
-# Panels: 13 total — 10 PERFECT, 3 APPROXIMATE (formula panels: memory%, expiring-delta, avg-time)
+# Panels: 13 total — 11 PERFECT, 2 APPROXIMATE (memory% via plugin; Network I/O is 2-series but uses OR filter)
 # Translation mode: auto (PromQL-first when native-PromQL is enabled; ES|QL fallback)
 
 query:

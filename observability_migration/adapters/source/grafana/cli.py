@@ -2325,13 +2325,18 @@ def main(argv: list[str] | None = None):
         if dashboard_pack is not rule_pack:
             gnet_id = dashboard.get("gnetId", "?")
             print(f"  [curated pack] gnetId={gnet_id} — applying bundled curated rules")
+            # The shared resolver was built with the base rule_pack; clone it so the
+            # curated pack's label_candidates are visible to offline label resolution.
+            dashboard_resolver = resolver.copy_with_pack(dashboard_pack)
+        else:
+            dashboard_resolver = resolver
         result, yaml_path = _translate_dashboard_resilient(
             dashboard,
             yaml_dir,
             datasource_index=args.data_view,
             esql_index=args.esql_index or args.data_view,
             rule_pack=dashboard_pack,
-            resolver=resolver,
+            resolver=dashboard_resolver,
             output_stem=output_stem,
         )
         if result.translation_error:
