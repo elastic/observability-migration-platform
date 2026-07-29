@@ -482,6 +482,50 @@ def _api_legend(legend: Any, kind: str) -> dict[str, Any] | None:
     return out or None
 
 
+_FORMAT_TYPE_TO_Y_AXIS_TITLE: dict[str, str] = {
+    "bytes": "Bytes",
+    "bytes_si": "Bytes",
+    "percent": "%",
+    "percent_decimal": "%",
+    "duration": "Seconds",
+    "seconds": "Seconds",
+    "milliseconds": "Milliseconds",
+}
+
+
+def _infer_y_axis_title(metrics: list[Any]) -> str:
+    """Return a Y-axis title inferred from a uniform metric format, or ''."""
+    left_formats = set()
+    for m in metrics:
+        if not isinstance(m, dict) or m.get("axis") == "right":
+            continue
+        fmt = m.get("format")
+        if isinstance(fmt, dict):
+            left_formats.add(str(fmt.get("type") or ""))
+        else:
+            left_formats.add("")
+    if len(left_formats) == 1:
+        fmt_type = next(iter(left_formats))
+        return _FORMAT_TYPE_TO_Y_AXIS_TITLE.get(fmt_type, "")
+    return ""
+
+
+def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the XY axis config, falling back to format-inferred Y title."""
+    axis = _api_xy_axis(_cfg_axis_source(cfg))
+    if axis and (axis.get("y") or {}).get("title"):
+        return axis
+    inferred = _infer_y_axis_title(cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else [])
+    if not inferred:
+        return axis
+    y_title: dict[str, Any] = {"title": {"text": inferred, "visible": True}}
+    if axis:
+        merged = dict(axis)
+        merged["y"] = {**merged.get("y", {}), **y_title}
+        return merged
+    return {"y": y_title}
+
+
 def _api_axis_title(title: Any) -> dict[str, Any] | None:
     if not isinstance(title, dict):
         return None
@@ -734,7 +778,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         legend = _api_legend(cfg.get("legend"), kind="xy")
         if legend:
             out["legend"] = legend
-        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        axis = _resolve_xy_axis(cfg)
         if axis:
             out["axis"] = axis
         styling_source = cfg.get("styling")
@@ -763,7 +807,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         legend = _api_legend(cfg.get("legend"), kind="xy")
         if legend:
             out["legend"] = legend
-        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        axis = _resolve_xy_axis(cfg)
         if axis:
             out["axis"] = axis
         return out
@@ -784,7 +828,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     legend = _api_legend(cfg.get("legend"), kind="xy")
     if legend:
         out["legend"] = legend
-    axis = _api_xy_axis(_cfg_axis_source(cfg))
+    axis = _resolve_xy_axis(cfg)
     if axis:
         out["axis"] = axis
     styling_source = cfg.get("styling")
