@@ -9613,7 +9613,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertIn("| EVAL series_5m_load =", yaml_panel["esql"]["query"])
+        query = yaml_panel["esql"]["query"]
+        # "5m load" → ES|QL-safe alias "series_5m_load" (leading digit escaped).
+        # The alias is placed directly in the STATS term (not a separate EVAL)
+        # when the metric requires no formula — the invariant is that the alias
+        # is present in the query and exposed as a metric field.
+        self.assertIn("series_5m_load", query)
         metric_fields = [m["field"] for m in yaml_panel["esql"]["metrics"]]
         self.assertIn("series_5m_load", metric_fields)
 
@@ -15643,20 +15648,19 @@ class NativePromqlTests(unittest.TestCase):
     # ── adaptive step (#272) and adaptive rate window (#273) ──
 
     def test_adaptive_step_omits_step_param(self):
-        """Issue #272: a range dashboard panel opts into ``adaptive_step`` so no
-        fixed ``step=`` is baked in; Elastic sizes the resolution to the view via
-        the dashboard time picker. A bare stepless command is rejected by ES
-        ("provide either [step] or all of [start], [end], and [buckets]"), so the
-        adaptive form binds ``start=?_tstart end=?_tend buckets=50`` (Kibana
-        materializes the params at render). The command still emits the ``step``
-        time column."""
+        """Issues #272/#318: a range dashboard panel opts into ``adaptive_step``
+        so no fixed ``step=`` is baked in; Kibana infers the time range from the
+        dashboard time picker at render time.  Bare ``PROMQL index=... value=(...)``
+        is valid in a Kibana panel context — no ``start``/``end``/``buckets`` args
+        needed.  The command still emits the ``step`` time column."""
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
         q = build_native_promql_query("up", index="metrics-*", kibana_type="line", adaptive_step=True)
         self.assertTrue(q.startswith("PROMQL index=metrics-*"))
         self.assertNotIn("step=", q)
         self.assertNotIn("time=?_tend", q)
-        # Adaptive-but-executable: bound to the time picker, not stepless.
-        self.assertIn("start=?_tstart end=?_tend buckets=50", q)
+        # Bare form — Kibana supplies the time range from the dashboard picker.
+        self.assertNotIn("start=", q)
+        self.assertNotIn("buckets=", q)
         self.assertIn("value=(up)", q)
 
     def test_adaptive_step_ignored_for_instant_tile(self):
@@ -16115,8 +16119,11 @@ class NativePromqlTests(unittest.TestCase):
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
         self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), device", query)
         self.assertNotIn(", interface", query)
-        self.assertIn("EVAL Operational_state_UP = node_network_up_A", query)
-        self.assertIn("EVAL Physical_link_state = node_network_carrier_B", query)
+        # Legend-derived aliases appear directly in the STATS term (no separate EVAL
+        # needed when the metric is a plain aggregate with no formula).
+        self.assertIn("Operational_state_UP =", query)
+        self.assertIn("Physical_link_state =", query)
+        # The un-suffixed bare metric names must not appear as EVAL sources.
         self.assertNotIn("EVAL Operational_state_UP = node_network_up\n", query)
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")

@@ -67,12 +67,14 @@ class TestIssue317AutoLegendBreakdown(unittest.TestCase):
 
 
 class TestIssue318PanelIntervalStep(unittest.TestCase):
-    def test_auto_panel_keeps_adaptive_buckets(self):
-        """#318 / #272: auto panels stay adaptive (executable on ES, not bare)."""
+    def test_auto_panel_emits_bare_promql(self):
+        """#318 / #272: auto panels emit bare PROMQL; Kibana injects time range."""
         yaml_panel, _ = _translate(_make_panel("node_disk_read_bytes_total", legend=""))
         query = yaml_panel["esql"]["query"]
-        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        self.assertTrue(query.startswith("PROMQL index="), query)
         self.assertNotIn("step=", query)
+        self.assertNotIn("start=", query)
+        self.assertNotIn("buckets=", query)
 
     def test_panel_interval_emits_step(self):
         """#318: Grafana panel ``interval`` must become PROMQL ``step=``."""

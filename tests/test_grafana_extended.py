@@ -2258,7 +2258,9 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "metric")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        # Bare form: Kibana supplies the time range from the dashboard picker (#318).
+        self.assertNotIn("start=", query)
+        self.assertNotIn("buckets=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_gauge_panel_emits_range_collapsed_latest_value(self):
@@ -2269,7 +2271,9 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "gauge")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        # Bare form: Kibana supplies the time range from the dashboard picker (#318).
+        self.assertNotIn("start=", query)
+        self.assertNotIn("buckets=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_timeseries_panel_emits_adaptive_range_query(self):

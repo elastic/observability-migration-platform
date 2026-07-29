@@ -459,7 +459,10 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
         )
         query = yaml_panel["esql"]["query"]
         if title == "CPU Frequency Scaling":
-            assert "EVAL CPU = node_cpu_scaling_frequency_hertz_B" in query
+            # Legend alias appears directly in the STATS term; no separate EVAL
+            # needed for a plain aggregate (the optimization collapses the rename).
+            assert "CPU =" in query
+            # The bare un-suffixed name must not be exposed as an EVAL source.
             assert "EVAL CPU = node_cpu_scaling_frequency_hertz\n" not in query
             _assert_eval_rhs_defined_after_stats(query)
         else:
@@ -469,3 +472,58 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             _assert_no_inner_case_ts_value_args(query)
             _assert_no_bare_ts_alongside_case(query)
         assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_multi_target_simple_renames_folded_into_stats():
+    """Pure-rename EVAL steps are eliminated: final alias goes directly into STATS.
+
+    For targets where ``plan.expr`` is the bare intermediate STATS alias (no
+    formula, no negation, no post_filter), the translator must rename the STATS
+    column in-place rather than emitting ``| EVAL result = intermediate``.
+    """
+    panel = {
+        "id": 1,
+        "type": "timeseries",
+        "title": "Hits / Misses",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": "irate(redis_keyspace_hits_total[5m])",
+                "legendFormat": "hits",
+                "refId": "A",
+            },
+            {
+                "expr": "irate(redis_keyspace_misses_total[5m])",
+                "legendFormat": "misses",
+                "refId": "B",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    rule_pack.metric_kinds.update(
+        {"redis_keyspace_hits_total": "counter", "redis_keyspace_misses_total": "counter"}
+    )
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = yaml_panel["esql"]["query"]
+
+    # Final aliases must appear directly in the STATS term — no separate EVAL.
+    assert "hits =" in query
+    assert "misses =" in query
+    assert "| EVAL hits =" not in query
+    assert "| EVAL misses =" not in query
+    # Intermediate suffixed aliases must not leak into the final query.
+    assert "redis_keyspace_hits_total_A" not in query
+    assert "redis_keyspace_misses_total_B" not in query
+    # Metric fields must still be wired up correctly.
+    metric_fields = [m["field"] for m in yaml_panel["esql"]["metrics"]]
+    assert "hits" in metric_fields
+    assert "misses" in metric_fields
+    assert structural_errors(check_esql_structure(query)) == []

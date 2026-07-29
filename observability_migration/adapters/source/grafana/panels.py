@@ -932,21 +932,15 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
-# Adaptive range resolution for dashboard panels (#272). A range plot must size
-# its bucketing to the dashboard time range at view time (like Grafana's
-# ``$__interval``) instead of freezing a fixed ``step=``. A *bare* stepless
-# ``PROMQL index=...`` command is NOT valid, however: Elasticsearch rejects it at
-# plan time with "unable to create a bucket; provide either [step] or all of
-# [start], [end], and [buckets]" (verified against ES 9.5 serverless). So the
-# adaptive form binds the window to the dashboard time picker via the
-# ``?_tstart`` / ``?_tend`` params Kibana materializes at render time, with a
-# fixed bucket count matching the ES|QL ``BUCKET(@timestamp, 50, ?_tstart,
-# ?_tend)`` path. This stays adaptive (no baked-in ``step=``) while remaining an
-# executable query.
-_NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
-_NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
-    f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
-)
+# Adaptive range resolution for dashboard panels (#272, #318). A range plot
+# must size its bucketing to the dashboard time range at view time (like
+# Grafana's ``$__interval``) instead of freezing a fixed ``step=``.
+# In a Kibana dashboard panel, bare ``PROMQL index=... value=(...)`` (no
+# timing args) is valid: Kibana infers the time range from the dashboard time
+# picker and injects it at render time — confirmed on Kibana/ES 9.5 (#318).
+# A bare form without ``step=`` is rejected by Elasticsearch on a raw
+# ``_query`` call, but inside a Kibana panel the timing is always supplied.
+_NATIVE_PROMQL_ADAPTIVE_SELECTOR = ""
 # Adaptive ES|QL TS calendar buckets (issue #316) — count form needs the range
 # args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
 # (FROM path still uses 50 via ``from_bucket``).
@@ -1745,13 +1739,13 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     #   1. instant           -> ``time=?_tend`` (no step column)
     #   2. explicit ``step`` -> ``step=<value>`` (e.g. a migrated Grafana alert
     #      honoring the source query interval, issue #209)
-    #   3. ``adaptive_step`` -> bind the window to the dashboard time picker via
-    #      ``start=?_tstart end=?_tend buckets=50`` so Elastic sizes the
-    #      resolution to the view (like Grafana's ``$__interval``) without a
-    #      frozen step (issue #272). A *bare* stepless command is rejected by ES
-    #      ("provide either [step] or all of [start], [end], and [buckets]"), so
-    #      the timing args must be present; Kibana materializes the params at
-    #      render time. The command still emits the ``step`` time column.
+    #   3. ``adaptive_step`` -> emit bare ``PROMQL index=... value=(...)`` (no
+    #      timing args). In a Kibana dashboard panel the time range comes from
+    #      the dashboard time picker — Kibana injects it at render time, so
+    #      the command resolves to the current view window (issues #272, #318).
+    #      A raw ES ``_query`` call without timing args is rejected; this path
+    #      is only used for Kibana dashboard panels, not alerts or direct calls.
+    #      The command still emits the ``step`` time column.
     #   4. otherwise         -> the documented ``step=1m`` default, preserving
     #      historical behavior for direct callers that opt into neither.
     if instant:
@@ -2232,18 +2226,18 @@ def _translate_panel_native_promql(
         _target_summary_mode(panel_type, target)
         and kibana_type not in ("line", "bar", "area")
     )
-    # Dashboard panels opt into adaptive resolution: a range plot emits no
-    # ``step=`` so Kibana/Elastic re-buckets it to the dashboard time range like
-    # Grafana (#272), and a rate()/increase() over ``$__rate_interval`` is
-    # emitted windowless so its lookback tracks the view too (#273). Instant
-    # tiles ignore both (they carry no step). Alerts never take this path — they
-    # call ``build_native_promql_query`` directly with an explicit/default step.
+    # Dashboard panels opt into adaptive resolution: a range plot emits bare
+    # ``PROMQL index=... value=(...)`` so Kibana injects the dashboard time
+    # range at render time (#272, #318), and a rate()/increase() over
+    # ``$__rate_interval`` is emitted windowless so its lookback tracks the
+    # view too (#273). Instant tiles ignore both (they carry no step). Alerts
+    # never take this path — they call ``build_native_promql_query`` directly
+    # with an explicit/default step.
     #
     # Explicit Grafana panel ``interval`` wins over adaptive bucketing and is
-    # emitted as ``step=`` (issue #318). Bare stepless PROMQL is rejected by ES,
-    # so auto panels keep ``start/end/buckets``. Keep ``adaptive_step=True`` even
-    # with an explicit step so ``$__rate_interval`` still becomes windowless
-    # (#273) — ``step=`` only overrides the timing selector precedence.
+    # emitted as ``step=`` (issue #318). Keep ``adaptive_step=True`` even with
+    # an explicit step so ``$__rate_interval`` still becomes windowless (#273)
+    # — ``step=`` only overrides the timing selector precedence.
     panel_step = _grafana_panel_fixed_interval(panel)
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
@@ -2471,7 +2465,7 @@ def _translate_multi_target_native_promql(
         )
     else:
         promql_query = (
-            f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
+            f"PROMQL index={index} value=({combined_expr})"
         )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
@@ -4188,6 +4182,33 @@ def _build_multi_target_series_query(translations):
         # ``result_alias`` may be a legend-derived token that collides with an
         # ES|QL reserved word (e.g. "IN"); quote it for the query text but keep
         # the bare name in ``metric_fields``/hints for Kibana column matching.
+        #
+        # Optimisation: when this EVAL is a pure column rename (single spec,
+        # no negation/post_filter applied, no intermediate eval_expr on the
+        # spec), inline the final alias directly into the STATS term and skip
+        # the EVAL.  This eliminates one pipeline step per simple-metric target
+        # (e.g. ``| STATS hits_A = IRATE(...)  | EVAL hits = hits_A`` becomes
+        # ``| STATS hits = IRATE(...)``).
+        if (
+            eval_expr == plan.expr
+            and len(plan.specs) == 1
+            and plan.expr == plan.specs[0].final_alias
+            and not plan.specs[0].eval_expr
+            and result_alias != eval_expr
+        ):
+            old_col = _esql_identifier(plan.expr)
+            new_col = _esql_identifier(result_alias)
+            stats_idx = next(
+                (i for i in range(len(parts) - 1, -1, -1) if parts[i].lstrip().startswith("| STATS")),
+                None,
+            )
+            if stats_idx is not None:
+                renamed = parts[stats_idx].replace(f"{old_col} =", f"{new_col} =", 1)
+                if renamed != parts[stats_idx]:
+                    parts[stats_idx] = renamed
+                    metric_fields.append(result_alias)
+                    metric_label_hints[result_alias] = raw_alias
+                    continue
         parts.append(f"| EVAL {_esql_identifier(result_alias)} = {eval_expr}")
         metric_fields.append(result_alias)
         metric_label_hints[result_alias] = raw_alias
