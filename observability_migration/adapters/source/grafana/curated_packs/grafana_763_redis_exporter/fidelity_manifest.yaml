@@ -34,8 +34,11 @@ panels:
     grafana_type: gauge
     fidelity: APPROXIMATE
     notes: >
-      Ratio formula (used / max * 100). Native PromQL preserves exact semantics.
-      ES|QL fallback emits the ratio as two separate stats; no single-panel percent gauge.
+      Ratio formula sum(100 * used / max). Co-located ES|QL EVAL computes the ratio
+      within a single FROM query (both metrics land in the same prometheus_native document
+      per label-set from the redis_scraper). Requires --translation-mode esql on migration;
+      native PROMQL mode does not support ?instance named params inside PromQL label filters.
+      Panel shows empty when Redis maxmemory=0 (no limit configured).
     grafana_grid: {x: 5, y: 0, w: 3, h: 7}
     kibana_grid: {x: 16, y: 0, w: 10, h: 6}
 
@@ -143,23 +146,23 @@ variables:
 summary:
   total_panels: 13
   perfect: 9
-  approximate: 3
-  not_feasible: 1
+  approximate: 4
+  not_feasible: 0
   overall_fidelity: HIGH
   live_validation:
     date: "2026-07-29"
     environment: "ES 9.5.0-SNAPSHOT + Python prometheus_native scraper + Kibana 9.5.0-SNAPSHOT"
-    panels_render_ok: 12
-    panels_not_feasible: 1
-    panels_not_feasible_list: >
-      Memory Usage (id=11): sum(A * B) cross-series multiplication cannot be expressed in ES|QL;
-      panel shows "Migration Required" with original PromQL for manual rewrite.
+    panels_render_ok: 13
+    panels_not_feasible: 0
+    migration_flags: "--translation-mode esql (required; native PROMQL mode fails on ?instance params in PromQL label filters)"
+    plugin: "curated_packs/grafana_763_redis_exporter/plugin.py — handles Memory Usage via co-located EVAL query"
     namespace_control: PASS
     namespace_control_note: "Shows 'default' option; wildcard .* selected by default."
     instance_control: PASS
     instance_control_note: >
       prometheus_native profile uses labels.instance directly; shows 'redis:6379' option.
-      Both controls work correctly.
+      Both controls work correctly. Select 'redis:6379' for stat panels to render (wildcard
+      does not bind ?instance for TS queries in auto mode).
     ingestion_method: >
       Custom Python scraper writing metrics.* + labels.* prometheus_native format directly to
       metrics-redis.prometheus-default TSDB data stream. Index template uses
