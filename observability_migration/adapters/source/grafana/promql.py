@@ -441,6 +441,8 @@ AGG_FUNCTION_MAP = {
     "max_over_time": "MAX_OVER_TIME",
     "min_over_time": "MIN_OVER_TIME",
     "count_over_time": "COUNT_OVER_TIME",
+    "last_over_time": "LAST_OVER_TIME",
+    "present_over_time": "PRESENT_OVER_TIME",
     "delta": "DELTA",
     "deriv": "DERIV",
     "histogram_quantile": "PERCENTILE_OVER_TIME",
@@ -803,8 +805,10 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "deriv",
     "increase",
     "irate",
+    "last_over_time",
     "max_over_time",
     "min_over_time",
+    "present_over_time",
     "rate",
     "sum_over_time",
 }
@@ -817,8 +821,10 @@ _OVER_TIME_RANGE_FUNCS = frozenset(
     {
         "avg_over_time",
         "count_over_time",
+        "last_over_time",
         "max_over_time",
         "min_over_time",
+        "present_over_time",
         "sum_over_time",
     }
 )

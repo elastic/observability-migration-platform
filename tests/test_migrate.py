@@ -1719,6 +1719,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("SUM_OVER_TIME(nginxlog_resp_bytes, 24h)", translated.esql_query)
         self.assertNotIn("SUM_OVER_TIME(nginxlog_resp_bytes, 1d)", translated.esql_query)
 
+    def test_last_over_time_translates_to_esql(self):
+        """last_over_time() must map to LAST_OVER_TIME, not fall through as not_feasible."""
+        translated = self.translate("last_over_time(up[$__interval])")
+        self.assertIn("LAST_OVER_TIME(up,", translated.esql_query)
+        self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
+
+    def test_present_over_time_translates_to_esql(self):
+        """present_over_time() must map to PRESENT_OVER_TIME, not fall through as not_feasible."""
+        translated = self.translate("present_over_time(up[$__interval])")
+        self.assertIn("PRESENT_OVER_TIME(up,", translated.esql_query)
+        self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
+
     def test_resolve_label_keeps_source_field_when_only_source_present(self):
         """If the target only has `instance`, the resolver keeps `instance`."""
         self.seed_field_caps({
@@ -9851,9 +9863,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        # Dashboard panels use adaptive TBUCKET (issue #316); summary gauges still
-        # collapse over that bucket with a null-safe MAX reduction.
-        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)", query)
+        # Scalar panels use TBUCKET(1, ...) — one bucket is enough to scope the
+        # time range; 100 buckets would waste 100× STATS work and skew AVG-outer
+        # aggregations toward the peak bucket instead of the range average.
+        self.assertIn("BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
         # not append a redundant trailing sort on the already-scalar result.
@@ -12407,6 +12420,40 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(
             yaml_panel["esql"]["appearance"]["y_left_axis"]["title"], "CPU %"
         )
+
+    def test_enrich_decimals_merged_into_format(self):
+        """fieldConfig.defaults.decimals must carry through to the format dict."""
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "esql": {
+                "type": "line",
+                "query": "FROM metrics-*",
+                "metrics": [{"field": "latency"}],
+            }
+        }
+        grafana_panel = {
+            "fieldConfig": {"defaults": {"unit": "ms", "decimals": 3}},
+        }
+        enrich_yaml_panel_display(yaml_panel, grafana_panel)
+        fmt = yaml_panel["esql"]["metrics"][0]["format"]
+        self.assertEqual(fmt["decimals"], 3)
+        self.assertIn("suffix", fmt)
+
+    def test_enrich_decimals_without_unit_emits_number_format(self):
+        """A panel with only decimals (no unit) must still get a format dict."""
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "esql": {
+                "type": "metric",
+                "query": "FROM metrics-*",
+                "primary": {"field": "count"},
+            }
+        }
+        grafana_panel = {"fieldConfig": {"defaults": {"decimals": 0}}}
+        enrich_yaml_panel_display(yaml_panel, grafana_panel)
+        fmt = yaml_panel["esql"]["primary"]["format"]
+        self.assertEqual(fmt["type"], "number")
+        self.assertEqual(fmt["decimals"], 0)
 
     def test_enrich_no_esql_is_noop(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display

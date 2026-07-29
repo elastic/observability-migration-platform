@@ -283,6 +283,16 @@ def enrich_yaml_panel_display(
     unit = extract_grafana_unit(grafana_panel)
     fmt = grafana_unit_to_yaml_format(unit)
 
+    # Carry fieldConfig.defaults.decimals into the format so the Kibana panel
+    # respects the same precision the operator set in Grafana.
+    panel_decimals = _field_defaults(grafana_panel).get("decimals")
+    if isinstance(panel_decimals, (int, float)) and panel_decimals >= 0:
+        decimals_int = int(panel_decimals)
+        if fmt is not None:
+            fmt = {**fmt, "decimals": decimals_int}
+        else:
+            fmt = {"type": "number", "decimals": decimals_int}
+
     _apply_metric_format_and_label(esql, "metrics", fmt, metric_labels)
     _apply_metric_format_and_label(esql, "breakdowns", None, None)
 

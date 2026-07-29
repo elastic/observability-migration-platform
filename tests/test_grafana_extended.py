@@ -3253,7 +3253,8 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "avg(node_load1)", panel_type="gauge")
         panel["targets"][0]["range"] = False
         _yaml_panel, result = _translate_panel(panel, rule_pack=rp)
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
+        # Scalar gauge: 1 FROM bucket (not 50) to avoid wasteful intermediate rows.
+        self.assertIn("BY time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)", result.esql_query)
         # ``MAX(node_load1)`` replaces the previous
         # ``LAST(node_load1, time_bucket)`` so the collapse is null-safe
         # across multi-target TS queries; behaviour for this

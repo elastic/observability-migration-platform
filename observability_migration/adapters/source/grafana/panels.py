@@ -945,6 +945,13 @@ _NATIVE_PROMQL_ADAPTIVE_SELECTOR = ""
 # args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
 # (FROM path still uses 50 via ``from_bucket``).
 _NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
+# Scalar panels (stat/gauge/bargauge/piechart) collapse to one row anyway, so
+# generating 100 intermediate buckets is wasteful. One bucket gives the same
+# scalar result, avoids the "MAX of per-bucket averages" semantic skew for
+# AVG-outer aggregations, and is 100× cheaper for the STATS step.
+_SCALAR_ESQL_TBUCKET = "time_bucket = TBUCKET(1, ?_tstart, ?_tend)"
+_SCALAR_FROM_BUCKET = "time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)"
+_SCALAR_PANEL_TYPES = frozenset({"stat", "singlestat", "gauge", "bargauge", "piechart"})
 
 
 def _grafana_panel_fixed_interval(panel) -> str | None:
@@ -972,12 +979,18 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
 
     Dashboard panels use adaptive ``TBUCKET(100, ?_tstart, ?_tend)`` by default
-    so zooming changes resolution. An explicit Grafana panel ``interval`` becomes
-    a fixed ``TBUCKET(<duration>)``. Direct ``translate_promql_to_esql`` callers
-    keep ``rule_pack.ts_bucket`` unchanged.
+    so zooming changes resolution. Scalar panels (stat/gauge/bargauge/piechart)
+    use ``TBUCKET(1, ...)`` — they collapse to one row anyway, so 100 intermediate
+    buckets are wasteful and skew AVG-outer queries toward the peak bucket. An
+    explicit Grafana panel ``interval`` becomes a fixed ``TBUCKET(<duration>)``.
+    Direct ``translate_promql_to_esql`` callers keep ``rule_pack.ts_bucket``
+    unchanged.
     """
+    panel_type = str((panel or {}).get("type") or "").lower()
+    is_scalar = panel_type in _SCALAR_PANEL_TYPES
     interval = _grafana_panel_fixed_interval(panel)
     new_bucket = None
+    new_from_bucket = None
     if interval:
         from observability_migration.adapters.source.grafana.esql_validate import (
             _promql_window_to_esql_interval,
@@ -988,10 +1001,15 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
             new_bucket = f"time_bucket = TBUCKET({esql_dur})"
     elif rule_pack.ts_bucket == "time_bucket = TBUCKET(5 minute)":
         # Adaptive auto resolution for dashboard panels (issue #316).
-        new_bucket = _NATIVE_ESQL_ADAPTIVE_TBUCKET
+        new_bucket = _SCALAR_ESQL_TBUCKET if is_scalar else _NATIVE_ESQL_ADAPTIVE_TBUCKET
+        if is_scalar:
+            new_from_bucket = _SCALAR_FROM_BUCKET
     if new_bucket is None or new_bucket == rule_pack.ts_bucket:
         return rule_pack
-    updated = replace(rule_pack, ts_bucket=new_bucket)
+    kwargs = {"ts_bucket": new_bucket}
+    if new_from_bucket and new_from_bucket != rule_pack.from_bucket:
+        kwargs["from_bucket"] = new_from_bucket
+    updated = replace(rule_pack, **kwargs)
     # ``replace`` only copies dataclass fields; propagate all dynamic attributes
     # (plugin pack markers, regex defaults, validators, runtime notes, etc.) so
     # that plugins whose marker-checks use ``context.rule_pack`` still fire after
