@@ -112,8 +112,11 @@ _MATH_FN_ESQL = {
     "log2": "LOG(2, {m})",
     "log10": "LOG10({m})",
     "acos": "ACOS({m})",
+    "acosh": "ACOSH({m})",
     "asin": "ASIN({m})",
+    "asinh": "ASINH({m})",
     "atan": "ATAN({m})",
+    "atanh": "ATANH({m})",
     "cos": "COS({m})",
     "sin": "SIN({m})",
     "tan": "TAN({m})",
@@ -1358,21 +1361,25 @@ def logql_count_family_rule(context):
     elif search_expr:
         _append_unique(context.warnings, "Dropped variable-driven LogQL text filter during migration")
 
+    _logql_summary = _summary_mode_from_metadata(context.metadata)
     context.parser_backend = "fragment"
     context.source_type = "FROM"
     context.index = rp.logs_index
     context.metric_name = "log_count"
     context.output_metric_field = "log_count"
-    context.output_group_fields = ["time_bucket"]
-    context.esql_query = "\n".join(
-        [
-            f"FROM {rp.logs_index}",
-            f"| WHERE {rp.from_time_filter}",
-            *_build_where_lines(filters),
-            f"| STATS log_count = COUNT(*) BY {rp.from_bucket}",
-            "| SORT time_bucket ASC",
-        ]
-    )
+    context.output_group_fields = [] if _logql_summary else ["time_bucket"]
+    _logql_lines = [
+        f"FROM {rp.logs_index}",
+        f"| WHERE {rp.from_time_filter}",
+        *_build_where_lines(filters),
+        f"| STATS log_count = COUNT(*) BY {rp.from_bucket}",
+    ]
+    if _logql_summary:
+        _logql_lines.append("| STATS log_count = MAX(log_count)")
+        _logql_lines.append("| KEEP log_count")
+    else:
+        _logql_lines.append("| SORT time_bucket ASC")
+    context.esql_query = "\n".join(_logql_lines)
     context.translation_complete = True
     _append_unique(context.warnings, "Translated LogQL count_over_time using log document counts")
     return "translated LogQL count_over_time"
@@ -1479,7 +1486,12 @@ def join_family_rule(context):
             right_only = [f for f in right_filters if f not in common_filter_exprs]
 
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
-            output_group = ["time_bucket"] + join_labels
+            _ratio_summary = _summary_mode_from_metadata(context.metadata)
+            # The STATS BY clause always includes the bucket to correctly scope
+            # aggregation to the selected time range via TBUCKET parameter binding.
+            # For summary-mode panels (stat/gauge), time_bucket is dropped from the
+            # output so metric_panel_rule doesn't promote the panel to a datatable.
+            output_group = (list(join_labels) if _ratio_summary else ["time_bucket"] + join_labels)
             group_by_parts = [rp.ts_bucket] + join_labels
             left_is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
             right_is_counter = resolver.is_counter(right_frag.metric) if resolver else _is_counter_fallback(right_frag.metric, rp)
@@ -1562,17 +1574,18 @@ def join_family_rule(context):
             context.metric_name = left_frag.metric
             context.output_metric_field = result_alias
             context.output_group_fields = output_group
-            context.esql_query = "\n".join(
-                [
-                    f"TS {context.index}",
-                    f"| WHERE {rp.ts_time_filter}",
-                    *common_filters,
-                    f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call} BY {', '.join(group_by_parts)}",
-                    f"| EVAL {result_alias} = numerator / denominator",
-                    f"| KEEP {_keep(output_group, result_alias)}",
-                    "| SORT time_bucket ASC",
-                ]
-            )
+            _ratio_by = f" BY {', '.join(group_by_parts)}" if group_by_parts else ""
+            _ratio_lines = [
+                f"TS {context.index}",
+                f"| WHERE {rp.ts_time_filter}",
+                *common_filters,
+                f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call}{_ratio_by}",
+                f"| EVAL {result_alias} = numerator / denominator",
+                f"| KEEP {_keep(output_group, result_alias)}",
+            ]
+            if not _ratio_summary:
+                _ratio_lines.append("| SORT time_bucket ASC")
+            context.esql_query = "\n".join(_ratio_lines)
             context.translation_complete = True
             # A label-aligned per-key ratio of aggregates (``sum(rate(A)) /
             # on(k) group_left sum(rate(B))``) is exact only when every source
@@ -1610,9 +1623,18 @@ def join_family_rule(context):
                     parts, output_group_fields, _ = shared
                     result_alias = "computed_value"
                     parts.append(f"| EVAL {result_alias} = {plan.expr}")
-                    parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
-                    if "time_bucket" in output_group_fields:
-                        parts.append("| SORT time_bucket ASC")
+                    _lhs_collapsed = None
+                    if _summary_mode_from_metadata(context.metadata):
+                        _lhs_collapsed = _collapse_summary_ts_query(
+                            parts, output_group_fields, [result_alias],
+                            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                        )
+                    if _lhs_collapsed is None:
+                        parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
+                        if "time_bucket" in output_group_fields:
+                            parts.append("| SORT time_bucket ASC")
+                    else:
+                        output_group_fields = _lhs_collapsed
                     for warning in plan.warnings:
                         _append_unique(context.warnings, warning)
                     for spec in plan.specs:
@@ -1669,7 +1691,8 @@ def join_family_rule(context):
             group_fields = candidate_group_fields
         else:
             group_fields = base_group_fields
-        output_group = ["time_bucket"] + group_fields if group_fields else ["time_bucket"]
+        _join_summary = _summary_mode_from_metadata(context.metadata)
+        output_group = list(group_fields) if _join_summary else (["time_bucket"] + group_fields if group_fields else ["time_bucket"])
         default_agg = rp.default_gauge_agg.upper()
         is_counter = resolver.is_counter(metric_name) if resolver else _is_counter_fallback(metric_name, rp)
         source = "TS" if is_counter else "FROM"
@@ -1689,16 +1712,16 @@ def join_family_rule(context):
         context.output_metric_field = metric_alias
         context.output_group_fields = output_group
         by_clause = bucket + (f", {', '.join(group_fields)}" if group_fields else "")
-        context.esql_query = "\n".join(
-            [
-                f"{source} {context.index}",
-                f"| WHERE {time_filter}",
-                *_build_where_lines(filters),
-                f"| WHERE {physical_metric} IS NOT NULL",
-                f"| STATS {metric_alias} = {default_agg}({join_agg_arg}) BY {by_clause}",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        _join_lines = [
+            f"{source} {context.index}",
+            f"| WHERE {time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {physical_metric} IS NOT NULL",
+            f"| STATS {metric_alias} = {default_agg}({join_agg_arg}) BY {by_clause}",
+        ]
+        if not _join_summary:
+            _join_lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(_join_lines)
         context.translation_complete = True
         if not carry_enrichment:
             # Nothing carried (bare/ambiguous group modifier, group_right, or a
@@ -1728,7 +1751,8 @@ def join_family_rule(context):
         if had_vars:
             _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
         metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", left_frag.metric)
-        output_group = ["time_bucket"] + join_labels if join_labels else ["time_bucket"]
+        _join_left_summary = _summary_mode_from_metadata(context.metadata)
+        output_group = list(join_labels) if _join_left_summary else (["time_bucket"] + join_labels if join_labels else ["time_bucket"])
         is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
         source = "TS" if (is_counter or left_frag.range_func in AGG_FUNCTION_MAP) else "FROM"
         time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
@@ -1772,15 +1796,15 @@ def join_family_rule(context):
         context.metric_name = left_frag.metric
         context.output_metric_field = metric_alias
         context.output_group_fields = output_group
-        context.esql_query = "\n".join(
-            [
-                f"{source} {context.index}",
-                f"| WHERE {time_filter}",
-                *_build_where_lines(filters),
-                f"| STATS {metric_alias} = {stats_expr} BY {by_clause}",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        _join_left_lines = [
+            f"{source} {context.index}",
+            f"| WHERE {time_filter}",
+            *_build_where_lines(filters),
+            f"| STATS {metric_alias} = {stats_expr} BY {by_clause}",
+        ]
+        if not _join_left_summary:
+            _join_left_lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(_join_left_lines)
         context.translation_complete = True
         _append_unique(context.warnings, "Approximated join expression using left side only")
         return "translated join (left-side fallback)"
@@ -2482,18 +2506,33 @@ def nested_agg_family_rule(context):
             if inner_group
             else rp.ts_bucket
         )
-        context.output_group_fields = ["time_bucket"]
-        context.esql_query = "\n".join(
-            [
-                f"TS {context.index}",
-                f"| WHERE {rp.ts_time_filter}",
-                *_build_where_lines(filters),
-                f"| WHERE {physical_metric} IS NOT NULL",
-                f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)} BY time_bucket",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        outer_stats_expr = f"{result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)}"
+        if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
+            context.output_group_fields = []
+            context.esql_query = "\n".join(
+                [
+                    f"TS {context.index}",
+                    f"| WHERE {rp.ts_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {physical_metric} IS NOT NULL",
+                    f"| STATS {first_stats_expr} BY {first_stats_by}",
+                    f"| STATS {outer_stats_expr}",
+                    f"| KEEP {result_alias}",
+                ]
+            )
+        else:
+            context.output_group_fields = ["time_bucket"]
+            context.esql_query = "\n".join(
+                [
+                    f"TS {context.index}",
+                    f"| WHERE {rp.ts_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {physical_metric} IS NOT NULL",
+                    f"| STATS {first_stats_expr} BY {first_stats_by}",
+                    f"| STATS {outer_stats_expr} BY time_bucket",
+                    "| SORT time_bucket ASC",
+                ]
+            )
         context.parser_backend = "fragment"
         context.source_type = "TS"
         context.metric_name = result_alias
@@ -2712,8 +2751,17 @@ def histogram_quantile_family_rule(context):
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
-    if "time_bucket" in output_group:
-        parts.append("| SORT time_bucket ASC")
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
+    if collapsed is None:
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
 
     context.esql_query = "\n".join(parts)
     context.parser_backend = "fragment"

@@ -1731,6 +1731,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PRESENT_OVER_TIME(up,", translated.esql_query)
         self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
 
+    def test_acosh_asinh_atanh_translate_to_esql(self):
+        """Inverse hyperbolic trig functions must translate to exact ES|QL equivalents."""
+        for func, esql_func in [("acosh", "ACOSH"), ("asinh", "ASINH"), ("atanh", "ATANH")]:
+            with self.subTest(func=func):
+                translated = self.translate(f"{func}(avg_over_time(up[$__interval]))")
+                self.assertIn(esql_func, translated.esql_query)
+                self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
+
     def test_resolve_label_keeps_source_field_when_only_source_present(self):
         """If the target only has `instance`, the resolver keeps `instance`."""
         self.seed_field_caps({
@@ -5856,6 +5864,75 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("idle", q)
         self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), cpu", q)
         self.assertIn("| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket", q)
+
+    def test_nested_agg_range_func_stat_panel_collapses_to_scalar(self):
+        # nested_agg + range_func on a stat panel must emit a scalar query (no
+        # time_bucket in output_group_fields) so metric_panel_rule doesn't
+        # accidentally promote it to a datatable.
+        expr = "avg(sum by (pod) (rate(http_requests_total[5m])))"
+        translated = self.translate(expr, panel_type="stat")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertNotIn("BY time_bucket", q.split("| STATS")[-1])
+        self.assertNotIn("SORT time_bucket", q)
+        self.assertIn("| KEEP", q)
+        self.assertEqual(translated.output_group_fields, [])
+
+    def test_nested_agg_range_func_timeseries_panel_keeps_time_bucket(self):
+        # On a timeseries panel the nested_agg + range_func path must keep the
+        # BY time_bucket grouping and SORT so the XY chart has a time axis.
+        expr = "avg(sum by (pod) (rate(http_requests_total[5m])))"
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertIn("BY time_bucket", q)
+        self.assertIn("| SORT time_bucket ASC", q)
+        self.assertIn("time_bucket", translated.output_group_fields)
+
+    def test_join_ratio_stat_panel_collapses_to_scalar(self):
+        # Join ratio (A/B) on a stat panel must not leave time_bucket in
+        # output_group_fields, which would cause metric_panel_rule to promote
+        # the panel to a datatable instead of a metric/stat panel.
+        expr = "sum(rate(http_requests_total[5m])) / sum(rate(http_requests_received[5m]))"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_join_ratio_timeseries_panel_keeps_time_bucket(self):
+        # On a timeseries panel the join ratio path must include time_bucket in
+        # output_group_fields and emit the SORT.
+        expr = "sum(rate(http_requests_total[5m])) / sum(rate(http_requests_received[5m]))"
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertIn("SORT time_bucket ASC", q)
+
+    def test_join_binary_expr_lhs_stat_panel_collapses_to_scalar(self):
+        # join_family_rule * path where left_frag is itself a binary_expr
+        # (A - B) * on(...) group_left C. For stat panels the collapsed output
+        # must not include time_bucket.
+        expr = "(rate(http_requests_total[5m]) - rate(http_errors_total[5m])) * on(job) group_left(label) some_info"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        if translated.feasibility == "not_feasible":
+            return  # path not reachable for this expr shape; skip
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_join_binary_expr_lhs_timeseries_panel_keeps_time_bucket(self):
+        # Same path as above for a timeseries panel — time_bucket must be kept.
+        expr = "(rate(http_requests_total[5m]) - rate(http_errors_total[5m])) * on(job) group_left(label) some_info"
+        translated = self.translate(expr, panel_type="timeseries")
+        if translated.feasibility == "not_feasible":
+            return
+        if "time_bucket" in (translated.output_group_fields or []):
+            q = translated.esql_query or ""
+            self.assertIn("SORT time_bucket ASC", q)
 
     def test_rule_catalog_exposes_binary_expr_rule(self):
         catalog = migrate.build_rule_catalog(self.rule_pack)

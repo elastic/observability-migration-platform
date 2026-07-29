@@ -3780,7 +3780,11 @@ def _try_collapse_same_metric_targets(translations):
     collapsed.source_type = plan.specs[0].source_type
     collapsed_summary = None
     if _summary_mode_from_metadata(collapsed.metadata):
-        collapsed_summary = _collapse_summary_ts_query(parts, output_group_fields, metric_fields)
+        _cst_panel_type = getattr(collapsed, "panel_type", "")
+        collapsed_summary = _collapse_summary_ts_query(
+            parts, output_group_fields, metric_fields,
+            keep_time_bucket=_cst_panel_type in {"table", "table-old"},
+        )
     if collapsed_summary is None:
         # The KEEP is dropped downstream by _strip_dotted_group_keep when a
         # grouping field is dotted (avoids an ES|QL "Output has changed" error).

@@ -874,8 +874,11 @@ ELEMENTWISE_MATH_FUNCTIONS = frozenset(
         "log2",
         "log10",
         "acos",
+        "acosh",
         "asin",
+        "asinh",
         "atan",
+        "atanh",
         "cos",
         "sin",
         "tan",
@@ -3513,7 +3516,7 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
         f"{_esql_identifier(field)} = MAX({_esql_identifier(field)})" for field in keep_fields
     )
     if group_fields:
-        parts.append("| SORT time_bucket ASC")
+        # MAX is order-independent; no pre-collapse sort needed.
         parts.append(
             f"| STATS {reduced} BY {', '.join(_esql_identifier(f) for f in group_fields)}"
         )
