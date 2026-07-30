@@ -13904,8 +13904,15 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         result, doc = self._translate(None)
         variable_names = {c["variable_name"] for c in doc["controls"]}
         self.assertEqual(variable_names, {"instance", "id"})
-        self.assertEqual(len(result.control_warnings), 1)
-        self.assertIn("scoped by $instance", result.control_warnings[0])
+        scope_warnings = [w for w in result.control_warnings if "scoped by $instance" in w]
+        self.assertEqual(len(scope_warnings), 1)
+        # Offline (no resolver) the `id="$id"` label filter cannot be resolved and
+        # is dropped, so neither control ends up bound to a panel query. Both must
+        # be reported as inert rather than left looking functional.
+        inert = [w for w in result.control_warnings if "no migrated panel" in w]
+        self.assertEqual(len(inert), 2)
+        self.assertTrue(any("variable 'instance'" in w for w in inert))
+        self.assertTrue(any("variable 'id'" in w for w in inert))
 
 
 class LokiDashboardIntegrationTests(unittest.TestCase):

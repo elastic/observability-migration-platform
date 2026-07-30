@@ -6836,6 +6836,31 @@ def _ensure_param_controls(
         and control.get("variable_name")
     }
     missing = sorted(name for name in emitted_params if name not in bound)
+    # Inert controls (the reverse of ``missing``): a control whose ``?var`` no
+    # migrated panel query binds. Grafana variables that exist only to scope
+    # another variable's ``label_values()`` selector (e.g. ``$namespace``
+    # narrowing the ``$instance`` option list) produce exactly this — Kibana
+    # renders a populated, clickable dropdown that changes nothing, because
+    # ES|QL controls have no cross-control dependency mechanism to re-apply.
+    # That is worse than a missing control: it looks functional. Surface it
+    # rather than let the operator discover it by clicking (degrade-gracefully
+    # rule: never hide a semantic gap).
+    if control_warnings is not None:
+        emitted = set(emitted_params or ())
+        for control in controls:
+            if not isinstance(control, dict) or control.get("type") != "esql":
+                continue
+            name = control.get("variable_name")
+            if name and name not in emitted:
+                control_warnings.append(
+                    f"variable '{name}' has a Kibana control, but no migrated panel "
+                    f"query binds ?{name} — the control renders and is selectable "
+                    "yet changes no panel. This happens when the Grafana variable "
+                    "only scoped another variable's option list (no panel filtered "
+                    "on it), or when its panel label filter could not be translated "
+                    "and was dropped. Check the panel warnings to tell which, then "
+                    "either filter panels on the field or remove the control."
+                )
     if not missing:
         return controls
     variables_by_name = {
