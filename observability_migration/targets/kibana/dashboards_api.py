@@ -515,8 +515,27 @@ def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
     axis = _api_xy_axis(_cfg_axis_source(cfg))
     if axis and (axis.get("y") or {}).get("title"):
         return axis
-    inferred = _infer_y_axis_title(cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else [])
+    metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
+    inferred = _infer_y_axis_title(metrics)
     if not inferred:
+        # No unit-derived title available. With two or more left-axis series
+        # Kibana falls back to the FIRST series' name, which mislabels the whole
+        # axis ("not expiring" on a chart plotting not-expiring AND expiring;
+        # "hits" on hits AND misses). Grafana showed no axis title at all here
+        # (axisLabel is empty), so hide it rather than let Kibana invent a
+        # wrong one. A single series keeps the default, where the column name
+        # does describe the axis.
+        left = [
+            m for m in metrics
+            if isinstance(m, dict) and m.get("axis") != "right"
+        ]
+        if len(left) >= 2:
+            hidden: dict[str, Any] = {"title": {"text": "", "visible": False}}
+            if axis:
+                merged_hidden = dict(axis)
+                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
+                return merged_hidden
+            return {"y": hidden}
         return axis
     y_title: dict[str, Any] = {"title": {"text": inferred, "visible": True}}
     if axis:
