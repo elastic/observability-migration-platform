@@ -79,7 +79,13 @@ def register(api):
         The standard binary_expr translator marks this not_feasible because it cannot
         safely divide two independent time series in ES|QL.  In the prometheus_native
         scraper layout both metrics are written into the same document per label-set,
-        so the ratio can be computed via EVAL within a single FROM query.
+        so the ratio can be computed via EVAL within a single TS query.
+
+        Uses TS (TSDB) source so each bucket has exactly one pre-aggregated row per
+        time series ID, avoiding the inflation that FROM would produce by reading
+        every individual scrape document.  TBUCKET(1, ...) spans the full query range
+        as a single bucket — correct for scalar/gauge panels that collapse to one value.
+        SUM matches PromQL sum() semantics (sum of per-instance ratios).
 
         Only fires when this curated pack's RulePackConfig is active (pack marker set)
         AND both metric names appear in the same PromQL expression.
@@ -91,19 +97,19 @@ def register(api):
 
         index = context.index or "metrics-redis.prometheus-default"
         esql = "\n".join([
-            f"FROM {index}",
+            f"TS {index}",
             "| WHERE metrics.redis_memory_used_bytes IS NOT NULL",
             "  AND metrics.redis_memory_max_bytes IS NOT NULL",
             "  AND metrics.redis_memory_max_bytes > 0",
             "| WHERE labels.instance RLIKE ?instance",
             "| EVAL memory_pct = 100.0 * metrics.redis_memory_used_bytes / metrics.redis_memory_max_bytes",
-            "| STATS memory_pct = AVG(memory_pct) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)",
-            "| SORT time_bucket ASC",
-            "| STATS time_bucket = MAX(time_bucket), memory_pct = MAX(memory_pct)",
-            "| KEEP time_bucket, memory_pct",
+            "| STATS memory_pct = SUM(memory_pct) BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)",
+            "| STATS memory_pct = MAX(memory_pct)",
+            "| KEEP memory_pct",
         ])
 
         context.esql_query = esql
+        context.source_type = "TS"
         context.output_metric_field = "memory_pct"
         context.metric_name = "redis_memory_usage_pct"
         context.feasibility = "feasible"

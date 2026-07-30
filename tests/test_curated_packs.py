@@ -12,6 +12,7 @@ from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
     resolve_pack_for_dashboard,
 )
+from observability_migration.adapters.source.grafana.panels import translate_panel
 
 # ---------------------------------------------------------------------------
 # Registry loader
@@ -192,3 +193,53 @@ def test_resolve_pack_no_gnet_id_uses_title_fallback():
     base = RulePackConfig()
     resolved = resolve_pack_for_dashboard(dashboard, base)
     assert resolved.metric_kinds.get("redis_commands_total") == "counter"
+
+
+# ---------------------------------------------------------------------------
+# redis_memory_ratio_rule — gauge query correctness
+# ---------------------------------------------------------------------------
+
+def test_redis_memory_ratio_uses_ts_source():
+    """gauge query must use TS (not FROM) to avoid inflating values from scrape docs."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
+    base = RulePackConfig()
+    rule_pack = resolve_pack_for_dashboard(dashboard, base)
+    rule_pack.metrics_index = "metrics-redis.prometheus-default"
+
+    gauge_panel = {
+        "type": "gauge",
+        "title": "Memory Usage",
+        "targets": [
+            {
+                "expr": 'sum(100 * (redis_memory_used_bytes{instance=~"$instance"} / redis_memory_max_bytes{instance=~"$instance"}))',
+                "refId": "A",
+            }
+        ],
+        "fieldConfig": {
+            "defaults": {
+                "min": 0, "max": 100,
+                "thresholds": {"mode": "absolute", "steps": [
+                    {"color": "green", "value": None},
+                    {"color": "orange", "value": 80},
+                    {"color": "red", "value": 95},
+                ]},
+            }
+        },
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+    }
+
+    yaml_panel, result = translate_panel(
+        gauge_panel,
+        datasource_index="metrics-redis.prometheus-default",
+        rule_pack=rule_pack,
+    )
+
+    assert result.status != "not_feasible", f"Expected feasible, got not_feasible: {result.reasons}"
+    assert "esql" in yaml_panel, "Expected esql panel, got markdown"
+    query = yaml_panel["esql"]["query"]
+
+    assert query.startswith("TS "), f"Bug 1: query should use TS source, got: {query[:50]}"
+    assert "TBUCKET(1," in query, f"Bug 3: scalar gauge should use TBUCKET(1,...), got: {query}"
+    assert "SUM(memory_pct)" in query, f"Bug 2: should use SUM (not AVG) to match PromQL sum(), got: {query}"
+    assert "time_bucket = MAX(time_bucket)" not in query, "Bug 3: should not keep time_bucket in collapse"
+    assert yaml_panel["esql"]["metric"]["field"] == "memory_pct"
