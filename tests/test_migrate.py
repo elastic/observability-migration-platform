@@ -1603,12 +1603,18 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(result.status, "requires_manual")
         query = yaml_panel["esql"]["query"]
-        # legendFormat labels are display-only and are not promoted into BY,
-        # including labels that exist in field caps (``type``) and ones that do
-        # not (``info``).
-        self.assertNotIn(", type", query)
+        # A legendFormat label that does NOT exist in field caps (``info``) is
+        # display-only and must never reach BY -- grouping on it would reference
+        # a non-existent column.
         self.assertNotIn(", info", query)
         self.assertNotIn("COALESCE(info", query)
+        # A legendFormat label that IS a real target dimension (``type``) is kept.
+        # ES|QL TS emits one row per series per bucket, but Kibana derives series
+        # identity from a breakdown column rather than the TSID, so dropping the
+        # only real label leaves column-identical rows that render as several
+        # indistinguishable same-named series. Keeping it is what makes them
+        # distinguishable.
+        self.assertIn(", type", query)
 
     def test_scalar_template_variable_in_arithmetic_becomes_literal_with_warning(self):
         self.seed_field_caps({

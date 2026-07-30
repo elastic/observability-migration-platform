@@ -3829,7 +3829,33 @@ def _drop_legend_labels_if_redundant(
         return group_fields
     if not _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
         return group_fields
+    if _legend_group_fields_are_real(group_fields, resolver):
+        # The TSID split is invisible to Kibana. ``TS`` does emit one row per
+        # series per bucket, but the chart binds series identity to a breakdown
+        # *column*, not to the TSID -- so dropping a legend label that names a
+        # real dimension leaves N rows per bucket that are column-identical, and
+        # Kibana draws N same-named, indistinguishable series (Redis 763
+        # Hits/Misses showed two "hits" and two "misses" in one tooltip once a
+        # second instance existed). Keep the label: the resulting outer
+        # aggregation is over a group that already holds one value per series
+        # per bucket, so it does not distort. Phantom placeholders such as
+        # ``{{input}}`` fail this check and still drop, which is what makes the
+        # AVG-wrapping / fusion-breaking case above safe.
+        return group_fields
     return []
+
+
+def _legend_group_fields_are_real(group_fields, resolver):
+    """True only when every legend-derived BY field is a proven target field.
+
+    Deliberately conservative: ``field_exists`` returns ``None`` when discovery
+    never ran (offline, no ``--es-url``), and that is treated as "not proven" so
+    offline runs keep their existing behaviour. Only a live-confirmed dimension
+    earns the label back.
+    """
+    if not resolver or not group_fields:
+        return False
+    return all(resolver.field_exists(field) is True for field in group_fields)
 
 
 def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):

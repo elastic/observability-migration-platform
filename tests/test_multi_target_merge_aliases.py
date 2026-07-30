@@ -589,3 +589,85 @@ def test_formula_and_simple_target_sharing_same_metric_deduplicates_stats():
     assert "expiring_A_rhs" not in query
     assert "expiring_B" not in query
     assert structural_errors(check_esql_structure(query)) == []
+
+
+def _seed(resolver, fields):
+    resolver._discovery_attempted = True
+    resolver._field_cache = fields
+    resolver._discovered_mappings = {}
+    resolver._schema_profile_cache_id = None
+
+
+_KW = {"keyword": {"type": "keyword", "searchable": True, "aggregatable": True}}
+_DBL = {"double": {"type": "double", "aggregatable": True}}
+
+
+def test_bare_irate_keeps_real_legend_label_as_breakdown():
+    """A bare ``irate()`` with a ``{{ label }}`` legend must keep that label in BY.
+
+    ES|QL ``TS`` emits one row per TSID per bucket, so dropping the legend label
+    yields N rows per bucket with no column identifying the series. Kibana binds
+    series identity to a breakdown *column*, not the TSID, so those render as N
+    indistinguishable same-named series (observed on Redis 763 Hits/Misses once a
+    second instance existed: two "hits" and two "misses" entries in one tooltip).
+    """
+    panel = {
+        "id": 1, "type": "timeseries", "title": "Hits / Misses per Sec",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {"expr": 'irate(redis_keyspace_hits_total{instance=~"$instance"}[5m])',
+             "legendFormat": "hits, {{ instance }}", "refId": "A"},
+            {"expr": 'irate(redis_keyspace_misses_total{instance=~"$instance"}[5m])',
+             "legendFormat": "misses, {{ instance }}", "refId": "B"},
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack, field_profile="prometheus_native")
+    _seed(resolver, {
+        "labels.instance": _KW,
+        "metrics.redis_keyspace_hits_total": _DBL,
+        "metrics.redis_keyspace_misses_total": _DBL,
+    })
+    yaml_panel, result = translate_panel(
+        panel, datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rule_pack, resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = yaml_panel["esql"]["query"]
+    stats = next(line for line in query.splitlines() if "| STATS" in line)
+    assert "labels.instance" in stats, (
+        f"real legend label must stay in BY so series are distinguishable: {stats}"
+    )
+    assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_bare_rate_drops_phantom_legend_label():
+    """A legendFormat placeholder that is not a real target field must still drop.
+
+    Redis 763's Network I/O uses ``{{ input }}`` / ``{{ output }}``, which are not
+    Prometheus labels. Grouping by them would reference a non-existent column and
+    break target fusion, so the existing drop must be preserved for that case.
+    """
+    panel = {
+        "id": 2, "type": "timeseries", "title": "Network I/O",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {"expr": 'sum(rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]))',
+             "legendFormat": "{{ input }}", "refId": "A"},
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack, field_profile="prometheus_native")
+    _seed(resolver, {
+        "labels.instance": _KW,
+        "metrics.redis_net_input_bytes_total": _DBL,
+    })
+    yaml_panel, _result = translate_panel(
+        panel, datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rule_pack, resolver=resolver,
+    )
+    query = yaml_panel["esql"]["query"]
+    assert "input" not in query.split("| STATS")[-1].split("BY")[-1], (
+        f"phantom legend label must not become a BY field: {query}"
+    )
+    assert structural_errors(check_esql_structure(query)) == []
