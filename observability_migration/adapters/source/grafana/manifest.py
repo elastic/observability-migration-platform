@@ -119,6 +119,22 @@ def analyze_panel_targets(panel: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _value_mapping_count(field_config: Any) -> int:
+    """Count Grafana value mappings (value -> display text) on a panel.
+
+    Kibana's panel schema has ``ColorValueMapping`` / ``ColorRangeMapping``,
+    which assign *colors*; there is no value -> text equivalent, so these
+    cannot be translated and must be surfaced rather than dropped silently.
+    """
+    if not isinstance(field_config, dict):
+        return 0
+    defaults = field_config.get("defaults")
+    if not isinstance(defaults, dict):
+        return 0
+    mappings = defaults.get("mappings")
+    return len(mappings) if isinstance(mappings, list) else 0
+
+
 def collect_panel_inventory(panel: dict[str, Any]) -> dict[str, Any]:
     field_config = panel.get("fieldConfig") or {}
     overrides = field_config.get("overrides") if isinstance(field_config, dict) else []
@@ -127,6 +143,7 @@ def collect_panel_inventory(panel: dict[str, Any]) -> dict[str, Any]:
         "links": len(panel.get("links", []) or []),
         "transformations": len(panel.get("transformations", []) or []),
         "field_overrides": len(overrides or []),
+        "value_mappings": _value_mapping_count(field_config),
         "has_repeat": bool(panel.get("repeat")),
         "has_library_panel": bool(panel.get("libraryPanel")),
         "has_description": bool(str(panel.get("description") or "").strip()),
@@ -143,6 +160,12 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
     if inventory["field_overrides"]:
         notes.append(
             f"Grafana panel has {inventory['field_overrides']} field override(s); verify visual mappings manually"
+        )
+    if inventory["value_mappings"]:
+        notes.append(
+            f"Grafana panel has {inventory['value_mappings']} value mapping(s) "
+            "(e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, "
+            "not display text, so the raw value is shown instead"
         )
     if inventory["has_repeat"]:
         notes.append("Grafana repeating panel behavior is not preserved automatically")

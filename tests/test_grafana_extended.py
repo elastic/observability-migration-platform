@@ -4161,3 +4161,53 @@ class TestNativePromqlLiveValidationFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestValueMappingsAreReported(unittest.TestCase):
+    """Grafana value mappings have no Kibana equivalent and must not vanish silently.
+
+    Kibana's panel schema offers ColorValueMapping / ColorRangeMapping, which
+    assign colors; there is no value -> display-text mapping. A Grafana panel
+    that renders "N/A" for null, or "Up" for 1, will show the raw value after
+    migration, so the loss has to be surfaced (degrade-gracefully rule).
+    """
+
+    def test_value_mappings_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "CPU Busy",
+            "type": "stat",
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [
+                        {"type": "special",
+                         "options": {"match": "null", "result": {"text": "N/A"}}}
+                    ]
+                }
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertTrue(
+            any("value mapping" in n for n in notes),
+            f"value mappings must be reported, got {notes}",
+        )
+
+    def test_panel_without_value_mappings_gets_no_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        notes = collect_panel_notes({"title": "x", "type": "stat", "fieldConfig": {"defaults": {}}})
+        self.assertFalse([n for n in notes if "value mapping" in n])
+
+    def test_inventory_counts_value_mappings(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_inventory,
+        )
+
+        panel = {"fieldConfig": {"defaults": {"mappings": [{"type": "value"}, {"type": "special"}]}}}
+        self.assertEqual(collect_panel_inventory(panel)["value_mappings"], 2)
+        self.assertEqual(collect_panel_inventory({})["value_mappings"], 0)
