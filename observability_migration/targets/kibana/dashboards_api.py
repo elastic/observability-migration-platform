@@ -1852,10 +1852,24 @@ def build_payload_from_yaml(yaml_doc: dict[str, Any]) -> tuple[dict[str, Any], d
 # Deploy
 # --------------------------------------------------------------------------- #
 
+# Public Dashboards API version this emitter's payload shape targets. Kibana
+# negotiates versioned public APIs via ``elastic-api-version``; omitting it
+# silently resolves to whatever that Kibana build defaults to, so a future
+# version bump could change payload handling under us without an error. Pin it
+# so a mismatch surfaces as an explicit 400 ("No version ... available")
+# instead of a behaviour change. Verified against Kibana 9.5:
+# ``Available versions are: [2023-10-31]``.
+DASHBOARDS_API_VERSION = "2023-10-31"
+
+
 def _session(api_key: str = "", verify: bool | str = True) -> requests.Session:
     session = requests.Session()
     apply_tls(session, verify)
-    session.headers.update({"kbn-xsrf": "true", "Content-Type": "application/json"})
+    session.headers.update({
+        "kbn-xsrf": "true",
+        "Content-Type": "application/json",
+        "elastic-api-version": DASHBOARDS_API_VERSION,
+    })
     if api_key:
         session.headers["Authorization"] = f"ApiKey {api_key}"
     return session
