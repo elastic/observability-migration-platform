@@ -24,10 +24,18 @@ query:
     bdb_conns: gauge
 
   # --- Prometheus label → OTel/Elastic field candidates -----------------
+  # Listed in resolution priority order (first match wins). Redis Cloud exposes
+  # a Prometheus endpoint, so the prometheus_native layout (``labels.<name>``)
+  # is the primary target and must come first: offline migrations (no
+  # ``--es-url``) fall through to the FIRST candidate without probing, so an
+  # OTel-first order silently emits ``service.name`` for a prometheus_native
+  # deployment. In live mode the source-faithful shortcut in SchemaResolver
+  # already returns ``labels.<name>``, so this ordering only changes the
+  # offline path -- which is exactly where it was wrong.
   label_candidates:
     cluster:
-      - service.name
-      - labels.cluster
+      - labels.cluster     # prometheus_native (primary for Redis Cloud / RLEC)
+      - service.name       # OTel ECS mode
     bdb:
-      - db.name
-      - labels.bdb
+      - labels.bdb         # prometheus_native
+      - db.name            # OTel ECS mode

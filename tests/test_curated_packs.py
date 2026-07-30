@@ -243,3 +243,65 @@ def test_redis_memory_ratio_uses_ts_source():
     assert "SUM(memory_pct)" in query, f"Bug 2: should use SUM (not AVG) to match PromQL sum(), got: {query}"
     assert "time_bucket = MAX(time_bucket)" not in query, "Bug 3: should not keep time_bucket in collapse"
     assert yaml_panel["esql"]["metric"]["field"] == "memory_pct"
+
+
+def test_find_14091_by_gnet_id():
+    entry = find_curated_pack(gnet_id=14091, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 14091
+    assert entry["name"] == "grafana_14091_redis_exporter_quickstart"
+
+
+def test_find_14091_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None, title="Redis Exporter Quickstart and Dashboard", tags=[]
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 14091
+
+
+def test_resolve_pack_14091_merges_metric_kinds():
+    dashboard = {"gnetId": 14091, "title": "Redis Exporter Quickstart", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert resolved.metric_kinds.get("redis_keyspace_hits_total") == "counter"
+    assert resolved.metric_kinds.get("redis_connected_clients") == "gauge"
+
+
+def test_resolve_pack_14091_maps_renamed_fragmentation_metric():
+    """Revision 1 targets the pre-rename exporter metric name.
+
+    Current oliver006/redis_exporter exposes redis_mem_fragmentation_ratio; the
+    pack carries the rename so operators do not need --metric-map-file. The
+    target must be fully qualified because metric_map targets are verbatim (no
+    field-profile prefix is prepended).
+    """
+    dashboard = {"gnetId": 14091, "title": "Redis Exporter Quickstart", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    entry = (resolved.metric_map or {}).get("redis_memory_fragmentation_ratio")
+    target = getattr(entry, "target", entry)
+    assert target == "metrics.redis_mem_fragmentation_ratio"
+
+
+def test_prometheus_native_label_candidates_come_first_in_redis_packs():
+    """Offline runs take the FIRST candidate without probing the target.
+
+    All three Redis packs describe Prometheus scrapes, so labels.<name> must lead;
+    an OTel-first order silently emits service.name / db.name for a
+    prometheus_native deployment (observed on 18405/18406 before this was fixed).
+    """
+    expected_first = {
+        763: [("instance", "labels.instance"), ("job", "labels.job")],
+        18405: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
+        18406: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
+        14091: [("instance", "labels.instance"), ("job", "labels.job")],
+    }
+    for gnet_id, pairs in expected_first.items():
+        resolved = resolve_pack_for_dashboard(
+            {"gnetId": gnet_id, "title": "", "tags": []}, RulePackConfig()
+        )
+        for label, first in pairs:
+            candidates = (resolved.label_candidates or {}).get(label)
+            assert candidates, f"{gnet_id}: no candidates for {label}"
+            assert candidates[0] == first, (
+                f"{gnet_id}: {label} resolves to {candidates[0]} offline, expected {first}"
+            )

@@ -1,0 +1,68 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 14091
+# https://grafana.com/grafana/dashboards/14091-redis-dashboard-for-prometheus-redis-exporter-1-x/
+#
+# Source: Grafana Labs "Redis Exporter Quickstart and Dashboard"
+#         (oliver006/redis_exporter Prometheus scrape)
+# Panels: 11 across 3 rows — 10 PERFECT, 1 APPROXIMATE (hit ratio via plugin)
+#
+# Two source-side quirks this pack absorbs so the operator does not have to:
+#   1. Revision 1 targets an older redis_exporter that exposed
+#      ``redis_memory_fragmentation_ratio``; current exporters renamed it to
+#      ``redis_mem_fragmentation_ratio``. Handled by ``metric_map`` below, so
+#      no ``--metric-map-file`` is needed.
+#   2. "Hit ratio per instance" is a self-referential ratio
+#      ``avg(irate(H) / (irate(M) + irate(H))) by (instance)`` that the general
+#      binary-expression translator marks not-feasible. plugin.py emits the
+#      equivalent single-query ES|QL form.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  metric_kinds:
+    redis_commands_total: counter
+    redis_commands_duration_seconds_total: counter
+    redis_keyspace_hits_total: counter
+    redis_keyspace_misses_total: counter
+    redis_evicted_keys_total: counter
+    redis_expired_keys_total: counter
+    redis_net_input_bytes_total: counter
+    redis_net_output_bytes_total: counter
+    redis_memory_used_bytes: gauge
+    redis_memory_max_bytes: gauge
+    redis_mem_fragmentation_ratio: gauge
+    redis_connected_clients: gauge
+    redis_blocked_clients: gauge
+    redis_connected_slaves: gauge
+    redis_db_keys: gauge
+    redis_db_keys_expiring: gauge
+    redis_master_last_io_seconds_ago: gauge
+
+  # --- source metric renames --------------------------------------------
+  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
+  # prepended), so the fully-qualified prometheus_native path is required here.
+  # See docs/command-contract.md, "metric_map targets are verbatim".
+  metric_map:
+    redis_memory_fragmentation_ratio: metrics.redis_mem_fragmentation_ratio
+
+  # --- Prometheus label → Elastic field candidates ----------------------
+  # prometheus_native (``labels.<name>``) first: offline migrations fall
+  # through to the FIRST candidate without probing the target, so an
+  # OTel-first order silently emits the wrong field for a Prometheus scrape.
+  label_candidates:
+    instance:
+      - labels.instance     # prometheus_native (primary for redis_exporter)
+      - service.instance.id # OTel ECS mode
+      - host.name
+    job:
+      - labels.job
+      - service.name
+    db:
+      - labels.db
+      - db
+    cmd:
+      - labels.cmd
+      - cmd

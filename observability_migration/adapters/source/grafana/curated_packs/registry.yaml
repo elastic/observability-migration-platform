@@ -38,3 +38,12 @@ packs:
     gnet_revision: 2
     dashboard_sha256: "b5f9f8b76ade994accd6cecd9a9c32f22e5e8ae46aa889a53bc9723db28a0ec9"
     description: "Redis Cloud subscription monitoring (bdb_* Prometheus metrics) — stat panels, cluster/bdb variables"
+
+  - gnet_id: 14091
+    name: grafana_14091_redis_exporter_quickstart
+    title_hint: "Redis Exporter Quickstart and Dashboard"
+    tags_hint: []
+    path: grafana_14091_redis_exporter_quickstart
+    gnet_revision: 1
+    dashboard_sha256: "ad46c7c61701f7c5ce55bae9daa56fecde0afa30980d2603b5919370e11a5f85"
+    description: "Grafana Labs Redis Exporter Quickstart — hit-ratio plugin, renamed fragmentation metric, label map"

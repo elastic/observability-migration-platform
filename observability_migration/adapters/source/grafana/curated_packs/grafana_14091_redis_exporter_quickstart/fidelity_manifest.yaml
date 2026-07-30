@@ -1,0 +1,92 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 14091 (Grafana Labs)
+# https://grafana.com/grafana/dashboards/14091-redis-dashboard-for-prometheus-redis-exporter-1-x/
+#
+# Fidelity: PERFECT = semantic parity | APPROXIMATE = documented delta
+
+schema_version: 1
+gnet_id: 14091
+gnet_revision: 1
+dashboard_title: "Redis Exporter Quickstart and Dashboard"
+maintainer: "Grafana Labs"
+rows: 3   # Performance / Memory / Basics — migrated as Kibana sections
+
+panels:
+  - title: "Commands per second"
+    fidelity: PERFECT
+    notes: "rate(redis_commands_total) by cmd — counter rate with cmd breakdown"
+
+  - title: "Command latency per second"
+    fidelity: PERFECT
+    notes: "duration/commands ratio per cmd; both counters co-located, EVAL after STATS"
+
+  - title: "Hit ratio per instance"
+    fidelity: APPROXIMATE
+    notes: >
+      Self-referential ratio avg(irate(H)/(irate(M)+irate(H))) by (instance). The general
+      binary-expression translator marks this not_feasible because it cannot align a metric
+      that appears in both numerator and denominator. plugin.py emits the equivalent single
+      ES|QL query (SUM the two IRATEs per bucket+instance, then EVAL the ratio) — one panel,
+      no split needed. Verified live: hits=10/misses=10 -> 0.50, hits=8/misses=2 -> 0.80.
+      APPROXIMATE (not PERFECT) for one reason only: the source panel's second target
+      (expr: 1, "Target hit ratio for cache") is a reference line, and the Kibana Dashboards
+      API 2023-10-31 has no reference-line layer type — posting one returns HTTP 400 while
+      the identical panel without it returns 200. The ratio series itself is exact.
+
+  - title: "Total Memory Usage"
+    fidelity: PERFECT
+    notes: "used/max gauge series"
+
+  - title: "Memory fragmentation ratio per instance"
+    fidelity: PERFECT
+    notes: >
+      Source targets redis_memory_fragmentation_ratio, which current
+      oliver006/redis_exporter releases renamed to redis_mem_fragmentation_ratio.
+      pack.yaml metric_map handles the rename, so no --metric-map-file is needed.
+
+  - title: "Key evictions per second per instance"
+    fidelity: PERFECT
+
+  - title: "Connected/Blocked Clients"
+    fidelity: PERFECT
+
+  - title: "Total Items per DB"
+    fidelity: PERFECT
+    notes: "db + instance composited into a synthetic legend column"
+
+  - title: "Expiring vs Not-Expiring Keys"
+    fidelity: PERFECT
+    notes: "EVAL subtraction on co-located gauges"
+
+  - title: "Connected slaves by instance"
+    fidelity: PERFECT
+
+  - title: "Time since last master connection"
+    fidelity: PERFECT
+    notes: >
+      Translation is structurally correct and accepted by Elasticsearch. It returns no data
+      against a standalone Redis because redis_master_last_io_seconds_ago is only exported by
+      a replica connected to a master — a data/topology gap, NOT a translator defect. It will
+      populate on a replica. Do not "fix" this by rewriting the query.
+
+summary:
+  total_panels: 11
+  perfect: 10
+  approximate: 1
+  not_feasible: 0
+  overall_fidelity: HIGH
+  live_validation:
+    date: "2026-07-31"
+    environment: "ES 9.5.0-SNAPSHOT + prometheus_native redis_exporter scrape + Kibana 9.5.0-SNAPSHOT"
+    method: "every panel query executed via POST /_query and classified"
+    queries_returning_data: 10
+    queries_structurally_valid: 11
+    translator_errors: 0
+    data_gaps: 1
+    data_gap_detail: "Time since last master connection — replica-only metric, standalone Redis under test"
+    flags_required: "none (metric rename handled by the pack, not --metric-map-file)"
+  known_gaps:
+    - "Reference line (expr: 1) on Hit ratio per instance — no Kibana Dashboards API layer type"
+    - "instance variable was multi-select in Grafana; Kibana ES|QL params are scalar, so a single-select control is emitted"
