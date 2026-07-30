@@ -67,14 +67,22 @@ class TestIssue317AutoLegendBreakdown(unittest.TestCase):
 
 
 class TestIssue318PanelIntervalStep(unittest.TestCase):
-    def test_auto_panel_emits_bare_promql(self):
-        """#318 / #272: auto panels emit bare PROMQL; Kibana injects time range."""
+    def test_auto_panel_emits_adaptive_window_not_frozen_step(self):
+        """#318 / #272: an auto panel must not freeze resolution with ``step=``.
+
+        It stays adaptive by binding the window to the dashboard time picker via
+        the ``?_tstart`` / ``?_tend`` placeholders. It must NOT be emitted bare:
+        Elasticsearch rejects a stepless PROMQL command at plan time, and Kibana
+        only substitutes placeholders — it does not synthesise absent command
+        arguments, so there is nothing for it to inject into a bare command.
+        """
         yaml_panel, _ = _translate(_make_panel("node_disk_read_bytes_total", legend=""))
         query = yaml_panel["esql"]["query"]
         self.assertTrue(query.startswith("PROMQL index="), query)
         self.assertNotIn("step=", query)
-        self.assertNotIn("start=", query)
-        self.assertNotIn("buckets=", query)
+        self.assertIn("start=?_tstart", query)
+        self.assertIn("end=?_tend", query)
+        self.assertIn("buckets=", query)
 
     def test_panel_interval_emits_step(self):
         """#318: Grafana panel ``interval`` must become PROMQL ``step=``."""
@@ -177,3 +185,56 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNativePromqlAdaptiveSelectorMustCarryTiming(unittest.TestCase):
+    """A bare stepless ``PROMQL index=...`` is rejected by Elasticsearch.
+
+    Elasticsearch fails such a command at plan time with "unable to create a
+    bucket; provide either [step] or all of [start], [end], and [buckets]".
+    Kibana does NOT rescue it: it substitutes ``?name`` placeholders, it does
+    not synthesise missing command arguments, so a bare command gives it
+    nothing to fill.
+
+    A previous change dropped the timing args on the theory that Kibana
+    supplied them at render time. It did not, and 8 corpus panels across 4
+    dashboards began failing with exactly that plan-time error. These tests
+    pin the selector so the same theory cannot be re-applied silently.
+    """
+
+    def test_adaptive_selector_is_not_empty(self):
+        from observability_migration.adapters.source.grafana import panels
+
+        self.assertTrue(
+            panels._NATIVE_PROMQL_ADAPTIVE_SELECTOR.strip(),
+            "bare stepless PROMQL is rejected by Elasticsearch at plan time",
+        )
+
+    def test_adaptive_selector_binds_the_dashboard_time_picker(self):
+        from observability_migration.adapters.source.grafana import panels
+
+        selector = panels._NATIVE_PROMQL_ADAPTIVE_SELECTOR
+        # ``?_tstart`` / ``?_tend`` are the placeholders Kibana actually binds;
+        # they are what keeps the range adaptive without a frozen ``step=``.
+        self.assertIn("?_tstart", selector)
+        self.assertIn("?_tend", selector)
+        self.assertIn("buckets=", selector)
+        self.assertNotIn("step=", selector)
+
+    def test_emitted_range_panel_query_carries_timing_args(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            build_native_promql_query,
+        )
+
+        query = build_native_promql_query(
+            "rate(node_cpu_seconds_total[5m])",
+            index="metrics-*",
+            adaptive_step=True,
+        )
+        self.assertTrue(query.startswith("PROMQL "), query)
+        has_step = "step=" in query
+        has_window = all(tok in query for tok in ("start=", "end=", "buckets="))
+        self.assertTrue(
+            has_step or has_window,
+            f"PROMQL command must carry step= or start/end/buckets: {query}",
+        )

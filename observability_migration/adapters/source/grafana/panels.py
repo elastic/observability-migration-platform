@@ -932,15 +932,26 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
-# Adaptive range resolution for dashboard panels (#272, #318). A range plot
-# must size its bucketing to the dashboard time range at view time (like
-# Grafana's ``$__interval``) instead of freezing a fixed ``step=``.
-# In a Kibana dashboard panel, bare ``PROMQL index=... value=(...)`` (no
-# timing args) is valid: Kibana infers the time range from the dashboard time
-# picker and injects it at render time — confirmed on Kibana/ES 9.5 (#318).
-# A bare form without ``step=`` is rejected by Elasticsearch on a raw
-# ``_query`` call, but inside a Kibana panel the timing is always supplied.
-_NATIVE_PROMQL_ADAPTIVE_SELECTOR = ""
+# Adaptive range resolution for dashboard panels (#272). A range plot must size
+# its bucketing to the dashboard time range at view time (like Grafana's
+# ``$__interval``) instead of freezing a fixed ``step=``.
+#
+# A *bare* stepless ``PROMQL index=...`` command is NOT valid: Elasticsearch
+# rejects it at plan time with "unable to create a bucket; provide either
+# [step] or all of [start], [end], and [buckets]". Do not remove these args on
+# the theory that Kibana supplies the timing at render — it does not. Kibana
+# substitutes ``?name`` *placeholders*; it does not synthesise missing command
+# arguments, so a bare command gives it nothing to fill. The form below is what
+# makes the range adaptive: ``?_tstart`` / ``?_tend`` ARE placeholders, bound to
+# the dashboard time picker at render, with a fixed bucket count matching the
+# ES|QL ``BUCKET(@timestamp, 50, ?_tstart, ?_tend)`` path. Adaptive and
+# executable. (A previous change dropped these and broke 8 corpus panels with
+# exactly the plan-time error above; ``test_native_promql_adaptive_selector_*``
+# pins it.)
+_NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
+_NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
+    f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
+)
 # Adaptive ES|QL TS calendar buckets (issue #316) — count form needs the range
 # args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
 # (FROM path still uses 50 via ``from_bucket``).
@@ -2483,7 +2494,7 @@ def _translate_multi_target_native_promql(
         )
     else:
         promql_query = (
-            f"PROMQL index={index} value=({combined_expr})"
+            f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
         )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
@@ -6482,14 +6493,21 @@ def query_variable_rule(context):
             extra_filters=scope_filters,
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
-            # Kibana binds this control's value into a scalar ES|QL parameter
-            # position (``== ?var`` / ``RLIKE ?var``), which cannot accept a
-            # multi-value selection. Report the gap (issue #312 criterion 3)
-            # rather than silently dropping multi-select.
+            # We emit ``RLIKE ?var``, a scalar parameter position that takes one
+            # value, so the control is single-select. Kibana itself is NOT the
+            # limitation: an ``esql_control`` accepts ``single_select: false``,
+            # and ES|QL binds a multi-value selection as an array usable via
+            # ``MV_CONTAINS(?var, field)`` -- both verified against Kibana/ES 9.5.
+            # Adopting it needs a new "All" story, because the ``.*`` regex
+            # sentinel this control defaults to is a literal (matching nothing)
+            # under MV_CONTAINS. Name the real constraint so nobody re-derives
+            # "Kibana can't do multi-select" from this warning.
             context.control_warnings.append(
-                f"variable '{name}' was multi-select in Grafana but binds a scalar "
-                "ES|QL parameter in Kibana; emitted a single-select control "
-                "(select one value at a time)"
+                f"variable '{name}' was multi-select in Grafana; the migrated panels "
+                "bind it as a scalar ES|QL parameter (RLIKE ?" + name + "), so a "
+                "single-select control is emitted. Kibana can express multi-select "
+                "via MV_CONTAINS(?" + name + ", <field>) with single_select=false — "
+                "rewrite those panel filters if you need multiple values at once"
             )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"

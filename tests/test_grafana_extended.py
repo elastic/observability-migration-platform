@@ -2258,9 +2258,15 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "metric")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        # Bare form: Kibana supplies the time range from the dashboard picker (#318).
-        self.assertNotIn("start=", query)
-        self.assertNotIn("buckets=", query)
+        # Adaptive, but NOT bare: Elasticsearch rejects a stepless PROMQL command
+        # at plan time ("provide either [step] or all of [start], [end], and
+        # [buckets]"), and Kibana does not synthesise the missing args -- it only
+        # substitutes ``?name`` placeholders. ``?_tstart`` / ``?_tend`` ARE those
+        # placeholders, so the window still tracks the dashboard time picker.
+        self.assertIn("start=?_tstart", query)
+        self.assertIn("end=?_tend", query)
+        self.assertIn("buckets=", query)
+        self.assertNotIn("step=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_gauge_panel_emits_range_collapsed_latest_value(self):
@@ -2271,9 +2277,15 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "gauge")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        # Bare form: Kibana supplies the time range from the dashboard picker (#318).
-        self.assertNotIn("start=", query)
-        self.assertNotIn("buckets=", query)
+        # Adaptive, but NOT bare: Elasticsearch rejects a stepless PROMQL command
+        # at plan time ("provide either [step] or all of [start], [end], and
+        # [buckets]"), and Kibana does not synthesise the missing args -- it only
+        # substitutes ``?name`` placeholders. ``?_tstart`` / ``?_tend`` ARE those
+        # placeholders, so the window still tracks the dashboard time picker.
+        self.assertIn("start=?_tstart", query)
+        self.assertIn("end=?_tend", query)
+        self.assertIn("buckets=", query)
+        self.assertNotIn("step=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_timeseries_panel_emits_adaptive_range_query(self):
