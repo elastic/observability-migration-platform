@@ -3307,6 +3307,28 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
 
     feasible_translations = [t for t in translations if t.feasibility != "not_feasible" and t.esql_query]
 
+    # A scalar-constant target (Grafana reference lines like ``expr: 1``) must
+    # never be the thing that makes a panel look migrated. When every
+    # substantive target was dropped as not-feasible and only constants remain,
+    # reporting success renders a flat reference line with the real series
+    # silently gone -- an operator sees a green panel and no indication the
+    # metric is missing. Grafana 14091's "Hit ratio per instance" pairs an
+    # unsupported self-referential ratio with ``expr: 1`` and did exactly that.
+    # Degrade gracefully instead: keep the panel not-feasible so the reason
+    # surfaces (project rule: never hide a semantic gap).
+    if feasible_translations and any(t.feasibility == "not_feasible" for t in translations):
+        if all(
+            (t.output_metric_field or t.metric_name) == "constant_value"
+            for t in feasible_translations
+        ):
+            _append_unique(
+                panel_notes,
+                "Only scalar-constant targets survived translation (e.g. a Grafana "
+                "reference line); the substantive target(s) are not feasible, so the "
+                "panel is reported as not feasible rather than rendering a bare constant",
+            )
+            feasible_translations = []
+
     collapsed = _try_collapse_same_metric_targets(feasible_translations)
     if collapsed:
         feasible_translations = [collapsed]

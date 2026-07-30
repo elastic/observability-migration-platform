@@ -671,3 +671,59 @@ def test_bare_rate_drops_phantom_legend_label():
         f"phantom legend label must not become a BY field: {query}"
     )
     assert structural_errors(check_esql_structure(query)) == []
+
+
+def _panel(targets, title="Hit ratio per instance"):
+    return {
+        "id": 1, "type": "graph", "title": title,
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": targets,
+    }
+
+
+_RATIO_NF = (
+    'avg(irate(redis_keyspace_hits_total{instance=~"$instance"}[1m]) '
+    '/ (irate(redis_keyspace_misses_total{instance=~"$instance"}[1m]) '
+    '+ irate(redis_keyspace_hits_total{instance=~"$instance"}[1m]))) by (instance)'
+)
+
+
+def _translate(panel):
+    rule_pack = RulePackConfig()
+    return translate_panel(
+        panel, datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rule_pack, resolver=SchemaResolver(rule_pack),
+    )
+
+
+def test_scalar_constant_does_not_rescue_a_not_feasible_panel():
+    """A Grafana reference line must not make a failed panel look migrated.
+
+    Grafana 14091 "Hit ratio per instance" pairs an unsupported self-referential
+    ratio with ``expr: 1``. Filtering not-feasible targets left only the constant,
+    so the panel reported success and rendered ``ROW constant_value = 1.0`` — a
+    flat line at 1 with the real series silently gone.
+    """
+    _panel_yaml, result = _translate(_panel([
+        {"expr": _RATIO_NF, "refId": "A", "legendFormat": "{{ instance }}"},
+        {"expr": "1", "refId": "B"},
+    ]))
+    assert result.status == "not_feasible", (
+        f"constant target must not rescue the panel, got {result.status}"
+    )
+
+
+def test_constant_only_panel_is_still_migrated():
+    """A panel whose ONLY target is a constant is legitimately a constant."""
+    _panel_yaml, result = _translate(_panel([{"expr": "1", "refId": "A"}], title="Threshold"))
+    assert result.status in {"migrated", "migrated_with_warnings"}
+
+
+def test_constant_alongside_a_feasible_target_still_migrates():
+    """The guard must only fire when EVERY substantive target failed."""
+    panel_yaml, result = _translate(_panel([
+        {"expr": "sum(redis_connected_clients)", "refId": "A"},
+        {"expr": "1", "refId": "B"},
+    ]))
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    assert "redis_connected_clients" in panel_yaml["esql"]["query"]
