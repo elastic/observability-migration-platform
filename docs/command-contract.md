@@ -695,6 +695,42 @@ The file must have a top-level `metric_map:` and/or `tag_map:` key (either or
 both). Grafana rule-pack wrappers (`query: { metric_map: … }`) and full Datadog
 field-profile YAML are **not** accepted by `--metric-map-file`.
 
+##### `metric_map` targets are verbatim — include the profile prefix yourself
+
+A `metric_map` target **replaces** profile-based namespacing; the profile's
+metric prefix is *not* prepended to it. An unmapped metric still gets the
+prefix, so a partially-mapped file silently produces two different field
+shapes:
+
+```yaml
+# --field-profile prometheus_native
+metric_map:
+  redis_uptime_in_seconds: system.uptime
+```
+
+```
+redis_uptime_in_seconds  (mapped)   -> system.uptime                    # no metrics. prefix
+redis_connected_clients  (unmapped) -> metrics.redis_connected_clients  # prefix applied
+```
+
+Write the fully-qualified target field instead:
+
+```yaml
+# --field-profile prometheus_native
+metric_map:
+  redis_uptime_in_seconds: metrics.system.uptime
+
+# --field-profile prometheus_metrics  (Datadog: prometheus)
+metric_map:
+  redis_uptime_in_seconds: prometheus.metrics.system.uptime
+```
+
+This is deliberate — an explicit rename must be able to target any field,
+including one outside the profile's namespace — but it means the profile does
+not "finish" a `metric_map` entry for you. With `--es-url`, a target that does
+not exist is reported as `missing` in `target_readiness_contract.json`; offline
+it is unverifiable, so check the prefix by hand.
+
 #### Grafana existing-OTEL example
 
 Run the migration against the existing OTEL metrics stream. With

@@ -948,7 +948,7 @@ _NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
 # Scalar panels (stat/gauge/bargauge/piechart) collapse to one row anyway, so
 # generating 100 intermediate buckets is wasteful. One bucket gives the same
 # scalar result, avoids the "MAX of per-bucket averages" semantic skew for
-# AVG-outer aggregations, and is 100× cheaper for the STATS step.
+# AVG-outer aggregations, and is 100x cheaper for the STATS step.
 _SCALAR_ESQL_TBUCKET = "time_bucket = TBUCKET(1, ?_tstart, ?_tend)"
 _SCALAR_FROM_BUCKET = "time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)"
 _SCALAR_PANEL_TYPES = frozenset({"stat", "singlestat", "gauge", "bargauge", "piechart"})

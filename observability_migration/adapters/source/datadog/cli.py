@@ -1497,7 +1497,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--field-profile", default="otel",
-        help="Field mapping profile: otel, elastic_agent, prometheus, prometheus_native, passthrough, or path to YAML",
+        help="Field mapping profile: otel, elastic_agent, prometheus "
+             "(alias: prometheus_metrics), prometheus_native, passthrough, "
+             "or path to YAML",
     )
     parser.add_argument(
         "--metric-map-file",

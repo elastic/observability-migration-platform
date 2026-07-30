@@ -9962,7 +9962,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
         # Scalar panels use TBUCKET(1, ...) — one bucket is enough to scope the
-        # time range; 100 buckets would waste 100× STATS work and skew AVG-outer
+        # time range; 100 buckets would waste 100x STATS work and skew AVG-outer
         # aggregations toward the peak bucket instead of the range average.
         self.assertIn("BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.

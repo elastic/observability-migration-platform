@@ -160,7 +160,7 @@ class SchemaResolver:
         self._metric_map_warnings: list[str] = []
         self._metric_map_applied: dict[str, str] = {}
 
-    def copy_with_pack(self, rule_pack) -> "SchemaResolver":
+    def copy_with_pack(self, rule_pack) -> SchemaResolver:
         """Return a new resolver sharing this resolver's ES field cache but using a different rule_pack.
 
         Used when a per-dashboard curated pack supplies different label_candidates than the

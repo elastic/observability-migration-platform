@@ -8,11 +8,11 @@ from observability_migration.adapters.source.grafana.curated_packs import (
     find_curated_pack,
     load_curated_registry,
 )
+from observability_migration.adapters.source.grafana.panels import translate_panel
 from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
     resolve_pack_for_dashboard,
 )
-from observability_migration.adapters.source.grafana.panels import translate_panel
 
 # ---------------------------------------------------------------------------
 # Registry loader

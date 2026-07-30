@@ -14,7 +14,7 @@ import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 
@@ -104,7 +104,7 @@ def bulk_index(body: str) -> tuple[int, int]:
         timeout=15,
     )
     result = resp.json()
-    ok = sum(1 for item in result.get("items", []) if list(item.values())[0].get("status", 0) in (200, 201))
+    ok = sum(1 for item in result.get("items", []) if next(iter(item.values())).get("status", 0) in (200, 201))
     err = len(result.get("items", [])) - ok
     return ok, err
 
@@ -132,7 +132,7 @@ def main() -> None:
         try:
             resp = requests.get(EXPORTER_URL, timeout=10)
             resp.raise_for_status()
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             groups = parse_prometheus(resp.text)
             body = build_bulk_body(groups, ts)
             ok, err = bulk_index(body)

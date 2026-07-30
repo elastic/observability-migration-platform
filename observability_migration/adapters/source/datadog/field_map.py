@@ -428,6 +428,12 @@ BUILTIN_PROFILES: dict[str, FieldMapProfile] = {
     "default": OTEL_PROFILE,
     "otel": OTEL_PROFILE,
     "prometheus": PROMETHEUS_PROFILE,
+    # Cross-source alias: Grafana names this same Metricbeat layout
+    # (``prometheus.metrics.*`` + ``prometheus.labels.*``) ``prometheus_metrics``.
+    # Accepting both names here means an operator who migrates Grafana and
+    # Datadog against one target does not have to remember two names for one
+    # ingestion layout. ``prometheus`` stays the canonical Datadog name.
+    "prometheus_metrics": PROMETHEUS_PROFILE,
     "prometheus_native": PROMETHEUS_NATIVE_PROFILE,
     "elastic_agent": ELASTIC_AGENT_PROFILE,
     "passthrough": PASSTHROUGH_PROFILE,
