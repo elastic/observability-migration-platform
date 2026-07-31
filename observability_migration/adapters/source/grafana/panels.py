@@ -6178,6 +6178,9 @@ def _build_esql_param_control(
         # scalar RLIKE position cannot accept more than one value.
         "multiple": bool(multiple),
     }
+    if multiple:
+        # Kibana's own helper: canBeMultiValue -> MULTI_VALUES, else VALUES.
+        control["variable_type"] = "multi_values"
     if include_internal_metadata:
         control[_CONTROL_RESOLVED_FIELD_NAME] = field_name
         if source_field:

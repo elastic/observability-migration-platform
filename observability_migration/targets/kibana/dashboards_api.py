@@ -1446,6 +1446,14 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
         return None
     title = title or variable_name
     variable_type = str(control.get("variable_type") or "values")
+    # Kibana types a multi-value control as MULTI_VALUES, not VALUES. Its own
+    # helper picks the type from whether the parameter accepts several values
+    # (``canBeMultiValue ? MULTI_VALUES : VALUES``), and MV_CONTAINS is exactly
+    # such a parameter. The API accepts "values" with single_select=false and
+    # the panel still renders, so this is invisible to black-box probing -- but
+    # the declared type is wrong and the control editor keys off it.
+    if control.get("multiple") and variable_type == "values":
+        variable_type = "multi_values"
     query = str(control.get("query") or "").strip()
     if query:
         esql_config: dict[str, Any] = {
