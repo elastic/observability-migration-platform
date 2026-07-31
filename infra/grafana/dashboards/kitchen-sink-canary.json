@@ -1,0 +1,380 @@
+{
+ "uid": "kitchen-sink-canary",
+ "title": "Kitchen Sink Panel Canary",
+ "schemaVersion": 39,
+ "version": 1,
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "instance",
+    "type": "query",
+    "multi": true,
+    "includeAll": true,
+    "current": {
+     "text": "All",
+     "value": "$__all"
+    },
+    "query": "label_values(redis_up, instance)",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prom"
+    }
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "timeseries panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_memory_used_bytes{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "graph",
+   "title": "graph panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_memory_used_bytes{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "stat panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_connected_clients{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "singlestat",
+   "title": "singlestat panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "gauge",
+   "title": "gauge panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_memory_used_bytes{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "bargauge",
+   "title": "bargauge panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "table",
+   "title": "table panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "table-old",
+   "title": "table-old panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "text",
+   "title": "text panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "# Kitchen sink\nPanel-type canary."
+   }
+  },
+  {
+   "id": 10,
+   "type": "logs",
+   "title": "logs panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "heatmap",
+   "title": "heatmap panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_commands_processed_total{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "type": "piechart",
+   "title": "piechart panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "type": "grafana-piechart-panel",
+   "title": "grafana-piechart-panel panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 48
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "barchart",
+   "title": "barchart panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 48
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_db_keys{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 15,
+   "type": "state-timeline",
+   "title": "state-timeline panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 56
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_up{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 16,
+   "type": "status-history",
+   "title": "status-history panel",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 56
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(redis_up{instance=~\"$instance\"}) by (instance)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,7 @@
+title: timeseries panel
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['redis_memory_used_bytes']
+breakdown: instance

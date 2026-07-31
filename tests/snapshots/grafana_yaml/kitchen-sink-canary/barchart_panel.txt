@@ -1,0 +1,8 @@
+title: barchart panel
+grafana_type: barchart
+status: migrated
+chart_type: bar
+dimension: time_bucket
+metrics: ['redis_db_keys']
+breakdown: instance
+mode: unstacked

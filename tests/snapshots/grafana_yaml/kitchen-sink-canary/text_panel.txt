@@ -1,0 +1,5 @@
+title: text panel
+grafana_type: text
+status: migrated
+chart_type: none
+chart_type: markdown

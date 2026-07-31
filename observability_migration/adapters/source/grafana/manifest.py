@@ -49,12 +49,23 @@ def infer_query_language(query_text: str, datasource_type: str = "", panel_type:
 
     if not query_text:
         return "unknown"
-    if "loki" in datasource_type or panel_type == "logs":
+    # An explicit datasource wins over the panel type. Grafana's Logs panel is a
+    # renderer, not a datasource: it is routinely pointed at Prometheus to show a
+    # metric as a table. Treating panel_type == "logs" as LogQL before reading the
+    # datasource sent such panels down the LogQL path, where labels resolve with
+    # OTEL/ECS naming -- a canary panel with a Prometheus datasource and
+    # ``sum(redis_db_keys) by (instance)`` emitted ``service.instance.id`` and
+    # failed in Kibana with "Unknown column", while every other panel type on the
+    # same dashboard correctly used the prometheus_native passthrough field.
+    if "loki" in datasource_type:
         return "logql"
     if "elastic" in datasource_type:
         return "esql" if ESQL_PREFIX_RE.match(query_text) else "elasticsearch"
     if "prom" in datasource_type or "mimir" in datasource_type:
         return "promql"
+    # No usable datasource hint: the Logs panel type is then the best signal.
+    if panel_type == "logs":
+        return "logql"
     if ESQL_PREFIX_RE.match(query_text):
         return "esql"
     if LOGQL_TOKEN_RE.search(query_text):

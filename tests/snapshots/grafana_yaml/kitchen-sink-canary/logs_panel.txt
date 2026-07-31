@@ -1,0 +1,6 @@
+title: logs panel
+grafana_type: logs
+status: migrated
+chart_type: datatable
+metrics: ['redis_db_keys']
+breakdowns: ['time_bucket', 'instance']

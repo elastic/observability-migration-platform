@@ -1,0 +1,7 @@
+title: stat panel
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['redis_connected_clients']
+breakdowns: ['instance']
+warning: Approximated grouped stat panel as summary table
