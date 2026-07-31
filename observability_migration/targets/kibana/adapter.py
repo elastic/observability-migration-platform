@@ -104,6 +104,44 @@ def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
     return lookup
 
 
+def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
+    """Index patterns the payload references as a data view, in first-seen order.
+
+    ``_ensure_default_data_views`` only ensures a fixed default list
+    (metrics-prometheus-*, metrics-*, logs-*). A control pointing at anything
+    else -- e.g. the Datadog prometheus_native profile's
+    ``metrics-*.prometheus-*`` -- therefore had no data view to resolve against,
+    so ``_rewrite_data_view_refs`` left the raw pattern in ``data_view_id`` and
+    Kibana rendered the control as "An error occurred". Ensuring exactly what
+    the payload asks for makes the lookup complete by construction.
+    """
+    if native_dashboard is None:
+        return []
+    try:
+        payload = native_dashboard.to_api_payload()
+    except Exception:
+        return []
+    found: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key in {"data_view", "data_view_id"} and isinstance(child, str):
+                    text = child.strip()
+                    # A real saved-object id is already resolved; only patterns
+                    # (which look like index expressions) need ensuring.
+                    if text and text not in found:
+                        found.append(text)
+                else:
+                    _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(payload)
+    return found
+
+
 def _rewrite_data_view_refs(value: Any, data_view_ids: dict[str, str]) -> Any:
     if isinstance(value, dict):
         rewritten: dict[str, Any] = {}
@@ -133,11 +171,24 @@ class KibanaTargetAdapter(TargetAdapter):
         api_key: str = "",
         space_id: str = "",
         verify: bool | str = True,
+        extra_patterns: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Create the default migration data views before importing dashboards."""
+        """Create the migration data views before importing dashboards.
+
+        ``extra_patterns`` carries the patterns the payload actually references,
+        on top of the defaults, so every ``data_view``/``data_view_id`` in the
+        payload has something to resolve to.
+        """
+        patterns = None
+        if extra_patterns:
+            patterns = list(
+                dict.fromkeys(
+                    ["metrics-prometheus-*", "metrics-*", "logs-*", *extra_patterns]
+                )
+            )
         return ensure_migration_data_views(
             kibana_url,
-            data_view_patterns=None,
+            data_view_patterns=patterns,
             api_key=api_key,
             space_id=space_id,
             verify=verify,
@@ -653,6 +704,7 @@ class KibanaTargetAdapter(TargetAdapter):
             api_key=kibana_api_key,
             space_id=space_id,
             verify=verify,
+            extra_patterns=_referenced_data_view_patterns(native_dashboard),
         )
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)

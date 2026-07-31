@@ -496,3 +496,38 @@ def test_unknown_data_view_reference_is_left_alone():
 
     out = _rewrite_data_view_refs({"data_view_id": "not-in-lookup"}, {"other": "id"})
     assert out["data_view_id"] == "not-in-lookup"
+
+
+def test_referenced_data_view_patterns_are_collected_from_the_payload():
+    """Ensure the data views the payload actually asks for, not a fixed list.
+
+    _ensure_default_data_views only ensured metrics-prometheus-* / metrics-* /
+    logs-*. A control pointing anywhere else -- the Datadog prometheus_native
+    profile uses ``metrics-*.prometheus-*`` -- had nothing to resolve against,
+    so the raw pattern stayed in ``data_view_id`` and Kibana rendered the
+    control as "An error occurred".
+    """
+    from observability_migration.core.assets.native_dashboard import (
+        NativeControl,
+        NativeDashboard,
+    )
+    from observability_migration.targets.kibana.adapter import (
+        _referenced_data_view_patterns,
+    )
+
+    dashboard = NativeDashboard(title="t")
+    dashboard.controls = [
+        NativeControl(
+            type="options_list_control",
+            config={"data_view_id": "metrics-*.prometheus-*", "field_name": "labels.instance"},
+        )
+    ]
+    assert _referenced_data_view_patterns(dashboard) == ["metrics-*.prometheus-*"]
+
+
+def test_referenced_data_view_patterns_handles_no_dashboard():
+    from observability_migration.targets.kibana.adapter import (
+        _referenced_data_view_patterns,
+    )
+
+    assert _referenced_data_view_patterns(None) == []
