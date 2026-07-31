@@ -9,10 +9,6 @@ _MEMORY_RATIO_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_NET_INPUT_RE = re.compile(r"\bredis_net_input_bytes_total\b", re.IGNORECASE)
-_NET_OUTPUT_RE = re.compile(r"\bredis_net_output_bytes_total\b", re.IGNORECASE)
-
-
 _PACK_MARKER = "_grafana_763_redis_exporter"
 
 
@@ -23,31 +19,6 @@ def register(api):
     # This prevents the globally-registered rules from firing for other dashboards
     # that happen to use the same PromQL expressions (e.g. gnet_id=11835).
     setattr(api["rule_pack"], _PACK_MARKER, True)
-
-    @api["query_classifiers"].register("redis_network_io_legend_fix", priority=0)
-    def redis_network_io_legend_fix(context):
-        """Remove phantom label group-by from Network I/O panel targets.
-
-        The Grafana Network I/O panel uses ``{{ input }}`` / ``{{ output }}`` as
-        legendFormat, but these are NOT real Prometheus labels on the
-        redis_net_*_bytes_total metrics.  The general translator treats them as
-        BY-clause dimensions, which prevents the two targets from fusing (different
-        group columns) and emits only one series with a non-existent breakdown field.
-
-        Clearing preferred_group_labels makes both targets group by time_bucket only
-        so they merge correctly into a two-series line chart (input + output).
-        """
-        if not getattr(context.rule_pack, _PACK_MARKER, False):
-            return None
-        expr = context.promql_expr or ""
-        is_input = bool(_NET_INPUT_RE.search(expr)) and not bool(_NET_OUTPUT_RE.search(expr))
-        is_output = bool(_NET_OUTPUT_RE.search(expr)) and not bool(_NET_INPUT_RE.search(expr))
-        if not is_input and not is_output:
-            return None
-        context.metadata["preferred_group_labels"] = []
-        context.metadata.pop("preferred_group_labels_origin", None)
-        context.metadata["series_alias"] = "input" if is_input else "output"
-        return f"cleared phantom legend label for redis network {'input' if is_input else 'output'} series"
 
     @api["query_classifiers"].register("redis_memory_ratio_unblock", priority=0)
     def redis_memory_ratio_unblock(context):

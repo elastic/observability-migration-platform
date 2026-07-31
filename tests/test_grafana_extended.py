@@ -4211,3 +4211,41 @@ class TestValueMappingsAreReported(unittest.TestCase):
         panel = {"fieldConfig": {"defaults": {"mappings": [{"type": "value"}, {"type": "special"}]}}}
         self.assertEqual(collect_panel_inventory(panel)["value_mappings"], 2)
         self.assertEqual(collect_panel_inventory({})["value_mappings"], 0)
+
+
+class TestNonPromqlPanelsNameTheirQueryLanguage(unittest.TestCase):
+    """"No PromQL expression found" reads like a parser failure.
+
+    Grafana dashboards routinely mix data sources. A panel backed by InfluxDB,
+    Graphite or SQL has nothing for a PromQL translator to do, and reporting it
+    as a missing expression sends the operator hunting for a bug instead of
+    telling them the panel must be rebuilt.
+    """
+
+    def _placeholder_reason(self, panel):
+        from observability_migration.adapters.source.grafana.panels import (
+            _make_placeholder_panel,
+        )
+
+        _yaml, result = _make_placeholder_panel({}, "T", "graph", "line", panel=panel)
+        return result.reasons[0]
+
+    def test_influxdb_panel_names_influxql(self):
+        panel = {
+            "type": "graph",
+            "targets": [{"dsType": "influxdb", "query": 'SELECT mean("value")'}],
+        }
+        reason = self._placeholder_reason(panel)
+        self.assertIn("InfluxDB", reason)
+        self.assertNotIn("No PromQL expression found", reason)
+
+    def test_datasource_type_is_also_recognised(self):
+        panel = {"type": "graph", "datasource": {"type": "graphite"}, "targets": [{}]}
+        self.assertIn("Graphite", self._placeholder_reason(panel))
+
+    def test_unidentifiable_panel_keeps_the_generic_reason(self):
+        panel = {"type": "graph", "targets": [{}]}
+        self.assertEqual(
+            self._placeholder_reason(panel),
+            "No PromQL expression found in panel targets",
+        )

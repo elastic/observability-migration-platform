@@ -10112,7 +10112,13 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "requires_manual")
         self.assertEqual(result.readiness, "manual_only")
-        self.assertEqual(result.reasons, ["No PromQL expression found in panel targets"])
+        # The panel is CloudWatch-backed, so the reason names that language
+        # rather than implying a PromQL parse failure. The point of this test is
+        # unchanged: identical uid across targets must NOT read as mixed
+        # datasource just because one target omits ``type``.
+        self.assertEqual(len(result.reasons), 1)
+        self.assertIn("CloudWatch", result.reasons[0])
+        self.assertNotIn("No PromQL expression found", result.reasons[0])
         self.assertFalse(any("mixed datasource" in note.lower() for note in result.notes))
 
     def test_dashboard_translation_preserves_original_panel_positions(self):

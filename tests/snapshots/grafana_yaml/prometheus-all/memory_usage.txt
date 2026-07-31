@@ -3,4 +3,4 @@ grafana_type: graph
 status: requires_manual
 chart_type: none
 chart_type: markdown
-warning: No PromQL expression found in panel targets
+warning: Panel queries InfluxQL/Flux (InfluxDB), not PromQL; this migration translates Prometheus queries, so it must be rebuilt against an Elasticsearch data source

@@ -3241,7 +3241,9 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if not promql_exprs:
         if visible_targets:
             _append_unique(panel_notes, "Visible panel targets did not expose PromQL-compatible expressions")
-        placeholder_panel, panel_result = _make_placeholder_panel(yaml_panel, title, panel_type, kibana_type)
+        placeholder_panel, panel_result = _make_placeholder_panel(
+            yaml_panel, title, panel_type, kibana_type, panel=panel
+        )
         return placeholder_panel, _enrich_panel_result(
             panel_result,
             panel=panel,
@@ -4450,17 +4452,63 @@ def _best_compatible_translation_group(translations):
     return [translations[idx] for idx in best_group]
 
 
-def _make_placeholder_panel(yaml_panel, title, panel_type, kibana_type):
-    yaml_panel["markdown"] = {
-        "content": f"**{title}**\n\n*(Placeholder: original {panel_type} panel had no PromQL targets)*"
-    }
+# Grafana ``target.dsType`` / datasource ``type`` values for query languages this
+# engine does not translate. Naming the language turns a confusing "no PromQL
+# found" into an accurate "this panel is not Prometheus".
+_NON_PROMQL_QUERY_LANGUAGES = {
+    "influxdb": "InfluxQL/Flux (InfluxDB)",
+    "elasticsearch": "Elasticsearch DSL",
+    "graphite": "Graphite",
+    "mysql": "SQL (MySQL)",
+    "postgres": "SQL (PostgreSQL)",
+    "mssql": "SQL (MSSQL)",
+    "cloudwatch": "CloudWatch metric queries",
+    "stackdriver": "Google Cloud Monitoring",
+    "azuremonitor": "Azure Monitor",
+    "loki": "LogQL (Loki)",
+    "tempo": "Tempo trace queries",
+}
+
+
+def _panel_query_language(panel):
+    """Name the non-PromQL query language a panel uses, if it is identifiable."""
+    seen = []
+    sources = [panel.get("datasource")] + [
+        t.get("dsType") or t.get("datasource")
+        for t in (panel.get("targets") or [])
+        if isinstance(t, dict)
+    ]
+    for src in sources:
+        kind = src.get("type") if isinstance(src, dict) else src
+        label = _NON_PROMQL_QUERY_LANGUAGES.get(str(kind or "").strip().lower())
+        if label and label not in seen:
+            seen.append(label)
+    return " / ".join(seen)
+
+
+def _make_placeholder_panel(yaml_panel, title, panel_type, kibana_type, panel=None):
+    language = _panel_query_language(panel or {})
+    if language:
+        # Not a failure to parse: the panel is simply not Prometheus-backed, and
+        # this engine translates PromQL. Say which language so the operator knows
+        # to rebuild it rather than hunting for a parser bug.
+        detail = (
+            f"Panel queries {language}, not PromQL; this migration translates "
+            "Prometheus queries, so it must be rebuilt against an Elasticsearch "
+            "data source"
+        )
+        content = f"**{title}**\n\n*(Placeholder: original {panel_type} panel queries {language}, not PromQL)*"
+    else:
+        detail = "No PromQL expression found in panel targets"
+        content = f"**{title}**\n\n*(Placeholder: original {panel_type} panel had no PromQL targets)*"
+    yaml_panel["markdown"] = {"content": content}
     return yaml_panel, PanelResult(
         title,
         panel_type,
         "markdown",
         "requires_manual",
         0.3,
-        reasons=["No PromQL expression found in panel targets"],
+        reasons=[detail],
     )
 
 
