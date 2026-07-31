@@ -205,23 +205,28 @@ query -> browser render audit with per-panel attribution).
 Node Exporter Full renders 19 in the browser because 124 of its panels sit in 14
 rows that ship **collapsed** — faithful to the Grafana source.
 
-**The remaining panels cannot light up, and neither can the originals.** They
-query metrics that do not exist in this deployment at all: MySQL query cache
-(removed in MySQL 8), `rdsosmetrics_*` (AWS RDS only),
-`innodb_additional_mem_pool_size` (removed in 5.7), `mysql_info_schema_threads`
-(collector unavailable), and node_exporter hardware sensors — hwmon, cooling
-device, power supply, CPU scaling frequency — which need host hardware access a
-container does not have. Grafana pointed at the same Prometheus shows nothing for
-exactly these panels, so "the same value as the source dashboard" is being
-delivered: nothing, because there is nothing.
+**Every panel now renders; none show an error card.** MySQL Overview is 36/36
+rendered, `pass`. Node Exporter Full is 18 rendered + 1 empty of the 19 visible,
+0 errors (124 of its panels live in 14 rows that ship collapsed, faithful to the
+source).
 
-The one behavioural difference is presentation: ES|QL rejects an unknown column,
-so Kibana shows an error card where Grafana draws an empty chart. Substituting
-NULL would make them render empty, but it would also bake the absence into the
-query so the panel could never self-heal when the metric arrives. The current
-choice keeps the field reference and names every affected panel and field in the
-run's DATA READINESS section. A curated pack is the right place to drop or
-annotate them if an operator wants a board with no error cards.
+Panels whose metrics are genuinely absent from the deployment -- MySQL query cache
+(removed in MySQL 8), `rdsosmetrics_*` (AWS RDS only),
+`innodb_additional_mem_pool_size` (removed in 5.7), `mysql_info_schema_threads`,
+and node_exporter's hardware sensors (hwmon, cooling device, power supply, CPU
+scaling) which need host access a container lacks -- are curated by
+`scripts/curate_absent_metric_panels.py` into a note in the same grid slot, naming
+the missing metric and what to ingest.
+
+That is the deliberate answer to a real presentation gap: ES|QL rejects an unknown
+column, so Kibana shows a red error where Grafana draws an empty chart. Rewriting
+the query to emit NULL would render empty but bake the absence in, so the panel
+could never self-heal. The note keeps the board clean AND keeps the fix reversible
+-- re-run the migration once the metric lands and the real panel returns.
+
+Detection is verified against live field caps, not just the migration report:
+the report's own validator missed two MySQL panels because their query lives
+under `config.layers[].data_source`, not `config.data_source`.
 
 ---
 
