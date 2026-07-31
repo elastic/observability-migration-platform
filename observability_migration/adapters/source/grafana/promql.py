@@ -1741,6 +1741,26 @@ def _mv_contains_filter(label, param_name, negate=False):
     return f"NOT {expr}" if negate else expr
 
 
+def _absent_as_empty(label):
+    """Make an absent label read as the empty string, which is PromQL semantics.
+
+    Prometheus has no NULL: a series that does not carry a label behaves exactly
+    as if the label were "". So ``label=~".*"`` (what Grafana sends for an All /
+    multi variable) matches those series, and so does ``label!="x"``.
+
+    Elasticsearch does have NULL, and it propagates: ``release RLIKE ".*"`` over
+    a document with no ``release`` yields NULL, the row is dropped, and the panel
+    silently loses every series that lacks the label. Measured on a node index:
+    1006 documents carry ``process_open_fds`` and none carry ``release``, so the
+    "All" default matched 0 of them -- while Prometheus matched all 1006.
+
+    Applied only where the two disagree (see callers): negated matchers, and any
+    matcher whose value is a ``?param`` bound at render time, since ".*" and ""
+    are both legitimate bindings and neither can be ruled out here.
+    """
+    return f'COALESCE({label}, "")'
+
+
 def _matcher_to_esql(matcher, resolver, metric_field=None):
     label = _resolve_label_for(resolver, matcher["label"], metric_field)
     op = matcher["op"]
@@ -1779,17 +1799,17 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
                 # for All/multi variables. (allValue-as-regex equality is a
                 # narrower residual not covered here.)
-                return f"{label} RLIKE ?{param_name}"
-            return f"{label} == ?{param_name}"
+                return f'{_absent_as_empty(label)} RLIKE ?{param_name}'
+            return f'{_absent_as_empty(label)} == ?{param_name}'
         if op == "!=":
             # Left as ``!=``: with the match-all default the param resolves to
             # ".*" and ``field != ".*"`` still matches every series (a safe,
             # non-empty default), unlike the ``==`` case which would be empty.
-            return f"{label} != ?{param_name}"
+            return f'{_absent_as_empty(label)} != ?{param_name}'
         if op == "=~":
-            return f"{label} RLIKE ?{param_name}"
+            return f'{_absent_as_empty(label)} RLIKE ?{param_name}'
         if op == "!~":
-            return f"NOT ({label} RLIKE ?{param_name})"
+            return f'NOT ({_absent_as_empty(label)} RLIKE ?{param_name})'
         return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid

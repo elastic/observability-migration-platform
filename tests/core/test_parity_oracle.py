@@ -1562,3 +1562,18 @@ def test_empty_index_leaves_the_window_untouched():
 
     start, end, note = po.clamp_window_to_data(request, "i", "a", "b")
     assert (start, end, note) == ("a", "b", "")
+
+
+def test_param_label_matcher_treats_an_absent_label_as_empty():
+    """PromQL has no NULL: an absent label behaves as "", so All (".*") matches it.
+
+    ES|QL NULL propagates, so `release RLIKE ?release` drops every document that
+    does not carry `release` -- measured on a node index, 1006 documents carry
+    process_open_fds, none carry release, and the "All" default matched 0 of them
+    while Prometheus matched all 1006. Reading the label through COALESCE(.., "")
+    restores PromQL semantics exactly: ".*" matches an absent label, "prod" does
+    not.
+    """
+    from observability_migration.adapters.source.grafana.promql import _absent_as_empty
+
+    assert _absent_as_empty("labels.release") == 'COALESCE(labels.release, "")'
