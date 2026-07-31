@@ -115,23 +115,16 @@ per-panel results would make the audit self-sufficient.
 
 ---
 
-## 8. Datadog `--field-profile prometheus` vs `prometheus_native`
+## 8. ~~Datadog `--field-profile prometheus` vs `prometheus_native`~~ FIXED
 
-**Status:** sharp edge, no error until every panel fails.
+Discovery already held the live field names; nothing compared them to the chosen
+profile. `_warn_on_field_profile_mismatch` now warns when the profile's
+`metric_prefix` matches none of the discovered fields, and names the profile the
+index actually looks like.
 
-Two different target layouts share a confusingly similar name:
-
-| profile | emits |
-|---|---|
-| `prometheus` | `prometheus.metrics.<m>` / `prometheus.labels.<l>` (Elastic Agent integration) |
-| `prometheus_native` | `metrics.<m>` / `labels.<l>` |
-
-Picking the wrong one migrates and uploads with a clean report, and then every
-panel fails in Kibana with "Unknown column". Field discovery has the live
-mapping and could detect the mismatch, but does not warn.
-
-Worth considering: fail (or warn loudly) when the chosen profile's field prefix
-is absent from the discovered index.
+Still worth considering: making this a hard failure under `--strict`, and giving
+the Grafana path the same check (it has richer discovery, but no equivalent
+prefix-vs-index assertion).
 
 ---
 

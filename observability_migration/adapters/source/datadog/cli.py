@@ -643,6 +643,37 @@ def _load_live_field_capabilities(
     if field_map.logs_index:
         parts.append(f"logs={log_fields}")
     print(f"  Target field capabilities: loaded {' '.join(parts)}")
+    _warn_on_field_profile_mismatch(field_map)
+
+
+def _warn_on_field_profile_mismatch(field_map: Any) -> None:
+    """Warn when the chosen profile's field prefix is absent from the target.
+
+    ``prometheus`` and ``prometheus_native`` name two different layouts:
+    ``prometheus.metrics.<m>`` (the Elastic Agent Prometheus integration) versus
+    a bare ``metrics.<m>``. Choosing the wrong one is silent -- the run migrates,
+    reports success, and uploads -- and then every panel fails in Kibana with
+    "Unknown column", because nothing ever compared the profile against the index
+    it was pointed at. Discovery already holds the live field names here, so say
+    so before the operator finds out from a broken dashboard.
+    """
+    prefix = getattr(field_map, "metric_prefix", "")
+    caps = getattr(field_map, "metric_field_caps", None)
+    # Advisory check: a profile object that does not expose these as a plain
+    # string/mapping tells us nothing, so stay quiet rather than guess.
+    if not isinstance(prefix, str) or not prefix or not isinstance(caps, dict) or not caps:
+        return
+    if any(str(name).startswith(prefix) for name in caps):
+        return
+    other = {"prometheus.metrics.": "prometheus_native", "metrics.": "prometheus"}.get(prefix)
+    sample = sorted(str(n) for n in caps)[:3]
+    print(
+        f"  WARNING: field profile {field_map.name!r} expects metric fields under "
+        f"{prefix!r}, but none of the {len(caps)} fields discovered in "
+        f"{field_map.metric_index!r} use that prefix (e.g. {', '.join(sample)}). "
+        "Every panel will fail in Kibana with \"Unknown column\"."
+        + (f" Did you mean --field-profile {other}?" if other else "")
+    )
 
 
 def _run_dashboard_preflight(
