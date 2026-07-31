@@ -302,15 +302,19 @@ def test_cli_untitled_panel_text_inside_field_gap_does_not_fail(tmp_path):
     assert rc == 0
 
 
-def test_missing_migration_out_says_so_instead_of_degrading_silently(capsys):
-    """No per-panel attribution must be announced, not inferred from empty output.
+def test_missing_migration_out_warns_on_stderr_and_keeps_stdout_valid_json(capsys):
+    """Announce the missing attribution, but never on stdout.
 
     Without --migration-out the audit still detects that a dashboard rendered
     errors, but returns "panels": [] -- it cannot say WHICH panel, which is the
     whole reason to run it. Degrading silently sent a real investigation down the
-    path of re-executing every panel query by hand to find the culprit.
+    path of re-executing every panel query by hand.
+
+    stdout carries the JSON report, so the notice goes to stderr: a stray line on
+    stdout makes the report unparseable for every downstream consumer.
     """
     import argparse
+    import json as _json
 
     from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
 
@@ -321,6 +325,9 @@ def test_missing_migration_out_says_so_instead_of_degrading_silently(capsys):
         agent_browser=False, chrome_no_sandbox=False, fail_on_error=False,
     )
     run_audit_cli(args, dom_fetcher=lambda _url: _CLEAN_DOM)
-    out = capsys.readouterr().out
-    assert "--migration-out" in out
-    assert "per-panel attribution" in out
+    captured = capsys.readouterr()
+
+    assert "--migration-out" in captured.err
+    assert "per-panel attribution" in captured.err
+    assert "--migration-out" not in captured.out
+    assert _json.loads(captured.out)["render"]["status"] == "pass"

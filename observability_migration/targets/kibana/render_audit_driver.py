@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -470,9 +471,11 @@ def run_audit_cli(
                       "falling back to whole-dashboard render classification")
                 report = None
         else:
+            # stderr, not stdout: stdout carries the JSON report and a stray
+            # line there makes it unparseable for every downstream consumer.
             print(f"warning: no migration_report.json under {migration_out!r}; "
                   "falling back to whole-dashboard render classification "
-                  "(no per-panel attribution)")
+                  "(no per-panel attribution)", file=sys.stderr)
     else:
         # Say so. Without the report the audit still detects that the dashboard
         # renders errors, but reports "panels": [] -- it cannot say WHICH panel,
@@ -480,7 +483,7 @@ def run_audit_cli(
         # investigation down the path of re-executing every panel query by hand.
         print("note: --migration-out not supplied; reporting whole-dashboard "
               "render status only. Pass --migration-out <dir>/dashboards for "
-              "per-panel attribution.")
+              "per-panel attribution.", file=sys.stderr)
 
     if report is not None:
         kinds = expected_kind_by_panel(report)
