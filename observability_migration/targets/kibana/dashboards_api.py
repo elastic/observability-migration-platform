@@ -209,14 +209,60 @@ def _api_format(fmt: Any) -> dict[str, Any] | None:
         # (kbn-lens-embeddable-utils/config_builder/transforms/columns/
         # format.ts). So an unspecified duration format renders exactly like
         # Kibana's own default "Duration" value-format selection would.
-        out = {"type": fmt_type}
-        out.update(_keep_keys(fmt, ("decimals", "suffix", "compact")))
-        out["from"] = str(fmt["from"]) if fmt.get("from") else "seconds"
-        out["to"] = str(fmt["to"]) if fmt.get("to") else "humanize"
-        return out
+        # The duration branch of the transform schema is closed: it accepts
+        # ``type``/``from``/``to`` only. Forwarding ``decimals`` (valid on the
+        # number/bytes branches) is rejected with "Additional properties are not
+        # allowed ('decimals' was unexpected)" and fails the whole panel.
+        return {
+            "type": fmt_type,
+            "from": _duration_unit(fmt.get("from"), default="s"),
+            "to": _duration_output(fmt.get("to")),
+        }
     if fmt_type == "custom" and fmt.get("pattern"):
         return {"type": fmt_type, "pattern": str(fmt["pattern"])}
     return None
+
+
+# Kibana's field-format layer names duration units in full ("seconds"), but the
+# Lens-as-code transform the Dashboards API runs accepts only the abbreviated
+# units. Sending the long name is rejected:
+#   [layers[0].y[0].format]: [from]: expected value to equal [ps|ns|us|ms|s|min|h|d|w|mo|y]
+# This was invisible for a long time because a rejected payload silently fell
+# back to the deprecated kb-dashboard-cli compiler, which accepted it -- the run
+# reported success while never using the API path at all.
+_DURATION_UNIT_ALIASES = {
+    "picoseconds": "ps", "nanoseconds": "ns", "microseconds": "us",
+    "milliseconds": "ms", "seconds": "s", "minutes": "min", "hours": "h",
+    "days": "d", "weeks": "w", "months": "mo", "years": "y",
+}
+_DURATION_UNITS = frozenset(_DURATION_UNIT_ALIASES.values())
+
+
+def _duration_unit(value: Any, *, default: str) -> str:
+    """Normalise a duration unit to the abbreviation the API accepts."""
+    text = str(value or "").strip()
+    if not text:
+        return default
+    if text in _DURATION_UNITS:
+        return text
+    return _DURATION_UNIT_ALIASES.get(text.lower(), default)
+
+
+# ``to`` has its own vocabulary: the transform accepts the abbreviated units
+# plus "auto"/"auto-approximate". Kibana's internal output method is
+# "humanize", which the transform does NOT accept -- it is spelled "auto" here.
+_DURATION_OUTPUT_ALIASES = {"humanize": "auto", "humanizePrecise": "auto-approximate"}
+
+
+def _duration_output(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "auto"
+    if text in _DURATION_UNITS or text in {"auto", "auto-approximate"}:
+        return text
+    if text in _DURATION_OUTPUT_ALIASES:
+        return _DURATION_OUTPUT_ALIASES[text]
+    return _DURATION_UNIT_ALIASES.get(text.lower(), "auto")
 
 
 def _api_color_mapping(color: dict[str, Any]) -> dict[str, Any] | None:
@@ -1342,6 +1388,23 @@ def _stable_dashboard_id(dashboard: dict[str, Any]) -> str:
     return f"obs-migrate-{slug or 'dashboard'}"
 
 
+def _stable_dashboard_id_from_ir(dashboard_ir: DashboardIR) -> str:
+    """Deterministic API dashboard id for an IR-sourced dashboard.
+
+    Deliberately identical to what :func:`_stable_dashboard_id` produced when
+    this path still went through ``to_yaml_dict()``. The YAML document shape
+    carries no ``id``/``uid``, so ids have always been the title slug -- and the
+    id is the upsert key. Switching to ``dashboard_ir.uid`` here would change
+    every migrated dashboard's id, orphaning previously uploaded copies and
+    (measured) getting the payload rejected outright. Any change to id
+    derivation is a migration concern in its own right, not a side effect of
+    removing the YAML hop.
+    """
+    return _stable_dashboard_id(
+        {"name": str(getattr(dashboard_ir, "title", "") or "")}
+    )
+
+
 def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
     """Map one YAML leaf panel (``esql``/``markdown``/``links``/``image``) to the API."""
     title = str(panel.get("title") or "")
@@ -1717,21 +1780,52 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     total) are enforced by :meth:`NativeDashboard.enforce_item_cap` plus the
     control-budget gate below.
     """
-    title = str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard")
-    description = dashboard.get("description")
     filters, dropped_filters = map_yaml_filters(dashboard.get("filters"))
+    return _native_dashboard_from_parts(
+        title=str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard"),
+        description=str(dashboard.get("description") or ""),
+        filters=filters,
+        dropped_filters=dropped_filters,
+        panel_entries=dashboard.get("panels") or [],
+        control_entries=dashboard.get("controls") or [],
+        dashboard_id=_stable_dashboard_id(dashboard),
+        tags=[],
+    )
+
+
+def _native_dashboard_from_parts(
+    *,
+    title: str,
+    description: str,
+    filters: list[dict[str, Any]],
+    dropped_filters: int,
+    panel_entries: list[Any],
+    control_entries: list[Any],
+    dashboard_id: str,
+    tags: list[str],
+) -> tuple[NativeDashboard, NativeMappingCounts]:
+    """Assemble a :class:`NativeDashboard` from already-extracted parts.
+
+    Both entry points share this so the leaf mapping (``map_yaml_panel`` /
+    ``map_yaml_control``) is written once, while dashboard-LEVEL fields are
+    supplied by the caller. That separation is the point: the panel/control
+    dicts are a stable wire shape, but routing dashboard-level fields through
+    the YAML document shape silently drops anything its schema cannot express
+    (it declares ``additionalProperties: false``), which the API does support.
+    """
     native = NativeDashboard(
         title=title,
-        description=str(description) if description else "",
-        dashboard_id=_stable_dashboard_id(dashboard),
+        description=description,
+        dashboard_id=dashboard_id,
         filters=filters,
+        tags=[str(tag).strip() for tag in (tags or []) if str(tag).strip()],
     )
     counts = NativeMappingCounts()
     if dropped_filters:
         counts.add_reason(_DROPPED_FILTER_REASON, dropped_filters)
     next_y = 0
 
-    for panel in dashboard.get("panels", []) or []:
+    for panel in panel_entries:
         if not isinstance(panel, dict):
             continue
         section = panel.get("section")
@@ -1781,7 +1875,7 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     pinned: list[NativeControl] = []
     available_control_slots = max(0, min(_MAX_PINNED_CONTROLS, _MAX_TOTAL_ITEMS - dashboard_item_count(native.items)))
     mapped_control_count = 0
-    for control in dashboard.get("controls") or []:
+    for control in control_entries:
         mapped_control = map_yaml_control(control)
         if mapped_control is not None:
             if mapped_control_count >= available_control_slots:
@@ -1809,12 +1903,31 @@ def native_dashboard_from_ir(dashboard_ir: DashboardIR) -> tuple[NativeDashboard
     working artifact (see ``adapters/source/grafana/panels.py``) and maps it
     straight to the native API shape here, without a YAML re-parse. It
     reuses the exact same leaf builders (:func:`map_yaml_panel` /
-    :func:`map_yaml_control` / :func:`map_yaml_filters`) the YAML path uses,
-    via :meth:`DashboardIR.to_yaml_dict` -- the kb-dashboard-core dict shape
-    is the shared wire format those builders already speak, so there is no
-    parallel/duplicated mapping logic to keep in sync between the two paths.
+    :func:`map_yaml_control` / :func:`map_yaml_filters`) the YAML path uses --
+    the panel/control dicts are a stable wire shape shared by both paths, so
+    there is no parallel mapping logic to keep in sync.
+
+    Dashboard-LEVEL fields are read straight off the IR rather than through
+    :meth:`DashboardIR.to_yaml_dict`. That document shape is validated against
+    ``docs/dashboards/schema.json``, which declares ``additionalProperties:
+    false``; routing dashboard fields through it silently discarded anything
+    the API supports but the (deprecated) YAML schema does not -- dashboard
+    ``tags`` being the worked example. The API path must not be limited by the
+    YAML format's vocabulary.
     """
-    return native_dashboard_from_yaml(dashboard_ir.to_yaml_dict())
+    filters, dropped_filters = map_yaml_filters(list(dashboard_ir.filters or []))
+    return _native_dashboard_from_parts(
+        title=str(dashboard_ir.title or "migrated dashboard"),
+        description=str(dashboard_ir.description or ""),
+        filters=filters,
+        dropped_filters=dropped_filters,
+        panel_entries=[panel.to_yaml_panel_entry() for panel in dashboard_ir.panels],
+        control_entries=[
+            control.to_yaml_control() for control in (dashboard_ir.controls or [])
+        ],
+        dashboard_id=_stable_dashboard_id_from_ir(dashboard_ir),
+        tags=list(dashboard_ir.tags or []),
+    )
 
 
 def build_dashboard_payload_from_ir(

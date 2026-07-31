@@ -306,7 +306,15 @@ def apply_metadata_polish(
             native_dashboard_from_ir,
         )
 
+        # The YAML document shape is a LOSSY carrier: its schema declares
+        # additionalProperties: false, so rebuilding the IR from it drops any
+        # API-only field. Carry those across explicitly rather than losing them
+        # on a metadata-polish pass.
+        previous_ir = getattr(result, "dashboard_ir", None)
         dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
+        if previous_ir is not None:
+            dashboard_ir.tags = list(getattr(previous_ir, "tags", []) or [])
+            dashboard_ir.uid = getattr(previous_ir, "uid", "") or dashboard_ir.uid
         result.dashboard_ir = dashboard_ir
         yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
         native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)

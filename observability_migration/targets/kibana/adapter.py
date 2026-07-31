@@ -356,7 +356,19 @@ class KibanaTargetAdapter(TargetAdapter):
             # and can overwrite same-space [DELETED] placeholders) or to
             # investigate a cross-space id collision manually.
             if results[0].status == "rejected":
-                _fallback(str(yaml_file))
+                # Do NOT silently fall back to the kb-dashboard-cli/YAML path.
+                # That path is deprecated, and quietly succeeding through it
+                # hides the fact that the typed API rejected the payload -- the
+                # operator sees "uploaded" and never learns the modern path
+                # failed, nor that the dashboard they got came from a different
+                # compiler. Treated as terminal, matching how a 409 conflict is
+                # already handled above: report it and let the operator opt into
+                # --legacy-import deliberately.
+                print(
+                    f"    ✗ Dashboards API rejected the payload for {Path(yaml_file).name}; "
+                    "not falling back to the deprecated compiler. "
+                    "Re-run with --legacy-import to use it explicitly."
+                )
         else:
             results = dashboards_api.upload_yaml_files(
                 [str(yaml_file)],

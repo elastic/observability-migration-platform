@@ -193,16 +193,21 @@ def _api_format(obj: Any) -> dict[str, Any] | None:
         # defaults (seconds -> humanize; see dashboards_api.py's ``_api_format``
         # for the source citations), so an unspecified format still renders
         # like Kibana's own default "Duration" value-format selection.
-        from_unit = obj.get("from")
-        to_unit = obj.get("to")
-        out = {
+        # Units use the transform's abbreviated vocabulary and the branch is
+        # closed to {type, from, to}: long names ("seconds") and extra keys
+        # ("suffix"/"decimals") are rejected by the API, so mirror what the
+        # emitter now produces rather than the looser shape the deprecated
+        # compiler used to tolerate.
+        from observability_migration.targets.kibana.dashboards_api import (
+            _duration_output,
+            _duration_unit,
+        )
+
+        return {
             "type": "duration",
-            "from": from_unit if isinstance(from_unit, str) else "seconds",
-            "to": to_unit if isinstance(to_unit, str) else "humanize",
+            "from": _duration_unit(obj.get("from"), default="s"),
+            "to": _duration_output(obj.get("to")),
         }
-        if isinstance(obj.get("suffix"), str):
-            out["suffix"] = obj["suffix"]
-        return out
     if typ == "custom" and isinstance(obj.get("pattern"), str) and obj["pattern"]:
         return {"type": "custom", "pattern": obj["pattern"]}
     return None

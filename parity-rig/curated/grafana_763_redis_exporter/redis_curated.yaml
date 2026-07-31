@@ -1,0 +1,502 @@
+dashboards:
+- name: Redis Dashboard for Prometheus Redis Exporter 1.x
+  description: Redis Dashboard for Prometheus Redis Exporter 1.x
+  minimum_kibana_version: 9.5.0
+  settings:
+    sync:
+      cursor: true
+  panels:
+  - title: Max Uptime
+    size:
+      w: 6
+      h: 11
+    position:
+      x: 0
+      y: 0
+    esql:
+      type: metric
+      query: 'TS metrics-*
+
+        | WHERE redis_uptime_in_seconds IS NOT NULL
+
+        | STATS redis_uptime_in_seconds = MAX(MAX_OVER_TIME(redis_uptime_in_seconds, 5m)) BY time_bucket = TBUCKET(1, ?_tstart,
+        ?_tend)
+
+        | STATS redis_uptime_in_seconds = MAX(redis_uptime_in_seconds)
+
+        | KEEP redis_uptime_in_seconds'
+      primary:
+        field: redis_uptime_in_seconds
+        format:
+          type: duration
+          decimals: 0
+        label: Max Uptime
+    hide_title: true
+  - title: Clients
+    size:
+      w: 4
+      h: 11
+    position:
+      x: 6
+      y: 0
+    esql:
+      type: metric
+      query: 'TS metrics-*
+
+        | WHERE redis_connected_clients IS NOT NULL
+
+        | STATS redis_connected_clients = SUM(redis_connected_clients) BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)
+
+        | STATS redis_connected_clients = MAX(redis_connected_clients)
+
+        | KEEP redis_connected_clients'
+      primary:
+        field: redis_connected_clients
+        format:
+          type: number
+          decimals: 0
+        label: Clients
+    hide_title: true
+
+  # CURATED: Memory Usage gauge.
+  # Original PromQL sum(100 * (A / B)) cannot be expressed as-is in ES|QL because
+  # per-element division inside sum() has no single-pass equivalent. Rewritten as
+  # SUM(used_bytes) / SUM(max_bytes) * 100, which is semantically equivalent for a
+  # single Redis instance (the overwhelmingly common case) and a faithful aggregate
+  # approximation for multi-instance setups.
+  - title: Memory Usage
+    size:
+      w: 6
+      h: 11
+    position:
+      x: 10
+      y: 0
+    esql:
+      type: metric
+      query: 'TS metrics-*
+
+        | WHERE redis_memory_used_bytes IS NOT NULL
+
+        | STATS used = SUM(LAST_OVER_TIME(redis_memory_used_bytes, 5m)),
+                max_mem = SUM(LAST_OVER_TIME(redis_memory_max_bytes, 5m))
+                BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)
+
+        | STATS used = MAX(used), max_mem = MAX(max_mem)
+
+        | EVAL memory_usage_pct = 100.0 * used / max_mem
+
+        | KEEP memory_usage_pct'
+      primary:
+        field: memory_usage_pct
+        format:
+          type: percent
+          decimals: 0
+        label: Memory Usage
+      thresholds:
+      - value: 70
+        color: yellow
+      - value: 85
+        color: red
+    hide_title: true
+
+  - title: Total Commands / sec
+    size:
+      w: 16
+      h: 11
+    position:
+      x: 16
+      y: 0
+    esql:
+      type: area
+      query: 'TS metrics-*
+
+        | WHERE redis_commands_total IS NOT NULL
+
+        | STATS redis_commands_total = SUM(RATE(redis_commands_total, 1m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend),
+        cmd
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: redis_commands_total
+        format:
+          type: number
+          compact: true
+        label: Redis Commands Total
+      mode: stacked
+      breakdown:
+        field: cmd
+      legend:
+        visible: hide
+        position: bottom
+        truncate_labels: 1
+  - title: Hits / Misses per Sec
+    size:
+      w: 16
+      h: 11
+    position:
+      x: 32
+      y: 0
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_keyspace_hits_total IS NOT NULL OR redis_keyspace_misses_total IS NOT NULL
+
+        | STATS hits = IRATE(redis_keyspace_hits_total, 5m), misses = IRATE(redis_keyspace_misses_total, 5m) BY time_bucket
+        = TBUCKET(100, ?_tstart, ?_tend)
+
+        | KEEP time_bucket, hits, misses
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: hits
+        format:
+          type: number
+          compact: true
+        label: hits
+      - field: misses
+        format:
+          type: number
+          compact: true
+        label: misses
+      legend:
+        visible: hide
+        position: bottom
+        truncate_labels: 1
+  - title: Total Memory Usage
+    size:
+      w: 24
+      h: 10
+    position:
+      x: 0
+      y: 11
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_memory_used_bytes IS NOT NULL OR redis_memory_max_bytes IS NOT NULL
+
+        | STATS used = AVG(redis_memory_used_bytes), max = AVG(redis_memory_max_bytes) BY time_bucket = TBUCKET(100, ?_tstart,
+        ?_tend), instance
+
+        | KEEP time_bucket, instance, used, max
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: used
+        format:
+          type: bytes
+        label: used
+      - field: max
+        format:
+          type: bytes
+        label: max
+      breakdown:
+        field: instance
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+
+  # CURATED: Network I/O timeseries.
+  # Original had two separate PromQL targets with legendFormat "{{ input }}" and
+  # "{{ output }}" — these are not real Prometheus labels, just custom legend strings.
+  # The auto-translator treated them as group-by fields, causing the multi-target merge
+  # to fail (target 2 was dropped). Rewritten as a single ES|QL query with explicitly
+  # named input/output columns.
+  - title: Network I/O
+    size:
+      w: 24
+      h: 10
+    position:
+      x: 24
+      y: 11
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_net_input_bytes_total IS NOT NULL OR redis_net_output_bytes_total IS NOT NULL
+
+        | STATS input = SUM(RATE(redis_net_input_bytes_total, 5m)),
+                output = SUM(RATE(redis_net_output_bytes_total, 5m))
+                BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+
+        | KEEP time_bucket, input, output
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: input
+        format:
+          type: bytes
+        label: Input
+      - field: output
+        format:
+          type: bytes
+        label: Output
+      legend:
+        visible: show
+        position: bottom
+
+  - title: Total Items per DB
+    size:
+      w: 24
+      h: 11
+    position:
+      x: 0
+      y: 21
+    esql:
+      type: area
+      query: 'TS metrics-*
+
+        | WHERE redis_db_keys IS NOT NULL
+
+        | STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), db, instance
+
+        | EVAL legend = CONCAT(COALESCE(TO_STRING(db), ""), ", ", COALESCE(TO_STRING(instance), ""))
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: redis_db_keys
+        label: Redis Db Keys
+      mode: stacked
+      breakdown:
+        field: legend
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  - title: Expiring vs Not-Expiring Keys
+    size:
+      w: 24
+      h: 11
+    position:
+      x: 24
+      y: 21
+    esql:
+      type: area
+      query: 'TS metrics-*
+
+        | WHERE redis_db_keys IS NOT NULL OR redis_db_keys_expiring IS NOT NULL
+
+        | STATS redis_db_keys_A_lhs = SUM(redis_db_keys), expiring = SUM(redis_db_keys_expiring) BY time_bucket = TBUCKET(100,
+        ?_tstart, ?_tend), instance
+
+        | EVAL not_expiring = (redis_db_keys_A_lhs - expiring)
+
+        | KEEP time_bucket, instance, not_expiring, expiring
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: not_expiring
+        format:
+          type: number
+          compact: true
+        label: not expiring
+      - field: expiring
+        format:
+          type: number
+          compact: true
+        label: expiring
+      mode: stacked
+      breakdown:
+        field: instance
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  - title: Expired/Evicted Keys
+    size:
+      w: 24
+      h: 10
+    position:
+      x: 0
+      y: 32
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_expired_keys_total IS NOT NULL OR redis_evicted_keys_total IS NOT NULL
+
+        | STATS expired = SUM(RATE(redis_expired_keys_total, 5m)), evicted = SUM(RATE(redis_evicted_keys_total, 5m)) BY time_bucket
+        = TBUCKET(100, ?_tstart, ?_tend), instance
+
+        | KEEP time_bucket, instance, expired, evicted
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: expired
+        format:
+          type: number
+          compact: true
+        label: expired
+      - field: evicted
+        format:
+          type: number
+          compact: true
+        label: evicted
+      breakdown:
+        field: instance
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  - title: Connected/Blocked Clients
+    size:
+      w: 24
+      h: 10
+    position:
+      x: 24
+      y: 32
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_connected_clients IS NOT NULL OR redis_blocked_clients IS NOT NULL
+
+        | STATS connected = SUM(redis_connected_clients), blocked = SUM(redis_blocked_clients) BY time_bucket = TBUCKET(100,
+        ?_tstart, ?_tend)
+
+        | KEEP time_bucket, connected, blocked
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: connected
+        format:
+          type: number
+          compact: true
+        label: connected
+      - field: blocked
+        format:
+          type: number
+          compact: true
+        label: blocked
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  - title: Average Time Spent by Command / sec
+    size:
+      w: 24
+      h: 11
+    position:
+      x: 0
+      y: 42
+    esql:
+      type: line
+      query: 'TS metrics-*
+
+        | WHERE redis_commands_duration_seconds_total IS NOT NULL OR redis_commands_total IS NOT NULL
+
+        | STATS duration_sum = SUM(IRATE(redis_commands_duration_seconds_total, 1m)),
+                cmd_count = SUM(IRATE(redis_commands_total, 1m))
+                BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), cmd
+
+        | EVAL avg_duration_sec = duration_sum / cmd_count
+
+        | KEEP time_bucket, cmd, avg_duration_sec
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: avg_duration_sec
+        format:
+          type: duration
+        label: Avg Duration / Command
+      breakdown:
+        field: cmd
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  - title: Total Time Spent by Command / sec
+    size:
+      w: 24
+      h: 11
+    position:
+      x: 24
+      y: 42
+    esql:
+      type: area
+      query: 'TS metrics-*
+
+        | WHERE redis_commands_duration_seconds_total IS NOT NULL
+
+        | STATS redis_commands_duration_seconds_total = SUM(IRATE(redis_commands_duration_seconds_total, 1m)) BY time_bucket
+        = TBUCKET(100, ?_tstart, ?_tend), cmd
+
+        | WHERE redis_commands_duration_seconds_total != 0
+
+        | SORT time_bucket ASC'
+      dimension:
+        field: time_bucket
+        data_type: date
+        label: Time
+      metrics:
+      - field: redis_commands_duration_seconds_total
+        format:
+          type: duration
+        label: Redis Commands Duration Seconds Total
+      mode: stacked
+      breakdown:
+        field: cmd
+      legend:
+        visible: show
+        position: bottom
+        truncate_labels: 1
+  filters:
+  - field: data_stream.dataset
+    equals: prometheus
+  controls:
+  - type: esql
+    label: namespace
+    variable_name: namespace
+    variable_type: values
+    query: FROM metrics-* | WHERE redis_up IS NOT NULL AND namespace IS NOT NULL | STATS count = COUNT(*) BY namespace | EVAL
+      options = MV_APPEND(".*", namespace) | MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options | RENAME
+      options AS instance | SORT namespace ASC | LIMIT 1000
+    multiple: false
+    default: .*
+  - type: esql
+    label: instance
+    variable_name: instance
+    variable_type: values
+    query: FROM metrics-* | WHERE redis_up IS NOT NULL AND instance IS NOT NULL | STATS count = COUNT(*) BY instance | EVAL
+      options = MV_APPEND(".*", instance) | MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options | RENAME
+      options AS instance | SORT instance ASC | LIMIT 1000
+    multiple: false
+    default: .*

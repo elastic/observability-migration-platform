@@ -208,3 +208,47 @@ class TestWriteHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_ir_dashboard_fields_bypass_the_yaml_document_shape():
+    """API-only dashboard fields must not be routed through the YAML shape.
+
+    ``docs/dashboards/schema.json`` declares ``additionalProperties: false``, so
+    anything the Dashboards API supports but the (deprecated) YAML format does
+    not was silently destroyed when the API path was built as
+    ``native_dashboard_from_yaml(ir.to_yaml_dict())``. Tags are the worked
+    example: Kibana stores dashboard-level tags and accepts plain strings.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+    from observability_migration.targets.kibana.dashboards_api import (
+        native_dashboard_from_ir,
+    )
+
+    ir = DashboardIR.from_yaml_dict({"name": "Tagged", "panels": []}, source_adapter="grafana")
+    ir.tags = ["prometheus", "redis"]
+
+    # The YAML shape cannot carry them...
+    assert "tags" not in ir.to_yaml_dict()
+    # ...but the API payload does.
+    native, _counts = native_dashboard_from_ir(ir)
+    assert native.to_api_payload()["tags"] == ["prometheus", "redis"]
+
+
+def test_ir_dashboard_id_is_unchanged_by_the_direct_mapping():
+    """Removing the YAML hop must not move dashboards to new ids.
+
+    The id is the upsert key; deriving it differently would orphan every
+    previously uploaded dashboard (and was measured to get the payload
+    rejected). Any change to id derivation is its own migration concern.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+    from observability_migration.targets.kibana.dashboards_api import (
+        native_dashboard_from_ir,
+        native_dashboard_from_yaml,
+    )
+
+    ir = DashboardIR.from_yaml_dict({"name": "Redis Overview", "panels": []}, source_adapter="grafana")
+    ir.uid = "someGrafanaUid"
+    via_ir, _ = native_dashboard_from_ir(ir)
+    via_yaml, _ = native_dashboard_from_yaml(ir.to_yaml_dict())
+    assert via_ir.dashboard_id == via_yaml.dashboard_id

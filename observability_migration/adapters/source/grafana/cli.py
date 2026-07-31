@@ -2546,8 +2546,21 @@ def main(argv: list[str] | None = None):
         )
 
     yaml_files = sorted(yaml_dir.glob("*.yaml"))
-    print("\n[4/7] Linting generated dashboard YAML...")
-    yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
+    # The YAML lint validates the DEPRECATED kb-dashboard-cli document shape.
+    # The default typed Dashboards API upload never consumes it, so linting it
+    # there only produces failures against a format the run does not use --
+    # noise that reads as a migration problem. Run it only when something
+    # actually consumes the YAML.
+    _yaml_consumers = getattr(args, "compile", False) or getattr(args, "legacy_import", False)
+    if not _yaml_consumers:
+        print(
+            "\n[4/7] Linting generated dashboard YAML: skipped "
+            "(native Dashboards API path; pass --compile or --legacy-import to enable)"
+        )
+        yaml_lint_ok, yaml_lint_results, yaml_lint_output = True, {}, ""
+    else:
+        print("\n[4/7] Linting generated dashboard YAML...")
+        yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
     for result, yaml_path, _dashboard in dashboard_outputs:
         if yaml_path is None:
             continue

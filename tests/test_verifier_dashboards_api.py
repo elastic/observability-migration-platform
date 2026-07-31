@@ -288,7 +288,7 @@ class TestSafeDisplayMetadata:
             "type": "primary",
             "column": "latency",
             "label": "Latency",
-            "format": {"type": "duration", "from": "milliseconds", "to": "humanize"},
+            "format": {"type": "duration", "from": "ms", "to": "auto"},
         }]
 
     def test_xy_preserves_y2_legend_axis_horizontal_bar_and_breakdowns_list(self) -> None:

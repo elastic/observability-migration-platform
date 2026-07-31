@@ -274,6 +274,10 @@ class NativeDashboard:
     items: list[NativeItem] = field(default_factory=list)
     controls: list[NativeControl] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
+    # Dashboard-level tags. Kibana stores these and accepts plain strings on
+    # create (verified on 9.5). They reach here straight from the IR, never via
+    # the YAML document shape, whose schema forbids unknown keys.
+    tags: list[str] = field(default_factory=list)
     dashboard_id: str = ""
 
     def enforce_item_cap(
@@ -324,6 +328,8 @@ class NativeDashboard:
             payload["pinned_panels"] = [control.to_api_dict() for control in self.controls]
         if self.filters:
             payload["filters"] = self.filters
+        if self.tags:
+            payload["tags"] = list(self.tags)
         return payload
 
 

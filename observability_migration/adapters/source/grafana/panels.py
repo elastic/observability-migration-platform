@@ -186,6 +186,24 @@ def _parse_kibana_version(version):
         return (0,)
 
 
+def _source_dashboard_tags(dashboard):
+    """Tags declared on the source dashboard, de-duplicated in order.
+
+    Carried on the IR (not the YAML document, whose schema forbids unknown
+    keys) so they reach the native payload. After a bulk migration these are
+    how an operator finds anything.
+    """
+    raw = (dashboard or {}).get("tags")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for tag in raw:
+        text = str(tag).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def _dashboard_minimum_kibana_version(flat_panels):
     """Return the dashboard ``minimum_kibana_version`` floor for *flat_panels*.
 
@@ -8412,6 +8430,9 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
     description = dashboard.get("description", "") or f"Migrated from Grafana ({uid})"
+    # Captured before ``_expand_repeat_panels`` rebuilds ``dashboard`` into a
+    # panel-focused copy that does not carry dashboard-level metadata.
+    source_tags = _source_dashboard_tags(dashboard)
 
     result = MigrationResult(
         dashboard_title=title,
@@ -8723,6 +8744,7 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # tests/test_grafana_native_dashboard_emission.py for the parity guarantee.
     dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
     dashboard_ir.uid = uid
+    dashboard_ir.tags = source_tags
     result.dashboard_ir = dashboard_ir
 
     safe_name = output_stem or _dashboard_output_stem(title)

@@ -277,21 +277,34 @@ def test_api_format_keeps_only_valid_shapes():
         "decimals": 2,
         "suffix": "B",
     }
+    # The duration branch of the transform schema is closed to {type, from, to}
+    # and its units are the abbreviated forms. Long names ("milliseconds") and
+    # extra keys ("suffix"/"decimals") are rejected outright:
+    #   [format]: [from]: expected value to equal [ps|ns|us|ms|s|min|h|d|w|mo|y]
+    #   [format.decimals]: Additional properties are not allowed
+    # This went unnoticed because a rejected payload silently fell back to the
+    # deprecated kb-dashboard-cli compiler, which accepted it.
     assert api._api_format({"type": "duration", "from": "milliseconds", "to": "seconds", "suffix": "s"}) == {
         "type": "duration",
-        "from": "milliseconds",
-        "to": "seconds",
-        "suffix": "s",
+        "from": "ms",
+        "to": "s",
     }
     assert api._api_format({"type": "custom", "pattern": "0.0a"}) == {"type": "custom", "pattern": "0.0a"}
     # An incomplete from/to pair is defaulted rather than dropped: the
     # multi-column format schema (xy/data_table/etc.) requires both, so a
     # partial pair must still produce a valid duration format.
     assert api._api_format({"type": "duration", "from": "milliseconds"}) == {
-        "type": "duration", "from": "milliseconds", "to": "humanize",
+        "type": "duration", "from": "ms", "to": "auto",
     }
+    # Kibana's internal output method is "humanize"; the transform spells the
+    # same thing "auto" and rejects "humanize".
+    assert api._api_format({"type": "duration", "to": "humanize"}) == {
+        "type": "duration", "from": "s", "to": "auto",
+    }
+    # Defaults are the transform's spelling of Kibana's DurationFormat
+    # defaults (seconds in, humanized out).
     assert api._api_format({"type": "duration"}) == {
-        "type": "duration", "from": "seconds", "to": "humanize",
+        "type": "duration", "from": "s", "to": "auto",
     }
     assert api._api_format({"type": "date", "pattern": "YYYY"}) is None
 
@@ -324,7 +337,7 @@ def test_xy_builder_preserves_api_safe_columns_legend_axis_and_horizontal_stacki
         "dimension": {
             "field": "bucket",
             "label": "Bucket",
-            "format": {"type": "duration", "from": "seconds", "to": "minutes"},
+            "format": {"type": "duration", "from": "s", "to": "min"},
         },
         "metrics": [{
             "field": "latency",
@@ -352,7 +365,7 @@ def test_xy_builder_preserves_api_safe_columns_legend_axis_and_horizontal_stacki
     assert cfg["layers"][0]["x"] == {
         "column": "bucket",
         "label": "Bucket",
-        "format": {"type": "duration", "from": "seconds", "to": "minutes"},
+        "format": {"type": "duration", "from": "s", "to": "min"},
     }
     assert cfg["layers"][0]["y"] == [{
         "column": "latency",
@@ -2097,16 +2110,21 @@ def test_api_format_accepts_bare_duration():
     # schema accepts a bare ``{type: duration}``, but the multi-column schema
     # (xy/data_table/etc.) *requires* ``from``/``to`` — omitting them 400s the
     # whole panel. Both schemas accept the pair harmlessly, so ``_api_format``
-    # always fills in defaults (seconds -> humanize) rather than only
-    # forwarding an already-complete pair.
+    # always fills in defaults rather than only forwarding a complete pair.
+    #
+    # The units are the transform's abbreviated vocabulary, and the branch is
+    # closed to {type, from, to}: long names and extra keys such as ``decimals``
+    # are rejected ("Additional properties are not allowed"). That went
+    # unnoticed while a rejected payload silently fell back to the deprecated
+    # kb-dashboard-cli compiler, which accepted the looser shape.
     assert api._api_format({"type": "duration"}) == {
-        "type": "duration", "from": "seconds", "to": "humanize",
+        "type": "duration", "from": "s", "to": "auto",
     }
     assert api._api_format({"type": "duration", "decimals": 1, "suffix": " s"}) == {
-        "type": "duration", "decimals": 1, "suffix": " s", "from": "seconds", "to": "humanize",
+        "type": "duration", "from": "s", "to": "auto",
     }
     assert api._api_format({"type": "duration", "from": "milliseconds"}) == {
-        "type": "duration", "from": "milliseconds", "to": "humanize",
+        "type": "duration", "from": "ms", "to": "auto",
     }
 
 
