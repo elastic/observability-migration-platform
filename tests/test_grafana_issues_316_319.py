@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import unittest
+
+import yaml
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.adapters.source.grafana.runtime_features import (
@@ -238,3 +242,84 @@ class TestNativePromqlAdaptiveSelectorMustCarryTiming(unittest.TestCase):
             has_step or has_window,
             f"PROMQL command must carry step= or start/end/buckets: {query}",
         )
+
+
+class TestMultiSelectControlsUseMvContains(unittest.TestCase):
+    """A Grafana multi-select variable must stay multi-select in Kibana.
+
+    ``RLIKE ?var`` is a scalar parameter position, so it can only ever bind one
+    value. Kibana's supported multi-value mechanism is ``MV_CONTAINS(?var,
+    field)`` with ``single_select: false`` — verified against Kibana/ES 9.5.
+    The ``.*`` sentinel preserves Grafana's All option, because the control
+    query already offers ``.*`` via MV_APPEND:
+
+        WHERE MV_CONTAINS(?v, ".*") OR MV_CONTAINS(?v, field)
+
+        [".*"]                -> every series (All)
+        ["a"]                 -> just a
+        ["a", "b"]            -> a and b
+
+    Exact matching (not regex) is forced by the platform: ES|QL ``RLIKE``
+    requires a literal pattern and rejects a computed one, so
+    ``RLIKE MV_CONCAT(?v, "|")`` — which would have rebuilt Grafana's own
+    ``(a|b)`` alternation — is not expressible.
+    """
+
+    def _dash(self, multi):
+        return {
+            "title": "multi-select repro",
+            "uid": "ms-repro",
+            "panels": [{
+                "id": 1, "type": "timeseries", "title": "P",
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+                "datasource": {"type": "prometheus", "uid": "p"},
+                "targets": [{"expr": 'sum(up{instance=~"$instance"})', "refId": "A"}],
+            }],
+            "templating": {"list": [{
+                "name": "instance", "type": "query", "multi": multi,
+                "includeAll": True,
+                "definition": "label_values(up, instance)",
+                "current": {"text": "All", "value": "$__all"},
+                "options": [],
+            }]},
+        }
+
+    def _translate(self, multi):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig()
+        set_runtime_feature(
+            rule_pack, ESQL_NAMED_PARAM_BINDING,
+            supported=True, source="test", confidence="assumed",
+        )
+        resolver = schema.SchemaResolver(rule_pack)
+        with tempfile.TemporaryDirectory() as tmp:
+            _result, path = panels.translate_dashboard(
+                self._dash(multi), tmp, datasource_index="metrics-*",
+                esql_index="metrics-*", rule_pack=rule_pack, resolver=resolver,
+            )
+            return yaml.safe_load(pathlib.Path(path).read_text())["dashboards"][0]
+
+    def test_multi_select_emits_mv_contains_with_all_sentinel(self):
+        doc = self._translate(multi=True)
+        query = doc["panels"][0]["esql"]["query"]
+        self.assertIn("MV_CONTAINS(?instance", query)
+        self.assertIn('MV_CONTAINS(?instance, ".*")', query)
+        self.assertNotIn("RLIKE ?instance", query)
+
+    def test_multi_select_control_is_not_single_select(self):
+        doc = self._translate(multi=True)
+        control = next(c for c in doc["controls"] if c.get("variable_name") == "instance")
+        self.assertTrue(control.get("multiple"), control)
+
+    def test_single_select_keeps_rlike_binding(self):
+        """Non-multi variables must be untouched: RLIKE keeps regex semantics."""
+        doc = self._translate(multi=False)
+        query = doc["panels"][0]["esql"]["query"]
+        self.assertIn("RLIKE ?instance", query)
+        self.assertNotIn("MV_CONTAINS", query)
+        control = next(c for c in doc["controls"] if c.get("variable_name") == "instance")
+        self.assertFalse(control.get("multiple"))

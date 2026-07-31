@@ -463,8 +463,13 @@ def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:
         for title, query in queries
         if "job" in _VALUE_PARAM_TOKEN.findall(query)
     )
+    # ``cluster`` is single-select (multi=False) -> scalar RLIKE binding.
     assert "RLIKE ?cluster" in cluster_query
-    assert "RLIKE ?job" in job_query
+    # ``job`` is multi=True in the source dashboard, so it binds through
+    # MV_CONTAINS and the control stays multi-select. A scalar RLIKE position
+    # could only ever hold one value and would force single-select.
+    assert "MV_CONTAINS(?job" in job_query
+    assert "RLIKE ?job" not in job_query
     assert "cluster" in cluster_query
     assert "job" in job_query
 

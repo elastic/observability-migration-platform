@@ -6063,6 +6063,24 @@ def _collect_regex_default_param_names(variables):
     return names
 
 
+def _collect_multi_select_param_names(variables):
+    """Names of Grafana ``multi: true`` template variables.
+
+    These bind through ``MV_CONTAINS(?var, field)`` rather than ``RLIKE ?var``:
+    a scalar parameter position can only ever hold one value, so RLIKE forces
+    the control to single-select. ``MV_CONTAINS`` is Kibana's supported
+    multi-value mechanism and pairs with ``single_select: false``.
+    """
+    names = set()
+    for var in variables:
+        if not isinstance(var, dict):
+            continue
+        name = var.get("name")
+        if name and bool(var.get("multi")):
+            names.add(name)
+    return names
+
+
 def _build_esql_param_control(
     variable_name,
     label,
@@ -6073,6 +6091,7 @@ def _build_esql_param_control(
     source_field="",
     include_internal_metadata=False,
     extra_filters=None,
+    multiple=False,
 ):
     """Build an ES|QL parameter-binding control (issue #107).
 
@@ -6086,9 +6105,10 @@ def _build_esql_param_control(
     A query-driven values control is emitted: it enumerates the resolved
     field's values at render time and binds them to the ES|QL variable named
     after the Grafana variable (which is exactly the parameter the query
-    references). Single-select is used because the rewritten matchers reference
-    the parameter in scalar positions (``== ?var`` / ``RLIKE ?var``); a
-    multi-value binding would be invalid ES|QL there.
+    references). ``multiple`` follows how the panel filters bind the parameter:
+    scalar positions (``== ?var`` / ``RLIKE ?var``) require single-select, while
+    a Grafana multi-select variable binds via ``MV_CONTAINS(?var, field)`` and
+    can therefore stay multi-select.
 
     A ``default`` selection is emitted so the parameter is bound on first load
     instead of leaving the control empty (issue #131).
@@ -6106,14 +6126,19 @@ def _build_esql_param_control(
             include_match_all=include_match_all,
             extra_filters=extra_filters,
         ),
-        "multiple": False,
+        # Multi-select only when the panel filters bind via MV_CONTAINS; a
+        # scalar RLIKE position cannot accept more than one value.
+        "multiple": bool(multiple),
     }
     if include_internal_metadata:
         control[_CONTROL_RESOLVED_FIELD_NAME] = field_name
         if source_field:
             control[_CONTROL_SOURCE_FIELD_NAME] = source_field
     if default not in (None, ""):
-        control["default"] = default
+        # ESQLQueryMultiSelectControl types ``default`` as an array of strings;
+        # the single-select variant types it as a scalar. Emitting the wrong
+        # shape fails Kibana YAML schema validation.
+        control["default"] = [default] if multiple else default
     return control
 
 
@@ -6481,6 +6506,12 @@ def query_variable_rule(context):
             control_warnings=context.control_warnings,
             variable_name=name,
         )
+        # Repeated panels are collapsed into one, so a multi-selection there
+        # would silently merge instances -- keep those single-select.
+        multi_select = (
+            bool(context.variable.get("multi"))
+            and name not in context.repeat_variable_names
+        )
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
@@ -6491,23 +6522,27 @@ def query_variable_rule(context):
             source_field=source_field,
             include_internal_metadata=True,
             extra_filters=scope_filters,
+            multiple=multi_select,
         )
-        if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
-            # We emit ``RLIKE ?var``, a scalar parameter position that takes one
-            # value, so the control is single-select. Kibana itself is NOT the
-            # limitation: an ``esql_control`` accepts ``single_select: false``,
-            # and ES|QL binds a multi-value selection as an array usable via
-            # ``MV_CONTAINS(?var, field)`` -- both verified against Kibana/ES 9.5.
-            # Adopting it needs a new "All" story, because the ``.*`` regex
-            # sentinel this control defaults to is a literal (matching nothing)
-            # under MV_CONTAINS. Name the real constraint so nobody re-derives
-            # "Kibana can't do multi-select" from this warning.
+        if bool(context.variable.get("multi")) and not multi_select:
+            # Only reachable for a repeat variable: Kibana has no equivalent of
+            # Grafana panel repetition, so the repeated panels collapse into
+            # one and a multi-selection there would silently merge instances.
             context.control_warnings.append(
-                f"variable '{name}' was multi-select in Grafana; the migrated panels "
-                "bind it as a scalar ES|QL parameter (RLIKE ?" + name + "), so a "
-                "single-select control is emitted. Kibana can express multi-select "
-                "via MV_CONTAINS(?" + name + ", <field>) with single_select=false — "
-                "rewrite those panel filters if you need multiple values at once"
+                f"variable '{name}' was multi-select in Grafana but also drives panel "
+                "repetition, which Kibana cannot reproduce; emitted a single-select "
+                "control so the collapsed panel shows one instance at a time rather "
+                "than silently merging them"
+            )
+        elif multi_select:
+            # Multi-select IS preserved, but exact-match instead of regex --
+            # state the delta rather than let it be discovered later.
+            context.control_warnings.append(
+                f"variable '{name}' is multi-select: panel filters bind it with "
+                f"MV_CONTAINS(?{name}, <field>) and the control allows several values "
+                "at once. Matching is exact rather than regex (ES|QL RLIKE takes only "
+                "a literal pattern), so a Grafana value written as a regex will not "
+                "match the way it did in Grafana"
             )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"
@@ -6941,6 +6976,7 @@ def _ensure_param_controls(
                 source_field=source_field,
                 include_internal_metadata=True,
                 extra_filters=scope_filters,
+                multiple=bool(variable.get("multi")),
             )
         )
     return controls
@@ -8316,6 +8352,11 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
     # explicitly into the native path. Set before any panel translation runs.
     setattr(rule_pack, "_regex_default_param_names", _collect_regex_default_param_names(variables))
+    # Multi-select variables bind via MV_CONTAINS instead of RLIKE so the
+    # Kibana control can stay multi-select. Same storage contract as above:
+    # set on the shared rule pack before any panel translation runs, reachable
+    # from the resolver as ``resolver._rule_pack``.
+    setattr(rule_pack, "_multi_select_param_names", _collect_multi_select_param_names(variables))
     # Issue #282: map grouping template variables (``by ($var)``) to ES|QL
     # field-control specs up front so the translation guardrail can defer the
     # dimension to a ``??var`` identifier control instead of failing. Gated on

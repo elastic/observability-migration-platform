@@ -7760,21 +7760,31 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self._device_scope_resolver(),
             collect_warnings=warnings,
         )
-        self.assertIs(controls[0]["multiple"], False)
+        # Multi-select is now preserved (MV_CONTAINS binding), so the reported
+        # gap is no longer "downgraded to single-select" -- it is the semantic
+        # delta that remains: MV_CONTAINS matches exactly, whereas Grafana's
+        # ``=~`` matched by regex. ES|QL RLIKE only accepts a literal pattern,
+        # so a computed alternation is not expressible and the delta is forced.
+        self.assertIs(controls[0]["multiple"], True)
         self.assertTrue(
             any(
                 "device_filtered" in warning
                 and "multi-select" in warning
-                and "single-select" in warning
+                and "MV_CONTAINS" in warning
+                and "exact" in warning
                 for warning in warnings
             ),
             warnings,
         )
 
-    def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
-        """A multi-select Grafana variable still binds a scalar ES|QL parameter
-        (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
-        to keep the query valid (issue #107)."""
+    def test_query_variable_esql_param_control_stays_multi_select(self):
+        """A multi-select Grafana variable stays multi-select in Kibana.
+
+        Superseded the original issue-#107 behaviour, which forced single-select
+        because a scalar ``RLIKE ?var`` position holds one value. Panel filters
+        for a multi variable now bind via ``MV_CONTAINS(?var, field)``, which
+        takes the whole selection, so the control no longer has to be narrowed.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -7799,7 +7809,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["type"], "esql")
-        self.assertIs(controls[0]["multiple"], False)
+        self.assertIs(controls[0]["multiple"], True)
 
     def test_query_variable_control_default_is_match_all_for_include_all(self):
         """Issue #131: a control with no default selection leaves the bound
@@ -7826,7 +7836,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             rule_pack=self.rule_pack,
             resolver=self.resolver,
         )
-        self.assertEqual(controls[0]["default"], ".*")
+        # multi=True -> ESQLQueryMultiSelectControl, whose ``default`` is an
+        # array of strings. The match-all semantic is unchanged.
+        self.assertEqual(controls[0]["default"], [".*"])
         # Match-all must appear in the VALUES_FROM_QUERY result set so Kibana
         # does not mark the selection as incompatible.
         self.assertIn('MV_APPEND(".*"', controls[0]["query"])
@@ -8004,11 +8016,19 @@ class TranslatorRegressionTests(unittest.TestCase):
             doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
 
         rendered = yaml.dump(doc)
-        self.assertIn("RLIKE ?host", rendered)
+        # ``host`` is multi=True, so it binds through MV_CONTAINS and the
+        # control stays multi-select. PR #133's intent is unchanged and still
+        # asserted: the ".*" default must select every series on first load,
+        # which the ".*" disjunct does — never a bare ``== ?host`` comparing
+        # the field against the literal string ".*".
+        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
+        self.assertIn("MV_CONTAINS(?host, host)", rendered)
         self.assertNotIn("== ?host", rendered)
         controls = doc["dashboards"][0].get("controls", [])
         binding = next(c for c in controls if c.get("variable_name") == "host")
-        self.assertEqual(binding["default"], ".*")
+        # Multi-select controls type ``default`` as an array (schema:
+        # ESQLQueryMultiSelectControl), single-select as a scalar.
+        self.assertEqual(binding["default"], [".*"])
 
     def test_dashboard_esql_named_param_binding_preserves_var_with_single_control(self):
         """Issue #132 end-to-end: an ES|QL-fallback target that only
@@ -8194,7 +8214,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         # Must fall through to ES|QL even when PROMQL_LABEL_MATCHER_PARAMS is
         # supported — Kibana does not inject control values into PROMQL expressions.
         self.assertNotIn("PROMQL", rendered)
-        self.assertIn("RLIKE ?host", rendered)
+        # multi=True -> MV_CONTAINS binding (see the equality-all test above);
+        # the ".*" disjunct keeps the first-load select-everything behaviour.
+        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
         self.assertNotIn("host=~?host", rendered)
 
     def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
@@ -8248,7 +8270,9 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         rendered = yaml.dump(doc)
         self.assertNotIn("PROMQL", rendered)
-        self.assertIn("RLIKE ?host", rendered)
+        # multi=True -> MV_CONTAINS binding (see the equality-all test above);
+        # the ".*" disjunct keeps the first-load select-everything behaviour.
+        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
         self.assertNotIn("== ?host", rendered)
 
     def test_dashboard_equality_matcher_on_concrete_var_keeps_exact_match(self):

@@ -1709,6 +1709,38 @@ def _param_binds_regex_default(resolver, param_name):
     return bool(names) and param_name in names
 
 
+def _param_is_multi_select(resolver, param_name):
+    """Whether *param_name* comes from a Grafana ``multi: true`` variable."""
+    rule_pack = getattr(resolver, "_rule_pack", None)
+    names = getattr(rule_pack, "_multi_select_param_names", None)
+    return bool(names) and param_name in names
+
+
+def _mv_contains_filter(label, param_name, negate=False):
+    """Multi-value label filter for a Grafana multi-select variable.
+
+    ``RLIKE ?var`` is a scalar parameter position, so it can bind only one
+    value and forces the Kibana control to single-select. ``MV_CONTAINS`` is
+    Kibana's supported multi-value mechanism and pairs with
+    ``single_select: false``.
+
+    The ``".*"`` disjunct preserves Grafana's ``All``: the binding control's
+    option list already offers ``.*`` (injected by ``MV_APPEND`` in the control
+    query) and defaults to it, so selecting All yields ``[".*"]`` and matches
+    every series, while any explicit selection matches just those values.
+
+    Matching is exact rather than regex. That is forced by the platform, not a
+    preference: ES|QL ``RLIKE`` requires a literal pattern and rejects a
+    computed one, so ``RLIKE MV_CONCAT(?var, "|")`` -- which would have
+    rebuilt Grafana's own ``(a|b)`` alternation -- is not expressible.
+    """
+    expr = (
+        f'(MV_CONTAINS(?{param_name}, ".*")'
+        f" OR MV_CONTAINS(?{param_name}, {label}))"
+    )
+    return f"NOT {expr}" if negate else expr
+
+
 def _matcher_to_esql(matcher, resolver, metric_field=None):
     label = _resolve_label_for(resolver, matcher["label"], metric_field)
     op = matcher["op"]
@@ -1731,6 +1763,11 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
         # ES|QL named parameter bound by an esqlControl, instead of silently
         # dropping it (issues #64 / #131). The matching control is guaranteed
         # by ``_ensure_param_controls`` during dashboard assembly.
+        if _param_is_multi_select(resolver, param_name) and op in {"=", "=~", "!=", "!~"}:
+            # Grafana multi-select: bind the whole selection, not one value.
+            return _mv_contains_filter(
+                label, param_name, negate=op in {"!=", "!~"}
+            )
         if op == "=":
             if _param_binds_regex_default(resolver, param_name):
                 # The binding control defaults this param to the regex
