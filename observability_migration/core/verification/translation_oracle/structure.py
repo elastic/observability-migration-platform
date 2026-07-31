@@ -9,6 +9,7 @@ import re
 
 from observability_migration.core.verification.translation_oracle.pipeline import (
     parse_stats_assignments,
+    parse_stats_grouping,
     split_pipeline_stages,
 )
 from observability_migration.core.verification.translation_oracle.types import (
@@ -78,6 +79,9 @@ def check_esql_structure(
                 lhs_match = _ASSIGNMENT_LHS.match(assignment.strip())
                 if lhs_match:
                     defined_columns.add(lhs_match.group(1))
+            # A STATS emits its grouping keys alongside its aggregates, so they
+            # are equally defined downstream.
+            defined_columns.update(parse_stats_grouping(stage))
             findings.extend(_check_stats_assignments(stats_assignments))
         elif stage_upper.startswith("EVAL"):
             eval_match = _EVAL_BODY.match(stage.strip())

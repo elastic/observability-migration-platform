@@ -21,21 +21,18 @@ Measured on the node index: 2640 documents carry `process_open_fds` and none
 carry `release`; `labels.release != "prod"` matched 0 of them, the fixed form
 matches all 2640 -- which is what Prometheus does, since an absent label is "".
 
-## 2. Structural oracle does not treat STATS BY keys as defined columns
+## 2. ~~Structural oracle does not treat STATS BY keys as defined columns~~ FIXED
 
-**Status:** verifier false positive, 5 occurrences on the community corpus.
+`parse_stats_grouping` now contributes a STATS stage's grouping keys to the
+defined-column set, alongside its aggregate aliases. Verified it still reports a
+genuinely undefined column (the dropped-outer-STATS shape) rather than going
+permissive.
 
-`STATS x = MAX(x) BY namespace, category, ...` defines `namespace` in its output,
-but `EVAL_UNDEFINED_COLUMN` reports `defined columns: ['policy_report_result']`
-and flags the following `EVAL namespace = namespace`.
+With this the community corpus reaches **0 structural-oracle errors** across
+1323 emitted queries.
 
-Affects PolicyReport Details (Passed/Failed/Warning/Errored Resources) and
-PolicyReports (Failing PolicyRules). The queries themselves are valid.
-
-Two things to fix:
-- the checker should count a STATS `BY` grouping key as a defined column;
-- the translator emits a degenerate `EVAL namespace = namespace` that the
-  following `KEEP` then discards. Harmless, but it is what trips the checker.
+The translator still emits a degenerate `EVAL namespace = namespace` that the
+following `KEEP` discards. Harmless noise, worth removing separately.
 
 ---
 
