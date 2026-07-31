@@ -957,6 +957,73 @@ def is_single_value_reduction(esql: str) -> bool:
     return not _stats_groups_by_time_bucket(stats_stages[-1])
 
 
+
+# PromQL metric-name token: Prometheus allows [a-zA-Z_:][a-zA-Z0-9_:]*. Anything
+# followed by "(" is a function call, and anything already containing "." is an
+# ES field path, so both are left alone.
+_PROMQL_METRIC_TOKEN_RE = re.compile(r"(?<![\w.:])([a-zA-Z_][a-zA-Z0-9_:]*)(?![\w.:]*\s*\()")
+
+# PromQL keywords / modifiers that are not metric names.
+_PROMQL_RESERVED = frozenset({
+    "by", "without", "on", "ignoring", "group_left", "group_right", "offset",
+    "bool", "and", "or", "unless", "inf", "nan", "start", "end", "step",
+})
+
+
+def qualify_source_metric_names(expr: str, resolve_field) -> str:
+    """Rewrite bare Prometheus metric names to their resolved ES field paths.
+
+    Elasticsearch's native PROMQL command addresses fields by their real path.
+    On the prometheus_native layout the metric lives at ``metrics.<name>``, so
+    feeding it the bare Prometheus name silently matches nothing:
+
+        value=(redis_connected_clients)          -> 0 rows
+        value=(metrics.redis_connected_clients)  -> 2 rows
+
+    Without this the oracle's reference side is always empty and every panel
+    degrades to "no reference data" -- i.e. the numeric gate reports PASS having
+    verified nothing. ``resolve_field`` is the translator's own resolver, so
+    both sides of the comparison address identical fields.
+    """
+    if not expr:
+        return expr
+
+    # Label positions must never be rewritten as metrics: `{cmd="x"}` matchers
+    # and `by (cmd)` / `on (id)` grouping lists name LABELS, which live under a
+    # different prefix entirely (labels.cmd, not metrics.cmd). Mask those spans
+    # first so only true metric tokens are left to rewrite.
+    masked = list(expr)
+    for match in re.finditer(r"\{[^{}]*\}", expr):
+        for i in range(*match.span()):
+            masked[i] = "\0"
+    for match in re.finditer(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^()]*)\)",
+        expr, re.IGNORECASE,
+    ):
+        for i in range(*match.span(1)):
+            masked[i] = "\0"
+    masked_expr = "".join(masked)
+
+    out = []
+    last = 0
+    for match in _PROMQL_METRIC_TOKEN_RE.finditer(masked_expr):
+        name = match.group(1)
+        start, end = match.span(1)
+        if name in _PROMQL_RESERVED:
+            continue
+        try:
+            resolved = resolve_field(name)
+        except Exception:
+            continue
+        if not resolved or resolved == name:
+            continue
+        out.append(expr[last:start])
+        out.append(resolved)
+        last = end
+    out.append(expr[last:])
+    return "".join(out)
+
+
 def sanitize_source_for_oracle(expr: str, step: int) -> str:
     """Make a Grafana source PromQL expression runnable by native PROMQL.
 
@@ -1054,7 +1121,60 @@ def _exact_control_param_names(esql: str) -> set[str]:
     return _control_param_names(esql) - _regex_control_param_names(esql)
 
 
-def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
+
+_MV_CONTAINS_PARAM_RE = re.compile(r"MV_CONTAINS\s*\(\s*\?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+
+def _mv_contains_param_names(esql: str) -> set[str]:
+    """Params bound inside ``MV_CONTAINS(?var, field)`` (multi-select controls)."""
+    return {
+        m.group(1) for m in _MV_CONTAINS_PARAM_RE.finditer(esql or "")
+        if m.group(1) not in _TIME_PARAM_NAMES
+    }
+
+
+def build_control_bindings(controls) -> dict[str, object]:
+    """Bind each dashboard control the way Kibana binds it at render time.
+
+    This is the difference between "the query parses" and "the panel works".
+    Kibana derives the parameter's *type* from the control: a multi-select
+    control binds a LIST, a single-select control binds a SCALAR. A query that
+    is valid under one is not necessarily valid under the other -- a scalar
+    ``RLIKE ?instance`` against a multi-select control fails at parse time with
+    "expected string, found list", which no hand-picked test binding reproduces.
+
+    Feeding these bindings to the oracle makes that class of failure a gate
+    result instead of something only a browser render can reveal.
+    """
+    bindings: dict[str, object] = {}
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        cfg = control.get("config") if isinstance(control.get("config"), dict) else control
+        name = cfg.get("variable_name")
+        if not name:
+            continue
+        selected = cfg.get("selected_options")
+        if selected is None:
+            selected = cfg.get("default")
+        # ``multiple: true`` (YAML) / ``single_select: false`` (native API).
+        multi = cfg.get("multiple")
+        if multi is None and "single_select" in cfg:
+            multi = not cfg.get("single_select")
+        if multi:
+            if isinstance(selected, list):
+                bindings[name] = selected or [".*"]
+            else:
+                bindings[name] = [selected if selected not in (None, "") else ".*"]
+        else:
+            if isinstance(selected, list):
+                selected = selected[0] if selected else None
+            bindings[name] = selected if selected not in (None, "") else ".*"
+    return bindings
+
+
+def run_translated(request, esql: str, tstart: str, tend: str,
+                   control_bindings: dict | None = None) -> dict:
     """Run the emitted ES|QL, binding time params and any dashboard-control params.
 
     Beyond ``?_tstart`` / ``?_tend``, a templated panel's ES|QL references the
@@ -1066,9 +1186,21 @@ def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
     ``field == ?var`` require the concrete dashboard default; compare_panel()
     skips those honestly rather than binding ".*" as a literal value.
     """
-    params: list[dict[str, str]] = [{"_tstart": tstart}, {"_tend": tend}]
-    for name in sorted(_regex_control_param_names(esql)):
+    params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
+    bindings = dict(control_bindings or {})
+    bound: set[str] = set()
+    # Control-derived bindings win: they carry the real Kibana type (list vs
+    # scalar), which is what makes a type mismatch visible here.
+    for name in sorted(_control_param_names(esql)):
+        if name in bindings:
+            params.append({name: bindings[name]})
+            bound.add(name)
+    for name in sorted(_regex_control_param_names(esql) - bound):
         params.append({name: ".*"})
+        bound.add(name)
+    # MV_CONTAINS takes a multi-value argument; ".*" alone is the All sentinel.
+    for name in sorted(_mv_contains_param_names(esql) - bound):
+        params.append({name: [".*"]})
     return _run_query(request, esql, params=params)
 
 
@@ -1092,7 +1224,8 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                   step: int, start_iso: str, end_iso: str,
                   translated_value_column: str | None = None,
                   translated_ignore_columns: frozenset[str] = frozenset(),
-                  translated_label_filter: tuple[str, str] | None = None) -> Comparison:
+                  translated_label_filter: tuple[str, str] | None = None,
+                  control_bindings: dict | None = None) -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
 
     ``translated_value_column``/``translated_ignore_columns`` scope the
@@ -1132,12 +1265,22 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             f"{names}; numeric parity requires concrete control defaults"
         )
         return cmp_
-    exact_control_params = _exact_control_param_names(cmp_.esql)
+    # A param is only unbindable if the dashboard's own controls do not define
+    # it and it is not a form we can bind ourselves. Previously every exact
+    # param skipped, which silently disabled numeric parity on ~95% of real
+    # panels -- the gate reported PASS having compared nothing.
+    bindable = (
+        set(control_bindings or {})
+        | _regex_control_param_names(cmp_.esql)
+        | _mv_contains_param_names(cmp_.esql)
+    )
+    exact_control_params = _exact_control_param_names(cmp_.esql) - bindable
     if exact_control_params:
         names = ", ".join(f"?{name}" for name in sorted(exact_control_params))
         cmp_.skipped_reason = (
             "translated query uses exact dashboard control param(s) "
-            f"{names}; numeric parity requires concrete control defaults"
+            f"{names} that no emitted control defines; numeric parity needs a "
+            "concrete binding"
         )
         return cmp_
     scalar_reductions = None
@@ -1159,7 +1302,7 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
         return cmp_
 
-    translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso)
+    translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso, control_bindings=control_bindings)
     if isinstance(translated_raw, dict) and translated_raw.get("error"):
         cmp_.translated_error = str(translated_raw["error"])[:200]
         return cmp_

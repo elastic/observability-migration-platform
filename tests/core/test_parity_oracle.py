@@ -1295,3 +1295,58 @@ class PromqlPassthroughOracleTests(unittest.TestCase):
                                   index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
         self.assertEqual(result.verdict(), "STRICT_PASS")
         self.assertGreaterEqual(result.compared_points, 1)
+
+
+# --- Kibana-faithful control binding -------------------------------------- #
+#
+# The numeric gate reported PASS on Redis 763 having compared 0 of 19 panels:
+# 18 skipped on "translated query uses exact dashboard control param(s)
+# ?instance" and the rest found no reference data. Two independent defects, both
+# of which made the one gate that can prove semantic correctness a no-op.
+
+
+def test_multi_select_control_binds_a_list():
+    """Kibana derives the param TYPE from the control.
+
+    A multi-select control binds a LIST. Binding a scalar in tests is what let a
+    scalar ``RLIKE ?instance`` ship against a multi-select control and fail only
+    in the browser with "expected string, found list".
+    """
+    bindings = po.build_control_bindings([
+        {"type": "esql_control", "config": {
+            "variable_name": "instance", "single_select": False,
+            "selected_options": [".*"]}},
+    ])
+    assert bindings["instance"] == [".*"]
+
+
+def test_single_select_control_binds_a_scalar():
+    bindings = po.build_control_bindings([
+        {"variable_name": "namespace", "multiple": False, "default": ".*"},
+    ])
+    assert bindings["namespace"] == ".*"
+
+
+def test_mv_contains_params_are_recognised_as_bindable():
+    esql = '| WHERE MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, labels.instance)'
+    assert po._mv_contains_param_names(esql) == {"instance"}
+
+
+def test_source_metric_names_are_qualified_to_es_field_paths():
+    """Native PROMQL addresses real field paths, not bare Prometheus names.
+
+    Verified on ES 9.5: ``value=(redis_connected_clients)`` returns 0 rows while
+    ``value=(metrics.redis_connected_clients)`` returns 2. Without qualification
+    the oracle's reference side is always empty, so every panel degrades to "no
+    reference data" and the gate verifies nothing.
+    """
+    resolve = lambda name: f"metrics.{name}"  # noqa: E731
+    out = po.qualify_source_metric_names("sum(rate(redis_commands_total[5m]))", resolve)
+    assert out == "sum(rate(metrics.redis_commands_total[5m]))"
+
+
+def test_label_positions_are_never_qualified_as_metrics():
+    """``by (cmd)`` and ``{db="db0"}`` name LABELS, which live under labels.*."""
+    resolve = lambda name: f"metrics.{name}"  # noqa: E731
+    out = po.qualify_source_metric_names('sum(redis_db_keys{db="db0"}) by (db, instance)', resolve)
+    assert out == 'sum(metrics.redis_db_keys{db="db0"}) by (db, instance)'

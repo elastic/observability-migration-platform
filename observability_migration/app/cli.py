@@ -1662,12 +1662,36 @@ def _run_verify_alert_rules(args: Any) -> int:
     return 0
 
 
+def _artifact_control_bindings(artifact_dir: Path, packets_doc: dict[str, Any]) -> dict[str, Any]:
+    """Kibana-faithful ``?param`` bindings from the artifact's emitted controls.
+
+    Prefers the native Dashboards API payload (``pinned_panels`` -> esql_control),
+    which is what Kibana actually loads; falls back to controls carried on the
+    verification packets document.
+    """
+    from observability_migration.core.verification.parity_oracle import build_control_bindings
+
+    controls: list[Any] = []
+    native_dir = artifact_dir / "native"
+    if native_dir.is_dir():
+        for native_file in sorted(native_dir.glob("*.native.json")):
+            try:
+                payload = json.loads(native_file.read_text(encoding="utf-8")).get("payload") or {}
+            except (OSError, ValueError):
+                continue
+            controls.extend(payload.get("pinned_panels") or [])
+    if not controls:
+        controls.extend(packets_doc.get("controls") or [])
+    return build_control_bindings(controls)
+
+
 def _run_compare(args: Any) -> int:
     """Per-panel side-by-side parity for migrated dashboards (PromQL native oracle)."""
     if not args.es_url or not args.api_key:
         print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
         return 2
     packets: list[dict[str, Any]] = []
+    control_bindings: dict[str, Any] = {}
     for raw in args.artifact_dir:
         path = Path(raw) / "verification_packets.json"
         if not path.exists():
@@ -1682,6 +1706,11 @@ def _run_compare(args: Any) -> int:
             print(json.dumps({"error": "invalid_verification_packets", "path": str(path), "detail": "expected a JSON object"}, indent=2))
             return 2
         packets.extend(data.get("packets") or [])
+        # Controls carry the binding CONTRACT (multi-select -> list, single ->
+        # scalar). Without them the oracle has to guess a scalar, which both
+        # skips most panels and hides list/scalar type errors that only show up
+        # in a real Kibana render.
+        control_bindings.update(_artifact_control_bindings(Path(raw), data))
 
     from datetime import UTC, datetime, timedelta
     end = datetime.now(UTC)
@@ -1770,6 +1799,7 @@ def _run_compare(args: Any) -> int:
                     cmp_ = compare_panel(
                         request, translated_query=pkt["translated_query"],
                         index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
+                        control_bindings=control_bindings,
                         **extra,
                     )
                 except NetworkError as exc:
