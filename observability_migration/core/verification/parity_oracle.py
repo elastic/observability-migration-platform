@@ -1024,6 +1024,36 @@ def qualify_source_metric_names(expr: str, resolve_field) -> str:
     return "".join(out)
 
 
+
+# Qualified metric field paths the translator emits, e.g.
+# ``metrics.redis_connected_clients`` or ``prometheus.foo_total.counter``.
+_TRANSLATED_FIELD_PATH_RE = re.compile(
+    r"\b((?:metrics|prometheus)\.[A-Za-z_][A-Za-z0-9_.]*)"
+)
+
+
+def derive_field_map_from_translated(esql: str) -> dict[str, str]:
+    """Map bare Prometheus metric names to the field paths the translation used.
+
+    Taking the mapping from the translated query rather than re-resolving means
+    both sides of the comparison address the same fields by construction: if the
+    translator resolved ``redis_connected_clients`` to
+    ``metrics.redis_connected_clients``, the oracle's reference query is pointed
+    at exactly that field. Re-deriving it independently could drift and produce a
+    false FAIL (or a false PASS against the wrong field).
+    """
+    mapping: dict[str, str] = {}
+    for match in _TRANSLATED_FIELD_PATH_RE.finditer(esql or ""):
+        path = match.group(1)
+        bare = path.split(".", 1)[1]
+        # Fleet's typed leaves are ``prometheus.<metric>.<counter|value|rate>``.
+        if path.startswith("prometheus.") and bare.rsplit(".", 1)[-1] in {"counter", "value", "rate"}:
+            bare = bare.rsplit(".", 1)[0]
+        if bare and bare not in mapping:
+            mapping[bare] = path
+    return mapping
+
+
 def sanitize_source_for_oracle(expr: str, step: int) -> str:
     """Make a Grafana source PromQL expression runnable by native PROMQL.
 
@@ -1173,6 +1203,31 @@ def build_control_bindings(controls) -> dict[str, object]:
     return bindings
 
 
+
+_ESQL_TIME_FILTER_RE = re.compile(r"@timestamp\s*(?:>=|<=|>|<)", re.IGNORECASE)
+
+
+def _ensure_oracle_time_window(esql: str) -> str:
+    """Scope a panel query to ``?_tstart``/``?_tend`` for out-of-Kibana execution.
+
+    Panel ES|QL references the time params only inside ``TBUCKET``/``BUCKET``;
+    Kibana itself applies the dashboard time range when it renders. Running the
+    same query directly against Elasticsearch therefore scans all history, which
+    is both slower and unaligned with the windowed reference query. Insert the
+    filter immediately after the source command when one is not already present.
+    """
+    if not esql or _ESQL_TIME_FILTER_RE.search(esql):
+        return esql
+    lines = esql.splitlines()
+    if not lines:
+        return esql
+    head = lines[0]
+    if not re.match(r"\s*(?:TS|FROM)\s", head, re.IGNORECASE):
+        return esql
+    window = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+    return "\n".join([head, window, *lines[1:]])
+
+
 def run_translated(request, esql: str, tstart: str, tend: str,
                    control_bindings: dict | None = None) -> dict:
     """Run the emitted ES|QL, binding time params and any dashboard-control params.
@@ -1186,6 +1241,12 @@ def run_translated(request, esql: str, tstart: str, tend: str,
     ``field == ?var`` require the concrete dashboard default; compare_panel()
     skips those honestly rather than binding ".*" as a literal value.
     """
+    # Kibana scopes an ES|QL panel to the dashboard time picker; a raw _query
+    # call does not, so without this the translated side reads the whole index
+    # while the native side is windowed, and their buckets never line up
+    # (surfacing as a false "no overlapping time buckets" FAIL). Apply the same
+    # window here when the emitted query does not already filter on time.
+    esql = _ensure_oracle_time_window(esql)
     params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
     bindings = dict(control_bindings or {})
     bound: set[str] = set()
@@ -1297,6 +1358,17 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     native_query = sanitize_source_for_oracle(source_query, step)
     if native_query != source_query:
         cmp_.notes.append("source sanitized for oracle (template vars / range macros resolved)")
+    # Native PROMQL addresses real field paths. On the prometheus_native layout
+    # the metric lives at ``metrics.<name>``, so the bare Prometheus name matches
+    # nothing and the reference side comes back empty -- which reads as "no data
+    # to verify against" rather than the setup error it is. Point the reference
+    # at the same fields the translation used.
+    field_map = derive_field_map_from_translated(cmp_.esql)
+    if field_map:
+        qualified = qualify_source_metric_names(native_query, lambda n: field_map.get(n, n))
+        if qualified != native_query:
+            native_query = qualified
+            cmp_.notes.append("source metric names qualified to the translated field paths")
     native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
         cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"

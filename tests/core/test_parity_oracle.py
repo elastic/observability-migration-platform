@@ -1350,3 +1350,34 @@ def test_label_positions_are_never_qualified_as_metrics():
     resolve = lambda name: f"metrics.{name}"  # noqa: E731
     out = po.qualify_source_metric_names('sum(redis_db_keys{db="db0"}) by (db, instance)', resolve)
     assert out == 'sum(metrics.redis_db_keys{db="db0"}) by (db, instance)'
+
+
+def test_field_map_is_derived_from_the_translated_query():
+    """Both sides must address the same fields by construction, not by re-deriving."""
+    esql = ("TS metrics-redis.prometheus-default\n"
+            "| STATS x = SUM(metrics.redis_connected_clients) BY labels.instance")
+    assert po.derive_field_map_from_translated(esql) == {
+        "redis_connected_clients": "metrics.redis_connected_clients"
+    }
+
+
+def test_field_map_strips_fleet_typed_leaf_suffix():
+    esql = "FROM i | STATS y = MAX(prometheus.node_cpu_total.counter)"
+    assert po.derive_field_map_from_translated(esql) == {
+        "node_cpu_total": "prometheus.node_cpu_total.counter"
+    }
+
+
+def test_oracle_applies_the_dashboard_time_window():
+    """Panel ES|QL uses ?_tstart/?_tend only inside TBUCKET; Kibana supplies the
+    range filter when it renders. Executed directly the query scans all history,
+    so its buckets never align with the windowed reference query -- which showed
+    up as a false "no overlapping time buckets" FAIL on 4 panels.
+    """
+    out = po._ensure_oracle_time_window("TS idx\n| WHERE a IS NOT NULL\n| STATS x=SUM(a)")
+    assert out.splitlines()[1] == "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+
+
+def test_oracle_does_not_double_apply_an_existing_time_filter():
+    esql = "TS idx\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS x=SUM(a)"
+    assert po._ensure_oracle_time_window(esql) == esql
