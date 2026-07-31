@@ -11,53 +11,41 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 0. rate() degraded to AVG_OVER_TIME reports a number that is not a rate
+## 0. ~~rate() degraded to AVG_OVER_TIME reports a number that is not a rate~~ WITHDRAWN — I was wrong
 
-**Status:** ACTIVE correctness bug, 17 panels on the community corpus. Highest
-priority. Fix identified and measured; not applied.
+I filed this as an active bug affecting 17 corpus panels. It is not happening.
 
-When a counter-style range function degrades to its gauge analogue,
-`_COUNTER_TO_GAUGE_FALLBACK` maps `rate`/`irate` to `AVG_OVER_TIME` — the average
-of the *cumulative counter value*, not a per-second rate. Measured on
-`mysql_global_status_queries` in the rig:
+My detection was "source contains rate() AND output contains AVG_OVER_TIME",
+which is wrong for multi-target panels: those panels have a rate()'d counter
+target AND a separate plain-gauge target, and the AVG_OVER_TIME belongs to the
+gauge one, where averaging over the bucket is exactly right.
 
-| form | value |
+Checking whether the rate()'d metric is itself the degraded one:
+
+| measure | count |
 |---|---|
-| `AVG(AVG_OVER_TIME(x, 5m))` (what we emit) | **2437** |
-| `(LAST_OVER_TIME(x) - FIRST_OVER_TIME(x)) / 60` (true rate) | **0.62 / sec** |
+| loose heuristic (what I reported) | 14 |
+| a rate()'d metric actually degraded to AVG_OVER_TIME | **0** |
 
-Off by roughly 4000x, and it renders as a healthy panel. This is the
-plausible-but-wrong failure mode the rest of this document exists to prevent, and
-it is worse than an error card because nothing signals it.
+Zero on the community corpus and zero across Node Exporter Full, MySQL Overview,
+PostgreSQL and Redis.
 
-**The fix.** Elasticsearch has no `DELTA_OVER_TIME`/`RATE_OVER_TIME`, but
-`FIRST_OVER_TIME` and `LAST_OVER_TIME` both work on gauge-typed fields (verified),
-so the correct emission is two aggregates plus an EVAL:
+The reason is the policy in `_should_degrade_counter_range_func`, which is doing
+its job: rate()/irate() are counter-only in PromQL, so the source asserting one
+is treated as authoritative and is NOT degraded on a live-caps gauge vote. Only
+an explicit rule-pack `metric_kinds: gauge` pin or a cross-index type conflict
+forces the degrade.
 
-```
-| STATS lo = MAX(FIRST_OVER_TIME(x)), hi = MAX(LAST_OVER_TIME(x)) BY tb = TBUCKET(...)
-| EVAL rate = (hi - lo) / <bucket_seconds>
-```
+The underlying observation still holds as a latent hazard — IF the fallback ever
+fires for a genuinely rate()'d metric, `AVG_OVER_TIME` would report the average
+cumulative value rather than a rate (measured on `mysql_global_status_queries`:
+2437 vs a true 0.62/sec). The correct form is
+`(LAST_OVER_TIME(x) - FIRST_OVER_TIME(x)) / bucket_seconds`, both of which work
+on gauge-typed fields. Worth doing if the policy is ever loosened; not urgent,
+because today the policy prevents it.
 
-That is `increase`/`rate` over the bucket for a monotonic counter. The
-co-located-arithmetic translator already emits this two-aggregate-plus-EVAL shape,
-so the machinery exists.
-
-**Why it is not done here.** `resolve_counter_range_translation` returns a single
-ES|QL function name, threaded through seven call sites that each build a different
-emission shape. Converting them to a two-aggregate form is a real refactor of the
-most fragile path in the translator, and it should be started with room to verify
-it, not squeezed in.
-
-**Interim honesty option** if the refactor is deferred further: refuse the panel
-with a precise reason instead of emitting `AVG_OVER_TIME`. A refused panel is
-strictly better than one showing a confident wrong number.
-
-**Related, and the reason this keeps firing:** PromQL does not enforce metric
-types, ES|QL does. `mysqld_exporter` and `node_exporter` publish many true
-counters as `# TYPE ... untyped`; Elasticsearch then infers gauge from the missing
-`_total` suffix, and every `rate()` over them fails or degrades. This is a source
--> target impedance mismatch that real operators hit, not a rig artifact.
+Lesson recorded because it cost real effort: measure the thing you are claiming,
+not a proxy for it.
 
 ---
 
