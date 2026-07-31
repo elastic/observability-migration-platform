@@ -189,6 +189,42 @@ document is about. The emitted reason already tells the operator to add
 
 ---
 
+## Four-dashboard audit — result and the ceiling
+
+Audited panel by panel against the live rig (migrate -> upload -> execute every
+query -> browser render audit with per-panel attribution).
+
+| dashboard | panels with data | browser render |
+|---|---|---|
+| Redis (763) | 13/13 | 13/13, `pass` |
+| PostgreSQL Exporter | 6/6 (from 2/6) | 6/6, `pass` |
+| Datadog DB Overview | 14/14 (from 9/14) | 14/14, `pass` |
+| MySQL Overview | 30/36 (from 11/36) | 30 rendered, 6 error |
+| Node Exporter Full | 105/124 (from 99) | 18/19 visible, 0 errors |
+
+Node Exporter Full renders 19 in the browser because 124 of its panels sit in 14
+rows that ship **collapsed** — faithful to the Grafana source.
+
+**The remaining panels cannot light up, and neither can the originals.** They
+query metrics that do not exist in this deployment at all: MySQL query cache
+(removed in MySQL 8), `rdsosmetrics_*` (AWS RDS only),
+`innodb_additional_mem_pool_size` (removed in 5.7), `mysql_info_schema_threads`
+(collector unavailable), and node_exporter hardware sensors — hwmon, cooling
+device, power supply, CPU scaling frequency — which need host hardware access a
+container does not have. Grafana pointed at the same Prometheus shows nothing for
+exactly these panels, so "the same value as the source dashboard" is being
+delivered: nothing, because there is nothing.
+
+The one behavioural difference is presentation: ES|QL rejects an unknown column,
+so Kibana shows an error card where Grafana draws an empty chart. Substituting
+NULL would make them render empty, but it would also bake the absence into the
+query so the panel could never self-heal when the metric arrives. The current
+choice keeps the field reference and names every affected panel and field in the
+run's DATA READINESS section. A curated pack is the right place to drop or
+annotate them if an operator wants a board with no error cards.
+
+---
+
 ## Current verified state
 
 Everything below was verified end to end against the live rig -- migrate, upload,
