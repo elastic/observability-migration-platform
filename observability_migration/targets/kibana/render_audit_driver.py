@@ -469,6 +469,18 @@ def run_audit_cli(
                 print(f"warning: could not read migration_report.json ({exc}); "
                       "falling back to whole-dashboard render classification")
                 report = None
+        else:
+            print(f"warning: no migration_report.json under {migration_out!r}; "
+                  "falling back to whole-dashboard render classification "
+                  "(no per-panel attribution)")
+    else:
+        # Say so. Without the report the audit still detects that the dashboard
+        # renders errors, but reports "panels": [] -- it cannot say WHICH panel,
+        # which is the whole reason to run it. Degrading silently sent a real
+        # investigation down the path of re-executing every panel query by hand.
+        print("note: --migration-out not supplied; reporting whole-dashboard "
+              "render status only. Pass --migration-out <dir>/dashboards for "
+              "per-panel attribution.")
 
     if report is not None:
         kinds = expected_kind_by_panel(report)

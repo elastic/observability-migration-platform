@@ -97,18 +97,19 @@ way.
 
 ---
 
-## 7. Render audit reports no per-panel detail
+## 7. ~~Render audit reports no per-panel detail~~ NOT A GAP (corrected)
 
-**Status:** diagnosis gap in the verifier.
+My earlier note here was wrong. Per-panel attribution exists and works; it
+requires `--migration-out <dir>/dashboards`, and the audit was **degrading
+silently** without it -- returning `panels: []` with no hint that a flag would
+have answered the question.
 
-`render_audit_driver --elements` detects page-level error markers
-("Unexpected error from Elasticsearch", "verification_exception") and correctly
-scores the dashboard `fail`, but returns `panels: []`. There is no attribution,
-so a failing dashboard says *that* something broke, never *which panel*.
+With the flag, on the Datadog canary: 24 panels attributed, 21 rendered, 1 empty,
+2 error -- and the 2 errors are exactly `log_stream` / `list_stream`, matching the
+independent per-query analysis precisely.
 
-Working around it means re-executing every panel query by hand against `_query`
-to find the culprit — which is how the logs-panel bug was localised. Populating
-per-panel results would make the audit self-sufficient.
+The audit now prints a notice when it falls back, and when `--migration-out`
+points at a directory with no `migration_report.json`.
 
 ---
 
