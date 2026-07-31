@@ -116,6 +116,23 @@ services:
   node_exporter:
     image: prom/node-exporter:v1.8.2
     container_name: redis-rig-node-exporter
+    # Node Exporter Full expects a fully instrumented host. These collectors are
+    # off by default but do work in a container, and each lights up panels that
+    # would otherwise report a data gap. Deliberately NOT enabled: systemd (no
+    # dbus socket) and interrupts (/proc/interrupts is empty in Docker Desktop's
+    # VM) -- both only log a collector error every scrape. Hardware sensors
+    # (hwmon, cooling_device, power_supply, cpu scaling) are unavailable for the
+    # same reason, so those panels stay honest data gaps.
+    command:
+      - --collector.processes
+      - --collector.tcpstat
+      - --collector.netdev
+      - --collector.netstat
+      - --collector.sockstat
+      - --collector.meminfo
+      - --collector.vmstat
+      - --collector.schedstat
+    pid: host
     ports:
       - "9101:9100"
     networks:
