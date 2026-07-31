@@ -3935,6 +3935,41 @@ def _rewrite_esql_alias_references(expression, alias_map):
     return _ESQL_ALIAS_TOKEN_RE.sub(_replace, expression)
 
 
+def _stats_aliases(stats_stage):
+    """Column names a STATS stage defines."""
+    body = re.split(r"\bBY\b", stats_stage, maxsplit=1, flags=re.IGNORECASE)[0]
+    body = body[len("STATS ") :] if body.upper().startswith("STATS ") else body
+    aliases = set()
+    for part in _split_top_level_csv(body):
+        if "=" in part:
+            aliases.add(_canonical_esql_alias(part.split("=", 1)[0]))
+    return aliases
+
+
+def _metric_field_is_defined_by_a_dropped_stage(
+    metric_field, kept_assignments, post_stats, eval_stages
+):
+    """Whether this target's output column only exists in a stage the merge drops."""
+    later_stats = [s for s in post_stats if s.upper().startswith("STATS ")]
+    if not later_stats:
+        return False
+    name = _canonical_esql_alias(metric_field)
+    kept = {
+        _canonical_esql_alias(a.split("=", 1)[0]) for a in kept_assignments if "=" in a
+    }
+    if name in kept:
+        return False
+    # An EVAL in this target may define it instead; the merge rewrites those.
+    for stage in eval_stages:
+        body = stage[len("EVAL ") :]
+        if "=" in body and _canonical_esql_alias(body.split("=", 1)[0]) == name:
+            return False
+    defined_later = set()
+    for stage in later_stats:
+        defined_later |= _stats_aliases(stage)
+    return name in defined_later
+
+
 def _merge_pretranslated_xy_queries(translations):
     """Fuse already-translated XY ES|QL queries when formula-plan fusion fails.
 
@@ -4001,6 +4036,20 @@ def _merge_pretranslated_xy_queries(translations):
             for stage in post_stats
             if stage.upper().startswith("EVAL ")
         ]
+        # Only the first STATS survives the merge, and the merge then binds this
+        # target's series to ``metric_field``. A later STATS that re-aggregates
+        # the same aliases (the summary-mode collapse) is safe to drop, but a
+        # nested aggregation defines a NEW column: PromQL
+        # ``min(sum(x) by (instance))`` emits an inner STATS grouped by instance
+        # and an outer one producing ``<metric>_min``, which is what
+        # ``metric_field`` names. Dropping that stage leaves the emitted
+        # ``EVAL <series> = <metric>_min`` pointing at a column nothing defines,
+        # and the panel fails in Kibana with "Unknown column". Refuse so it
+        # falls back to a path that can express the shape.
+        if _metric_field_is_defined_by_a_dropped_stage(
+            metric_field, assignments, post_stats, eval_stages
+        ):
+            return None
         parsed.append(
             {
                 "translation": translation,

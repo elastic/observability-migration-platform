@@ -830,3 +830,41 @@ def test_outer_case_is_detected_when_the_condition_contains_a_comma():
     out = _wrap_bare_ts_value_args_when_case_siblings(assignments)
     assert "RATE(CASE(true," not in out[0]
     assert "RATE(jvm_gc_pause_seconds_sum, 1m)" in out[0]
+
+
+def test_merge_refuses_when_the_output_column_lives_in_a_dropped_stage():
+    """A nested aggregation cannot be fused; refusing beats emitting a broken query.
+
+    PromQL ``min(sum(x) by (instance))`` translates to an inner STATS grouped by
+    instance plus an outer STATS producing ``<metric>_min``. Only the first STATS
+    survives this merge, so binding the series to ``<metric>_min`` emitted
+    ``EVAL series = kube_node_status_allocatable_cpu_cores_min`` against a column
+    nothing defined -- "Unknown column" in Kibana. Refuse so the panel falls back
+    to a path that can express the shape.
+    """
+    def nested(ref, metric):
+        return (
+            "FROM metrics-*\n"
+            f"| STATS inner_val = SUM({metric}) BY time_bucket = BUCKET(@timestamp, 50), instance\n"
+            f"| STATS {metric}_min = MIN(inner_val) BY time_bucket\n"
+            f"| KEEP time_bucket, {metric}_min"
+        )
+    t1 = _translation("A", "Alloc", "kube_node_status_allocatable_cpu_cores_min",
+                      nested("A", "kube_node_status_allocatable_cpu_cores"))
+    t2 = _translation("B", "Req", "kube_pod_container_resource_requests_cpu_cores_min",
+                      nested("B", "kube_pod_container_resource_requests_cpu_cores"))
+    assert _merge_pretranslated_xy_queries([t1, t2]) is None
+
+
+def test_summary_collapse_second_stats_still_merges():
+    """A later STATS that re-aggregates the same alias is safe to drop."""
+    def collapsed(metric):
+        return (
+            "TS metrics-*\n"
+            f"| STATS {metric} = SUM({metric}) BY time_bucket = TBUCKET(5 minute), instance\n"
+            f"| STATS {metric} = MAX({metric}) BY instance\n"
+            f"| KEEP instance, {metric}"
+        )
+    t1 = _translation("A", "One", "metric_one", collapsed("metric_one"))
+    t2 = _translation("B", "Two", "metric_two", collapsed("metric_two"))
+    assert _merge_pretranslated_xy_queries([t1, t2]) is not None
