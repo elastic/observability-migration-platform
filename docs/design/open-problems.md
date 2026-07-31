@@ -128,6 +128,29 @@ prefix-vs-index assertion).
 
 ---
 
+## 9. Refusals are disclosed, not silent — verified
+
+87 of 1647 corpus packets carry a PromQL source query and emit nothing. All 87
+are `status: not_feasible` with `semantic_gate: Red` and a written reason, so
+none of them is silent loss. Breakdown:
+
+| pattern | count | why refused |
+|---|---|---|
+| `on()` / `ignoring()` vector matching | 45 | genuinely unaligned joins |
+| `histogram_quantile` on a bare `_bucket` | 21 | see below |
+| other / template-heavy / `label_join` | 21 | assorted |
+
+**Do not "fix" the histogram_quantile group by guessing a grouping.**
+`histogram_quantile(q, sum by (le) (rate(x_bucket[5m])))` translates fine. The
+bare `histogram_quantile(q, rate(x_bucket[5m]))` is refused, and that is correct:
+the bare form computes a quantile *per label-set*, so translating it requires
+choosing a grouping the source never stated. Picking one would produce numbers
+that look plausible and are wrong — the exact failure mode the rest of this
+document is about. The emitted reason already tells the operator to add
+`sum by (le)`.
+
+---
+
 ## Current verified state
 
 Everything below was verified end to end against the live rig -- migrate, upload,
