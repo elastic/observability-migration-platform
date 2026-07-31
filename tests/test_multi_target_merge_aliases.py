@@ -726,3 +726,57 @@ def test_constant_alongside_a_feasible_target_still_migrates():
     ]))
     assert result.status in {"migrated", "migrated_with_warnings"}
     assert "redis_connected_clients" in panel_yaml["esql"]["query"]
+
+
+def test_target_specific_filters_are_folded_not_anded_globally():
+    """Per-target filters must not become sibling global WHERE stages.
+
+    Each target is translated alone, so its pre-STATS filters describe only
+    that target: a presence guard, a label matcher (``mode == "idle"``), a
+    device filter. Emitting them as sibling ``| WHERE`` stages ANDs them across
+    every target, and because no single document carries every target's metric
+    the fused query matches nothing -- the panel renders empty instead of
+    erroring, which is the worst failure mode there is.
+
+    Caught live on Node Exporter Dashboard EN "Server Resource Overview": the
+    fused query grew 16 ANDed WHERE stages and returned 0 rows; folding the
+    target-specific ones into each measure returned 72.
+    """
+    q_cpu = (
+        "TS metrics-*\n"
+        '| WHERE job RLIKE ?job\n'
+        '| WHERE mode == "idle"\n'
+        "| WHERE node_cpu_seconds_total IS NOT NULL\n"
+        "| STATS node_cpu_seconds_total = AVG(RATE(node_cpu_seconds_total, 5m)) "
+        "BY time_bucket = TBUCKET(5 minute)\n"
+        "| SORT time_bucket ASC"
+    )
+    q_load = (
+        "TS metrics-*\n"
+        "| WHERE job RLIKE ?job\n"
+        "| WHERE node_load5 IS NOT NULL\n"
+        "| STATS node_load5 = AVG(node_load5) BY time_bucket = TBUCKET(5 minute)\n"
+        "| SORT time_bucket ASC"
+    )
+    merged = _merge_pretranslated_xy_queries(
+        [
+            _translation("F", "CPU", "node_cpu_seconds_total", q_cpu),
+            _translation("L", "Load", "node_load5", q_load),
+        ]
+    )
+    assert merged is not None
+    query = merged["query"]
+
+    # The shared filter stays global; nothing target-specific does.
+    where_stages = [line.strip() for line in query.splitlines() if line.strip().startswith("| WHERE")]
+    assert where_stages == ["| WHERE job RLIKE ?job"], where_stages
+
+    # No metric is required to be present alongside a different target's metric.
+    assert "| WHERE node_load5 IS NOT NULL" not in query
+    assert "| WHERE node_cpu_seconds_total IS NOT NULL" not in query
+
+    # The filters are preserved, folded into their own measure.
+    assert 'mode == "idle"' in query
+    assert "CASE(" in query
+    stats = " ".join(_stats_assignments(query))
+    assert "node_load5" in stats and "node_cpu_seconds_total" in stats

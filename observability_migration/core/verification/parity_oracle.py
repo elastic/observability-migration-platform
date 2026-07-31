@@ -82,11 +82,24 @@ class Comparison:
     # ignore the gate. Classified separately so a real ERROR still means a real
     # ERROR. (Grafana renders such a panel empty; ES|QL rejects the column, so
     # the same absent data looks like a hard failure in Kibana.)
+    #
+    # RATE/IRATE rejecting a non-counter field is the same kind of gap. PromQL
+    # ``rate()`` is counter-only, so the source asserts the field is a counter;
+    # when the target's ingest types it as a gauge instead, the translator stays
+    # source-faithful and warns ("...but the target currently types this field
+    # as gauge..."). Many real exporters emit counters as ``# TYPE untyped``
+    # (node_exporter does this for node_netstat_*, node_vmstat_*), so the
+    # mapping lands on gauge and the query is rejected. That is an ingest-typing
+    # gap the run already predicted and told the operator how to fix -- not a
+    # translation defect, and not something the gate should call an ERROR.
     _DATA_GAP_MARKERS = ("Unknown column", "Unknown index", "verification_exception")
+    _COUNTER_TYPING_MARKERS = ("counter_long", "counter_integer", "counter_double")
 
     def _is_data_gap(self) -> bool:
         blob = f"{self.translated_error} {self.native_error}"
-        return "Unknown column" in blob or "Unknown index" in blob
+        if "Unknown column" in blob or "Unknown index" in blob:
+            return True
+        return "must be [" in blob and any(m in blob for m in self._COUNTER_TYPING_MARKERS)
 
     def verdict(self) -> str:
         if self.skipped_reason:

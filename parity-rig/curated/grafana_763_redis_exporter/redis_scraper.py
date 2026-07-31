@@ -3,11 +3,17 @@
 # SPDX-License-Identifier: Elastic-2.0
 #
 # Lightweight Prometheus → Elasticsearch ingestion in prometheus_native format.
-# Scrapes redis_exporter and writes docs to the metrics-redis.prometheus-default
-# data stream using the metrics.* + labels.* layout that matches the built-in
-# metrics-prometheus@mappings template (labels.* = passthrough TSDB dimension).
-# This gives the migration pipeline the prometheus_native schema profile so
-# TS queries, label controls, and RATE() all work correctly.
+# Scrapes each configured exporter and writes docs to its own
+# metrics-<dataset>-default data stream using the metrics.* + labels.* layout
+# that matches the built-in metrics-prometheus@mappings template
+# (labels.* = passthrough TSDB dimension). This gives the migration pipeline the
+# prometheus_native schema profile so TS queries, label controls, and RATE() all
+# work correctly.
+#
+# Multiple targets exist so the numeric parity gate has real data for more than
+# one exporter. Comparing a node_exporter dashboard against a redis-only index
+# yields DATA_GAP for every panel, which looks like coverage but verifies
+# nothing; the metric names have to actually be present to be compared.
 
 import json
 import re
@@ -18,14 +24,16 @@ from datetime import UTC, datetime
 
 import requests
 
-EXPORTER_URL = "http://redis_exporter:9121/metrics"
 ES_URL = "http://elasticsearch:9200"
-INDEX = "metrics-redis.prometheus-default"
-JOB = "redis_exporter"
-INSTANCE = "redis:6379"
 NAMESPACE = "default"
 SCRAPE_INTERVAL = 10
 RETRY_DELAY = 5
+
+# (exporter URL, dataset, job label, instance label)
+TARGETS = [
+    ("http://redis_exporter:9121/metrics", "redis.prometheus", "redis_exporter", "redis:6379"),
+    ("http://node_exporter:9100/metrics", "node.prometheus", "node_exporter", "node:9100"),
+]
 
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
 
@@ -74,9 +82,10 @@ def parse_prometheus(text: str) -> dict:
     return groups
 
 
-def build_bulk_body(groups: dict, timestamp: str) -> str:
+def build_bulk_body(groups: dict, timestamp: str, dataset: str, job: str, instance: str) -> str:
     lines = []
-    base_labels = {"instance": INSTANCE, "job": JOB, "namespace": NAMESPACE}
+    index = f"metrics-{dataset}-{NAMESPACE}"
+    base_labels = {"instance": instance, "job": job, "namespace": NAMESPACE}
     for label_key, metrics in groups.items():
         if not metrics:
             continue
@@ -84,12 +93,12 @@ def build_bulk_body(groups: dict, timestamp: str) -> str:
         doc = {
             "@timestamp": timestamp,
             "data_stream.type": "metrics",
-            "data_stream.dataset": "redis.prometheus",
+            "data_stream.dataset": dataset,
             "data_stream.namespace": NAMESPACE,
             "labels": {**base_labels, **extra},
             "metrics": metrics,
         }
-        lines.append(json.dumps({"create": {"_index": INDEX}}))
+        lines.append(json.dumps({"create": {"_index": index}}))
         lines.append(json.dumps(doc))
     return "\n".join(lines) + "\n"
 
@@ -127,20 +136,23 @@ def wait_for_es(url: str, max_wait: int = 120) -> None:
 
 def main() -> None:
     wait_for_es(ES_URL)
-    print(f"Scraping {EXPORTER_URL} every {SCRAPE_INTERVAL}s → {INDEX}", flush=True)
+    for url, dataset, _job, _instance in TARGETS:
+        print(f"Scraping {url} every {SCRAPE_INTERVAL}s → metrics-{dataset}-{NAMESPACE}", flush=True)
     while True:
-        try:
-            resp = requests.get(EXPORTER_URL, timeout=10)
-            resp.raise_for_status()
-            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            groups = parse_prometheus(resp.text)
-            body = build_bulk_body(groups, ts)
-            ok, err = bulk_index(body)
-            print(f"{ts} scraped {len(groups)} series → indexed {ok}, errors {err}", flush=True)
-        except Exception as exc:
-            print(f"scrape error: {exc}", flush=True)
-            time.sleep(RETRY_DELAY)
-            continue
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        for url, dataset, job, instance in TARGETS:
+            # One target being down must not stop the others: the redis pack is
+            # validated from this same rig and cannot regress because a
+            # secondary exporter is unhealthy.
+            try:
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                groups = parse_prometheus(resp.text)
+                body = build_bulk_body(groups, ts, dataset, job, instance)
+                ok, err = bulk_index(body)
+                print(f"{ts} {dataset}: {len(groups)} series → indexed {ok}, errors {err}", flush=True)
+            except Exception as exc:
+                print(f"{ts} {dataset}: scrape error: {exc}", flush=True)
         time.sleep(SCRAPE_INTERVAL)
 
 

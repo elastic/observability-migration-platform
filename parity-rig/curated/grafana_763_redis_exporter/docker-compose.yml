@@ -12,6 +12,7 @@
 #   3001 → Grafana
 #   9091 → Prometheus
 #   9122 → redis_exporter
+#   9101 → node_exporter
 #   6380 → Redis
 
 services:
@@ -106,6 +107,18 @@ services:
       redis:
         condition: service_healthy
 
+  # Second exporter so the numeric parity gate has real data for the
+  # node_exporter dashboards in the corpus. Without it every node panel
+  # compares against a redis-only index and reports DATA_GAP, which verifies
+  # nothing.
+  node_exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: redis-rig-node-exporter
+    ports:
+      - "9101:9100"
+    networks:
+      - redis-rig
+
   prometheus:
     image: prom/prometheus:v3.0.1
     container_name: redis-rig-prometheus
@@ -135,6 +148,8 @@ services:
       elasticsearch:
         condition: service_healthy
       redis_exporter:
+        condition: service_started
+      node_exporter:
         condition: service_started
     restart: unless-stopped
 

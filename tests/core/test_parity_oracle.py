@@ -1480,3 +1480,30 @@ def test_unknown_dashboard_falls_back_to_packet_controls(tmp_path):
                                  "selected_options": [".*"]}}],
     })
     assert _bindings_for_dashboard(by_dashboard, "Some Other Dashboard") == {"instance": ".*"}
+
+
+def test_rate_on_gauge_typed_field_is_a_data_gap_not_an_error():
+    """RATE() rejecting a gauge-typed field is an ingest gap, not a bad translation.
+
+    PromQL rate() is counter-only, so the source asserts the field is a counter.
+    Real exporters emit many counters as `# TYPE untyped` (node_exporter does
+    for node_netstat_* / node_vmstat_*), the mapping lands on gauge, and ES
+    rejects RATE(). The translator deliberately stays source-faithful and warns.
+    Calling that an ERROR blames the translation for the target's typing.
+    """
+    cmp_ = po.Comparison(expr="rate(node_netstat_Tcp_InSegs[5m])", esql="TS i | STATS a = RATE(x)")
+    cmp_.translated_error = (
+        "verification_exception: Found 1 problem\nline 4:31: first argument of "
+        "[RATE(node_netstat_Tcp_InSegs, 5m)] must be [counter_long, counter_integer "
+        "or counter_double], found value [node_netstat_Tcp_InSegs] type [double]"
+    )
+    assert cmp_.verdict() == "DATA_GAP"
+
+
+def test_other_verification_exceptions_are_still_errors():
+    """The counter carve-out must not swallow unrelated ES|QL failures."""
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = TBUKCET(1)")
+    cmp_.translated_error = (
+        "verification_exception: Found 1 problem\nline 2:9: Unknown function [TBUKCET]"
+    )
+    assert cmp_.verdict() == "ERROR"

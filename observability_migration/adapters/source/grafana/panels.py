@@ -84,6 +84,7 @@ from .promql import (
     _collapse_summary_ts_query,
     _finalize_fused_stats_assignments,
     _format_scalar_value,
+    _inline_filters_into_stats_expr,
     _is_counter_fallback,
     _matcher_to_esql,
     _parse_fragment,
@@ -4020,15 +4021,45 @@ def _merge_pretranslated_xy_queries(translations):
     if len(by_texts) != 1:
         return None
 
-    # Merge WHERE / filter stages: keep unique lines in order.
-    merged_pre: list[str] = []
-    seen_pre: set[str] = set()
-    for item in parsed:
+    # Merge WHERE / filter stages.
+    #
+    # These stages must NOT simply be concatenated. Each target was translated
+    # on its own, so its pre-STATS filters describe only that target: a metric
+    # presence guard (``node_load5 IS NOT NULL``), a label matcher
+    # (``mode == "idle"``), a device filter (``fstype RLIKE ...``). Emitting
+    # them all as sibling ``| WHERE`` stages ANDs them across every target, and
+    # since no single document carries every target's metric the fused query
+    # matches nothing at all -- a panel that silently renders empty rather than
+    # erroring, which is the worst possible failure mode.
+    #
+    # Keep only the stages EVERY target shares as global filters; fold each
+    # target's own filters into its measure with CASE, exactly as the
+    # formula-plan fusion path does. If a target-specific filter cannot be
+    # folded, refuse the merge so the panel degrades to a path that is correct.
+    common_pre: list[str] = []
+    for stage in parsed[0]["pre_stats"]:
+        key = stage.strip()
+        if key and all(
+            any(other.strip() == key for other in item["pre_stats"]) for item in parsed[1:]
+        ):
+            if key not in {existing.strip() for existing in common_pre}:
+                common_pre.append(stage)
+    common_keys = {stage.strip() for stage in common_pre}
+
+    scoped_filters_by_item: dict[int, list[str]] = {}
+    for position, item in enumerate(parsed):
+        scoped: list[str] = []
         for stage in item["pre_stats"]:
             key = stage.strip()
-            if key and key not in seen_pre:
-                seen_pre.add(key)
-                merged_pre.append(stage)
+            if not key or key in common_keys:
+                continue
+            if not key.upper().startswith("WHERE "):
+                # Only filters can be folded into a measure; anything else
+                # (EVAL, DROP, ...) would change the shared pipeline.
+                return None
+            scoped.append(key[len("WHERE ") :].strip())
+        scoped_filters_by_item[position] = scoped
+    merged_pre = common_pre
 
     used_aliases: set[str] = set()
     renamed_assignments: list[str] = []
@@ -4042,6 +4073,7 @@ def _merge_pretranslated_xy_queries(translations):
 
     for idx, item in enumerate(parsed, start=1):
         translation = item["translation"]
+        scoped_filters = scoped_filters_by_item.get(idx - 1) or []
         alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
         raw_alias = (
             translation.metadata.get("series_alias")
@@ -4065,7 +4097,12 @@ def _merge_pretranslated_xy_queries(translations):
                 fallback_suffix=str(idx),
             )
             alias_map[old_alias] = new_alias
-            renamed_assignments.append(f"{_esql_identifier(new_alias)} = {right.strip()}")
+            measure_expr = right.strip()
+            if scoped_filters:
+                measure_expr = _inline_filters_into_stats_expr(measure_expr, scoped_filters)
+                if not measure_expr:
+                    return None
+            renamed_assignments.append(f"{_esql_identifier(new_alias)} = {measure_expr}")
 
         # Rewrite EVAL expressions to use renamed STATS aliases, then bind the
         # final series column to ``result_alias``.
