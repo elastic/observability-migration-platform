@@ -1508,12 +1508,11 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             # could be derived, that is an oracle attribution limit, not a
             # translation defect, and FAIL would blame the wrong thing.
             #
-            # NOTE: this does not explain the 4 known multi-target FAILs on the
-            # corpus (Node Exporter Full "File Descriptors" and friends). Their
-            # merged query returns 60 rows and normalizes to 3 series when run
-            # through run_translated directly, yet the comparison sees none --
-            # the per-target provenance path evidently compares a different
-            # sub-query than the one recorded in the report. Unresolved.
+            # This is NOT what caused the four "returned no series" corpus
+            # failures on Node Exporter Full / Node.js: those came from control
+            # bindings being merged across dashboards, so the panels were
+            # filtered by another dashboard's ``job`` default and legitimately
+            # matched nothing. Fixed at the source in _artifact_control_bindings.
             if (translated_raw or {}).get("values"):
                 cmp_.skipped_reason = (
                     "translated query returned rows but the oracle could not attribute "

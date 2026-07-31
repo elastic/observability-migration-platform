@@ -1422,3 +1422,61 @@ def test_explicit_renames_bridge_a_metric_map_gap():
         "avg(redis_memory_fragmentation_ratio)", lambda n: merged.get(n, n)
     )
     assert out == "avg(metrics.redis_mem_fragmentation_ratio)"
+
+
+def test_control_bindings_are_scoped_per_dashboard(tmp_path):
+    """Control names collide across dashboards; bindings must not be merged.
+
+    Node Exporter Full defaults ``job`` to ``.*`` while the PostgreSQL pack
+    defaults it to ``postgres``. A single merged dict lets whichever dashboard
+    loads last win, so Node Exporter Full panels get filtered by ``job RLIKE
+    "postgres"``, match nothing, and are reported as translation FAILs even
+    though the emitted query is correct. This was the root cause of four
+    long-standing "translated query returned no series" corpus failures.
+    """
+    from observability_migration.app.cli import (
+        _artifact_control_bindings,
+        _bindings_for_dashboard,
+    )
+
+    native = tmp_path / "native"
+    native.mkdir()
+
+    def write(slug, title, variable, default):
+        (native / f"{slug}.native.json").write_text(json.dumps({
+            "payload": {
+                "title": title,
+                "pinned_panels": [{
+                    "type": "esql_control",
+                    "config": {
+                        "variable_name": variable,
+                        "single_select": True,
+                        "selected_options": [default],
+                    },
+                }],
+            }
+        }), encoding="utf-8")
+
+    # "postgresql_..." sorts after "node_exporter_full", so under the old
+    # merge-everything behaviour it overwrote the node dashboard's binding.
+    write("node_exporter_full", "Node Exporter Full", "job", ".*")
+    write("postgresql_exporter", "PostgreSQL Exporter", "job", "postgres")
+
+    by_dashboard = _artifact_control_bindings(tmp_path, {})
+
+    assert _bindings_for_dashboard(by_dashboard, "Node Exporter Full") == {"job": ".*"}
+    assert _bindings_for_dashboard(by_dashboard, "PostgreSQL Exporter") == {"job": "postgres"}
+
+
+def test_unknown_dashboard_falls_back_to_packet_controls(tmp_path):
+    """A panel from a dashboard with no emitted controls still binds something."""
+    from observability_migration.app.cli import (
+        _artifact_control_bindings,
+        _bindings_for_dashboard,
+    )
+
+    by_dashboard = _artifact_control_bindings(tmp_path, {
+        "controls": [{"config": {"variable_name": "instance", "single_select": True,
+                                 "selected_options": [".*"]}}],
+    })
+    assert _bindings_for_dashboard(by_dashboard, "Some Other Dashboard") == {"instance": ".*"}

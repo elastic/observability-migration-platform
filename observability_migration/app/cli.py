@@ -1675,16 +1675,27 @@ def _run_verify_alert_rules(args: Any) -> int:
     return 0
 
 
-def _artifact_control_bindings(artifact_dir: Path, packets_doc: dict[str, Any]) -> dict[str, Any]:
-    """Kibana-faithful ``?param`` bindings from the artifact's emitted controls.
+def _artifact_control_bindings(
+    artifact_dir: Path, packets_doc: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """Kibana-faithful ``?param`` bindings, keyed by dashboard title.
 
     Prefers the native Dashboards API payload (``pinned_panels`` -> esql_control),
     which is what Kibana actually loads; falls back to controls carried on the
-    verification packets document.
+    verification packets document (stored under ``""``, the any-dashboard key).
+
+    Bindings MUST stay per-dashboard. A control name like ``job`` or ``instance``
+    is only unique within one dashboard: Node Exporter Full defaults ``job`` to
+    ``.*`` while the PostgreSQL pack defaults it to ``postgres``. Merging every
+    dashboard's controls into one dict makes the last one loaded win, so a panel
+    gets filtered by a different dashboard's default, matches nothing, and is
+    reported as a translation FAIL when the translation was correct. That is
+    exactly what produced the long-standing "returned no series" failures on
+    Node Exporter Full and Node.js.
     """
     from observability_migration.core.verification.parity_oracle import build_control_bindings
 
-    controls: list[Any] = []
+    by_dashboard: dict[str, dict[str, Any]] = {}
     native_dir = artifact_dir / "native"
     if native_dir.is_dir():
         for native_file in sorted(native_dir.glob("*.native.json")):
@@ -1692,10 +1703,26 @@ def _artifact_control_bindings(artifact_dir: Path, packets_doc: dict[str, Any]) 
                 payload = json.loads(native_file.read_text(encoding="utf-8")).get("payload") or {}
             except (OSError, ValueError):
                 continue
-            controls.extend(payload.get("pinned_panels") or [])
-    if not controls:
-        controls.extend(packets_doc.get("controls") or [])
-    return build_control_bindings(controls)
+            controls = payload.get("pinned_panels") or []
+            if not controls:
+                continue
+            by_dashboard[str(payload.get("title") or "")] = build_control_bindings(controls)
+    fallback = packets_doc.get("controls") or []
+    if fallback:
+        by_dashboard.setdefault("", build_control_bindings(fallback))
+    return by_dashboard
+
+
+def _bindings_for_dashboard(
+    by_dashboard: dict[str, dict[str, Any]], dashboard: str
+) -> dict[str, Any]:
+    """Controls for one dashboard, falling back to the any-dashboard set.
+
+    Never merges across dashboards -- see ``_artifact_control_bindings``.
+    """
+    if dashboard in by_dashboard:
+        return by_dashboard[dashboard]
+    return by_dashboard.get("", {})
 
 
 def _artifact_metric_renames(artifact_dir: Path) -> dict[str, str]:
@@ -1730,7 +1757,7 @@ def _run_compare(args: Any) -> int:
         print(json.dumps({"error": "es_url and api_key are required (or set ELASTICSEARCH_ENDPOINT/KEY)"}, indent=2))
         return 2
     packets: list[dict[str, Any]] = []
-    control_bindings: dict[str, Any] = {}
+    control_bindings: dict[str, dict[str, Any]] = {}
     metric_renames: dict[str, str] = {}
     for raw in args.artifact_dir:
         path = Path(raw) / "verification_packets.json"
@@ -1749,7 +1776,8 @@ def _run_compare(args: Any) -> int:
         # Controls carry the binding CONTRACT (multi-select -> list, single ->
         # scalar). Without them the oracle has to guess a scalar, which both
         # skips most panels and hides list/scalar type errors that only show up
-        # in a real Kibana render.
+        # in a real Kibana render. Keyed by dashboard: control names collide
+        # across dashboards and merging them mis-filters panels.
         control_bindings.update(_artifact_control_bindings(Path(raw), data))
         # An applied metric_map renames the metric, so the source expression's
         # name has no relation to the translated field's bare name and the
@@ -1843,7 +1871,9 @@ def _run_compare(args: Any) -> int:
                     cmp_ = compare_panel(
                         request, translated_query=pkt["translated_query"],
                         index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
-                        control_bindings=control_bindings,
+                        control_bindings=_bindings_for_dashboard(
+                            control_bindings, str(pkt.get("dashboard", ""))
+                        ),
                         metric_renames=metric_renames,
                         **extra,
                     )
