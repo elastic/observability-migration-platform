@@ -1841,7 +1841,9 @@ def _run_compare(args: Any) -> int:
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
     progress(f"report written to {out}")
     print(json.dumps(summary, indent=2))
-    return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL") for r in rows) else 0
+    # DATA_GAP is telemetry that has not landed yet, not a defect, so it must
+    # not fail the gate. ERROR is an unexplained execution failure and must.
+    return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL", "ERROR") for r in rows) else 0
 
 
 # Live source-vs-target verdicts recorded by ``migrate --source-execution

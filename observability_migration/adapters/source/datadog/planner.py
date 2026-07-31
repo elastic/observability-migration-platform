@@ -233,6 +233,28 @@ def unparsed_query_rule(context: PlanContext) -> str | None:
     if not has_unparsed:
         return None
     context.plan.backend = "markdown"
+    unsupported = next(
+        (
+            getattr(q, "unsupported_function", "")
+            for q in context.widget.queries
+            if getattr(q, "unsupported_function", "")
+        ),
+        "",
+    )
+    if unsupported:
+        # The query parses fine; the blocker is a Datadog function with no ES|QL
+        # equivalent (timeshift compares against a past window, top/derivative
+        # likewise have no direct form). Saying "could not be parsed" sends the
+        # operator looking for a syntax problem that does not exist.
+        context.plan.reasons.append(
+            f"query uses Datadog {unsupported}(), which has no ES|QL equivalent"
+        )
+        context.plan.warnings.append(
+            f"{unsupported}() is not translatable; rebuild this widget in Kibana "
+            "or drop the function"
+        )
+        context.plan.confidence = 0.2
+        return f"selected markdown because the query uses unsupported {unsupported}()"
     context.plan.reasons.append("metric query could not be parsed")
     context.plan.warnings.append("query syntax not recognized; manual review needed")
     context.plan.confidence = 0.2

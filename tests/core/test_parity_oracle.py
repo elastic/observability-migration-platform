@@ -1381,3 +1381,22 @@ def test_oracle_applies_the_dashboard_time_window():
 def test_oracle_does_not_double_apply_an_existing_time_filter():
     esql = "TS idx\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS x=SUM(a)"
     assert po._ensure_oracle_time_window(esql) == esql
+
+
+def test_missing_column_is_a_data_gap_not_an_error():
+    """Telemetry that has not landed must not read as a translation defect.
+
+    Grafana renders a panel for an absent metric as empty; ES|QL rejects the
+    unknown column, so the same missing data looks like a hard failure. Scoring
+    it ERROR turns every not-yet-ingested metric into a red CI result, which
+    trains people to ignore the gate.
+    """
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = MAX(metrics.absent)")
+    cmp_.translated_error = "verification_exception - Unknown column [metrics.absent]"
+    assert cmp_.verdict() == "DATA_GAP"
+
+
+def test_unexplained_execution_failure_is_still_an_error():
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = MAX(y)")
+    cmp_.translated_error = "circuit_breaking_exception - parent request too large"
+    assert cmp_.verdict() == "ERROR"

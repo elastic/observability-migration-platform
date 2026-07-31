@@ -301,6 +301,10 @@ class WidgetQuery:
     log_query: LogQuery | None = None
     aggregator: str = ""
     query_type: str = ""
+    # Name of an unsupported legacy Datadog function (timeshift/top/derivative)
+    # that blocked translation. Distinguishes "we cannot express this" from
+    # "we could not parse this", which are very different operator problems.
+    unsupported_function: str = ""
 
 
 @dataclass

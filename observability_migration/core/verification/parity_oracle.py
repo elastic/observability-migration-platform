@@ -76,11 +76,23 @@ class Comparison:
     mean_relative_error: float = 0.0
     notes: list[str] = field(default_factory=list)
 
+    # "Unknown column" means the metric is not in the target yet. That is data
+    # readiness, not a translation defect, and conflating the two turns every
+    # not-yet-ingested metric into a red CI failure -- which trains people to
+    # ignore the gate. Classified separately so a real ERROR still means a real
+    # ERROR. (Grafana renders such a panel empty; ES|QL rejects the column, so
+    # the same absent data looks like a hard failure in Kibana.)
+    _DATA_GAP_MARKERS = ("Unknown column", "Unknown index", "verification_exception")
+
+    def _is_data_gap(self) -> bool:
+        blob = f"{self.translated_error} {self.native_error}"
+        return "Unknown column" in blob or "Unknown index" in blob
+
     def verdict(self) -> str:
         if self.skipped_reason:
             return "SKIP"
         if self.translated_error or self.native_error:
-            return "ERROR"
+            return "DATA_GAP" if self._is_data_gap() else "ERROR"
         if self.common_series == 0:
             return "FAIL"
         if self.compared_points == 0:

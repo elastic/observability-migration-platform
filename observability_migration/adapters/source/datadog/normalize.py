@@ -336,11 +336,13 @@ def _extract_from_request(
                     wq.query_type = "metric"
                 else:
                     existing_queries = list(queries)
+                    blocked_by: dict[str, str] = {}
                     formula_raw = _extract_legacy_metric_expression(
                         part,
                         queries,
                         legacy_aggregator,
                         require_group=widget_type == "heatmap",
+                        blocked_by=blocked_by,
                     )
                     if formula_raw:
                         if not formulas:
@@ -350,6 +352,8 @@ def _extract_from_request(
                         _append_formula(formula_raw, formulas)
                         continue
                     wq.query_type = "legacy_unparsed"
+                    if blocked_by.get("function"):
+                        wq.unsupported_function = blocked_by["function"]
             queries.append(wq)
             if formulas and wq.query_type == "metric":
                 _append_formula(wq.name, formulas)
@@ -516,6 +520,7 @@ def _extract_legacy_metric_expression(
     queries: list[WidgetQuery],
     aggregator: str,
     require_group: bool = False,
+    blocked_by: dict[str, str] | None = None,
 ) -> str | None:
     """Convert legacy arithmetic over metric atoms into a normalized formula."""
     formula: list[str] = []
@@ -552,7 +557,13 @@ def _extract_legacy_metric_expression(
         return None
     if parsed.ast is None:
         return None
-    if _formula_uses_unsafe_legacy_function(parsed.ast):
+    unsafe_fn = _unsafe_legacy_function_name(parsed.ast)
+    if unsafe_fn:
+        # The sub-queries built here are discarded when we bail, so report the
+        # blocker through ``blocked_by`` and let the caller attach it to the
+        # widget query that actually survives.
+        if blocked_by is not None:
+            blocked_by["function"] = unsafe_fn
         return None
     if require_group and not any(query.metric_query and query.metric_query.group_by for query in new_queries):
         return None
@@ -597,20 +608,37 @@ def _parse_legacy_metric_atom(text: str) -> MetricQuery | None:
     return _try_parse_bare_metric(text)
 
 
-def _formula_uses_unsafe_legacy_function(node: Any) -> bool:
+UNSAFE_LEGACY_FORMULA_FUNCTIONS = frozenset({"top", "timeshift", "derivative"})
+
+
+def _unsafe_legacy_function_name(node: Any) -> str:
+    """Name the unsupported legacy Datadog function in *node*, or "".
+
+    Returning the name rather than a bool lets the planner say which function
+    blocked the widget. "could not be parsed" is misleading for a query that
+    parses perfectly well and simply uses timeshift().
+    """
     if isinstance(node, FormulaFuncCall):
         fn_name = (node.name or "").lower()
-        if fn_name in {"top", "timeshift", "derivative"}:
-            return True
-        return any(_formula_uses_unsafe_legacy_function(arg) for arg in node.args or [])
+        if fn_name in UNSAFE_LEGACY_FORMULA_FUNCTIONS:
+            return fn_name
+        for arg in node.args or []:
+            found = _unsafe_legacy_function_name(arg)
+            if found:
+                return found
+        return ""
     if isinstance(node, FormulaBinOp):
         return (
-            _formula_uses_unsafe_legacy_function(node.left)
-            or _formula_uses_unsafe_legacy_function(node.right)
+            _unsafe_legacy_function_name(node.left)
+            or _unsafe_legacy_function_name(node.right)
         )
     if isinstance(node, FormulaUnary):
-        return _formula_uses_unsafe_legacy_function(node.operand)
-    return False
+        return _unsafe_legacy_function_name(node.operand)
+    return ""
+
+
+def _formula_uses_unsafe_legacy_function(node: Any) -> bool:
+    return bool(_unsafe_legacy_function_name(node))
 
 
 def _metric_name_is_count_like(metric_name: str) -> bool:
