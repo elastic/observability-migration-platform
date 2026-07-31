@@ -1854,3 +1854,23 @@ class TestPromQLOrFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLabelReplaceIdentity(TestLabelReplaceTranslation):
+    def test_label_replace_onto_itself_emits_nothing_and_does_not_warn(self):
+        """An identity label_replace is a no-op, not an untranslatable pattern.
+
+        `label_replace(x, "instance", "$1", "instance", "(.*)")` copies a label
+        onto itself. Emitting `EVAL instance = instance` is dead weight, but
+        reporting it as "not translatable" would be a false alarm -- the two
+        outcomes must stay distinguishable.
+        """
+        ctx = self._translate(
+            'label_replace(rate(http_requests_total[5m]), "instance", "$1", "instance", "(.*)")'
+        )
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        self.assertNotIn("EVAL instance = instance", ctx.esql_query)
+        self.assertFalse(
+            [w for w in ctx.warnings if "not translatable" in str(w)],
+            ctx.warnings,
+        )

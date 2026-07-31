@@ -2285,10 +2285,19 @@ def _build_label_replace_grok(dst, src, regex):
 
 
 def _build_label_replace_eval(dst, replacement, src, regex):
-    """Return an ES|QL clause for label_replace(), or None if untranslatable."""
+    """ES|QL clause for label_replace(): None if untranslatable, "" if a no-op.
+
+    "" and None are deliberately different. None means the pattern could not be
+    expressed and the operator needs to know the rename was dropped; "" means the
+    rename is the identity and there is simply nothing to emit.
+    """
     # Case 1: full copy — replacement captures everything unchanged
     if replacement in ("$1", "$0") and regex in ("(.*)", ".*", "(.+)", ".+"):
-        return f"| EVAL {dst} = {src}"
+        # label_replace(x, "namespace", "$1", "namespace", "(.*)") copies a label
+        # onto itself. Emitting `EVAL namespace = namespace` is a no-op that a
+        # later KEEP discards, so it only adds noise to the query.
+        same = str(dst).strip().strip("`") == str(src).strip().strip("`")
+        return "" if same else f"| EVAL {dst} = {src}"
     # Case 2: constant string — no $N capture group references
     if not re.search(r"\$\d+", replacement):
         safe = replacement.replace('"', '\\"')
@@ -2361,7 +2370,7 @@ def label_replace_family_rule(context):
         else:
             warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
         _append_unique(context.warnings, warning)
-    else:
+    elif eval_clause is None:
         _append_unique(
             context.warnings,
             f"label_replace(): complex replacement pattern not translatable; "
