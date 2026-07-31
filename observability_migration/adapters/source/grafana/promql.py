@@ -1826,7 +1826,8 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 )
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
-        return f"{label} != {_quote_esql_string(value)}"
+        # PromQL matches an absent label here (absent == ""), ES|QL NULL does not.
+        return f'{_absent_as_empty(label)} != {_quote_esql_string(value)}'
     if op == "=~":
         if value in (".*", ".+", ""):
             return None
@@ -1834,7 +1835,7 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
     if op == "!~":
         if value in (".*", ".+", ""):
             return None
-        return f"NOT ({label} RLIKE {_quote_esql_string(value)})"
+        return f'NOT ({_absent_as_empty(label)} RLIKE {_quote_esql_string(value)})'
     return None
 
 

@@ -1577,3 +1577,33 @@ def test_param_label_matcher_treats_an_absent_label_as_empty():
     from observability_migration.adapters.source.grafana.promql import _absent_as_empty
 
     assert _absent_as_empty("labels.release") == 'COALESCE(labels.release, "")'
+
+
+def test_negated_literal_matchers_also_treat_an_absent_label_as_empty():
+    """PromQL `label!="x"` and `label!~"x"` MATCH a series lacking the label.
+
+    Absent == "" in PromQL, and "" != "prod" is true. ES|QL NULL propagates, so
+    `labels.release != "prod"` dropped every such document. Measured on the node
+    index: 2640 documents carry process_open_fds and none carry release; the old
+    form matched 0 of them, COALESCE(release, "") != "prod" matches all 2640.
+    """
+    from observability_migration.adapters.source.grafana.promql import _matcher_to_esql
+
+    class _R:
+        def resolve_label(self, name):
+            return name
+        def field_exists(self, name):
+            return None
+
+    resolver = _R()
+    neq = _matcher_to_esql({"label": "release", "op": "!=", "value": "prod"}, resolver)
+    assert neq == 'COALESCE(release, "") != "prod"'
+
+    nre = _matcher_to_esql({"label": "release", "op": "!~", "value": "prod.*"}, resolver)
+    assert nre == 'NOT (COALESCE(release, "") RLIKE "prod.*")'
+
+    # Positive literal matchers are already correct: PromQL does NOT match an
+    # absent label for `=` or a regex that cannot match "". Leave them bare so
+    # the field stays directly comparable.
+    eq = _matcher_to_esql({"label": "release", "op": "=", "value": "prod"}, resolver)
+    assert eq == 'release == "prod"'

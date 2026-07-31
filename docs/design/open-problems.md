@@ -11,29 +11,15 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 1. Negated literal label matchers drop series with an absent label
+## 1. ~~Negated literal label matchers drop series with an absent label~~ FIXED
 
-**Status:** real defect, fix known, not applied.
+Resolved once the CASE-shape normaliser was fixed -- that interaction, not the
+semantics, was what blocked the first attempt. `!=` and `!~` now read the label
+through `COALESCE(field, "")` like the parameterized matchers do.
 
-PromQL has no NULL: a series that does not carry a label behaves as if the label
-were `""`. So `label!="x"` and `label!~"x"` both MATCH a series lacking the
-label. ES|QL NULL propagates, so `label != "x"` yields NULL there and the row is
-dropped.
-
-The parameterized half of this is fixed (`_absent_as_empty` in
-`adapters/source/grafana/promql.py` wraps `?param` matchers in
-`COALESCE(field, "")`). The literal half is not.
-
-**Why it was not applied:** wrapping the literal branches shifted which filters
-count as target-specific in fused panels and produced an invalid shape in the
-`k8s-views-global` fixture. Retry after the CASE-shape normaliser is better
-understood, and re-run `tests/test_grafana_fixture_structural_gate.py`.
-
-**Evidence:** on the node index, 1006 documents carry `process_open_fds` and none
-carry `release`; `release RLIKE ".*"` matched 0, `COALESCE(release, "") RLIKE ".*"`
-matched 1006.
-
----
+Measured on the node index: 2640 documents carry `process_open_fds` and none
+carry `release`; `labels.release != "prod"` matched 0 of them, the fixed form
+matches all 2640 -- which is what Prometheus does, since an absent label is "".
 
 ## 2. Structural oracle does not treat STATS BY keys as defined columns
 
