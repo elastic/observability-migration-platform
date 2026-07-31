@@ -38,17 +38,19 @@ following `KEEP` discards. Harmless noise, worth removing separately.
 
 ## 3. Bucket alignment on `$interval`-driven ratio panels
 
-**Status:** 1 FAIL out of 2510 comparisons, unexplained.
+**Status:** intermittent, currently not reproducing.
 
 Node Exporter Dashboard EN "Disk R/W Time (Reference: less than 100ms)(beta)":
 `rate(node_disk_read_time_seconds_total[$interval]) / rate(node_disk_reads_completed_total[$interval])`.
 
-Both sides return exactly one series, but no time bucket overlaps, so it scores
-FAIL rather than a numeric difference. Left as a FAIL deliberately — absorbing it
-into a lenient verdict is how the control-binding bug (below) stayed hidden.
+Seen once as a single FAIL out of 2510 comparisons -- both sides returned exactly
+one series but no time bucket overlapped. The last several corpus runs report
+0 FAIL, so it depends on where the window falls relative to scrape boundaries.
 
-Unknown whether the cause is `$interval` resolving differently on the two sides,
-or `TBUCKET` vs the oracle's `step` disagreeing at this granularity.
+Not chased further because it stopped reproducing, and a fix aimed at a
+non-reproducing symptom is a fix aimed at nothing. If it returns, the question is
+whether `$interval` resolves differently on the two sides or whether `TBUCKET`
+and the oracle's `step` disagree at that granularity.
 
 ---
 
@@ -126,19 +128,29 @@ prefix-vs-index assertion).
 
 ---
 
-## Panel-type review — current state
+## Current verified state
 
-Verified end to end against the live rig (migrate → upload → execute every query
-→ browser render audit), not by reading routing tables.
+Everything below was verified end to end against the live rig -- migrate, upload,
+execute every emitted query, browser render audit with per-panel attribution --
+not by reading routing tables.
 
-**Grafana — 16/16 supported panel types render clean.** Canary:
-`infra/grafana/dashboards/kitchen-sink-canary.json`. One bug found and fixed:
-`logs` panels on a Prometheus datasource were routed as LogQL.
+**Grafana**
+- Community corpus (69 dashboards, 1323 emitted queries): **0 structural-oracle
+  errors**, down from 15.
+- Numeric parity gate (2510 comparisons): **0 FAIL, 0 ERROR**, 236 passes
+  (136 STRICT / 87 SHAPE / 13 FUZZY).
+- Panel-type canary (`infra/grafana/dashboards/kitchen-sink-canary.json`),
+  all 16 supported types: **16/16 rendered** in Kibana.
+- Curated Redis 763 pack: **13/13 rendered**, render audit `pass`.
 
-**Datadog — 22/22 non-log widget types render clean.** Canary:
-`infra/datadog/dashboards/kitchen-sink-canary.json`. The 2 log widgets
-(`log_stream`, `list_stream`) fail only because the rig has no `logs-*` index —
-confirmed absent via `_resolve/index`, not a defect.
+**Datadog**
+- All fixtures (26 emitted queries): **0 structural-oracle errors**.
+- Widget canary (`infra/datadog/dashboards/kitchen-sink-canary.json`),
+  all 23 planner-routed types plus a nested group: **22/22 non-log widgets
+  rendered**; the 2 log widgets fail only because the rig has no `logs-*` index
+  (confirmed absent via `_resolve/index`).
+- `sample_dashboard.json` execution errors are all `Unknown column` for Datadog
+  system metrics against a redis index -- data gaps, not defects.
 
 Every lossy conversion is disclosed with a reason rather than applied silently,
 which is the behaviour to preserve:
