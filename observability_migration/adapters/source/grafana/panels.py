@@ -4902,7 +4902,59 @@ def _strip_dotted_group_keep(query):
         }
         return bool(tokens & dotted_groups)
 
-    return "\n".join(line for line in lines if not _projects_dotted_group(line))
+    # Deleting the KEEP outright leaks every intermediate STATS alias into the
+    # panel output (e.g. ``a``, ``b`` alongside ``computed_value``). Those extra
+    # numeric columns are noise to Kibana and actively break numeric parity:
+    # the oracle reads unpinned numeric columns as label dimensions, which
+    # turned a 10-series panel into 375 and produced a false FAIL.
+    #
+    # A DROP of just the unwanted value columns expresses the same intent
+    # without re-projecting the dotted grouping key, so it does not trip the
+    # "Output has changed" optimizer error the strip exists to avoid.
+    produced: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| STATS"):
+            body = stripped[len("| STATS "):].split(" BY ", 1)[0]
+            for part in body.split(","):
+                if "=" in part:
+                    produced.append(part.split("=", 1)[0].strip().strip("`"))
+        elif stripped.startswith("| EVAL"):
+            body = stripped[len("| EVAL "):]
+            for part in body.split(" = ")[:1]:
+                name = part.strip().strip("`")
+                if name and " " not in name:
+                    produced.append(name)
+
+    kept: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| KEEP ") and _projects_dotted_group(line):
+            kept |= {
+                part.strip().strip("`")
+                for part in stripped[len("| KEEP "):].split(",")
+                if part.strip()
+            }
+
+    droppable = (
+        [name for name in dict.fromkeys(produced) if name not in kept] if kept else []
+    )
+    drop_line = (
+        "| DROP " + ", ".join(_esql_identifier(n) for n in droppable) if droppable else None
+    )
+    out: list[str] = []
+    for line in lines:
+        if _projects_dotted_group(line):
+            # Substitute in place so the DROP keeps the KEEP's position in the
+            # pipeline (before any trailing SORT) instead of trailing it.
+            if drop_line is not None:
+                out.append(drop_line)
+                drop_line = None
+            continue
+        out.append(line)
+    if drop_line is not None:
+        out.append(drop_line)
+    return "\n".join(out)
 
 
 def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
