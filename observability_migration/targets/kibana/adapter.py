@@ -108,7 +108,11 @@ def _rewrite_data_view_refs(value: Any, data_view_ids: dict[str, str]) -> Any:
     if isinstance(value, dict):
         rewritten: dict[str, Any] = {}
         for key, child in value.items():
-            if key == "data_view" and isinstance(child, str):
+            # Controls spell this ``data_view_id``; panels spell it
+            # ``data_view``. Matching only the latter meant a control kept the
+            # raw index pattern as its id, and Kibana renders "An error
+            # occurred" because no data view with that id exists.
+            if key in {"data_view", "data_view_id"} and isinstance(child, str):
                 rewritten[key] = data_view_ids.get(child, child)
             else:
                 rewritten[key] = _rewrite_data_view_refs(child, data_view_ids)

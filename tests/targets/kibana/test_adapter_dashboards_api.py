@@ -468,3 +468,31 @@ class TestUploadDashboardNativePath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_data_view_rewrite_covers_the_control_spelling():
+    """Controls spell it ``data_view_id``; panels spell it ``data_view``.
+
+    Rewriting only the panel spelling left every options_list_control holding a
+    raw index pattern as its data view id. Kibana then renders the control as
+    "An error occurred", because no data view with that id exists -- observed on
+    every migrated Datadog dashboard.
+    """
+    from observability_migration.targets.kibana.adapter import _rewrite_data_view_refs
+
+    lookup = {"metrics-*.prometheus-*": "real-data-view-id"}
+    control = {
+        "type": "options_list_control",
+        "config": {"data_view_id": "metrics-*.prometheus-*", "field_name": "labels.instance"},
+    }
+    panel = {"data_view": "metrics-*.prometheus-*"}
+
+    assert _rewrite_data_view_refs(control, lookup)["config"]["data_view_id"] == "real-data-view-id"
+    assert _rewrite_data_view_refs(panel, lookup)["data_view"] == "real-data-view-id"
+
+
+def test_unknown_data_view_reference_is_left_alone():
+    from observability_migration.targets.kibana.adapter import _rewrite_data_view_refs
+
+    out = _rewrite_data_view_refs({"data_view_id": "not-in-lookup"}, {"other": "id"})
+    assert out["data_view_id"] == "not-in-lookup"
