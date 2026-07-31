@@ -780,3 +780,53 @@ def test_target_specific_filters_are_folded_not_anded_globally():
     assert "CASE(" in query
     stats = " ".join(_stats_assignments(query))
     assert "node_load5" in stats and "node_cpu_seconds_total" in stats
+
+
+def test_counter_range_siblings_are_wrapped_outer_not_inner():
+    """A bare RATE/IRATE sibling must gain an OUTER CASE, never an inner one.
+
+    Inner-CASE value args are exactly what _rewrite_ts_inner_case_to_outer_case
+    exists to remove: a time-series function may not take CASE as its value
+    argument. Emitting the inner shape when wrapping bare siblings recreated the
+    form that pass had just removed, so the fused query was rejected. OVER_TIME
+    genuinely uses the inner shape and keeps it.
+    """
+    from observability_migration.adapters.source.grafana.promql import (
+        _wrap_bare_ts_value_args_when_case_siblings,
+    )
+
+    out = _wrap_bare_ts_value_args_when_case_siblings([
+        'a = SUM(CASE((mode == "idle"), IRATE(cpu_seconds_total, 2m), NULL))',
+        "b = SUM(IRATE(container_cpu_usage_seconds_total, 2m))",
+    ])
+    assert "CASE(true, IRATE(container_cpu_usage_seconds_total, 2m), NULL)" in out[1]
+    assert "IRATE(CASE(true," not in out[1]
+
+    over_time = _wrap_bare_ts_value_args_when_case_siblings([
+        'a = SUM(CASE((mode == "idle"), AVG_OVER_TIME(x, 2m), NULL))',
+        "b = SUM(AVG_OVER_TIME(y, 2m))",
+    ])
+    assert "AVG_OVER_TIME(CASE(true, y, NULL), 2m)" in over_time[1]
+
+
+def test_outer_case_is_detected_when_the_condition_contains_a_comma():
+    """A comma inside the CASE condition must not hide the outer shape.
+
+    `COALESCE(label, "") RLIKE ?var` is an ordinary label matcher -- PromQL reads
+    an absent label as "". The outer-shape detector matched its condition with
+    `[^,]+`, so that comma made it stop recognising the shape, and the caller
+    then nested an identity CASE inside the outer filter CASE, producing
+    `SUM(CASE(cond, RATE(CASE(true, field, w), NULL)))`.
+    """
+    from observability_migration.adapters.source.grafana.promql import (
+        _wrap_bare_ts_value_args_when_case_siblings,
+    )
+
+    assignments = [
+        'a = SUM(CASE((COALESCE(app, "") RLIKE ?app) and (COALESCE(inst, "") RLIKE ?inst), '
+        "RATE(jvm_gc_pause_seconds_sum, 1m), NULL))",
+        "b = MAX(LAST_OVER_TIME(system_cpu_count))",
+    ]
+    out = _wrap_bare_ts_value_args_when_case_siblings(assignments)
+    assert "RATE(CASE(true," not in out[0]
+    assert "RATE(jvm_gc_pause_seconds_sum, 1m)" in out[0]

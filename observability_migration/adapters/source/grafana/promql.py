@@ -4645,8 +4645,14 @@ _TS_INNER_CASE_VALUE_ARG = re.compile(
     re.IGNORECASE,
 )
 
+# The condition may itself contain commas -- ``COALESCE(label, "") RLIKE ?var``
+# is a normal label matcher (an absent label reads as "" in PromQL). Matching the
+# condition with ``[^,]+`` silently stopped recognising the outer shape as soon as
+# one appeared, and the caller then nested an identity CASE inside the outer
+# filter CASE. Anchor on the TS call and the trailing ``, NULL)`` instead, and let
+# the condition be anything up to it.
 _OUTER_CASE_TS_FUNC = re.compile(
-    r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
+    r"CASE\(.+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
 )
 
 
@@ -4711,12 +4717,29 @@ def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[
         return [_wrap_outer(assignment) for assignment in assignments]
 
     def _repl(match: re.Match[str]) -> str:
-        return (
-            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
-            f"{match.group('window')})"
-        )
+        func = match.group("func")
+        field, window = match.group("field"), match.group("window")
+        # The counter range functions reject CASE as their value argument, which
+        # is why _rewrite_ts_inner_case_to_outer_case exists. Emitting the inner
+        # shape for them here just recreates the form that pass removed, so keep
+        # them outer. OVER_TIME genuinely uses the inner shape.
+        if func.upper() in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
+            return f"CASE(true, {func}({field}, {window}), NULL)"
+        return f"{func}(CASE(true, {field}, NULL), {window})"
 
-    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+    def _wrap_inner(assignment: str) -> str:
+        # Same guard as the outer branch: a measure that already carries a
+        # filter CASE must not gain an identity CASE nested inside it. Without
+        # this, an outer-shaped measure whose condition the detector above
+        # failed to recognise becomes
+        # ``SUM(CASE(cond, RATE(CASE(true, field, w), NULL)))`` -- which
+        # Elasticsearch rejects, since a time-series function may not take CASE
+        # as its value argument.
+        if "CASE(" in assignment:
+            return assignment
+        return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
+
+    return [_wrap_inner(assignment) for assignment in assignments]
 
 
 def _infer_stats_metric_field(expr: str) -> str:
