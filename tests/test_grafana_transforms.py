@@ -103,6 +103,22 @@ def test_counter_suffix_alias_resolves_against_live_caps():
     assert r._counter_suffix_alias("metrics.z", "z") == "metrics.z"
 
 
+def test_bytes_suffix_drift_is_also_reconciled():
+    """node_exporter 0.16 added `_bytes` to every byte-valued metric.
+
+    MySQL Overview's "Memory Distribution" queries `node_memory_Buffers`; the
+    exporter has published `node_memory_Buffers_bytes` since 0.16.
+    """
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    r = SchemaResolver.__new__(SchemaResolver)
+    r._field_cache = {"metrics.node_memory_Buffers_bytes": {}}
+    r._metric_map_applied = {}
+    r._metric_map_warnings = []
+    assert (r._counter_suffix_alias("metrics.node_memory_Buffers", "node_memory_Buffers")
+            == "metrics.node_memory_Buffers_bytes")
+
+
 def test_counter_suffix_alias_never_guesses_offline():
     """With no live caps there is no evidence, so nothing may be substituted."""
     from observability_migration.adapters.source.grafana.schema import SchemaResolver

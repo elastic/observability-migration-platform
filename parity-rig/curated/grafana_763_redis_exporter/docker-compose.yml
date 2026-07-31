@@ -146,6 +146,7 @@ services:
       - --collect.global_status
       - --collect.global_variables
       - --collect.info_schema.innodb_metrics
+      - --collect.info_schema.processlist
     ports:
       - "9104:9104"
     networks:

@@ -818,8 +818,16 @@ class SchemaResolver:
         except Exception:
             return None
 
+    # Suffix conventions exporters adopted wholesale at a version boundary, so a
+    # dashboard written before the change names a metric that no longer exists:
+    # ``_total`` is the OpenMetrics counter suffix, and node_exporter 0.16 added
+    # ``_bytes`` to every byte-valued metric (node_memory_Buffers ->
+    # node_memory_Buffers_bytes). Both directions are tried, and only ever
+    # against live caps.
+    _EXPORTER_SUFFIX_DRIFT = ("_total", "_bytes")
+
     def _counter_suffix_alias(self, field, metric_name):
-        """Reconcile the OpenMetrics ``_total`` counter suffix against live caps.
+        """Reconcile known exporter suffix drift against live caps.
 
         Exporters moved counters to the OpenMetrics ``_total`` convention at
         different times, so a dashboard written against one version names a
@@ -838,18 +846,21 @@ class SchemaResolver:
         cache = self._field_cache or {}
         if not cache or field in cache:
             return field
-        if field.endswith("_total"):
-            alternative = field[: -len("_total")]
-        else:
-            alternative = f"{field}_total"
-        if alternative not in cache:
+        candidates = []
+        for suffix in self._EXPORTER_SUFFIX_DRIFT:
+            if field.endswith(suffix):
+                candidates.append(field[: -len(suffix)])
+            else:
+                candidates.append(f"{field}{suffix}")
+        alternative = next((c for c in candidates if c in cache), None)
+        if alternative is None:
             return field
         self._metric_map_applied[metric_name] = alternative
         warning = (
             f"Resolved {field!r} to {alternative!r}: the target does not have the "
-            "metric under the name the dashboard uses, but does have it under the "
-            "other OpenMetrics counter spelling (exporters added/removed the "
-            "'_total' suffix across versions)"
+            "metric under the name the dashboard uses, but does have it under a "
+            "known exporter suffix rename ('_total' for OpenMetrics counters, "
+            "'_bytes' since node_exporter 0.16)"
         )
         if warning not in self._metric_map_warnings:
             self._metric_map_warnings.append(warning)
