@@ -11,6 +11,56 @@ Everything here is reproducible against the curated rig
 
 ---
 
+## 0. rate() degraded to AVG_OVER_TIME reports a number that is not a rate
+
+**Status:** ACTIVE correctness bug, 17 panels on the community corpus. Highest
+priority. Fix identified and measured; not applied.
+
+When a counter-style range function degrades to its gauge analogue,
+`_COUNTER_TO_GAUGE_FALLBACK` maps `rate`/`irate` to `AVG_OVER_TIME` — the average
+of the *cumulative counter value*, not a per-second rate. Measured on
+`mysql_global_status_queries` in the rig:
+
+| form | value |
+|---|---|
+| `AVG(AVG_OVER_TIME(x, 5m))` (what we emit) | **2437** |
+| `(LAST_OVER_TIME(x) - FIRST_OVER_TIME(x)) / 60` (true rate) | **0.62 / sec** |
+
+Off by roughly 4000x, and it renders as a healthy panel. This is the
+plausible-but-wrong failure mode the rest of this document exists to prevent, and
+it is worse than an error card because nothing signals it.
+
+**The fix.** Elasticsearch has no `DELTA_OVER_TIME`/`RATE_OVER_TIME`, but
+`FIRST_OVER_TIME` and `LAST_OVER_TIME` both work on gauge-typed fields (verified),
+so the correct emission is two aggregates plus an EVAL:
+
+```
+| STATS lo = MAX(FIRST_OVER_TIME(x)), hi = MAX(LAST_OVER_TIME(x)) BY tb = TBUCKET(...)
+| EVAL rate = (hi - lo) / <bucket_seconds>
+```
+
+That is `increase`/`rate` over the bucket for a monotonic counter. The
+co-located-arithmetic translator already emits this two-aggregate-plus-EVAL shape,
+so the machinery exists.
+
+**Why it is not done here.** `resolve_counter_range_translation` returns a single
+ES|QL function name, threaded through seven call sites that each build a different
+emission shape. Converting them to a two-aggregate form is a real refactor of the
+most fragile path in the translator, and it should be started with room to verify
+it, not squeezed in.
+
+**Interim honesty option** if the refactor is deferred further: refuse the panel
+with a precise reason instead of emitting `AVG_OVER_TIME`. A refused panel is
+strictly better than one showing a confident wrong number.
+
+**Related, and the reason this keeps firing:** PromQL does not enforce metric
+types, ES|QL does. `mysqld_exporter` and `node_exporter` publish many true
+counters as `# TYPE ... untyped`; Elasticsearch then infers gauge from the missing
+`_total` suffix, and every `rate()` over them fails or degrades. This is a source
+-> target impedance mismatch that real operators hit, not a rig artifact.
+
+---
+
 ## 1. ~~Negated literal label matchers drop series with an absent label~~ FIXED
 
 Resolved once the CASE-shape normaliser was fixed -- that interaction, not the
