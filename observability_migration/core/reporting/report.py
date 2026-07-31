@@ -508,6 +508,31 @@ def print_report(results, compile_results, field_discovery=None):
         for dash_title, warning in control_warnings[:20]:
             print(f"  [{dash_title}] {warning}")
 
+    # Data-readiness gaps. Live discovery can PROVE a metric is absent from the
+    # target, and we still emit the query so the panel self-heals once the
+    # telemetry lands. But ES|QL rejects an unknown column outright, so until
+    # then Kibana renders a red "Unknown column [...]" card -- where Grafana
+    # would simply have drawn an empty panel. Staying quiet about that means
+    # the operator meets it in the browser instead of in the run that knew.
+    readiness_gaps = []
+    for result in results:
+        for panel in getattr(result, "panel_results", []) or []:
+            for reason in (getattr(panel, "reasons", None) or []):
+                if "missing from live schema discovery" in str(reason):
+                    readiness_gaps.append(
+                        (result.dashboard_title, getattr(panel, "title", ""), str(reason))
+                    )
+    if readiness_gaps:
+        print(f"\nDATA READINESS ({len(readiness_gaps)} panel(s) will show an error until telemetry lands):")
+        for dash_title, panel_title, reason in readiness_gaps[:20]:
+            field = reason.split("Target field ", 1)[-1].split(" is missing", 1)[0]
+            print(f"  [{dash_title}] {panel_title}: '{field}' is absent from the target.")
+        print(
+            "  These panels are translated correctly. Kibana shows 'Unknown column'\n"
+            "  rather than an empty chart because ES|QL rejects unknown columns; they\n"
+            "  start working as soon as the metric is ingested."
+        )
+
     total_alerts = sum(len(getattr(r, "alert_results", [])) for r in results)
     if total_alerts:
         automated = sum(sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated") for r in results)
