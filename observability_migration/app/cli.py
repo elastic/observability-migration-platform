@@ -241,6 +241,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--upload", action="store_true")
     migrate.add_argument(
+        "--ensure-data-views", action="store_true",
+        help=(
+            "Auto-create the data views migrated controls reference before upload. "
+            "Both adapter CLIs accept this, but the unified 'migrate' command did "
+            "not, so options_list_control filters shipped pointing at a data view "
+            "id that did not exist and rendered as 'An error occurred'."
+        ),
+    )
+    migrate.add_argument(
         "--legacy-import",
         dest="legacy_import",
         action="store_true",
@@ -1163,6 +1172,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.append("--compile")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "ensure_data_views", False):
+        legacy_argv.append("--ensure-data-views")
     if getattr(args, "legacy_import", False):
         legacy_argv.append("--legacy-import")
     if args.es_url:
@@ -1274,6 +1285,8 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "ensure_data_views", False):
+        legacy_argv.append("--ensure-data-views")
     if getattr(args, "legacy_import", False):
         legacy_argv.append("--legacy-import")
     if args.preflight:

@@ -1113,7 +1113,7 @@ def _ensure_data_views(
     field_map: Any,
     *,
     verify: bool | str | None = None,
-) -> None:
+) -> list[dict[str, Any]]:
     patterns: list[str] = []
     if field_map.metric_index:
         patterns.append(field_map.metric_index)
@@ -1133,8 +1133,15 @@ def _ensure_data_views(
         )
         for dv in created:
             print(f"    OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
+        # Returned rather than only printed so a caller can correlate what was
+        # created. NOTE: the upload does not consume this yet -- it recomputes
+        # data views itself via KibanaTargetAdapter._ensure_default_data_views,
+        # which is why a migrated options_list_control can still carry the raw
+        # index pattern as its data_view_id. Tracked as an open gap.
+        return list(created)
     except Exception as exc:
         print(f"    WARNING: data view creation failed: {exc}")
+    return []
 
 
 def _upload_all_dashboards(
