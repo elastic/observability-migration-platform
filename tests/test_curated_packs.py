@@ -240,9 +240,14 @@ def test_redis_memory_ratio_uses_ts_source():
 
     assert query.startswith("TS "), f"Bug 1: query should use TS source, got: {query[:50]}"
     assert "TBUCKET(1," in query, f"Bug 3: scalar gauge should use TBUCKET(1,...), got: {query}"
-    assert "SUM(memory_pct)" in query, f"Bug 2: should use SUM (not AVG) to match PromQL sum(), got: {query}"
+    # The core translator now handles this shape (colocated_binary_agg_family),
+    # so the curated pack no longer carries a hand-written query. The alias is
+    # the generic ``computed_value`` rather than the pack's ``memory_pct``; what
+    # matters is unchanged -- SUM (matching PromQL sum()) over the per-document
+    # ratio, verified numerically identical to the old pack query on live data.
+    assert "SUM(" in query and "computed_value" in query, f"Bug 2: should use SUM (not AVG) to match PromQL sum(), got: {query}"
     assert "time_bucket = MAX(time_bucket)" not in query, "Bug 3: should not keep time_bucket in collapse"
-    assert yaml_panel["esql"]["metric"]["field"] == "memory_pct"
+    assert yaml_panel["esql"]["metric"]["field"] == "computed_value"
 
 
 def test_find_14091_by_gnet_id():

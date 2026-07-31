@@ -52,6 +52,7 @@ from .promql import (
     _counter_unsafe_cast_needed,
     _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
+    _esql_identifier,
     _expand_late_bound_group_by_terms,
     _finalize_fused_stats_assignments,
     _format_scalar_value,
@@ -82,6 +83,8 @@ from .promql import (
     _same_metric_range_fallback_warning,
     _summary_mode_from_metadata,
     classify_promql_complexity,
+    colocated_binary_agg_plan,
+    colocated_metric_fields,
     gauge_default_agg_warning,
     preprocess_grafana_macros,
     resolve_counter_range_translation,
@@ -1088,6 +1091,25 @@ def _binary_left_fallback_is_feasible(frag):
     return _or_left_is_feasible(frag) or _mixed_os_zero_fill_left_is_feasible(frag)
 
 
+@QUERY_CLASSIFIERS.register("colocated_binary_agg_unblock", priority=0)
+def colocated_binary_agg_unblock(context):
+    """Clear the ``agg(A op B)`` refusal when the arithmetic renders exactly.
+
+    Runs before ``fragment_guardrails`` (priority 1), which would otherwise turn
+    the parser's reason into a dead panel. Only clears when
+    ``colocated_binary_agg_plan`` -- a closed allowlist -- can render the whole
+    tree, so genuinely unaligned joins keep their refusal.
+    """
+    frag = context.fragment
+    extra = getattr(frag, "extra", None) if frag else None
+    if not isinstance(extra, dict) or not extra.get("not_feasible_reasons"):
+        return None
+    if colocated_binary_agg_plan(frag, context.resolver, context.rule_pack) is None:
+        return None
+    extra.pop("not_feasible_reasons", None)
+    return "cleared not_feasible for co-located per-element arithmetic"
+
+
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
 def fragment_guardrails_rule(context):
     frag = context.fragment
@@ -1271,6 +1293,88 @@ def warning_pattern_rule(context):
     if matches:
         return "; ".join(matches)
     return None
+
+
+@QUERY_TRANSLATORS.register("colocated_binary_agg_family", priority=0)
+def colocated_binary_agg_family_rule(context):
+    """``agg(A op B)`` over operands that share a label set.
+
+    Evaluates the arithmetic per document and aggregates the result, which is
+    exactly what the source asked for. Two curated packs (grafana-763 memory
+    ratio, grafana-14091 hit ratio) each hand-wrote this query; this retires
+    both.
+
+    Priority 0 matters: the generic ``fragment_extract``/``stats_expression``
+    stages (20/90) build ``agg(<frag.metric>)`` from fragment fields and know
+    nothing about binary expressions, so letting them win drops an operand
+    silently.
+    """
+    frag = context.fragment
+    plan = colocated_binary_agg_plan(frag, context.resolver, context.rule_pack)
+    if plan is None:
+        return None
+    value_expr, leaf = plan
+    rp = context.rule_pack
+
+    filters, had_vars = _frag_filters(leaf, context.resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    # TS: the operands are per-series functions (RATE/IRATE) or raw gauges, and
+    # FROM over a TSDS would inflate them by the per-bucket sample count.
+    group_fields = _frag_group_labels(
+        frag,
+        context.resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
+    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields, frag)
+
+    alias = "computed_value"
+    parts = [
+        f"TS {context.index}",
+        f"| WHERE {rp.ts_time_filter}",
+        *_build_where_lines(filters),
+    ]
+    # Require every operand on the row. Co-location is the precondition for
+    # evaluating the arithmetic per document, so a row missing either metric is
+    # not a valid sample of the expression -- without this the aggregate silently
+    # loses whole series (measured: 1.23 instead of 42.41, one of two instances).
+    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
+    for metric_field in colocated_metric_fields(inner, context.resolver):
+        parts.append(f"| WHERE {_esql_identifier(metric_field)} IS NOT NULL")
+    stats_line = f"| STATS {alias} = {OUTER_AGG_MAP[(frag.outer_agg or '').lower()]}({value_expr})"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+
+    context.parser_backend = "fragment"
+    context.source_type = "TS"
+    context.metric_name = alias
+    context.output_metric_field = alias
+    context.output_group_fields = output_group
+
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+        )
+    if collapsed is None:
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.output_group_fields = output_group
+    context.translation_complete = True
+    _append_unique(
+        context.warnings,
+        "Per-element arithmetic between co-located metrics evaluated per document "
+        "before aggregation (exact for Prometheus layouts that store one document "
+        "per label-set; PromQL's all-label matching guarantees the operands align)",
+    )
+    return "translated co-located per-element arithmetic"
 
 
 @QUERY_TRANSLATORS.register("scalar_family", priority=1)

@@ -86,7 +86,7 @@ PROMQL_CASES: list[tuple[str, str, str]] = [
     ("bargauge_topk_grouped", "topk(10, sum(rate(http_requests_total[5m])) by (handler))", "bargauge"),
     ("timeseries_histogram_by_le", "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)", "timeseries"),
     # not_feasible shapes still produce a (markdown) panel — confirm graceful shape.
-    ("timeseries_join_not_feasible", "max(node_filesystem_avail_bytes / node_filesystem_size_bytes)", "timeseries"),
+    ("timeseries_ratio_colocated", "max(node_filesystem_avail_bytes / node_filesystem_size_bytes)", "timeseries"),
     ("stat_histogram_quantile_blocked", "histogram_quantile(0.9, rate(foo_bucket[5m]))", "stat"),
 ]
 

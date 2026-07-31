@@ -174,9 +174,9 @@ CASES: list[tuple[str, str, str]] = [
         "time() - node_boot_time_seconds{job='node'}",
         "timeseries",
     ),
-    # --- two-vector multiplication: correctly not_feasible ------------------
+    # --- two-vector ratio: co-located, so divided per document --------------
     (
-        "two_series_ratio_not_feasible",
+        "two_series_ratio_colocated",
         "max(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),
@@ -484,9 +484,10 @@ CASES: list[tuple[str, str, str]] = [
         'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) / increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)',
         "timeseries",
     ),
-    # Unrelated per-element ratio (not a histogram _sum/_count pair) stays not_feasible.
+    # Per-element ratio (not a histogram _sum/_count pair). No on()/ignoring(),
+    # so the operands share a label set and the division happens per document.
     (
-        "per_element_ratio_not_feasible",
+        "per_element_ratio_colocated",
         "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),

@@ -6127,3 +6127,163 @@ __all__ = [
     "substitute_grafana_range_macros",
     "substitute_scalar_template_vars",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Co-located per-element arithmetic (agg(A op B))
+# --------------------------------------------------------------------------- #
+#
+# ``agg(A op B) != agg(A) op agg(B)``, which is why the normaliser refuses this
+# shape by default. That inequality only matters if A and B must be aggregated
+# separately. When the operands share a label set they land on the SAME document
+# row in every Prometheus->Elasticsearch layout (one document per timestamp +
+# label-set carrying each metric of that set), so ES|QL can evaluate ``A op B``
+# per row and aggregate the result -- which is exactly ``agg(A op B)``.
+#
+# PromQL itself proves the label sets match: a binary operation with no
+# ``on()``/``ignoring()`` modifier matches on ALL labels, so a dashboard that
+# renders in Grafana necessarily has aligned operands. Fragments carrying
+# ``vector_matching``/``join_labels`` are excluded -- those are the genuinely
+# unaligned joins.
+#
+# The renderer is deliberately closed: anything outside the allowlist returns
+# None and keeps the existing not-feasible behaviour. A wrong rendering here
+# produces silently incorrect numbers rather than a visible failure, so the bias
+# is strongly toward refusing.
+
+_COLOCATED_BINARY_OPS = frozenset({"+", "-", "*", "/"})
+
+_COLOCATED_RANGE_FUNCS = frozenset({
+    "rate", "irate", "increase", "delta",
+    "avg_over_time", "max_over_time", "min_over_time", "sum_over_time",
+    "last_over_time",
+})
+
+
+def _colocated_leaf_matchers(frag):
+    return tuple(sorted(
+        (str(m.get("label", "")), str(m.get("op", "")), str(m.get("value", "")))
+        for m in (frag.matchers or [])
+        if isinstance(m, dict)
+    ))
+
+
+def _render_colocated_arithmetic(frag, resolver, rule_pack, depth=0):
+    """Render ``A op B`` as one inline ES|QL expression, or None if unsafe.
+
+    Returns ``(expression, matcher_signature)``. ``matcher_signature`` is the
+    label-matcher set every metric leaf shares; a mismatch means the operands
+    are not the same series and the caller must refuse.
+    """
+    if frag is None or depth > 32:
+        return None
+
+    family = getattr(frag, "family", "")
+    extra = getattr(frag, "extra", {}) or {}
+    if extra.get("vector_matching") or extra.get("join_labels"):
+        return None
+
+    if family == "binary_expr":
+        op = (frag.binary_op or "").strip()
+        if op not in _COLOCATED_BINARY_OPS:
+            return None
+        left = _render_colocated_arithmetic(extra.get("left_frag"), resolver, rule_pack, depth + 1)
+        right = _render_colocated_arithmetic(extra.get("right_frag"), resolver, rule_pack, depth + 1)
+        if left is None or right is None:
+            return None
+        l_expr, l_sig = left
+        r_expr, r_sig = right
+        if l_sig is not None and r_sig is not None and l_sig != r_sig:
+            return None
+        sig = l_sig if l_sig is not None else r_sig
+        # No divide-by-zero guard: ES|QL already yields NULL for ``x / 0``
+        # (verified: ROW a=5.0, b=0.0 | EVAL a/b -> null), which is the absent
+        # point we want. NULLIF is not an ES|QL function -- using it here made
+        # every such query fail with "Unknown function [NULLIF]".
+        return (f"({l_expr} {op} {r_expr})", sig)
+
+    if getattr(frag, "is_scalar", False) or frag.scalar_value is not None:
+        try:
+            return (repr(float(frag.scalar_value)), None)
+        except (TypeError, ValueError):
+            return None
+
+    if not frag.metric:
+        return None
+    # An operand carrying its own aggregation is a separate reduction; only bare
+    # selectors and single range calls are safe to inline.
+    if frag.outer_agg or frag.group_labels:
+        return None
+
+    field = resolver.resolve_metric_field(frag.metric) if resolver else frag.metric
+    field_ref = _esql_identifier(field)
+    sig = _colocated_leaf_matchers(frag)
+
+    if family == "simple_metric" and not frag.range_func:
+        return (field_ref, sig)
+
+    rf = (frag.range_func or "").lower()
+    if family == "range_agg" and rf in _COLOCATED_RANGE_FUNCS:
+        esql_fn = AGG_FUNCTION_MAP.get(rf)
+        window = frag.range_window or ""
+        if not esql_fn or not window:
+            return None
+        return (f"{esql_fn}({field_ref}, {window})", sig)
+    return None
+
+
+def first_colocated_leaf(frag, depth=0):
+    """First metric-bearing leaf of a rendered arithmetic tree."""
+    if frag is None or depth > 32:
+        return None
+    if getattr(frag, "metric", ""):
+        return frag
+    extra = getattr(frag, "extra", {}) or {}
+    for key in ("left_frag", "right_frag"):
+        found = first_colocated_leaf(extra.get(key), depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def colocated_metric_fields(frag, resolver, out=None, depth=0):
+    """Resolved field paths of every metric leaf in an arithmetic tree."""
+    if out is None:
+        out = []
+    if frag is None or depth > 32:
+        return out
+    if getattr(frag, "metric", ""):
+        field = resolver.resolve_metric_field(frag.metric) if resolver else frag.metric
+        if field and field not in out:
+            out.append(field)
+        return out
+    extra = getattr(frag, "extra", {}) or {}
+    for key in ("left_frag", "right_frag"):
+        colocated_metric_fields(extra.get(key), resolver, out, depth + 1)
+    return out
+
+
+def colocated_binary_agg_plan(frag, resolver, rule_pack):
+    """``(value_expr, leaf)`` for a renderable ``agg(A op B)``, else None."""
+    if not frag or not frag.outer_agg:
+        return None
+    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
+    if inner is None or getattr(inner, "family", "") != "binary_expr":
+        return None
+    rendered = _render_colocated_arithmetic(inner, resolver, rule_pack)
+    if rendered is None:
+        return None
+    value_expr, matcher_sig = rendered
+    if matcher_sig is None:
+        # Pure scalar arithmetic: no metric to read.
+        return None
+    # NOTE: the OUTER aggregation lives in OUTER_AGG_MAP. AGG_FUNCTION_MAP is the
+    # RANGE-function map and has no "sum"/"avg" -- looking the outer agg up there
+    # silently returns None, which is how an earlier attempt at this fell through
+    # to the generic single-metric builder and dropped an operand.
+    if (frag.outer_agg or "").lower() not in OUTER_AGG_MAP:
+        return None
+    leaf = first_colocated_leaf(inner)
+    if leaf is None:
+        return None
+    return value_expr, leaf

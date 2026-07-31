@@ -681,11 +681,10 @@ def _panel(targets, title="Hit ratio per instance"):
     }
 
 
-_RATIO_NF = (
-    'avg(irate(redis_keyspace_hits_total{instance=~"$instance"}[1m]) '
-    '/ (irate(redis_keyspace_misses_total{instance=~"$instance"}[1m]) '
-    '+ irate(redis_keyspace_hits_total{instance=~"$instance"}[1m]))) by (instance)'
-)
+# An explicitly vector-matched join: genuinely unalignable, so still refused.
+# (The self-referential hit ratio this used to use is now translated by
+# colocated_binary_agg_family, so it no longer exercises the rescue path.)
+_RATIO_NF = "sum(node_a / on(x) group_left node_b)"
 
 
 def _translate(panel):

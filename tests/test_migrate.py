@@ -17185,15 +17185,27 @@ class TestScalarAggregationHoisting(unittest.TestCase):
         r = self._translate('sum(8 * rate(http_requests_total[5m])) by (job)')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
 
-    def test_true_two_series_still_not_feasible(self):
-        """max(A / B) with two distinct metrics must remain not_feasible."""
+    def test_two_series_ratio_divides_per_document(self):
+        """max(A / B) is translated, but only as a per-document division.
+
+        Superseded the old blanket refusal. Both operands are node_filesystem
+        series with no on()/ignoring(), so PromQL matches on all labels and they
+        share a document per label-set; dividing per document and then taking
+        MAX is exactly max(A / B).
+
+        What must never happen -- substituting MAX(A) / MAX(B) -- is asserted
+        directly, so the guarantee the old test protected is still enforced.
+        """
         r = self._translate(
             'max(node_filesystem_size_bytes / node_filesystem_avail_bytes)'
         )
-        self.assertEqual(
-            r.feasibility, "not_feasible",
-            f"Two-series ratio should stay not_feasible; got:\n{r.esql_query}",
+        self.assertEqual(r.feasibility, "feasible", r.esql_query)
+        query = (r.esql_query or "").replace("\n", " ")
+        self.assertRegex(
+            query,
+            r"MAX\(\s*\(?node_filesystem_size_bytes\s*/\s*node_filesystem_avail_bytes",
         )
+        self.assertNotRegex(query, r"MAX\([^)]*\)\s*/\s*MAX\(")
 
 
 class TestUnaryMinusOverBinaryExpr(unittest.TestCase):
@@ -17400,16 +17412,27 @@ class TestJoinAggScalarDiv(unittest.TestCase):
         self.assertEqual(r.feasibility, "not_feasible")
         self.assertTrue(any("vector-matching join" in w for w in r.warnings), r.warnings)
 
-    def test_sum_over_two_series_still_not_feasible(self):
-        """sum(A / B) with two real series must remain not_feasible."""
+    def test_sum_over_two_series_divides_per_document(self):
+        """sum(A / B) between two real series is translated per document.
+
+        Superseded the blanket refusal: with no on()/ignoring() PromQL matches
+        on all labels, so the operands are the same node_filesystem series and
+        share a document per label-set. Dividing per document and summing the
+        result is exactly sum(A / B).
+
+        The substitution this guarded against -- SUM(A) / SUM(B) -- is asserted
+        against directly, so that protection is retained.
+        """
         r = self._translate(
             "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)"
         )
-        self.assertEqual(
-            r.feasibility,
-            "not_feasible",
-            "per-element division between two real series should stay not_feasible",
+        self.assertEqual(r.feasibility, "feasible", r.esql_query)
+        query = (r.esql_query or "").replace("\n", " ")
+        self.assertRegex(
+            query,
+            r"SUM\(\s*\(?node_filesystem_avail_bytes\s*/\s*node_filesystem_size_bytes",
         )
+        self.assertNotRegex(query, r"SUM\([^)]*\)\s*/\s*SUM\(")
 
 
 class TestAnchoredVariableMatcherQuality(unittest.TestCase):
