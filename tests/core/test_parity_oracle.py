@@ -1400,3 +1400,25 @@ def test_unexplained_execution_failure_is_still_an_error():
     cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = MAX(y)")
     cmp_.translated_error = "circuit_breaking_exception - parent request too large"
     assert cmp_.verdict() == "ERROR"
+
+
+def test_explicit_renames_bridge_a_metric_map_gap():
+    """A renamed metric cannot be inferred from the translated query alone.
+
+    metric_map turns ``redis_memory_fragmentation_ratio`` into
+    ``metrics.redis_mem_fragmentation_ratio``; the source name and the emitted
+    field share no common token, so derive_field_map_from_translated cannot pair
+    them and the reference query silently matched nothing.
+    """
+    esql = "TS i | STATS a = AVG(metrics.redis_mem_fragmentation_ratio)"
+    inferred = po.derive_field_map_from_translated(esql)
+    assert "redis_memory_fragmentation_ratio" not in inferred
+
+    renames = {"redis_memory_fragmentation_ratio": "metrics.redis_mem_fragmentation_ratio"}
+    merged = dict(inferred)
+    for src, target in renames.items():
+        merged.setdefault(src, target)
+    out = po.qualify_source_metric_names(
+        "avg(redis_memory_fragmentation_ratio)", lambda n: merged.get(n, n)
+    )
+    assert out == "avg(metrics.redis_mem_fragmentation_ratio)"

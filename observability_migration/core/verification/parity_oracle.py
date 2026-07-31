@@ -1298,7 +1298,8 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                   translated_value_column: str | None = None,
                   translated_ignore_columns: frozenset[str] = frozenset(),
                   translated_label_filter: tuple[str, str] | None = None,
-                  control_bindings: dict | None = None) -> Comparison:
+                  control_bindings: dict | None = None,
+                  metric_renames: dict | None = None) -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
 
     ``translated_value_column``/``translated_ignore_columns`` scope the
@@ -1376,6 +1377,9 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     # to verify against" rather than the setup error it is. Point the reference
     # at the same fields the translation used.
     field_map = derive_field_map_from_translated(cmp_.esql)
+    # Explicit renames win: inference cannot bridge a renamed metric.
+    for source_name, target_field in (metric_renames or {}).items():
+        field_map.setdefault(source_name, target_field)
     if field_map:
         qualified = qualify_source_metric_names(native_query, lambda n: field_map.get(n, n))
         if qualified != native_query:

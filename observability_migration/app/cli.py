@@ -1685,6 +1685,32 @@ def _artifact_control_bindings(artifact_dir: Path, packets_doc: dict[str, Any]) 
     return build_control_bindings(controls)
 
 
+def _artifact_metric_renames(artifact_dir: Path) -> dict[str, str]:
+    """Applied ``metric_map`` renames, source name -> target field path.
+
+    ``derive_field_map_from_translated`` recovers the metric->field mapping from
+    the emitted query, but a renamed metric breaks that inference: the source
+    says ``redis_memory_fragmentation_ratio`` while the query says
+    ``metrics.redis_mem_fragmentation_ratio``, and nothing connects the two. The
+    run already records the rename it applied, so read it rather than guess.
+    """
+    report = artifact_dir / "migration_report.json"
+    if not report.exists():
+        return {}
+    try:
+        doc = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    summary = doc.get("metric_map_summary")
+    if not isinstance(summary, dict):
+        return {}
+    out: dict[str, str] = {}
+    for entry in summary.get("applied") or []:
+        if isinstance(entry, dict) and entry.get("source") and entry.get("target"):
+            out[str(entry["source"])] = str(entry["target"])
+    return out
+
+
 def _run_compare(args: Any) -> int:
     """Per-panel side-by-side parity for migrated dashboards (PromQL native oracle)."""
     if not args.es_url or not args.api_key:
@@ -1692,6 +1718,7 @@ def _run_compare(args: Any) -> int:
         return 2
     packets: list[dict[str, Any]] = []
     control_bindings: dict[str, Any] = {}
+    metric_renames: dict[str, str] = {}
     for raw in args.artifact_dir:
         path = Path(raw) / "verification_packets.json"
         if not path.exists():
@@ -1711,6 +1738,10 @@ def _run_compare(args: Any) -> int:
         # skips most panels and hides list/scalar type errors that only show up
         # in a real Kibana render.
         control_bindings.update(_artifact_control_bindings(Path(raw), data))
+        # An applied metric_map renames the metric, so the source expression's
+        # name has no relation to the translated field's bare name and the
+        # oracle cannot pair them by itself. Feed it the rename explicitly.
+        metric_renames.update(_artifact_metric_renames(Path(raw)))
 
     from datetime import UTC, datetime, timedelta
     end = datetime.now(UTC)
@@ -1800,6 +1831,7 @@ def _run_compare(args: Any) -> int:
                         request, translated_query=pkt["translated_query"],
                         index=index, step=args.step_seconds, start_iso=start_iso, end_iso=end_iso,
                         control_bindings=control_bindings,
+                        metric_renames=metric_renames,
                         **extra,
                     )
                 except NetworkError as exc:
