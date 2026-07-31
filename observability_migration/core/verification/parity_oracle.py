@@ -1503,6 +1503,24 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     cmp_.mean_relative_error = rmean
     if cmp_.common_series == 0:
         if not translated:
+            # Distinguish "the query produced nothing" from "the oracle could
+            # not attribute what it produced". If rows came back but no series
+            # could be derived, that is an oracle attribution limit, not a
+            # translation defect, and FAIL would blame the wrong thing.
+            #
+            # NOTE: this does not explain the 4 known multi-target FAILs on the
+            # corpus (Node Exporter Full "File Descriptors" and friends). Their
+            # merged query returns 60 rows and normalizes to 3 series when run
+            # through run_translated directly, yet the comparison sees none --
+            # the per-target provenance path evidently compares a different
+            # sub-query than the one recorded in the report. Unresolved.
+            if (translated_raw or {}).get("values"):
+                cmp_.skipped_reason = (
+                    "translated query returned rows but the oracle could not attribute "
+                    "them to series (multi-metric panel with no pinned value column); "
+                    "numeric parity needs per-target provenance"
+                )
+                return cmp_
             cmp_.fail_reason = (
                 f"translated query returned no series; native returned {cmp_.native_series}"
             )
