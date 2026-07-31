@@ -434,6 +434,23 @@ def metric_heatmap_distribution_rule(context: PlanContext) -> str | None:
     if context.widget.widget_type not in ("heatmap", "distribution"):
         return None
     context.plan.backend = "esql"
+    # A heatmap needs a Y dimension to bucket into. An ungrouped Datadog heatmap
+    # (`avg:node_load1{*}` with no `by {...}`) is a single series, so the heatmap
+    # emitter has nothing to put on Y and the widget was dropped as not_feasible
+    # -- losing data that translates perfectly well. The same series drawn as an
+    # XY chart carries exactly the same values, so degrade instead of dropping,
+    # and say so. Mirrors metric_change_rule, which picks table-vs-metric the
+    # same way.
+    grouped = any(
+        q.metric_query and q.metric_query.group_by for q in context.metric_queries
+    )
+    if context.widget.widget_type == "heatmap" and not grouped:
+        context.plan.kibana_type = "xy"
+        context.plan.reasons.append(
+            "ungrouped heatmap → ES|QL XY chart (no group-by means a single "
+            "series, which has no heatmap Y dimension; the values are unchanged)"
+        )
+        return "selected ES|QL XY for ungrouped heatmap"
     context.plan.kibana_type = context.widget.kibana_type
     context.plan.reasons.append(f"{context.widget.widget_type} → ES|QL")
     return f"selected ES|QL for {context.widget.widget_type}"

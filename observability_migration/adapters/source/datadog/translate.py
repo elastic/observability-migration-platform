@@ -2560,7 +2560,13 @@ def _rate_multiplier(mq: MetricQuery | None) -> int:
 
 
 def _rate_approx_expr(metric_field: str, mq: MetricQuery | None = None) -> str:
-    metric_ident = _esql_identifier(metric_field)
+    # TO_DOUBLE unwraps a counter-typed field. Elasticsearch rejects MAX/MIN over
+    # counter_double in FROM mode ("argument of [MAX(x)] must be [... numeric
+    # except counter types]"), and `.as_rate()` is applied to exactly the metrics
+    # most likely to be typed as counters -- so every as_rate widget failed
+    # against a correctly typed index while working against a mistyped one. The
+    # cast is a no-op for a plain double.
+    metric_ident = f"TO_DOUBLE({_esql_identifier(metric_field)})"
     rollup_seconds = _rollup_seconds(mq)
     if rollup_seconds is not None:
         denominator = str(rollup_seconds)
