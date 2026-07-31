@@ -37,6 +37,15 @@ _RENDER_ERROR_PATTERNS = (
     r"verification_exception",
     r"is not yet implemented",
     r"Output has changed from",
+    # Kibana's own client-side failures, which never reach Elasticsearch and so
+    # carry none of the markers above. A panel whose query cannot even be built
+    # shows this card, and the audit scored such a dashboard "pass" -- observed
+    # with a native PROMQL panel whose control param Kibana does not forward:
+    # "Couldn't parse Elasticsearch ES|QL query ... Parameter [?instance] value
+    # not found". An unbound parameter is a construction bug, not data
+    # readiness, so these stay hard errors and are never downgraded to a gap.
+    r"Couldn't parse Elasticsearch ES\|QL query",
+    r"Parameter \[\?[^\]]+\] value not found",
 )
 _ERROR_RE = [re.compile(p, re.IGNORECASE) for p in _RENDER_ERROR_PATTERNS]
 

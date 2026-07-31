@@ -331,3 +331,36 @@ def test_missing_migration_out_warns_on_stderr_and_keeps_stdout_valid_json(capsy
     assert "per-panel attribution" in captured.err
     assert "--migration-out" not in captured.out
     assert _json.loads(captured.out)["render"]["status"] == "pass"
+
+
+def test_kibana_client_side_parse_failure_is_a_render_error():
+    """A query Kibana cannot even build never reaches ES, so it carries no ES marker.
+
+    Observed live: a native PROMQL panel referencing a dashboard control renders
+    "Couldn't parse Elasticsearch ES|QL query ... Parameter [?instance] value not
+    found", because Kibana does not forward control values into a PROMQL
+    command's PromQL expression. The audit scored that dashboard `pass` -- a
+    visibly broken panel counted as healthy, which is the one thing this gate
+    exists to prevent.
+    """
+    from observability_migration.targets.kibana.render_audit import classify_render
+
+    dom = (
+        "<div>Couldn't parse Elasticsearch ES|QL query. Check your query and try "
+        "again. Error: line 1:134: Parameter [?instance] value not found</div>"
+    )
+    verdict = classify_render(dom)
+    assert verdict.status == "fail"
+    assert verdict.rendered_error_markers
+
+
+def test_unbound_parameter_is_not_downgraded_to_a_data_gap():
+    """An unbound param is a construction bug, not data readiness."""
+    from observability_migration.targets.kibana.render_audit import classify_panel
+
+    result = classify_panel(
+        "P", "Parameter [?instance] value not found",
+        breakdown_fields=["instance"], expects_data=True,
+        available_fields=set(), available_metrics=set(),
+    )
+    assert result.status == "error", result.status
