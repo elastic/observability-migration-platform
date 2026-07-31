@@ -69,3 +69,47 @@ def test_organize_real_rename_still_renames():
     assert "EVAL ns = namespace" in query
     keep = [ln for ln in query.splitlines() if ln.strip().startswith("| KEEP")]
     assert keep and "ns" in keep[-1]
+
+
+def test_counter_suffix_alias_resolves_against_live_caps():
+    """A dashboard naming a counter without `_total` must still find it.
+
+    Exporters adopted the OpenMetrics `_total` suffix at different times, so a
+    dashboard written against one version names a metric the current exporter no
+    longer exposes. Real case: postgres-overview "Buffers" queries
+    `pg_stat_bgwriter_buffers_alloc` while postgres_exporter v0.15 emits
+    `pg_stat_bgwriter_buffers_alloc_total` -- the panel was dead against a
+    perfectly healthy target.
+    """
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    r = SchemaResolver.__new__(SchemaResolver)
+    r._field_cache = {"metrics.x_total": {}, "metrics.y": {}}
+    r._metric_map_applied = {}
+    r._metric_map_warnings = []
+
+    # Dashboard says `x`, target has `x_total`.
+    assert r._counter_suffix_alias("metrics.x", "x") == "metrics.x_total"
+    assert r._metric_map_applied["x"] == "metrics.x_total"
+    assert r._metric_map_warnings, "the substitution must be reported"
+
+    # Dashboard says `y_total`, target has `y`.
+    assert r._counter_suffix_alias("metrics.y_total", "y_total") == "metrics.y"
+
+    # Present as asked: untouched.
+    assert r._counter_suffix_alias("metrics.y", "y") == "metrics.y"
+
+    # Neither spelling present: keep the source name so preflight reports the gap.
+    assert r._counter_suffix_alias("metrics.z", "z") == "metrics.z"
+
+
+def test_counter_suffix_alias_never_guesses_offline():
+    """With no live caps there is no evidence, so nothing may be substituted."""
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    r = SchemaResolver.__new__(SchemaResolver)
+    r._field_cache = {}
+    r._metric_map_applied = {}
+    r._metric_map_warnings = []
+    assert r._counter_suffix_alias("metrics.x", "x") == "metrics.x"
+    assert r._metric_map_applied == {}

@@ -818,6 +818,43 @@ class SchemaResolver:
         except Exception:
             return None
 
+    def _counter_suffix_alias(self, field, metric_name):
+        """Reconcile the OpenMetrics ``_total`` counter suffix against live caps.
+
+        Exporters moved counters to the OpenMetrics ``_total`` convention at
+        different times, so a dashboard written against one version names a
+        metric the current exporter no longer exposes. Real case:
+        postgres-overview "Buffers" queries ``pg_stat_bgwriter_buffers_alloc``
+        while postgres_exporter v0.15 emits
+        ``pg_stat_bgwriter_buffers_alloc_total`` -- five panels dead on a
+        perfectly healthy target.
+
+        Only ever applied when live discovery PROVES it: the requested field is
+        absent from the caps and the other spelling is present. With no caps
+        (offline) nothing is inferred, so this can never invent a field. The
+        substitution is recorded like an applied metric_map entry so the run
+        reports it instead of quietly renaming the operator's metric.
+        """
+        cache = self._field_cache or {}
+        if not cache or field in cache:
+            return field
+        if field.endswith("_total"):
+            alternative = field[: -len("_total")]
+        else:
+            alternative = f"{field}_total"
+        if alternative not in cache:
+            return field
+        self._metric_map_applied[metric_name] = alternative
+        warning = (
+            f"Resolved {field!r} to {alternative!r}: the target does not have the "
+            "metric under the name the dashboard uses, but does have it under the "
+            "other OpenMetrics counter spelling (exporters added/removed the "
+            "'_total' suffix across versions)"
+        )
+        if warning not in self._metric_map_warnings:
+            self._metric_map_warnings.append(warning)
+        return alternative
+
     def resolve_metric_field(self, metric_name, *, prefer=None, source_labels=None):
         """Resolve a PromQL metric name to its actual stored field.
 
@@ -871,11 +908,13 @@ class SchemaResolver:
             # Native endpoint stores metrics as `metrics.<name>` directly — no
             # suffix variants.  Return the prefixed form unconditionally so the
             # contract layer can surface missing fields via preflight.
-            return f"metrics.{metric_name}"
+            return self._counter_suffix_alias(f"metrics.{metric_name}", metric_name)
         if profile == "prometheus_metrics":
             # Classic Metricbeat remote_write (use_types=false): nested under
             # prometheus.metrics.<name> with labels under prometheus.labels.*.
-            return f"prometheus.metrics.{metric_name}"
+            return self._counter_suffix_alias(
+                f"prometheus.metrics.{metric_name}", metric_name
+            )
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to

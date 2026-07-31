@@ -38,6 +38,79 @@ TARGETS = [
 ]
 
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
+_TYPE_RE = re.compile(r"^#\s*TYPE\s+(\S+)\s+(\S+)")
+
+
+def parse_metric_types(text: str) -> dict:
+    """Metric name -> Prometheus type, from the exposition's ``# TYPE`` lines.
+
+    Elasticsearch infers counter-vs-gauge from the ``_total`` suffix when a
+    mapping does not say otherwise. Real exporters do not all follow that
+    convention: postgres_exporter declares ``pg_stat_database_tup_fetched`` as a
+    counter, and without the declaration it lands as a gauge, so every
+    ``irate()`` panel over it fails with "first argument of [IRATE(...)] must be
+    [counter_long, counter_integer or counter_double]". Honouring ``# TYPE``
+    makes the rig behave like a faithful ingest instead of manufacturing a
+    counter-typing gap the real world would not have.
+    """
+    out = {}
+    for line in text.splitlines():
+        m = _TYPE_RE.match(line.strip())
+        if m:
+            out[m.group(1)] = m.group(2).lower()
+    return out
+
+
+def ensure_index_template(dataset: str, metric_types: dict) -> None:
+    """Declare counter/gauge typing for this dataset before its first document."""
+    props = {}
+    for name, kind in sorted(metric_types.items()):
+        if kind not in ("counter", "gauge"):
+            continue
+        props[name] = {"type": "double", "time_series_metric": kind}
+    if not props:
+        return
+    # Compose on the built-in metrics component templates rather than replacing
+    # them: an index template does not merge with a lower-priority one, and
+    # re-declaring TSDB settings here fails with "[index.mode=time_series]
+    # requires a non-empty [index.routing_path]". Composing keeps the stock
+    # passthrough/dimension setup and adds only the metric typing.
+    body = {
+        "index_patterns": [f"metrics-{dataset}-*"],
+        "data_stream": {},
+        "priority": 500,
+        # ``index.mode`` must be set here: none of the composed component
+        # templates set it, so omitting it yields a standard index and every
+        # query fails with "is not a time series index. Use FROM command
+        # instead". The routing path comes from the ``labels`` passthrough in
+        # ``metrics-prometheus@mappings``, so that component must be composed and
+        # ``labels`` must NOT be redefined below -- redefining it without
+        # ``time_series_dimension`` leaves TSDB with no routing path and the
+        # template is rejected outright.
+        "composed_of": [
+            "metrics-prometheus@mappings",
+            "metrics-prometheus@settings",
+            "metrics@mappings",
+            "data-streams@mappings",
+            "metrics@settings",
+        ],
+        "template": {
+            "settings": {"index.mode": "time_series"},
+            "mappings": {"properties": {"metrics": {"properties": props}}},
+        },
+    }
+    try:
+        resp = requests.put(
+            f"{ES_URL}/_index_template/rig-{dataset.replace('.', '-')}",
+            json=body, timeout=20,
+        )
+        if resp.status_code >= 300:
+            print(f"  template {dataset}: HTTP {resp.status_code} {resp.text[:160]}", flush=True)
+        else:
+            counters = sum(1 for v in props.values() if v["time_series_metric"] == "counter")
+            print(f"  template {dataset}: {len(props)} fields ({counters} counters)", flush=True)
+    except Exception as exc:
+        print(f"  template {dataset}: {exc}", flush=True)
 
 
 def parse_prometheus(text: str) -> dict:
@@ -138,6 +211,15 @@ def wait_for_es(url: str, max_wait: int = 120) -> None:
 
 def main() -> None:
     wait_for_es(ES_URL)
+    # Declare counter/gauge typing from each exporter's own ``# TYPE`` lines
+    # before the first document creates the data stream with inferred mappings.
+    for url, dataset, _job, _instance in TARGETS:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            ensure_index_template(dataset, parse_metric_types(resp.text))
+        except Exception as exc:
+            print(f"  template {dataset}: could not scrape for types: {exc}", flush=True)
     for url, dataset, _job, _instance in TARGETS:
         print(f"Scraping {url} every {SCRAPE_INTERVAL}s → metrics-{dataset}-{NAMESPACE}", flush=True)
     while True:
