@@ -33,6 +33,8 @@ RETRY_DELAY = 5
 TARGETS = [
     ("http://redis_exporter:9121/metrics", "redis.prometheus", "redis_exporter", "redis:6379"),
     ("http://node_exporter:9100/metrics", "node.prometheus", "node_exporter", "node:9100"),
+    ("http://mysqld_exporter:9104/metrics", "mysql.prometheus", "mysqld_exporter", "mysql:3306"),
+    ("http://postgres_exporter:9187/metrics", "postgres.prometheus", "postgres_exporter", "postgres:5432"),
 ]
 
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')

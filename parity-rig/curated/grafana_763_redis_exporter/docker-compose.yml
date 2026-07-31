@@ -13,6 +13,8 @@
 #   9091 → Prometheus
 #   9122 → redis_exporter
 #   9101 → node_exporter
+#   9104 → mysqld_exporter
+#   9187 → postgres_exporter
 #   6380 → Redis
 
 services:
@@ -107,10 +109,10 @@ services:
       redis:
         condition: service_healthy
 
-  # Second exporter so the numeric parity gate has real data for the
-  # node_exporter dashboards in the corpus. Without it every node panel
-  # compares against a redis-only index and reports DATA_GAP, which verifies
-  # nothing.
+  # Additional exporters so the parity gate has real data for the dashboards we
+  # audit panel-by-panel (Node Exporter Full, MySQL Overview, PostgreSQL). Without
+  # them every panel compares against a redis-only index and reports DATA_GAP,
+  # which verifies nothing and cannot show whether a panel lights up.
   node_exporter:
     image: prom/node-exporter:v1.8.2
     container_name: redis-rig-node-exporter
@@ -118,6 +120,66 @@ services:
       - "9101:9100"
     networks:
       - redis-rig
+
+  mysql:
+    image: mysql:8.0
+    container_name: redis-rig-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=rigpass
+      - MYSQL_DATABASE=rigdb
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -prigpass || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  mysqld_exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: redis-rig-mysqld-exporter
+    environment:
+      - MYSQLD_EXPORTER_PASSWORD=rigpass
+    command:
+      - --mysqld.username=root
+      - --mysqld.address=mysql:3306
+      - --collect.global_status
+      - --collect.global_variables
+      - --collect.info_schema.innodb_metrics
+    ports:
+      - "9104:9104"
+    networks:
+      - redis-rig
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: redis-rig-postgres
+    environment:
+      - POSTGRES_PASSWORD=rigpass
+      - POSTGRES_DB=rigdb
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: redis-rig-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:rigpass@postgres:5432/rigdb?sslmode=disable
+    ports:
+      - "9187:9187"
+    networks:
+      - redis-rig
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -150,6 +212,10 @@ services:
       redis_exporter:
         condition: service_started
       node_exporter:
+        condition: service_started
+      mysqld_exporter:
+        condition: service_started
+      postgres_exporter:
         condition: service_started
     restart: unless-stopped
 
