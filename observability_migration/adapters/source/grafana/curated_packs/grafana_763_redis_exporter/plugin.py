@@ -72,7 +72,12 @@ def register(api):
             "| WHERE metrics.redis_memory_used_bytes IS NOT NULL",
             "  AND metrics.redis_memory_max_bytes IS NOT NULL",
             "  AND metrics.redis_memory_max_bytes > 0",
-            "| WHERE labels.instance RLIKE ?instance",
+            # ``instance`` is a Grafana multi-select variable, so its Kibana control
+            # binds ?instance as a LIST. RLIKE takes a scalar pattern and fails with
+            # "Invalid pattern parameter type for RLIKE [?instance]: expected string,
+            # found list". Match the core translator's multi-select binding instead;
+            # the ".*" disjunct preserves the All selection.
+            '| WHERE MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, labels.instance)',
             "| EVAL memory_pct = 100.0 * metrics.redis_memory_used_bytes / metrics.redis_memory_max_bytes",
             "| STATS memory_pct = SUM(memory_pct) BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)",
             "| STATS memory_pct = MAX(memory_pct)",

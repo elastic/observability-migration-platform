@@ -66,7 +66,12 @@ def register(api):
         index = context.index or "metrics-redis.prometheus-default"
         esql = "\n".join([
             f"TS {index}",
-            "| WHERE labels.instance RLIKE ?instance",
+            # ``instance`` is a Grafana multi-select variable, so its Kibana control
+            # binds ?instance as a LIST. RLIKE takes a scalar pattern and fails with
+            # "Invalid pattern parameter type for RLIKE [?instance]: expected string,
+            # found list". Match the core translator's multi-select binding instead;
+            # the ".*" disjunct preserves the All selection.
+            '| WHERE MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, labels.instance)',
             "| WHERE metrics.redis_keyspace_hits_total IS NOT NULL",
             "  OR metrics.redis_keyspace_misses_total IS NOT NULL",
             "| STATS hits = SUM(IRATE(metrics.redis_keyspace_hits_total, 1m)),"
