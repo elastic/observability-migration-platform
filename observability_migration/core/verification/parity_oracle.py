@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from observability_migration.core.sample_data import NetworkError
+
 # Labels Prometheus/remote-write attach automatically; scrub so series keys match
 # between the translated output and the native PROMQL output.
 PROMETHEUS_ONLY_LABELS = frozenset(
@@ -1293,6 +1295,67 @@ def run_translated(request, esql: str, tstart: str, tend: str,
 def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:
     query = f'PROMQL index={index} step={step}s start="{start_iso}" end="{end_iso}" value=({expr})'
     return _run_query(request, query)
+
+
+def data_time_bounds(request, index: str) -> tuple[str, str] | None:
+    """Actual ``@timestamp`` span of the index, or None if it cannot be determined.
+
+    Best-effort by design: narrowing the comparison window is a convenience, so
+    a probe that cannot answer must leave the run alone rather than abort it.
+    ``NetworkError`` still propagates -- an unreachable cluster is the caller's
+    to report, and it reports it far better than "could not clamp" would.
+    """
+    try:
+        res = _run_query(request, f"FROM {index} | STATS mn = MIN(@timestamp), mx = MAX(@timestamp)")
+    except NetworkError:
+        raise
+    except Exception:
+        # Advisory probe: any failure means "don't narrow", never "abort the run".
+        return None
+    if not isinstance(res, dict) or res.get("error"):
+        return None
+    values = res.get("values") or []
+    if not values or len(values[0]) < 2:
+        return None
+    lo, hi = values[0][0], values[0][1]
+    if not lo or not hi:
+        return None
+    return str(lo), str(hi)
+
+
+def clamp_window_to_data(
+    request, index: str, start_iso: str, end_iso: str
+) -> tuple[str, str, str]:
+    """Shrink a comparison window to the data that actually exists.
+
+    The gate defaults to ``now - window_minutes .. now``. Point that at an index
+    seeded minutes ago and almost the whole window is empty: the reference query
+    and the translated query each return a couple of buckets, they land in
+    different places, and every panel reports "no overlapping time buckets".
+    Measured on a freshly seeded node_exporter index: 174 of 356 panels FAILed
+    for this reason alone, which is indistinguishable at a glance from the
+    translator being broken -- the exact kind of noise that gets a gate ignored.
+
+    Only ever narrows the window, never widens it, and returns a note describing
+    what it did so a clamped run is never silently mistaken for a full one.
+    """
+    bounds = data_time_bounds(request, index)
+    if not bounds:
+        return start_iso, end_iso, ""
+    data_lo, data_hi = bounds
+    new_start = max(start_iso, data_lo)
+    new_end = min(end_iso, data_hi)
+    if new_start >= new_end:
+        return start_iso, end_iso, (
+            f"index {index} has data from {data_lo} to {data_hi}, which does not overlap "
+            f"the requested window {start_iso}..{end_iso}; comparisons will not be meaningful"
+        )
+    if (new_start, new_end) == (start_iso, end_iso):
+        return start_iso, end_iso, ""
+    return new_start, new_end, (
+        f"window clamped to available data in {index}: {new_start}..{new_end} "
+        f"(requested {start_iso}..{end_iso})"
+    )
 
 
 def native_promql_available(request, index: str) -> bool:

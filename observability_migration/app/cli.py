@@ -47,6 +47,7 @@ from observability_migration.core.telemetry_contract import (
     write_telemetry_contract,
 )
 from observability_migration.core.verification.parity_oracle import (
+    clamp_window_to_data,
     compare_panel,
     native_promql_available,
 )
@@ -1792,6 +1793,19 @@ def _run_compare(args: Any) -> int:
 
     verify = _tls_verify(args)
     request = make_es_request(args.es_url, args.api_key, verify=verify)
+    # A window that reaches past the data produces "no overlapping time buckets"
+    # on every panel, which reads as a mass translation failure rather than as
+    # the misconfiguration it is.
+    window_note = ""
+    try:
+        start_iso, end_iso, window_note = clamp_window_to_data(
+            request, args.index or "metrics-*", start_iso, end_iso
+        )
+    except NetworkError as exc:
+        print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
+        return 2
+    if window_note:
+        print(f"compare: {window_note}")
     try:
         oracle_ok = native_promql_available(request, args.index or "metrics-*")
     except NetworkError as exc:
@@ -1910,7 +1924,12 @@ def _run_compare(args: Any) -> int:
     summary = {"panels": len(rows)}
     for r in rows:
         summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
-    report = {"summary": summary, "oracle_available": oracle_ok, "panels": rows}
+    report = {
+        "summary": summary,
+        "oracle_available": oracle_ok,
+        "window": {"start": start_iso, "end": end_iso, "note": window_note},
+        "panels": rows,
+    }
     out = Path(args.report_out)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")

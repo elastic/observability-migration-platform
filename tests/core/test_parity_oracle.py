@@ -1507,3 +1507,58 @@ def test_other_verification_exceptions_are_still_errors():
         "verification_exception: Found 1 problem\nline 2:9: Unknown function [TBUKCET]"
     )
     assert cmp_.verdict() == "ERROR"
+
+
+def test_window_is_clamped_to_available_data():
+    """A window reaching past the data must narrow, not produce mass FAILs.
+
+    The gate defaults to `now - window_minutes .. now`. Against a freshly
+    seeded index almost the whole window is empty, the two sides bucket into
+    different places, and every panel reports "no overlapping time buckets" --
+    174 of 356 panels on a real run, indistinguishable from a broken translator.
+    """
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-07-31T12:56:00.000Z", "2026-07-31T13:01:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "metrics-node.prometheus-default",
+        "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert start == "2026-07-31T12:56:00.000Z"
+    assert end == "2026-07-31T13:00:00Z"
+    assert "clamped" in note
+
+
+def test_window_is_not_widened_when_data_is_abundant():
+    """Clamping must only ever narrow the requested window."""
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-07-01T00:00:00.000Z", "2026-08-01T00:00:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "i", "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert (start, end) == ("2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z")
+    assert note == ""
+
+
+def test_non_overlapping_window_is_reported_not_silently_clamped():
+    """Data that misses the window entirely must say so, not fake an overlap."""
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-06-01T00:00:00.000Z", "2026-06-02T00:00:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "i", "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert (start, end) == ("2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z")
+    assert "does not overlap" in note
+
+
+def test_empty_index_leaves_the_window_untouched():
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}], "values": [[None, None]]}
+
+    start, end, note = po.clamp_window_to_data(request, "i", "a", "b")
+    assert (start, end, note) == ("a", "b", "")
