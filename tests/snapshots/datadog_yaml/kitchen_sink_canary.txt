@@ -1,0 +1,31 @@
+dashboard: Datadog Kitchen Sink Canary
+source: infra/datadog/dashboards/kitchen-sink-canary.json
+widgets: 25
+panels: 24
+controls: 1
+filters: 0
+statuses: {'ok': 16, 'requires_manual': 3, 'skipped': 1, 'warning': 5}
+- title='timeseries widget'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
+- title='query_value widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='toplist widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='bar_chart widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='table widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='query_table widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='heatmap widget'; kind=esql; type=heatmap; dimension=; metrics=[]; breakdowns=[]; primary=; metric=value; x_axis=time_bucket; y_axis=instance
+- title='distribution widget'; kind=esql; type=line; dimension=time_bucket; metrics=['avg', 'p50', 'p90', 'p99']; breakdowns=[]; primary=; metric=
+- title='change widget'; kind=esql; type=datatable; dimension=; metrics=['value', 'current_value', 'previous_value']; breakdowns=['instance']; primary=; metric=
+- title='pie widget'; kind=esql; type=pie; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='treemap widget'; kind=esql; type=treemap; dimension=; metrics=[]; breakdowns=['instance']; primary=; metric=value
+- title='sunburst widget'; kind=esql; type=pie; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='scatterplot widget'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
+- title='geomap widget'; kind=markdown
+- title='hostmap widget'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['instance']; primary=; metric=
+- title='log_stream widget'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
+- title='list_stream widget'; kind=esql; type=datatable; dimension=; metrics=[]; breakdowns=['@timestamp', 'message', 'log.level', 'service.name', 'host.name']; primary=; metric=
+- title='note widget'; kind=markdown
+- title='free_text widget'; kind=markdown
+- title='image widget'; kind=markdown
+- title='iframe widget'; kind=markdown
+- title='check_status widget'; kind=markdown
+- title='manage_status widget'; kind=markdown
+- title='nested timeseries'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=

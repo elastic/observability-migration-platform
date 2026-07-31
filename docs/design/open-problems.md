@@ -114,6 +114,73 @@ way.
 
 ---
 
+## 7. Render audit reports no per-panel detail
+
+**Status:** diagnosis gap in the verifier.
+
+`render_audit_driver --elements` detects page-level error markers
+("Unexpected error from Elasticsearch", "verification_exception") and correctly
+scores the dashboard `fail`, but returns `panels: []`. There is no attribution,
+so a failing dashboard says *that* something broke, never *which panel*.
+
+Working around it means re-executing every panel query by hand against `_query`
+to find the culprit — which is how the logs-panel bug was localised. Populating
+per-panel results would make the audit self-sufficient.
+
+---
+
+## 8. Datadog `--field-profile prometheus` vs `prometheus_native`
+
+**Status:** sharp edge, no error until every panel fails.
+
+Two different target layouts share a confusingly similar name:
+
+| profile | emits |
+|---|---|
+| `prometheus` | `prometheus.metrics.<m>` / `prometheus.labels.<l>` (Elastic Agent integration) |
+| `prometheus_native` | `metrics.<m>` / `labels.<l>` |
+
+Picking the wrong one migrates and uploads with a clean report, and then every
+panel fails in Kibana with "Unknown column". Field discovery has the live
+mapping and could detect the mismatch, but does not warn.
+
+Worth considering: fail (or warn loudly) when the chosen profile's field prefix
+is absent from the discovered index.
+
+---
+
+## Panel-type review — current state
+
+Verified end to end against the live rig (migrate → upload → execute every query
+→ browser render audit), not by reading routing tables.
+
+**Grafana — 16/16 supported panel types render clean.** Canary:
+`infra/grafana/dashboards/kitchen-sink-canary.json`. One bug found and fixed:
+`logs` panels on a Prometheus datasource were routed as LogQL.
+
+**Datadog — 22/22 non-log widget types render clean.** Canary:
+`infra/datadog/dashboards/kitchen-sink-canary.json`. The 2 log widgets
+(`log_stream`, `list_stream`) fail only because the rig has no `logs-*` index —
+confirmed absent via `_resolve/index`, not a defect.
+
+Every lossy conversion is disclosed with a reason rather than applied silently,
+which is the behaviour to preserve:
+
+| widget | becomes | disclosed as |
+|---|---|---|
+| `geomap` | markdown placeholder | `requires_manual` — needs Kibana Maps |
+| `check_status` / `manage_status` | markdown placeholder | `requires_manual` — Synthetics/Alerts |
+| `hostmap` | table | warning — "data-preserving ES|QL table" |
+| `scatterplot` | XY | warning |
+| `change` | table | warning — "comparison shift" |
+| `bar_chart` / `toplist` | table | deliberate: same grouped-scalar data shape |
+| `group` | (structural) | skipped |
+
+Not yet reviewed to this depth: Grafana alert rules, and Datadog widgets driven
+by log/APM/RUM data sources rather than metrics.
+
+---
+
 ## Fixed this cycle — kept as cautionary notes
 
 These are resolved. They are recorded because each one looked like something
