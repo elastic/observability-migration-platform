@@ -14719,25 +14719,26 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         )
 
     def test_kibana_native_layout_l2_yields_to_2d_grid(self):
-        """L2 per-type minimums must NOT break the 2D grid the
-        source author authored.
+        """A legibility floor must not distort the 2D grid the author authored.
 
-        Reproduces the ``node-exporter-full`` "Quick CPU / Mem / Disk"
-        section: 6 wide gauges along the top, with two short stat
-        tiles in the corner that the author *deliberately* sized to
-        h=3 so they could stack two-deep beside a tall neighbour.
-        Before the collision-aware fix, L2's metric ``min_h=6``
-        bumped each short tile to h=6, blowing through the gauge
-        below it and forcing the overlap resolver to cascade panels
-        to y=8/y=6 -- producing the ugly "right-side dangling stat
-        tile cluster" layout in the screenshot at 2026-05-13 01:24.
+        Reproduces node-exporter-full's "Quick CPU / Mem / Disk": wide gauges
+        along the top with two short stat tiles stacked beside them, deliberately
+        sized so the stack tiles exactly against its tall neighbour.
+
+        Applying the per-type floor panel-by-panel broke this twice over. The
+        floors differ by type (gauge 8, metric 6) so the gauge grew for being a
+        gauge, and the bump was rejected wherever a neighbour was in the way --
+        StatTop could not grow because StatBottom sat under it, StatBottom could,
+        and two panels with identical source geometry ended up different heights.
+        The row went ragged: the stack overhung the gauge by a row.
+
+        The band is now scaled by a single factor, so the floors are met AND the
+        stack stays flush with its neighbour.
         """
         from observability_migration.adapters.source.grafana.panels import (
             _apply_kibana_native_layout,
         )
 
-        # Tall gauge on the left + two stacked short stats on its
-        # right. Heights 8 and (3 + 3) tile to the same 8 rows.
         panels = [
             {"title": "GaugeLeft", "esql": {"type": "gauge"},
              "size": {}, "position": {},
@@ -14753,22 +14754,20 @@ class KibanaNativeLayoutTests(unittest.TestCase):
              "_grafana_w": 8, "_grafana_h": 3},
         ]
         _apply_kibana_native_layout(panels)
-
         gauge, top, bot = panels
-        # StatTop's min_h=6 *would* push its bottom to y=6,
-        # overlapping StatBottom at y=5..8 (scaled). Collision-
-        # aware L2 keeps the source-author-chosen short height for
-        # StatTop so the 2D grid remains intact.
-        self.assertLessEqual(
-            top["size"]["h"], 5,
-            "StatTop must keep its short height when StatBottom is below it; "
-            f"got h={top['size']['h']} which would clash",
-        )
-        # StatBottom has nothing below in this group so the L2 min_h
-        # can be applied to it.
-        self.assertGreaterEqual(top["position"]["y"] + top["size"]["h"], bot["position"]["y"])
-        # And the gauge keeps its faithful height (no false collision).
-        self.assertGreater(gauge["size"]["h"], 0)
+
+        def bottom(panel):
+            return panel["position"]["y"] + panel["size"]["h"]
+
+        # The stack still tiles: no gap, no overlap.
+        self.assertEqual(bottom(top), bot["position"]["y"])
+        # And it ends exactly where its tall neighbour does -- the property whose
+        # absence produced the ragged right-hand column.
+        self.assertEqual(bottom(gauge), bottom(bot))
+        # Every panel clears its own legibility floor.
+        self.assertGreaterEqual(gauge["size"]["h"], 8)
+        self.assertGreaterEqual(top["size"]["h"], 6)
+        self.assertGreaterEqual(bot["size"]["h"], 6)
 
     def test_kibana_native_layout_preserves_relative_y_spacing(self):
         """L1 universal fix: when multiple Grafana visual rows are

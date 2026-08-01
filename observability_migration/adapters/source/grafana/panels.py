@@ -4885,7 +4885,14 @@ def _build_summary_category_bar_query(esql, metric_fields, metric_label_hints=No
         return esql
     metric_label_hints = metric_label_hints or {}
     labels = [json.dumps(str(metric_label_hints.get(field, field) or field)) for field in metric_fields]
-    value_terms = [f"TO_STRING({field})" for field in metric_fields]
+    # COALESCE each element: MV_APPEND propagates null, so a single metric with
+    # no data in the target nulls the WHOLE array and every bar in the panel
+    # comes back empty -- Node Exporter Full's "Pressure" rendered blank because
+    # node_pressure_irq_stalled_seconds_total is absent, taking CPU, Mem and I/O
+    # down with it. The "" placeholder survives MV_APPEND and TO_DOUBLE("")
+    # yields null again at the far end, so only the absent metric's own bar is
+    # empty.
+    value_terms = [f'COALESCE(TO_STRING({field}), "")' for field in metric_fields]
     lines = esql.splitlines()
     lines.extend(
         [
@@ -8083,6 +8090,10 @@ def _apply_kibana_native_layout(yaml_panels):
     # intent) over the readability floor.
     _apply_collision_aware_minimums(yaml_panels)
 
+    # L2b: raise panels to their legibility floor by scaling each horizontal
+    # band uniformly, which preserves the band's internal proportions.
+    _apply_band_uniform_min_height(yaml_panels)
+
     # L1.5 (gap compaction): strip stale vertical dead-space left by collapsed
     # Grafana rows (their children keep last-expanded absolute y, so the first
     # visible row can sit hundreds of rows above the rest). Runs after the
@@ -8245,7 +8256,8 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             _normalize_tile_size(panel, kibana_type)
             continue
 
-        min_w, min_h, max_h = constraints
+        # min_h is applied by _apply_band_uniform_min_height, not here.
+        min_w, _min_h, max_h = constraints
         x, y, w, h = _rect(panel)
         if w <= 0 or h <= 0:
             _normalize_tile_size(panel, kibana_type)
@@ -8266,21 +8278,13 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             if not collides:
                 w = min_w
 
-        # Grow to the row's target height: at least the type's legibility floor
-        # (min_h), or higher if the row cap (already lifted to the max type
-        # floor in the row) demands it. Capped by the type's max_h.
-        cap = row_height_cap.get(y)
-        target_h = max(min_h, cap) if cap is not None else min_h
-        if max_h is not None:
-            target_h = min(target_h, max_h)
-        if h < target_h:
-            candidate = (x, y, w, target_h)
-            collides = any(
-                i != idx and _rects_overlap(candidate, _rect(other))
-                for i, other in enumerate(yaml_panels)
-            )
-            if not collides:
-                h = target_h
+        # Height growth is NOT done here. Bumping one panel at a time and
+        # rejecting on collision breaks the proportions the author chose, and
+        # breaks them asymmetrically: on Node Exporter Full's first row
+        # "CPU Cores" could not grow (RootFS Total sits directly below it) while
+        # "RootFS Total" could, so two panels with identical source geometry
+        # ended up 3 and 6 high and the row went ragged.
+        # _apply_band_uniform_min_height scales each band as a unit instead.
 
         panel["size"] = {"w": w, "h": h}
         # Re-apply the legacy x-clamp + grid-overflow guard.
@@ -8290,6 +8294,100 @@ def _apply_collision_aware_minimums(yaml_panels: list[dict]) -> None:
             max_x = 0
         position["x"] = min(int(position.get("x", 0) or 0), max_x)
         panel["position"] = position
+
+
+def _panel_effective_type(panel):
+    """The Kibana visualization type that governs this panel's size limits."""
+    esql_cfg = panel.get("esql")
+    if isinstance(esql_cfg, dict) and esql_cfg.get("type"):
+        return str(esql_cfg["type"])
+    if "markdown" in panel:
+        return "markdown"
+    return str(_kibana_panel_type(panel) or "")
+
+
+def _vertical_bands(yaml_panels):
+    """Group panel indices into maximal bands that share vertical space.
+
+    A band is a run of panels whose vertical extents overlap transitively, so a
+    tall panel and the stack of short ones beside it belong to the same band —
+    which is exactly the relationship that has to be preserved for a row to look
+    right. Bands never overlap each other, so each can be rescaled independently.
+    """
+    order = sorted(
+        range(len(yaml_panels)), key=lambda i: (_rect(yaml_panels[i])[1], _rect(yaml_panels[i])[0])
+    )
+    bands: list[list[int]] = []
+    current: list[int] = []
+    current_bottom = None
+    for i in order:
+        _, y, _, h = _rect(yaml_panels[i])
+        if current and current_bottom is not None and y >= current_bottom:
+            bands.append(current)
+            current = []
+            current_bottom = None
+        current.append(i)
+        current_bottom = max(current_bottom or 0, y + h)
+    if current:
+        bands.append(current)
+    return bands
+
+
+def _apply_band_uniform_min_height(yaml_panels):
+    """Raise panels to their legibility floor without distorting the layout.
+
+    The faithful coordinate transform already reproduces the author's
+    proportions: Node Exporter Full's first row has six gauges at h=4 beside a
+    2+2 stat stack, and after the 30/20 row scale that is 6 beside 3+3 — still
+    flush. Applying a per-type floor panel-by-panel destroys that, because the
+    floors differ by type (gauge 8, metric 6) and a bump gets rejected wherever a
+    neighbour is in the way.
+
+    Scaling a whole band by ONE factor fixes both problems at once. The factor is
+    the smallest that lifts every panel in the band to its own floor, so relative
+    heights are untouched and the band stays flush. Scaling top and bottom edges
+    (rather than heights) keeps panels that touched still touching, so no overlap
+    can be introduced. Bands below are shifted by the growth so nothing collides.
+
+    For that first row the factor is 2: gauges 6 -> 12, stats 3+3 -> 6+6. Flush,
+    and every panel clears its floor.
+    """
+    if not yaml_panels:
+        return
+
+    def half_up(value: float) -> int:
+        return int(value + 0.5)
+
+    offset = 0
+    for band in _vertical_bands(yaml_panels):
+        rects = {i: _rect(yaml_panels[i]) for i in band}
+        old_top = min(rects[i][1] for i in band)
+        old_bottom = max(rects[i][1] + rects[i][3] for i in band)
+
+        scale = 1.0
+        for i in band:
+            constraints = _TYPE_SIZE_CONSTRAINTS.get(_panel_effective_type(yaml_panels[i]))
+            if constraints is None:
+                continue
+            _, min_h, _ = constraints
+            height = rects[i][3]
+            if height > 0 and height < min_h:
+                scale = max(scale, min_h / height)
+
+        new_top = old_top + offset
+        for i in band:
+            _, y, _, h = rects[i]
+            ny = new_top + half_up((y - old_top) * scale)
+            nb = new_top + half_up((y + h - old_top) * scale)
+            panel = yaml_panels[i]
+            position = dict(panel.get("position", {}))
+            size = dict(panel.get("size", {}))
+            position["y"] = ny
+            size["h"] = max(1, nb - ny)
+            panel["position"] = position
+            panel["size"] = size
+        new_bottom = new_top + half_up((old_bottom - old_top) * scale)
+        offset = new_bottom - old_bottom
 
 
 def _apply_faithful_coordinate_transform(yaml_panels):
