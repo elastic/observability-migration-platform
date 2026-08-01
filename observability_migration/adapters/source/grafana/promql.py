@@ -1741,24 +1741,24 @@ def _mv_contains_filter(label, param_name, negate=False):
     return f"NOT {expr}" if negate else expr
 
 
-def _absent_as_empty(label):
-    """Make an absent label read as the empty string, which is PromQL semantics.
+def _absent_aware(label, predicate, empty_predicate):
+    """Make a matcher treat an absent label as "", without losing pushdown.
 
-    Prometheus has no NULL: a series that does not carry a label behaves exactly
-    as if the label were "". So ``label=~".*"`` (what Grafana sends for an All /
-    multi variable) matches those series, and so does ``label!="x"``.
+    Prometheus has no NULL: a series that does not carry a label behaves as if
+    the label were "". ES|QL NULL propagates instead, so `release RLIKE ?p`
+    drops those series (measured: 0 matched where Prometheus matched 1565).
 
-    Elasticsearch does have NULL, and it propagates: ``release RLIKE ".*"`` over
-    a document with no ``release`` yields NULL, the row is dropped, and the panel
-    silently loses every series that lacks the label. Measured on a node index:
-    1006 documents carry ``process_open_fds`` and none carry ``release``, so the
-    "All" default matched 0 of them -- while Prometheus matched all 1006.
+    The obvious fix, ``COALESCE(field, "") RLIKE ?p``, is correct but wraps the
+    field in a function and Elasticsearch can no longer push the filter down to
+    Lucene -- measured on the rig, 176 documents scanned instead of 16 for the
+    same selective filter, on every label matcher of every panel.
 
-    Applied only where the two disagree (see callers): negated matchers, and any
-    matcher whose value is a ``?param`` bound at render time, since ".*" and ""
-    are both legitimate bindings and neither can be ruled out here.
+    This form keeps both: the first disjunct is a bare field comparison that
+    still pushes down, and the second only fires for documents where the field is
+    absent, deciding via the same predicate applied to "". Verified identical
+    results to the COALESCE form and identical document counts to the bare one.
     """
-    return f'COALESCE({label}, "")'
+    return f"({predicate} OR ({label} IS NULL AND {empty_predicate}))"
 
 
 def _matcher_to_esql(matcher, resolver, metric_field=None):
@@ -1799,17 +1799,29 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
                 # for All/multi variables. (allValue-as-regex equality is a
                 # narrower residual not covered here.)
-                return f'{_absent_as_empty(label)} RLIKE ?{param_name}'
-            return f'{_absent_as_empty(label)} == ?{param_name}'
+                return _absent_aware(
+                    label, f"{label} RLIKE ?{param_name}", f'"" RLIKE ?{param_name}'
+                )
+            return _absent_aware(
+                label, f"{label} == ?{param_name}", f'"" == ?{param_name}'
+            )
         if op == "!=":
             # Left as ``!=``: with the match-all default the param resolves to
             # ".*" and ``field != ".*"`` still matches every series (a safe,
             # non-empty default), unlike the ``==`` case which would be empty.
-            return f'{_absent_as_empty(label)} != ?{param_name}'
+            return _absent_aware(
+                label, f"{label} != ?{param_name}", f'"" != ?{param_name}'
+            )
         if op == "=~":
-            return f'{_absent_as_empty(label)} RLIKE ?{param_name}'
+            return _absent_aware(
+                label, f"{label} RLIKE ?{param_name}", f'"" RLIKE ?{param_name}'
+            )
         if op == "!~":
-            return f'NOT ({_absent_as_empty(label)} RLIKE ?{param_name})'
+            return _absent_aware(
+                label,
+                f"NOT ({label} RLIKE ?{param_name})",
+                f'NOT ("" RLIKE ?{param_name})',
+            )
         return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
@@ -1827,7 +1839,11 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
         # PromQL matches an absent label here (absent == ""), ES|QL NULL does not.
-        return f'{_absent_as_empty(label)} != {_quote_esql_string(value)}'
+        return _absent_aware(
+            label,
+            f"{label} != {_quote_esql_string(value)}",
+            f'"" != {_quote_esql_string(value)}',
+        )
     if op == "=~":
         if value in (".*", ".+", ""):
             return None
@@ -1835,7 +1851,11 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
     if op == "!~":
         if value in (".*", ".+", ""):
             return None
-        return f'NOT ({_absent_as_empty(label)} RLIKE {_quote_esql_string(value)})'
+        return _absent_aware(
+            label,
+            f"NOT ({label} RLIKE {_quote_esql_string(value)})",
+            f'NOT ("" RLIKE {_quote_esql_string(value)})',
+        )
     return None
 
 

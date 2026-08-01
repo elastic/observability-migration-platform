@@ -4,7 +4,7 @@ warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| WHERE NOT (COALESCE(device, "") RLIKE "(veth|azv|lxc).*")
+| WHERE (NOT (device RLIKE "(veth|azv|lxc).*") OR (device IS NULL AND NOT ("" RLIKE "(veth|azv|lxc).*")))
 | WHERE node_network_transmit_bytes_total IS NOT NULL
 | STATS node_network_transmit_bytes_total_device_veth_azv_lxc_rate_sum = SUM(RATE(node_network_transmit_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), device
 | EVAL computed_value = (0 - node_network_transmit_bytes_total_device_veth_azv_lxc_rate_sum)

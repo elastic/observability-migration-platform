@@ -7952,21 +7952,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         matcher = {"label": "host", "op": "=", "value": _grafana_param_value("host")}
 
-        # No match-all default declared -> exact equality preserved.
-        # The field reads through COALESCE(.., "") because a ``?param`` is bound
-        # at render time: PromQL treats an absent label as "", and ES|QL NULL
-        # would drop those series instead of matching them.
-        label = f'COALESCE({self.resolver.resolve_label("host")}, "")'
+        # A ``?param`` is bound at render time and may be "" or ".*", so the
+        # matcher is widened to treat an absent label as "" (PromQL semantics).
+        # The bare field stays the first disjunct so the filter still pushes
+        # down to Lucene.
+        label = self.resolver.resolve_label("host")
         self.assertEqual(
             _matcher_to_esql(matcher, self.resolver),
-            f"{label} == ?host",
+            f'({label} == ?host OR ({label} IS NULL AND "" == ?host))',
         )
 
         # Declared as a regex-default param -> equality becomes a regex match.
         self.rule_pack._regex_default_param_names = {"host"}
         self.assertEqual(
             _matcher_to_esql(matcher, self.resolver),
-            f"{label} RLIKE ?host",
+            f'({label} RLIKE ?host OR ({label} IS NULL AND "" RLIKE ?host))',
         )
 
     def test_dashboard_equality_matcher_on_include_all_var_renders_regex(self):

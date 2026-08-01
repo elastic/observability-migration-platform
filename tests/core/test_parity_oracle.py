@@ -1570,22 +1570,35 @@ def test_param_label_matcher_treats_an_absent_label_as_empty():
     ES|QL NULL propagates, so `release RLIKE ?release` drops every document that
     does not carry `release` -- measured on a node index, 1006 documents carry
     process_open_fds, none carry release, and the "All" default matched 0 of them
-    while Prometheus matched all 1006. Reading the label through COALESCE(.., "")
-    restores PromQL semantics exactly: ".*" matches an absent label, "prod" does
-    not.
-    """
-    from observability_migration.adapters.source.grafana.promql import _absent_as_empty
+    while Prometheus matched all 1006.
 
-    assert _absent_as_empty("labels.release") == 'COALESCE(labels.release, "")'
+    The emitted form must ALSO keep the filter pushable to Lucene. Wrapping the
+    field (`COALESCE(field, "") RLIKE ?p`) is correct but scans 176 documents
+    where the bare form scans 16. The OR form keeps a bare field comparison as
+    its first disjunct, so pushdown survives.
+    """
+    from observability_migration.adapters.source.grafana.promql import _absent_aware
+
+    out = _absent_aware(
+        "labels.release", "labels.release RLIKE ?release", '"" RLIKE ?release'
+    )
+    assert out == (
+        '(labels.release RLIKE ?release OR '
+        '(labels.release IS NULL AND "" RLIKE ?release))'
+    )
+    # The field must appear bare in the first disjunct, never wrapped.
+    assert not out.startswith("(COALESCE")
 
 
 def test_negated_literal_matchers_also_treat_an_absent_label_as_empty():
     """PromQL `label!="x"` and `label!~"x"` MATCH a series lacking the label.
 
     Absent == "" in PromQL, and "" != "prod" is true. ES|QL NULL propagates, so
-    `labels.release != "prod"` dropped every such document. Measured on the node
-    index: 2640 documents carry process_open_fds and none carry release; the old
-    form matched 0 of them, COALESCE(release, "") != "prod" matches all 2640.
+    `labels.release != "prod"` dropped every such document: 2640 documents carry
+    process_open_fds, none carry release, and the old form matched 0 of them.
+
+    The emitted form keeps the bare comparison as its first disjunct so the
+    filter still pushes down to Lucene.
     """
     from observability_migration.adapters.source.grafana.promql import _matcher_to_esql
 
@@ -1597,13 +1610,17 @@ def test_negated_literal_matchers_also_treat_an_absent_label_as_empty():
 
     resolver = _R()
     neq = _matcher_to_esql({"label": "release", "op": "!=", "value": "prod"}, resolver)
-    assert neq == 'COALESCE(release, "") != "prod"'
+    assert neq == '(release != "prod" OR (release IS NULL AND "" != "prod"))'
 
     nre = _matcher_to_esql({"label": "release", "op": "!~", "value": "prod.*"}, resolver)
-    assert nre == 'NOT (COALESCE(release, "") RLIKE "prod.*")'
+    assert nre == (
+        '(NOT (release RLIKE "prod.*") OR '
+        '(release IS NULL AND NOT ("" RLIKE "prod.*")))'
+    )
 
-    # Positive literal matchers are already correct: PromQL does NOT match an
-    # absent label for `=` or a regex that cannot match "". Leave them bare so
-    # the field stays directly comparable.
+    # Positive literal matchers stay a plain comparison: PromQL does not match an
+    # absent label for `=`, so no widening is needed and pushdown is untouched.
     eq = _matcher_to_esql({"label": "release", "op": "=", "value": "prod"}, resolver)
     assert eq == 'release == "prod"'
+
+
