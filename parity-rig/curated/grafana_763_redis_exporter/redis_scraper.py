@@ -116,20 +116,31 @@ def ensure_index_template(dataset: str, metric_types: dict, label_names=()) -> N
         ],
         "template": {
             "settings": {"index.mode": "time_series"},
-            "mappings": {
-                # A dynamic_template, not explicit sub-properties: ``labels`` is a
-                # passthrough field and explicit children do not survive the merge
-                # (verified -- the template carried labels.ip, the index did not).
-                # This forces every label to keyword so a label NAMED ip cannot be
-                # given the ip DATATYPE.
-                "dynamic_templates": [
-                    {"labels_as_keyword": {
-                        "path_match": "labels.*",
-                        "mapping": {"type": "keyword", "time_series_dimension": True},
-                    }}
-                ],
-                "properties": {"metrics": {"properties": props}},
-            },
+            "mappings": {"properties": {
+                "metrics": {"properties": props},
+                # Elasticsearch types a field named ``ip`` as the ip DATATYPE
+                # (ECS ``match_ip``), and node_exporter publishes
+                # ``node_udp_queues{ip="v4"}``. "v4" is not an IP address, so the
+                # WHOLE document is rejected into the failure store -- and the
+                # bulk response still returns 201, which is why this went
+                # unnoticed while 3459 documents were lost.
+                #
+                # The override only holds when ``labels`` is redeclared in FULL.
+                # A partial ``{"properties": {...}}` loses to the composed
+                # passthrough definition, and dynamic_templates do not win either
+                # (verified: ordered ahead of ECS's match_ip and still rejected).
+                # Repeating type/priority/time_series_dimension here replaces the
+                # definition outright, and the subfield type then sticks.
+                "labels": {
+                    "type": "passthrough",
+                    "priority": 10,
+                    "time_series_dimension": True,
+                    "properties": {
+                        name: {"type": "keyword", "time_series_dimension": True}
+                        for name in sorted(label_names)
+                    },
+                },
+            }},
         },
     }
     try:

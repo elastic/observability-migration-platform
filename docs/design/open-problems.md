@@ -38,33 +38,32 @@ Every scalar panel across every dashboard is affected.
 
 ---
 
-## 0c. `labels.ip` silently discards documents — four approaches ruled out
+## 0c. ~~`labels.ip` silently discards documents~~ FIXED
 
-**Status:** cause proven, fix not found. Costs the "UDP Queue" panel and loses
-3459 documents on the node index.
+Elasticsearch types a field named `ip` as the **ip datatype** (ECS `match_ip`),
+node_exporter publishes `node_udp_queues{ip="v4"}`, "v4" is not an IP address, and
+the WHOLE document was rejected into the failure store -- while the bulk response
+still returned 201, so the scraper reported "0 errors" while losing 3459 documents.
 
-node_exporter publishes `node_udp_queues{ip="v4"}`. Elasticsearch types a field
-named `ip` as the **ip datatype** (ECS `match_ip` dynamic template), `"v4"` is not
-an IP address, and the WHOLE document is rejected into the failure store. The bulk
-response still reports 201, which is why the scraper reported "0 errors" while
-losing data.
+The fix is that `labels` must be redeclared in FULL. A partial
+`{"properties": {"ip": ...}}` loses to the composed passthrough definition, and
+dynamic templates do not win either (verified: ordered ahead of ECS's `match_ip`
+and still rejected). Repeating `type`/`priority`/`time_series_dimension` alongside
+the subfield replaces the definition outright and the type sticks.
 
-Ruled out, each verified against the live cluster:
+Applied in both templates that can govern these streams -- the rig scraper's and
+`apply_counter_mappings.py`'s, the latter at priority 600 where it silently won.
 
-| approach | result |
-|---|---|
-| explicit `labels.ip` property in the index template | dropped in the merge; template carried it, index did not |
-| `dynamic_template` on `labels.*` in the index template | replaced wholesale by the composed component's templates |
-| component template with an explicit `labels.ip` property, composed LAST | still rejected |
-| component template with `dynamic_templates`, composed FIRST | templates ARE ordered first (`labels_ip_leaf`, `labels_ip_full`, ... `match_ip`), and the document is STILL rejected |
+Result: node ingestion `errors 4 -> 0`, failure store `3459 -> 0`,
+`labels.ip` and `metrics.node_udp_queues` both present, and Node Exporter Full
+goes from 107 to 108 panels returning data.
 
-The last result is the informative one: the override is correctly ordered ahead of
-ECS's `match_ip` and still does not take, so the ip typing is not being decided by
-dynamic-template precedence at all. The next thing to test is whether a
-`passthrough` field with `time_series_dimension: true` resolves its subfield types
-through a different path (TSDB dimension setup) that runs before dynamic
-templates -- and if so, whether declaring `labels` non-passthrough for these
-datasets is acceptable.
+A detail that wasted an attempt: a hand-made probe document is rejected with
+"timestamp outside of ranges of currently writable indices" if its timestamp is
+not recent -- a TSDB write-window rule, nothing to do with mappings. It looks
+identical to the mapping failure in the bulk response.
+
+---
 
 ## 0b. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
 

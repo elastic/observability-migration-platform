@@ -85,7 +85,23 @@ def build_template(index_pattern: str, fields: list[str]) -> dict:
         "composed_of": _COMPOSED_OF,
         "template": {
             "settings": {"index.mode": "time_series"},
-            "mappings": {"properties": {"metrics": {"properties": props}}},
+            "mappings": {"properties": {
+                "metrics": {"properties": props},
+                # Elasticsearch types a field named `ip` as the ip DATATYPE, and
+                # node_exporter publishes node_udp_queues{ip="v4"}. "v4" is not an
+                # IP, so the WHOLE document is rejected into the failure store --
+                # while the bulk response still returns 201, so it looks clean.
+                # The override only holds when `labels` is redeclared in full;
+                # a partial properties block loses to the composed passthrough.
+                "labels": {
+                    "type": "passthrough",
+                    "priority": 10,
+                    "time_series_dimension": True,
+                    "properties": {
+                        "ip": {"type": "keyword", "time_series_dimension": True}
+                    },
+                },
+            }},
         },
     }
 
