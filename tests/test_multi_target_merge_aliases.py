@@ -868,3 +868,35 @@ def test_summary_collapse_second_stats_still_merges():
     t1 = _translation("A", "One", "metric_one", collapsed("metric_one"))
     t2 = _translation("B", "Two", "metric_two", collapsed("metric_two"))
     assert _merge_pretranslated_xy_queries([t1, t2]) is not None
+
+
+def test_drop_only_names_columns_that_exist_at_that_point():
+    """The DROP replacing a stripped KEEP must not name columns that are gone.
+
+    Two ways it went wrong on Node Exporter Full, each killing the whole query
+    with "Unknown column":
+
+    * A later STATS *replaces* the schema, so an alias from an earlier STATS it
+      does not re-emit no longer exists ("Speed": ``DROP
+      node_network_speed_bytes_instance_job`` after a collapse STATS).
+    * The DROP is inserted where the KEEP was, so a column a LATER EVAL creates
+      does not exist yet ("Node Exporter Scrape": ``DROP __labels, __pairs,
+      label`` above the ``EVAL __labels = ...`` defining them).
+    """
+    from observability_migration.adapters.source.grafana.panels import (
+        _strip_dotted_group_keep,
+    )
+
+    query = (
+        "TS metrics-*\n"
+        "| STATS inner = AVG(metrics.x) BY time_bucket = TBUCKET(1, ?_tstart, ?_tend), labels.device\n"
+        "| EVAL computed_value = (inner * 8)\n"
+        "| STATS computed_value = MAX(computed_value) BY labels.device\n"
+        "| KEEP labels.device, computed_value"
+    )
+    out = _strip_dotted_group_keep(query)
+    assert "inner" not in out.split("| STATS", 2)[-1], out
+    # A grouping key expressed as TBUCKET(...) must never leak its ?params into
+    # the DROP -- splitting the BY clause on bare commas reached inside the call
+    # and produced `DROP ?_tstart`, which failed every such query.
+    assert "?_tstart" not in out.replace("TBUCKET(1, ?_tstart, ?_tend)", ""), out

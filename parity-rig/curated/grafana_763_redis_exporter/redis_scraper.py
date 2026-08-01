@@ -61,8 +61,28 @@ def parse_metric_types(text: str) -> dict:
     return out
 
 
-def ensure_index_template(dataset: str, metric_types: dict) -> None:
-    """Declare counter/gauge typing for this dataset before its first document."""
+def parse_label_names(text: str) -> set:
+    """Every label name the exposition uses."""
+    names = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "{" not in line:
+            continue
+        block = line.split("{", 1)[1].rsplit("}", 1)[0]
+        names.update(k for k, _ in _LABEL_RE.findall(block))
+    return names
+
+
+def ensure_index_template(dataset: str, metric_types: dict, label_names=()) -> None:
+    """Declare counter/gauge typing for this dataset before its first document.
+
+    Label names are pinned to ``keyword`` too. Elasticsearch maps a field called
+    ``ip`` to the ``ip`` DATATYPE, and node_exporter publishes
+    ``node_udp_queues{ip="v4"}`` — "v4" is not an IP address, so the whole
+    document is rejected into the failure store and the metric silently never
+    lands. The bulk response still says created, so the scraper reported "0
+    errors" while losing data.
+    """
     props = {}
     for name, kind in sorted(metric_types.items()):
         if kind not in ("counter", "gauge"):
@@ -96,7 +116,20 @@ def ensure_index_template(dataset: str, metric_types: dict) -> None:
         ],
         "template": {
             "settings": {"index.mode": "time_series"},
-            "mappings": {"properties": {"metrics": {"properties": props}}},
+            "mappings": {
+                # A dynamic_template, not explicit sub-properties: ``labels`` is a
+                # passthrough field and explicit children do not survive the merge
+                # (verified -- the template carried labels.ip, the index did not).
+                # This forces every label to keyword so a label NAMED ip cannot be
+                # given the ip DATATYPE.
+                "dynamic_templates": [
+                    {"labels_as_keyword": {
+                        "path_match": "labels.*",
+                        "mapping": {"type": "keyword", "time_series_dimension": True},
+                    }}
+                ],
+                "properties": {"metrics": {"properties": props}},
+            },
         },
     }
     try:
@@ -188,9 +221,13 @@ def bulk_index(body: str) -> tuple[int, int]:
         timeout=15,
     )
     result = resp.json()
-    ok = sum(1 for item in result.get("items", []) if next(iter(item.values())).get("status", 0) in (200, 201))
-    err = len(result.get("items", [])) - ok
-    return ok, err
+    items = [next(iter(item.values())) for item in result.get("items", [])]
+    ok = sum(1 for item in items if item.get("status", 0) in (200, 201))
+    # A document rejected into the failure store still reports 201, so counting
+    # only HTTP status hides real data loss. Count it separately and loudly.
+    diverted = sum(1 for item in items if item.get("failure_store") == "used")
+    err = len(items) - ok
+    return ok - diverted, err + diverted
 
 
 def wait_for_es(url: str, max_wait: int = 120) -> None:
@@ -217,7 +254,9 @@ def main() -> None:
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
-            ensure_index_template(dataset, parse_metric_types(resp.text))
+            ensure_index_template(
+                dataset, parse_metric_types(resp.text), parse_label_names(resp.text)
+            )
         except Exception as exc:
             print(f"  template {dataset}: could not scrape for types: {exc}", flush=True)
     for url, dataset, _job, _instance in TARGETS:

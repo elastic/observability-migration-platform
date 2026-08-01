@@ -5015,14 +5015,39 @@ def _strip_dotted_group_keep(query):
     # A DROP of just the unwanted value columns expresses the same intent
     # without re-projecting the dotted grouping key, so it does not trip the
     # "Output has changed" optimizer error the strip exists to avoid.
+    # Track the LIVE schema, not every alias ever produced. A STATS *replaces*
+    # the output schema, so an alias from an earlier STATS that a later one does
+    # not re-emit is already gone -- dropping it fails the whole query with
+    # "Unknown column". Node Exporter Full's "Speed" and "Node Exporter Scrape"
+    # died exactly this way: a summary-collapse STATS removed the inner alias and
+    # the trailing DROP still named it.
+    # The DROP is inserted where the stripped KEEP was, so it may only name
+    # columns that exist AT THAT POINT. Accumulating over the whole pipeline
+    # dropped names a later EVAL had not created yet -- Node Exporter Full's
+    # "Node Exporter Scrape" emitted ``DROP __labels, __pairs, label`` above the
+    # ``EVAL __labels = ...`` that defines them.
+    keep_index = next(
+        (i for i, line in enumerate(lines) if _projects_dotted_group(line)), len(lines)
+    )
     produced: list[str] = []
-    for line in lines:
+    for line in lines[:keep_index]:
         stripped = line.strip()
         if stripped.startswith("| STATS"):
-            body = stripped[len("| STATS "):].split(" BY ", 1)[0]
-            for part in body.split(","):
+            head, _, grouping = stripped[len("| STATS "):].partition(" BY ")
+            # A STATS emits its aggregate aliases plus its grouping keys, and
+            # nothing else survives it.
+            produced = []
+            for part in _split_top_level_csv(head):
                 if "=" in part:
                     produced.append(part.split("=", 1)[0].strip().strip("`"))
+            # Split at top level only: a grouping key is routinely
+            # ``time_bucket = TBUCKET(1, ?_tstart, ?_tend)``, and a naive comma
+            # split reaches inside the call and yields ``?_tstart`` as a column
+            # name -- which then lands in the DROP and fails every such query.
+            for part in _split_top_level_csv(grouping):
+                token = part.split("=", 1)[0].strip().strip("`") if "=" in part else part.strip().strip("`")
+                if token and " " not in token and not token.startswith("?"):
+                    produced.append(token)
         elif stripped.startswith("| EVAL"):
             body = stripped[len("| EVAL "):]
             for part in body.split(" = ")[:1]:
