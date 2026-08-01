@@ -414,11 +414,24 @@ def _target_summary_mode(panel_type, target):
     return str(target.get("format") or "").lower() == "table"
 
 
+def _panel_reduce_calc(panel) -> str:
+    """The reducer a Grafana scalar panel declares, e.g. ``lastNotNull``."""
+    calcs = (((panel or {}).get("options") or {}).get("reduceOptions") or {}).get("calcs")
+    if isinstance(calcs, list) and calcs:
+        return str(calcs[0] or "")
+    return ""
+
+
 def _target_translation_hints(panel, panel_type, target, metric_series_labels=None):
     summary_mode = _target_summary_mode(panel_type, target)
     hints = {
         "summary_mode": summary_mode,
         "series_alias": _target_series_alias(panel, target),
+        # Grafana states how a scalar panel reduces its series here. It was never
+        # read, so every such panel collapsed with MAX no matter what the
+        # dashboard asked for -- "CPU Busy" declares lastNotNull and Grafana
+        # draws 1.87% where MAX draws 79.1%.
+        "reduce_calc": _panel_reduce_calc(panel),
     }
     preferred_group_labels = []
     style_labels = []

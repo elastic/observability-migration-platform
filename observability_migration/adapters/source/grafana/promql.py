@@ -3576,7 +3576,8 @@ def _grouping_parts(bucket_expr, group_fields, frag=None):
     return by_parts, output_group_fields
 
 
-def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_time_bucket=False):
+def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_time_bucket=False,
+                               reduce_calc=""):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
         return None
     group_fields = list(output_group_fields[1:])
@@ -3590,9 +3591,33 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
     # for monotonically-bucketed gauges and stats; this was surfaced by
     # reviewing the Node Exporter Full "Pressure" bar chart, which had
     # data in every bucket but rendered all-null bars.
-    reduced = ", ".join(
-        f"{_esql_identifier(field)} = MAX({_esql_identifier(field)})" for field in keep_fields
-    )
+    # Honour the panel's own reducer when we can do so safely. Grafana states it
+    # in ``reduceOptions.calcs`` and it was never read: every scalar panel
+    # collapsed with MAX regardless. Node Exporter Full's "CPU Busy" asks for
+    # lastNotNull -- Grafana draws 1.87%, MAX over the buckets draws 79.1%. Both
+    # are real numbers from real data, which is why no gate flagged it.
+    #
+    # LAST is only used for a single kept field. The MAX default exists for
+    # null-safety: in a multi-target TS query each per-series row carries one
+    # non-null column and nulls for the others, and LAST can land on a null row
+    # (this is what made the "Pressure" bars render all-null). With one field
+    # there are no sibling columns to land on, so LAST is safe there.
+    calc = str(reduce_calc or "").lower()
+    reducer = "MAX"
+    if calc in ("mean", "avg"):
+        reducer = "AVG"
+    elif calc == "min":
+        reducer = "MIN"
+    if calc in ("last", "lastnotnull") and len(keep_fields) == 1:
+        reduced = ", ".join(
+            f"{_esql_identifier(field)} = LAST({_esql_identifier(field)}, time_bucket)"
+            for field in keep_fields
+        )
+    else:
+        reduced = ", ".join(
+            f"{_esql_identifier(field)} = {reducer}({_esql_identifier(field)})"
+            for field in keep_fields
+        )
     if group_fields:
         # MAX is order-independent; no pre-collapse sort needed.
         parts.append(
