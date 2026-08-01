@@ -9995,10 +9995,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        # Scalar panels use TBUCKET(1, ...) — one bucket is enough to scope the
-        # time range; 100 buckets would waste 100x STATS work and skew AVG-outer
-        # aggregations toward the peak bucket instead of the range average.
-        self.assertIn("BY time_bucket = TBUCKET(1, ?_tstart, ?_tend)", query)
+        # A scalar panel normally collapses to TBUCKET(1, ...) because one bucket
+        # is enough to scope the range and 100 would be wasted work. That does NOT
+        # hold once a range function is involved: a rate evaluated over a single
+        # window-wide bucket is not the rate. Measured on the rig, this exact
+        # query read avg(rate(idle)) as 10.75 against Prometheus's 0.98, so
+        # "CPU Busy" rendered -192%; at TBUCKET(50) it matched Prometheus.
+        self.assertNotIn("TBUCKET(1, ?_tstart, ?_tend)", query)
+        self.assertIn("TBUCKET(", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
         # not append a redundant trailing sort on the already-scalar result.

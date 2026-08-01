@@ -1005,6 +1005,32 @@ def _grafana_panel_fixed_interval(panel) -> str | None:
     return text.replace(" ", "")
 
 
+_RANGE_FUNCTION_RE = re.compile(
+    r"\b(?:i?rate|increase|delta|deriv|[a-z_]+_over_time)\s*\(", re.IGNORECASE
+)
+
+
+def _panel_uses_range_function(panel) -> bool:
+    """Whether any target applies a windowed PromQL function.
+
+    A rate is only a rate when it is evaluated at a sensible resolution.
+    Collapsing one to ``TBUCKET(1, ?_tstart, ?_tend)`` -- a single bucket
+    spanning the whole dashboard window -- does not merely lose detail, it
+    returns a different number: Node Exporter Full's "CPU Busy" read
+    avg(rate(idle)) as 10.75 instead of 0.98 and rendered -192% CPU, while the
+    same query at TBUCKET(50) matched Prometheus exactly.
+
+    So the scalar-panel bucket optimisation applies only to panels that do NOT
+    use a range function; those genuinely collapse to one row and lose nothing.
+    """
+    for target in (panel or {}).get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        if _RANGE_FUNCTION_RE.search(str(target.get("expr") or "")):
+            return True
+    return False
+
+
 def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
 
@@ -1017,7 +1043,7 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     unchanged.
     """
     panel_type = str((panel or {}).get("type") or "").lower()
-    is_scalar = panel_type in _SCALAR_PANEL_TYPES
+    is_scalar = panel_type in _SCALAR_PANEL_TYPES and not _panel_uses_range_function(panel)
     interval = _grafana_panel_fixed_interval(panel)
     new_bucket = None
     new_from_bucket = None

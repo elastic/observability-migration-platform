@@ -1358,6 +1358,59 @@ def clamp_window_to_data(
     )
 
 
+
+def run_prometheus_range(prometheus_url, expr, start_iso, end_iso, step):
+    """Evaluate ``expr`` in real Prometheus, shaped like native PROMQL output.
+
+    The ES|QL PROMQL command is the primary oracle, but it rejects a real slice
+    of PromQL -- ``> bool``, ``on(..) group_left(..)``, ``or``, nested binary
+    expressions. Panels using those were SKIPped, which reads as "fine" and is
+    how a wrong query survives review. Prometheus itself has no such gaps.
+
+    The result is converted to native PROMQL's own ``columns``/``values`` shape
+    so the existing normalisation and series comparison run unchanged -- the
+    fallback is a different REFERENCE, never a different or weaker comparison.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    query = urllib.parse.urlencode(
+        {"query": expr, "start": start_iso, "end": end_iso, "step": f"{int(step)}s"}
+    )
+    url = f"{str(prometheus_url).rstrip('/')}/api/v1/query_range?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return {"error": exc.read().decode()[:200]}
+    except (OSError, ValueError) as exc:
+        return {"error": str(exc)[:200]}
+    if payload.get("status") != "success":
+        return {"error": str(payload.get("error"))[:200]}
+
+    results = payload.get("data", {}).get("result", []) or []
+    label_names: list[str] = []
+    for series in results:
+        for name in (series.get("metric") or {}):
+            if name != "__name__" and name not in label_names:
+                label_names.append(name)
+    columns = [{"name": "value"}, {"name": "step"}] + [{"name": n} for n in label_names]
+    rows: list[list] = []
+    for series in results:
+        labels = series.get("metric") or {}
+        for timestamp, value in series.get("values") or []:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric != numeric:  # NaN: Prometheus emits it for 0/0
+                continue
+            stamp = datetime.fromtimestamp(float(timestamp), UTC).isoformat().replace("+00:00", "Z")
+            rows.append([numeric, stamp] + [labels.get(n) for n in label_names])
+    return {"columns": columns, "values": rows}
+
+
 def native_promql_available(request, index: str) -> bool:
     """Probe whether the target ES supports the native PROMQL command."""
     end = datetime.now(UTC)
@@ -1375,7 +1428,8 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                   translated_ignore_columns: frozenset[str] = frozenset(),
                   translated_label_filter: tuple[str, str] | None = None,
                   control_bindings: dict | None = None,
-                  metric_renames: dict | None = None) -> Comparison:
+                  metric_renames: dict | None = None,
+                  prometheus_url: str = "") -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
 
     ``translated_value_column``/``translated_ignore_columns`` scope the
@@ -1463,8 +1517,19 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             cmp_.notes.append("source metric names qualified to the translated field paths")
     native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
-        cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
-        return cmp_
+        # Fall back to real Prometheus rather than skipping. A skip reads as
+        # "fine" and is how a wrong query survives review.
+        fallback = (
+            run_prometheus_range(prometheus_url, native_query, start_iso, end_iso, step)
+            if prometheus_url else {"error": "no --prometheus-url"}
+        )
+        if isinstance(fallback, dict) and fallback.get("error"):
+            cmp_.skipped_reason = (
+                f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
+            )
+            return cmp_
+        native_raw = fallback
+        cmp_.notes.append("reference evaluated by Prometheus (ES|QL PROMQL rejected it)")
 
     translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso, control_bindings=control_bindings)
     if isinstance(translated_raw, dict) and translated_raw.get("error"):

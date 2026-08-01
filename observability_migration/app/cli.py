@@ -735,6 +735,13 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--index", default="", help="Override the ES index pattern for the native PROMQL oracle (default: infer per panel).")
     compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
     compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
+    compare_cmd.add_argument(
+        "--prometheus-url", default="",
+        help="Prometheus to fall back to when the ES|QL PROMQL command cannot "
+             "evaluate a source expression (> bool, on(..) group_left(..), or, "
+             "nested binary). Without it those panels are SKIPped and get no "
+             "numeric verification at all.",
+    )
     compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
     compare_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(compare_cmd)
@@ -1889,6 +1896,7 @@ def _run_compare(args: Any) -> int:
                             control_bindings, str(pkt.get("dashboard", ""))
                         ),
                         metric_renames=metric_renames,
+                        prometheus_url=getattr(args, "prometheus_url", "") or "",
                         **extra,
                     )
                 except NetworkError as exc:

@@ -11,7 +11,34 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 0. Kubernetes / Views / Namespaces "Overview" row is ragged
+## 0. Scalar panels ignore Grafana's `reduceOptions.calcs`
+
+**Status:** systemic correctness bug. Evidence below; not fixed.
+
+`reduceOptions` is never read anywhere in the codebase. Every stat/gauge/bargauge
+panel collapses its series with a hardcoded `MAX`, whatever the dashboard asked
+for. Node Exporter Full's "CPU Busy" declares
+`reduceOptions.calcs: ["lastNotNull"]`, so Grafana shows the LATEST value; we show
+the peak.
+
+Measured on the rig, same window:
+
+| | CPU Busy |
+|---|---|
+| Prometheus (`lastNotNull`, what Grafana draws) | **1.87%** |
+| ours (`MAX` over 100 buckets) | **79.1%** |
+
+Both are "a real number from real data", which is why no gate caught it — the
+numeric gate compares series shape and the values are legitimately present.
+
+The mapping is small and mechanical: `lastNotNull`/`last` -> take the final
+bucket (`SORT time_bucket DESC | LIMIT 1`), `mean` -> AVG, `min` -> MIN,
+`max` -> MAX (today's behaviour, correct only when the dashboard asked for it).
+Every scalar panel across every dashboard is affected.
+
+---
+
+## 0b. Kubernetes / Views / Namespaces "Overview" row is ragged
 
 **Status:** real defect, found by `scripts/dashboard_qa.py`, not yet fixed.
 
