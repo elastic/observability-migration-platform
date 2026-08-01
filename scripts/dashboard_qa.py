@@ -112,26 +112,34 @@ def check_layout(payload: dict) -> list[str]:
                 else:
                     continue
                 break
-        # Bands should end flush: a band whose panels stop at different depths
-        # is the ragged-row defect.
-        bands: dict[int, list[tuple[int, int]]] = {}
+        # Uneven bottom edges are only a DEFECT when the deeper part hangs off
+        # the right. Dashboards fill left to right, so a row whose last line is
+        # half full is deeper on the LEFT and is perfectly normal authoring --
+        # Node Exporter Full's "Storage Disk" is like that in Grafana itself, and
+        # an earlier version of this check called it a failure.
+        #
+        # The real defect looks the other way round: the first row's stat stack
+        # ended at 9 while the gauges beside it ended at 8, leaving a sliver of
+        # empty grid under the gauges. So flag only when the deepest columns do
+        # not start at x=0.
+        depth: dict[int, int] = {}
         for panel in kids:
             grid = panel.get("grid") or {}
-            bands.setdefault(int(grid.get("y") or 0), []).append(
-                (int(grid.get("y") or 0) + int(grid.get("h") or 0), id(panel))
-            )
-        for top, entries in bands.items():
-            bottoms = {b for b, _ in entries}
-            if len(bottoms) > 1 and len(entries) > 1:
-                # Only a problem when nothing fills the gap underneath.
-                shallow = min(bottoms)
-                filled = any(
-                    int((p.get("grid") or {}).get("y") or 0) == shallow for p in kids
+            x, y = int(grid.get("x") or 0), int(grid.get("y") or 0)
+            w, h = int(grid.get("w") or 0), int(grid.get("h") or 0)
+            if w <= 0 or h <= 0:
+                continue
+            for cx in range(x, min(x + w, GRID_COLUMNS)):
+                depth[cx] = max(depth.get(cx, 0), y + h)
+        if depth and len(set(depth.values())) > 1:
+            deepest = max(depth.values())
+            deep_columns = sorted(c for c, d in depth.items() if d == deepest)
+            if deep_columns and deep_columns[0] != min(depth):
+                issues.append(
+                    f"[{row_title}] content hangs below its neighbours on the right: "
+                    f"columns {deep_columns[0]}..{deep_columns[-1]} end at {deepest}, "
+                    f"the rest at {sorted(set(depth.values()) - {deepest})}"
                 )
-                if not filled:
-                    issues.append(
-                        f"[{row_title}] band at y={top} is ragged: bottoms {sorted(bottoms)}"
-                    )
     return issues
 
 
@@ -139,6 +147,11 @@ def check_layout(payload: dict) -> list[str]:
 # dimension: ui configuration
 # --------------------------------------------------------------------------- #
 _SYNTHETIC_COLUMNS = {"label", "value", "__labels", "__values", "__pairs"}
+# Tiles that legitimately have no visualization: they carry their type on the
+# panel and their content in a config of their own. Every one of these was a
+# false positive of this checker before it knew about them -- the curated
+# absent-metric notes, the dashboard-links tile, and Datadog image/iframe widgets.
+_NON_VIS_PANEL_TYPES = {"markdown", "links", "image", "iframe"}
 
 
 def check_ui(payload: dict) -> list[str]:
@@ -149,7 +162,7 @@ def check_ui(payload: dict) -> list[str]:
         # markdown tiles and the dashboard-links tile carry their type on the
         # panel rather than the config and have no visualization at all. Both
         # were this checker's own false positives, not dashboard defects.
-        if not cfg.get("type") and panel.get("type") not in ("markdown", "links"):
+        if not cfg.get("type") and panel.get("type") not in _NON_VIS_PANEL_TYPES:
             issues.append(f"[{row}] {title}: no visualization type")
         axis = cfg.get("axis") or {}
         for side in ("x", "y", "y2"):

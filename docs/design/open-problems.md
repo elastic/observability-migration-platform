@@ -11,7 +11,26 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 0. Per-type min-height bumps break the source's row proportions
+## 0. Kubernetes / Views / Namespaces "Overview" row is ragged
+
+**Status:** real defect, found by `scripts/dashboard_qa.py`, not yet fixed.
+
+The Grafana source row is flush -- a 7+4 stack beside an 11-high panel, every
+column ending at 12. We emit columns 0..23 ending at 21 and 24..47 at 29, so the
+right-hand panel hangs eight rows below its neighbours.
+
+The band-uniform height pass reduced corpus-wide raggedness from 3 rows to this
+one, so it is a residual rather than a regression. Something after that pass
+(`_compact_vertical_gaps`, or a width bump changing band membership) is moving
+the panels apart again; the band scale itself preserves flushness by
+construction.
+
+Reproduce: `python scripts/dashboard_qa.py --migration-out <out>/dashboards
+--skip queries --skip render`.
+
+---
+
+## 0b. ~~Per-type min-height bumps break the source's row proportions~~ FIXED
 
 **Status:** confirmed defect with a worked example. Not fixed — the fix touches
 layout for every dashboard and needs verification I could not complete.
