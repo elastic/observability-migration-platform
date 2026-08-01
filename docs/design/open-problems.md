@@ -38,22 +38,31 @@ Every scalar panel across every dashboard is affected.
 
 ---
 
-## 0b. Kubernetes / Views / Namespaces "Overview" row is ragged
+## 0b. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
 
-**Status:** real defect, found by `scripts/dashboard_qa.py`, not yet fixed.
+**Status:** diagnosed, not fixed. The only finding `scripts/dashboard_qa.py`
+reports across the 69-dashboard corpus.
 
-The Grafana source row is flush -- a 7+4 stack beside an 11-high panel, every
-column ending at 12. We emit columns 0..23 ending at 21 and 24..47 at 29, so the
-right-hand panel hangs eight rows below its neighbours.
+The row is flush in Grafana (every column ends at 12) and ragged in ours. The
+first three panels transform faithfully; the last two do not:
 
-The band-uniform height pass reduced corpus-wide raggedness from 3 rows to this
-one, so it is a residual rather than a regression. Something after that pass
-(`_compact_vertical_gaps`, or a width bump changing band membership) is moving
-the panels apart again; the band scale itself preserves flushness by
-construction.
+| panel | source (24-col) | expected (x2) | emitted |
+|---|---|---|---|
+| usage on total cluster CPU | x=0 w=6 h=7 | x=0 w=12 | x=0 w=12 h=13 OK |
+| usage on total cluster RAM | x=6 w=6 h=7 | x=12 w=12 | x=12 w=12 h=13 OK |
+| Kubernetes Resource Count | x=12 w=12 h=11 | x=24 w=24 | x=24 w=24 h=21 OK |
+| CPU Usage in cores | x=0 y=8 w=6 h=4 | x=0 w=12 | **x=0 w=24** |
+| RAM Usage in bytes | x=6 y=8 w=6 h=4 | x=12 w=12 | **x=24 y=21 w=24** |
 
-Reproduce: `python scripts/dashboard_qa.py --migration-out <out>/dashboards
---skip queries --skip render`.
+Both come out full width and stacked, which is the signature of
+`_apply_even_distribution_fallback` (it spreads a band evenly across the
+48 columns) rather than `_apply_faithful_coordinate_transform`. Worth checking
+first whether those two panels reach layout without `_grafana_w`/`_grafana_h` --
+the fallback is chosen when ANY panel in the group lacks them, and these two are
+the ones whose geometry is lost.
+
+Not a regression from the band-uniform height pass: that pass took corpus
+raggedness from 3 rows to this 1.
 
 ---
 
