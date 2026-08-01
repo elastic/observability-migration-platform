@@ -123,7 +123,14 @@ services:
     # VM) -- both only log a collector error every scrape. Hardware sensors
     # (hwmon, cooling_device, power_supply, cpu scaling) are unavailable for the
     # same reason, so those panels stay honest data gaps.
+    # Mount the host root so filesystem collectors see real mountpoints. Without
+    # it only the container's own tmpfs /var and /tmp exist, so every panel that
+    # filters mountpoint="/" (RootFS Total, Root FS Used, Disk Space Used) is
+    # empty -- and Grafana against the same exporter would be equally empty.
+    volumes:
+      - /:/host:ro
     command:
+      - --path.rootfs=/host
       - --collector.processes
       - --collector.tcpstat
       - --collector.netdev
