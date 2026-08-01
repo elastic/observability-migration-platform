@@ -191,6 +191,18 @@ def _es(es_url: str, body: dict, api_key: str = "") -> dict:
         return json.load(resp)
 
 
+def data_window_dt(es_url: str, index: str, api_key: str, minutes: int = 20):
+    """The window as datetimes, so callers can align other engines to it."""
+    body = {"query": f"FROM {index} | STATS mn = MIN(@timestamp), mx = MAX(@timestamp)"}
+    mn, mx = _es(es_url, body, api_key)["values"][0]
+    end = dt.datetime.fromisoformat(str(mx).replace("Z", "+00:00"))
+    start = max(
+        dt.datetime.fromisoformat(str(mn).replace("Z", "+00:00")),
+        end - dt.timedelta(minutes=minutes),
+    )
+    return start, end
+
+
 def data_window(es_url: str, index: str, api_key: str, minutes: int = 20):
     body = {"query": f"FROM {index} | STATS mn = MIN(@timestamp), mx = MAX(@timestamp)"}
     mn, mx = _es(es_url, body, api_key)["values"][0]
@@ -242,6 +254,117 @@ def check_queries(payload: dict, es_url: str, index: str, api_key: str):
                 worst = (status, detail)
         results.append((row, panel_title(panel), worst[0], worst[1]))
     return results, (tstart, tend)
+
+
+# --------------------------------------------------------------------------- #
+# dimension: values (compare against Prometheus, the source's own engine)
+# --------------------------------------------------------------------------- #
+def _prom_instant(prometheus_url: str, expr: str, when: str):
+    import urllib.parse
+    url = f"{prometheus_url.rstrip('/')}/api/v1/query?" + urllib.parse.urlencode(
+        {"query": expr, "time": when}
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = json.load(resp)
+    except (urllib.error.HTTPError, OSError, ValueError):
+        return None
+    if payload.get("status") != "success":
+        return None
+    out = []
+    for series in payload.get("data", {}).get("result", []) or []:
+        try:
+            value = float(series["value"][1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if value == value:  # skip NaN
+            out.append(value)
+    return out
+
+
+def check_values(payload: dict, packets: list, args, tolerance: float = 0.05):
+    """Compare every SCALAR panel's number against Prometheus's own answer.
+
+    This is the dimension that catches a wrong query which still returns a
+    perfectly real number. Both "CPU Busy = 79.1" (MAX over the buckets) and
+    "CPU Busy = 1.83" (lastNotNull, what the panel asks for) are real values
+    computed from real data, so shape-based checks pass either way. Only the
+    source's own engine settles which one is right.
+
+    Scalar panels only: a single number is directly comparable, where a
+    multi-series panel needs per-series alignment that belongs in the numeric
+    gate rather than here.
+    """
+    from observability_migration.core.verification.parity_oracle import (
+        sanitize_source_for_oracle,
+    )
+
+    by_title = {}
+    for packet in packets:
+        title = packet.get("panel")
+        if title and packet.get("source_query"):
+            by_title.setdefault(str(title), packet)
+
+    # Prometheus must be asked about the SAME instant our value describes. Our
+    # scalar is the last bucket, which ends at `tend`; querying Prometheus at
+    # "now" instead made volatile metrics like load average look like a 23%
+    # disagreement when both sides were right about different moments.
+    tstart_dt, tend_dt = data_window_dt(args.es_url, args.es_index, args.es_api_key)
+    when_iso = tend_dt.isoformat().replace("+00:00", "Z")
+    tstart = tstart_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    tend = tend_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    agree = differ = unchecked = 0
+    findings = []
+    for row, panel in iter_panels(payload):
+        title = panel_title(panel)
+        packet = by_title.get(title)
+        queries = panel_queries(panel)
+        if not packet or len(queries) != 1:
+            unchecked += 1
+            continue
+        try:
+            ours = run_query_values(args.es_url, queries[0], tstart, tend, args.es_api_key)
+        except Exception:
+            unchecked += 1
+            continue
+        if len(ours) != 1:  # not a scalar panel
+            unchecked += 1
+            continue
+        expr = sanitize_source_for_oracle(str(packet["source_query"]), 60)
+        reference = _prom_instant(args.prometheus_url, expr, when_iso)
+        if not reference:
+            unchecked += 1
+            continue
+        best = min(abs(r - ours[0]) / max(abs(r), 1e-9) for r in reference)
+        if best <= tolerance:
+            agree += 1
+        else:
+            differ += 1
+            findings.append(
+                f"[{row}] {title}: ours={ours[0]:.6g} prometheus={reference[0]:.6g}"
+            )
+    return agree, differ, unchecked, findings
+
+
+def run_query_values(es_url: str, query: str, tstart: str, tend: str, api_key: str):
+    """The panel's numeric output, excluding bucket keys and display config."""
+    lines = query.splitlines()
+    if not re.search(r"@timestamp\s*(>=|<=)", query):
+        query = "\n".join([lines[0], "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend", *lines[1:]])
+    params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
+    for name in sorted(set(_PARAM.findall(query))):
+        if name in ("_tstart", "_tend"):
+            continue
+        params.append({name: [".*"] if f"MV_CONTAINS(?{name}" in query else ".*"})
+    doc = _es(es_url, {"query": query, "params": params}, api_key)
+    columns = [c["name"] for c in doc.get("columns", [])]
+    # `_gauge_min`/`_gauge_max` are panel display config, not data: including
+    # them made every gauge look like it returned 100.
+    idx = [i for i, c in enumerate(columns)
+           if c not in ("time_bucket", "@timestamp", "tb") and not c.startswith("_")]
+    return [row[i] for row in doc.get("values", []) for i in idx
+            if isinstance(row[i], (int, float))]
 
 
 # --------------------------------------------------------------------------- #
@@ -345,8 +468,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--es-api-key", default="")
     parser.add_argument("--time-from", default="now-30m")
     parser.add_argument("--time-to", default="now")
+    parser.add_argument("--prometheus-url", default="",
+                        help="Compare each scalar panel's number against Prometheus, "
+                             "the source dashboard's own engine. Without it a query "
+                             "that returns a real but WRONG number passes every "
+                             "other dimension.")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["layout", "ui", "queries", "render"])
+                        choices=["layout", "ui", "queries", "render", "values"])
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args(argv)
 
@@ -386,6 +514,17 @@ def main(argv: list[str] | None = None) -> int:
             for row, name, _s, detail in bad[:8]:
                 print(f"             [{row}] {name}: {detail[:90]}")
             failed |= bool(bad)
+
+        if "values" not in args.skip and args.prometheus_url and args.es_url:
+            packets_path = out / "verification_packets.json"
+            packets = (json.loads(packets_path.read_text(encoding="utf-8")).get("packets") or []
+                       if packets_path.exists() else [])
+            agree, differ, unchecked, findings = check_values(payload, packets, args)
+            print(f"  values   {'FAIL' if differ else 'ok':4}  "
+                  f"agree={agree} differ={differ} unchecked={unchecked}")
+            for finding in findings[:8]:
+                print(f"             {finding}")
+            failed |= bool(differ)
 
         if "render" not in args.skip and args.kibana_url:
             report, rows, note = check_render(doc, out, args)
