@@ -11,7 +11,48 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 0. ~~rate() degraded to AVG_OVER_TIME reports a number that is not a rate~~ WITHDRAWN — I was wrong
+## 0. Per-type min-height bumps break the source's row proportions
+
+**Status:** confirmed defect with a worked example. Not fixed — the fix touches
+layout for every dashboard and needs verification I could not complete.
+
+Node Exporter Full's first row, "Quick CPU / Mem / Disk", is ragged: the
+right-hand stat block overhangs the gauge row by one grid unit.
+
+The faithful coordinate transform is NOT the problem. It is exactly right:
+
+| stage | gauges | CPU Cores | RootFS Total | result |
+|---|---|---|---|---|
+| Grafana source (30px rows) | h=4 | h=2 | h=2 | right block 2+2 = 4 == 4, flush |
+| after 1.5x scale (30px -> 20px) | 6 | 3 | 3 | 3+3 = 6 == 6, still flush |
+| after per-type min-height bumps | **8** | **3** | **6** | 3+6 = **9** vs **8**, ragged |
+
+Two separate things go wrong in the bump pass
+(`_apply_kibana_native_layout`, panels.py):
+
+1. `PANEL_SIZE_CONSTRAINTS` imposes a legibility floor per visualisation type
+   (gauge min_h=8, metric min_h=6). Applied on top of faithfully scaled
+   coordinates it overrides the proportions the dashboard author chose — the
+   gauges go 6 -> 8 purely because they are gauges.
+2. The bump is attempted panel-by-panel and **rejected when it would overlap a
+   neighbour**, which makes the breakage asymmetric. `CPU Cores` cannot grow
+   3 -> 6 because `RootFS Total` sits directly below it, so it stays 3; `RootFS
+   Total` has nothing below it, so it grows 3 -> 6. Two panels with identical
+   source geometry end up different heights.
+
+The layout is otherwise sound: checked every row for overlaps, overflow past 48
+columns and zero-size panels — 0 issues — and x/w scale correctly (x2).
+
+Fix direction: when source geometry is present the transform is already faithful,
+so a legibility floor should either be applied to a whole band at once (bump every
+panel in the band and reflow what is below) or not applied at all, falling back to
+a hard minimum (~3) that only rescues genuinely unreadable tiles. Either way it
+must be verified across the corpus for new overlaps, which is why it is not done
+here.
+
+---
+
+## 0b. ~~rate() degraded to AVG_OVER_TIME reports a number that is not a rate~~ WITHDRAWN — I was wrong
 
 I filed this as an active bug affecting 17 corpus panels. It is not happening.
 
