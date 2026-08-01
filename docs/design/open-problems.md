@@ -38,6 +38,34 @@ Every scalar panel across every dashboard is affected.
 
 ---
 
+## 0c. `labels.ip` silently discards documents — four approaches ruled out
+
+**Status:** cause proven, fix not found. Costs the "UDP Queue" panel and loses
+3459 documents on the node index.
+
+node_exporter publishes `node_udp_queues{ip="v4"}`. Elasticsearch types a field
+named `ip` as the **ip datatype** (ECS `match_ip` dynamic template), `"v4"` is not
+an IP address, and the WHOLE document is rejected into the failure store. The bulk
+response still reports 201, which is why the scraper reported "0 errors" while
+losing data.
+
+Ruled out, each verified against the live cluster:
+
+| approach | result |
+|---|---|
+| explicit `labels.ip` property in the index template | dropped in the merge; template carried it, index did not |
+| `dynamic_template` on `labels.*` in the index template | replaced wholesale by the composed component's templates |
+| component template with an explicit `labels.ip` property, composed LAST | still rejected |
+| component template with `dynamic_templates`, composed FIRST | templates ARE ordered first (`labels_ip_leaf`, `labels_ip_full`, ... `match_ip`), and the document is STILL rejected |
+
+The last result is the informative one: the override is correctly ordered ahead of
+ECS's `match_ip` and still does not take, so the ip typing is not being decided by
+dynamic-template precedence at all. The next thing to test is whether a
+`passthrough` field with `time_series_dimension: true` resolves its subfield types
+through a different path (TSDB dimension setup) that runs before dynamic
+templates -- and if so, whether declaring `labels` non-passthrough for these
+datasets is acceptable.
+
 ## 0b. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
 
 **Status:** diagnosed, not fixed. The only finding `scripts/dashboard_qa.py`
