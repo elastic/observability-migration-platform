@@ -11,9 +11,9 @@ Everything here is reproducible against the curated rig
 
 ---
 
-## 0. Scalar panels ignore Grafana's `reduceOptions.calcs`
+## 0. ~~Scalar panels ignore Grafana's `reduceOptions.calcs`~~ FIXED
 
-**Status:** systemic correctness bug. Evidence below; not fixed.
+**Status:** FIXED in aae227c. lastNotNull/last -> LAST(field, time_bucket), mean -> AVG, min -> MIN, everything else keeps MAX; LAST only when a single field is kept, because the MAX default exists for null-safety across multi-target rows. Verified against Prometheus: CPU Busy 79.1 -> 1.833 (Prometheus 1.938), SWAP Used 0.1976 (Prometheus 0.19760207).
 
 `reduceOptions` is never read anywhere in the codebase. Every stat/gauge/bargauge
 panel collapses its series with a hardcoded `MAX`, whatever the dashboard asked
@@ -65,7 +65,7 @@ identical to the mapping failure in the bulk response.
 
 ---
 
-## 0b. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
+## 1a. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
 
 **Status:** diagnosed, not fixed. The only finding `scripts/dashboard_qa.py`
 reports across the 69-dashboard corpus.
