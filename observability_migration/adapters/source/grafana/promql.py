@@ -3576,13 +3576,22 @@ def _grouping_parts(bucket_expr, group_fields, frag=None):
     return by_parts, output_group_fields
 
 
+# Only the DERIVATIVE family. A boundary bucket holds part of a scrape interval,
+# and a value derived from differences across it (rate, delta) is wrong there, not
+# merely coarse -- which is why the collapse steps back one bucket.
+#
+# LAST_OVER_TIME and friends are NOT in this set. The last sample inside a partial
+# bucket is a perfectly good last sample, so stepping back costs a bucket for
+# nothing; when the window is short enough that the penultimate bucket is empty,
+# it costs the whole panel. "Root FS Used" went blank exactly this way once bare
+# gauges started being wrapped in LAST_OVER_TIME.
 _RANGE_FUNC_IN_ESQL = re.compile(
-    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV|[A-Z_]+_OVER_TIME)\s*\(", re.IGNORECASE
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)\s*\(", re.IGNORECASE
 )
 
 
 def _parts_use_range_function(parts) -> bool:
-    """Whether the pipeline so far computes a windowed time-series function."""
+    """Whether the pipeline so far derives a value from differences over time."""
     return any(_RANGE_FUNC_IN_ESQL.search(str(line) or "") for line in parts or [])
 
 
@@ -4122,7 +4131,18 @@ def _build_measure_spec(
             if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
                 warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-            stats_expr = f"{default_agg}({agg_arg})"
+            # Collapse ACROSS TIME with LAST_OVER_TIME before aggregating ACROSS
+            # SERIES. A bare instant-vector selector has a value at each step: the
+            # most recent sample at or before it -- Prometheus never averages a
+            # gauge over the step interval. Aggregating the raw field instead
+            # conflates the two axes, so a bucket's value became its MEAN.
+            #
+            # "Node Exporter Scrape Time" is the clearest case: 46 of its 48
+            # per-collector series disagreed with Prometheus, collector=nfs by
+            # 5276% (0.0123 against 0.000228), because a scrape-duration gauge
+            # spikes and the 14-minute bucket mean sits far above the latest
+            # sample. The counter branch above already does this correctly.
+            stats_expr = f"{default_agg}(LAST_OVER_TIME({agg_arg}))"
             warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
             if warning:
                 warnings.append(warning)

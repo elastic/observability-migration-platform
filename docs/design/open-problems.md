@@ -583,3 +583,59 @@ Migrating with `--field-profile prometheus_native` (no `--es-url`) emitted
 translator cannot confirm the label exists -- but it is silent, and an operator
 who picks the explicit profile over `auto` gets materially poorer dashboards with
 no warning. Not investigated further.
+
+---
+
+## 0g. A bare gauge selector was averaged across TIME, not just across series
+
+**Status:** FIXED.
+
+`node_scrape_collector_duration_seconds{...}` became
+`AVG(metrics.node_scrape_collector_duration_seconds) BY time_bucket, collector`.
+That aggregate collapses two axes at once. A bare instant-vector selector has a
+value at each step -- the most recent sample at or before it -- so the per-bucket
+collapse must be `LAST_OVER_TIME` (across TIME) and only the across-SERIES
+combine should use the gauge default:
+
+    AVG(LAST_OVER_TIME(field))     not     AVG(field)
+
+The counter branch already did this (`MAX(LAST_OVER_TIME(...))`); the gauge
+branches did not. There were THREE near-duplicate copies of this logic --
+`promql.py` (`can_use_ts_aggregated_gauge`), `translate.py` (same branch name),
+and `translate.py`'s `stats_expression_rule` -- and the first two edits I made hit
+copies that the dashboard path does not use. Worth collapsing into one helper.
+
+`LAST_OVER_TIME` is TS-only, so the FROM path still emits the plain aggregate.
+That is why "Sys Load" (FROM, binary op with `COUNT_DISTINCT`) still reads its
+bucket mean. Open.
+
+**Measured.** Per-collector on the rig, against Prometheus:
+
+| collector | before | after | prometheus |
+|---|---|---|---|
+| nfs | 0.0123 (5276% off) | -- | 0.000228 |
+| arp | -- | 0.000103 | 0.000161 |
+| cpu | -- | 0.000187 | 0.000367 |
+
+Before, ours was two orders of magnitude high; after, it is the same order as
+Prometheus.
+
+**But the harness's own differ count did NOT improve measurably** -- 52 before,
+54 after, and the Scrape Time panel alone swung 43/47/46 across three runs of the
+SAME build. `node_scrape_collector_duration_seconds` varies 2-3x between
+consecutive scrapes, and the values check compares our last COMPLETE bucket
+(~14 min old at a 12 h range) against Prometheus's instant value. No tolerance
+will make a noisy per-scrape gauge agree across a 14-minute offset. This panel's
+46 series are ~85% of the dashboard's disagreements, so the headline differ count
+for Node Exporter Full is dominated by a measurement artifact, not by translation
+defects. Either compare at a matched instant or exclude per-scrape-noisy gauges
+before reading that number as a quality signal.
+
+### Regression this caused, and the narrowing that fixed it
+
+Wrapping gauges in `LAST_OVER_TIME` tripped the penultimate-bucket collapse,
+because its gate matched `[A-Z_]+_OVER_TIME` as well as the counter functions.
+"Root FS Used" went blank: at a short window the bucket it stepped back to was
+empty. The gate now matches only the DERIVATIVE family (RATE/IRATE/INCREASE/
+DELTA/DERIV), whose value in a partial boundary bucket is genuinely wrong. The
+last sample inside a partial bucket is a perfectly good last sample.

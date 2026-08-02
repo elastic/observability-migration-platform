@@ -3473,8 +3473,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         # result is correct either way; TS additionally avoids inflating any SUM/COUNT.
         self.assertNotEqual(translated.feasibility, "not_feasible")
         self.assertIn("TS metrics-*", translated.esql_query)
-        self.assertIn("AVG(known_gauge)", translated.esql_query)
-        self.assertIn("AVG(unknown_gauge)", translated.esql_query)
+        # LAST_OVER_TIME collapses across TIME, AVG across SERIES -- a bare
+        # instant-vector selector takes its latest sample at each step rather
+        # than the step mean.
+        self.assertIn("AVG(LAST_OVER_TIME(known_gauge))", translated.esql_query)
+        self.assertIn("AVG(LAST_OVER_TIME(unknown_gauge))", translated.esql_query)
 
     def test_mixed_known_and_unknown_gauge_arithmetic_demotes_to_from_when_opt_out(self):
         # With assume_tsds_gauges=False, unknown_gauge stays FROM while known_gauge is a
@@ -5055,7 +5058,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("AVG(node_systemd_units)", query)
+        self.assertIn("AVG(LAST_OVER_TIME(node_systemd_units))", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
         # Issue #8 / #316: proven TSDS gauge takes the TS path with adaptive TBUCKET.
         self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), state", query)
@@ -11502,7 +11505,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("AVG(node_memory_MemAvailable_bytes)", translated.esql_query)
+        # LAST_OVER_TIME collapses across TIME, AVG across SERIES -- a bare selector
+        # takes each series' latest sample per bucket, not the bucket mean.
+        self.assertIn("AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes))", translated.esql_query)
         self.assertFalse(any("faithful gauge downsample" in w for w in translated.warnings))
 
     def test_translation_hints_table_style_patterns_do_not_set_legend_origin(self):

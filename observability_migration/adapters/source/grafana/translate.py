@@ -3507,10 +3507,17 @@ def simple_metric_family_rule(context):
         if _counter_unsafe_cast_needed(physical_metric, resolver):
             agg_arg = f"TO_DOUBLE({physical_metric})"
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
-        stats_expr = f"{default_agg}({agg_arg})"
-        # No explicit PromQL aggregator was given; default to the gauge aggregator. With
-        # grouping labels this is a faithful per-series downsample; without them it collapses
-        # series and the warning says so (and is recorded as a semantic loss).
+        # No explicit PromQL aggregator was given. Collapse ACROSS TIME with
+        # LAST_OVER_TIME first, then aggregate ACROSS SERIES with the gauge
+        # default. Aggregating the raw field does BOTH at once, which is not a
+        # downsample of an instant vector: a bare selector's value at each step is
+        # the most recent sample at or before it, never the step mean.
+        #
+        # "Node Exporter Scrape Time" had 46 of its 48 per-collector series
+        # disagree with Prometheus for exactly this reason (collector=nfs by
+        # 5276%: 0.0123 against 0.000228) -- a scrape-duration gauge spikes, so a
+        # 14-minute bucket mean sits far above the latest sample.
+        stats_expr = f"{default_agg}(LAST_OVER_TIME({agg_arg}))"
         warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
         if warning:
             _append_unique(context.warnings, warning)
@@ -3770,14 +3777,30 @@ def stats_expression_rule(context):
     if _counter_unsafe_cast_needed(physical_metric, context.resolver):
         default_agg_arg = f"TO_DOUBLE({physical_metric})"
         _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, context.resolver))
-    context.stats_expr = f"{default_agg}({default_agg_arg})"
+    # Collapse ACROSS TIME with LAST_OVER_TIME before aggregating ACROSS SERIES.
+    # A bare instant-vector selector has a value at each step -- the most recent
+    # sample at or before it -- so averaging a gauge over the step interval is a
+    # different number, not a smoothed one. "Node Exporter Scrape Time" had 46 of
+    # its 48 per-collector series disagree with Prometheus for this reason
+    # (collector=nfs by 5276%: 0.0123 against 0.000228), because a scrape-duration
+    # gauge spikes and a 14-minute bucket mean sits far above the latest sample.
+    # LAST_OVER_TIME is a TS-command function, so the FROM path keeps the plain
+    # aggregate (it has no equivalent; see open-problems 0f).
+    if context.source_type == "TS" and not context.inner_func:
+        context.stats_expr = f"{default_agg}(LAST_OVER_TIME({default_agg_arg}))"
+    else:
+        context.stats_expr = f"{default_agg}({default_agg_arg})"
     if context.inner_func:
         _append_unique(
             context.warnings,
             f"Unmapped function {context.inner_func}; approximating with {default_agg}",
         )
     else:
-        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+        _append_unique(
+            context.warnings,
+            f"No explicit aggregation; using {default_agg} over each series' latest "
+            f"sample (instant-vector semantics)",
+        )
     return f"built stats expression {context.stats_expr}"
 
 
