@@ -282,67 +282,196 @@ def _prom_instant(prometheus_url: str, expr: str, when: str):
     return out
 
 
+def _prom_instant_series(prometheus_url: str, expr: str, when: str):
+    """Prometheus series at an instant: [(labels dict, value), ...]."""
+    import urllib.parse
+    url = f"{prometheus_url.rstrip('/')}/api/v1/query?" + urllib.parse.urlencode(
+        {"query": expr, "time": when}
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = json.load(resp)
+    except (urllib.error.HTTPError, OSError, ValueError):
+        return None
+    if payload.get("status") != "success":
+        return None
+    out = []
+    for series in payload.get("data", {}).get("result", []) or []:
+        try:
+            value = float(series["value"][1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        if value != value:
+            continue
+        labels = {k: v for k, v in (series.get("metric") or {}).items() if k != "__name__"}
+        out.append((labels, value))
+    return out
+
+
+def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
+    """Our panel's series at its final bucket: [(labels dict, value), ...].
+
+    The final bucket is the one a viewer sees "now", so it is the fair instant to
+    compare against Prometheus. Label columns are stripped of the ``labels.``
+    prefix so they line up with Prometheus's own label names.
+    """
+    lines = query.splitlines()
+    if not re.search(r"@timestamp\s*(>=|<=)", query):
+        query = "\n".join([lines[0], "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend", *lines[1:]])
+    params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
+    for name in sorted(set(_PARAM.findall(query))):
+        if name in ("_tstart", "_tend"):
+            continue
+        params.append({name: [".*"] if f"MV_CONTAINS(?{name}" in query else ".*"})
+    doc = _es(es_url, {"query": query, "params": params}, api_key)
+    columns = [c["name"] for c in doc.get("columns", [])]
+    rows = doc.get("values") or []
+    if not rows:
+        return None, None
+    bucket_idx = next((i for i, c in enumerate(columns) if c in ("time_bucket", "tb", "@timestamp")), None)
+    value_idx = [i for i, c in enumerate(columns)
+                 if not c.startswith("_") and i != bucket_idx
+                 and any(isinstance(r[i], (int, float)) for r in rows)]
+    label_idx = [i for i, c in enumerate(columns)
+                 if i != bucket_idx and i not in value_idx and not c.startswith("_")]
+    if len(value_idx) != 1:
+        return None, None  # multi-target panel: needs per-target provenance
+    vi = value_idx[0]
+    if bucket_idx is not None:
+        # The FINAL bucket is partial -- it holds only the scrapes that landed
+        # before the window closed, so a rate computed in it reads low (measured:
+        # Processes Forks 1.98 against Prometheus's 42.9). Compare the last
+        # COMPLETE bucket instead, which is the one a viewer actually reads.
+        stamps = sorted({r[bucket_idx] for r in rows if r[bucket_idx] is not None})
+        if not stamps:
+            return None, None
+        chosen = stamps[-2] if len(stamps) > 1 else stamps[-1]
+        rows = [r for r in rows if r[bucket_idx] == chosen]
+    else:
+        chosen = None
+    out = []
+    for row in rows:
+        if not isinstance(row[vi], (int, float)):
+            continue
+        labels = {columns[i].removeprefix("labels."): str(row[i])
+                  for i in label_idx if row[i] is not None}
+        out.append((labels, float(row[vi])))
+    return out, chosen
+
+
+def _match_series(ours, theirs, tolerance):
+    """Pair series by their shared label values, then compare.
+
+    Matching on the labels both sides carry (rather than requiring identical
+    label sets) tolerates our extra grouping columns and Prometheus's extra
+    identity labels, while still refusing to pair genuinely different series.
+    """
+    shared = set()
+    for labels, _ in ours:
+        shared |= set(labels)
+    common = shared & {k for labels, _ in theirs for k in labels}
+    def key(labels):
+        return tuple(sorted((k, labels[k]) for k in common if k in labels))
+    theirs_by_key = {}
+    for labels, value in theirs:
+        theirs_by_key.setdefault(key(labels), []).append(value)
+    agree = differ = unmatched = 0
+    worst = None
+    for labels, value in ours:
+        candidates = theirs_by_key.get(key(labels))
+        if not candidates:
+            unmatched += 1
+            continue
+        best = min(abs(c - value) / max(abs(c), 1e-9) for c in candidates)
+        if best <= tolerance:
+            agree += 1
+        else:
+            differ += 1
+            if worst is None or best > worst[0]:
+                worst = (best, key(labels), value, candidates[0])
+    return agree, differ, unmatched, worst
+
+
 def check_values(payload: dict, packets: list, args, tolerance: float = 0.05):
-    """Compare every SCALAR panel's number against Prometheus's own answer.
+    """Compare EVERY panel's numbers against Prometheus, series by series.
 
     This is the dimension that catches a wrong query which still returns a
-    perfectly real number. Both "CPU Busy = 79.1" (MAX over the buckets) and
-    "CPU Busy = 1.83" (lastNotNull, what the panel asks for) are real values
-    computed from real data, so shape-based checks pass either way. Only the
-    source's own engine settles which one is right.
+    perfectly real number. "CPU Busy = 79.1" (MAX over buckets) and
+    "CPU Busy = 1.83" (lastNotNull, what the panel asks for) are both real values
+    computed from real data, so layout, ui, queries and render pass either way.
+    Only the source's own engine settles which is right.
 
-    Scalar panels only: a single number is directly comparable, where a
-    multi-series panel needs per-series alignment that belongs in the numeric
-    gate rather than here.
+    Scalar panels compare one number. Multi-series panels are paired by their
+    shared label values at the final bucket -- restricting this check to scalars
+    left 116 of 125 Node Exporter Full panels unverified, which is most of the
+    dashboard and most of the risk.
+
+    Multi-target panels (several value columns fused into one query) are counted
+    unchecked: pairing them needs the per-target provenance the numeric gate
+    carries, not a single expression.
     """
     from observability_migration.core.verification.parity_oracle import (
         sanitize_source_for_oracle,
     )
 
-    by_title = {}
+    by_title: dict[str, dict] = {}
     for packet in packets:
         title = packet.get("panel")
         if title and packet.get("source_query"):
             by_title.setdefault(str(title), packet)
 
-    # Prometheus must be asked about the SAME instant our value describes. Our
-    # scalar is the last bucket, which ends at `tend`; querying Prometheus at
-    # "now" instead made volatile metrics like load average look like a 23%
-    # disagreement when both sides were right about different moments.
-    tstart_dt, tend_dt = data_window_dt(args.es_url, args.es_index, args.es_api_key)
+    # A window this check uses must be wide enough that TBUCKET's buckets stay
+    # wider than the scrape interval. At 20 minutes an adaptive TBUCKET(100)
+    # gives 12-second buckets against a 10-second scrape, so RATE sees one or two
+    # samples and reads low -- that is a measurement artifact of the check, not a
+    # defect in the panel.
+    tstart_dt, tend_dt = data_window_dt(
+        args.es_url, args.es_index, args.es_api_key, minutes=args.window_minutes
+    )
+    # Prometheus must be asked about the SAME instant our value describes -- the
+    # final bucket. Querying "now" instead made load average look 23% off when
+    # both sides were right about different moments.
     when_iso = tend_dt.isoformat().replace("+00:00", "Z")
     tstart = tstart_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     tend = tend_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     agree = differ = unchecked = 0
-    findings = []
+    findings: list[str] = []
     for row, panel in iter_panels(payload):
         title = panel_title(panel)
         packet = by_title.get(title)
         queries = panel_queries(panel)
-        if not packet or len(queries) != 1:
+        source = str((packet or {}).get("source_query") or "")
+        # "|||" marks a multi-target panel in the packet's source record.
+        if not packet or len(queries) != 1 or "|||" in source:
             unchecked += 1
             continue
         try:
-            ours = run_query_values(args.es_url, queries[0], tstart, tend, args.es_api_key)
+            ours, at_bucket = _our_last_bucket_series(
+                args.es_url, queries[0], tstart, tend, args.es_api_key
+            )
         except Exception:
+            ours = None
+        if not ours:
             unchecked += 1
             continue
-        if len(ours) != 1:  # not a scalar panel
+        # Ask Prometheus about the SAME bucket our value came from.
+        theirs = _prom_instant_series(
+            args.prometheus_url, sanitize_source_for_oracle(source, 60),
+            str(at_bucket) if at_bucket else when_iso,
+        )
+        if not theirs:
             unchecked += 1
             continue
-        expr = sanitize_source_for_oracle(str(packet["source_query"]), 60)
-        reference = _prom_instant(args.prometheus_url, expr, when_iso)
-        if not reference:
-            unchecked += 1
-            continue
-        best = min(abs(r - ours[0]) / max(abs(r), 1e-9) for r in reference)
-        if best <= tolerance:
-            agree += 1
-        else:
-            differ += 1
+        ok, bad, unmatched, worst = _match_series(ours, theirs, tolerance)
+        agree += ok
+        differ += bad
+        unchecked += unmatched
+        if bad and worst:
+            rel, key, mine, ref = worst
+            label = ", ".join(f"{k}={v}" for k, v in key) or "(no labels)"
             findings.append(
-                f"[{row}] {title}: ours={ours[0]:.6g} prometheus={reference[0]:.6g}"
+                f"[{row}] {title}: {label} ours={mine:.6g} prometheus={ref:.6g} ({rel:.0%})"
             )
     return agree, differ, unchecked, findings
 
@@ -468,6 +597,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--es-api-key", default="")
     parser.add_argument("--time-from", default="now-30m")
     parser.add_argument("--time-to", default="now")
+    parser.add_argument("--window-minutes", type=int, default=120,
+                        help="Comparison window. Must stay wide enough that adaptive "
+                             "buckets remain wider than the scrape interval.")
     parser.add_argument("--prometheus-url", default="",
                         help="Compare each scalar panel's number against Prometheus, "
                              "the source dashboard's own engine. Without it a query "
