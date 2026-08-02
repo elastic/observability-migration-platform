@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import itertools
 import json
 import re
 import sys
@@ -319,6 +320,78 @@ def _prom_instant_series(prometheus_url: str, expr: str, when: str):
     return out
 
 
+def _bucket_end(stamps, chosen):
+    """The END of ``chosen``, derived from the spacing between bucket starts.
+
+    Returns ``chosen`` unchanged when the spacing cannot be determined (a single
+    bucket, or timestamps in a form we cannot parse) -- comparing at the start is
+    the old behaviour, so an unparseable stamp degrades rather than breaks.
+    """
+    if len(stamps) < 2:
+        return chosen
+
+    def parse(value):
+        try:
+            return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+
+    starts = [parse(s) for s in stamps[-3:]]
+    picked = parse(chosen)
+    widths = [(b - a) for a, b in itertools.pairwise(starts) if a and b]
+    if not picked or not widths:
+        return chosen
+    end = picked + min(widths)
+    return end.isoformat().replace("+00:00", "Z")
+
+
+def _self_noise(prometheus_url, expr, when, seconds=30):
+    """How much the REFERENCE itself moves between adjacent instants.
+
+    Returns ``{label_key: relative_change}`` from Prometheus at ``when`` versus
+    ``when - seconds``.
+
+    Some metrics vary more between consecutive scrapes than any sane tolerance
+    allows. ``node_scrape_collector_duration_seconds`` is the clearest: on the rig
+    the collector=arp series read 9.5e-05 in Elasticsearch at 16:23:52 and
+    3.53e-04 in Prometheus at 16:23:56 -- four seconds apart, 3.7x -- because the
+    two stores scrape independently (ES every 10s at :02/:12/..., Prometheus every
+    60s at :56) and the metric genuinely swings that much.
+
+    No choice of comparison instant fixes that, so counting it as a translation
+    defect is wrong: it made this panel's 44-47 series dominate the dashboard's
+    disagreements and swing run to run. Asking the reference how noisy it is
+    separates "our query is wrong" from "this metric cannot be compared at a
+    point". Deliberately self-calibrating -- no per-metric allowlist to maintain.
+    """
+    end = _shift_iso(when, -seconds)
+    if end is None:
+        return {}
+    before = _prom_instant_series(prometheus_url, expr, end)
+    after = _prom_instant_series(prometheus_url, expr, when)
+    if not before or not after:
+        return {}
+    def key(labels):
+        return tuple(sorted(labels.items()))
+    prev = {key(lbl): val for lbl, val in before}
+    out = {}
+    for lbl, val in after:
+        was = prev.get(key(lbl))
+        if was is None:
+            continue
+        out[key(lbl)] = abs(val - was) / max(abs(val), abs(was), 1e-12)
+    return out
+
+
+def _shift_iso(when, seconds):
+    """``when`` moved by ``seconds``, or None when it cannot be parsed."""
+    try:
+        moment = dt.datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (moment + dt.timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
 def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
     """Our panel's series at its final bucket: [(labels dict, value), ...].
 
@@ -358,6 +431,15 @@ def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
             return None, None
         chosen = stamps[-2] if len(stamps) > 1 else stamps[-1]
         rows = [r for r in rows if r[bucket_idx] == chosen]
+        # ``time_bucket`` is the bucket's START, but a bucket's value describes its
+        # whole SPAN -- LAST_OVER_TIME returns the last sample in it, near the END.
+        # Asking Prometheus about the start therefore compared two instants a full
+        # bucket apart: at a 12-hour range that is a 7-minute offset, and on a
+        # per-scrape-noisy gauge it manufactured disagreements no tolerance could
+        # absorb (node_scrape_collector_duration_seconds swung 43/47/46 differing
+        # series across three runs of the SAME build). Compare at the bucket END,
+        # where "last sample at or before t" means the same thing on both sides.
+        chosen = _bucket_end(stamps, chosen)
     else:
         chosen = None
     out = []
@@ -370,7 +452,7 @@ def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
     return out, chosen
 
 
-def _match_series(ours, theirs, tolerance):
+def _match_series(ours, theirs, tolerance, noise=None):
     """Pair series by their shared label values, then compare.
 
     Matching on the labels both sides carry (rather than requiring identical
@@ -386,6 +468,15 @@ def _match_series(ours, theirs, tolerance):
     theirs_by_key = {}
     for labels, value in theirs:
         theirs_by_key.setdefault(key(labels), []).append(value)
+    # A series the REFERENCE cannot hold still between adjacent instants cannot be
+    # compared at a point at all: ES and Prometheus scrape independently, so they
+    # hold different samples. Count those unmatched rather than differing -- see
+    # _self_noise.
+    noise_by_key = {}
+    for labels, _ in theirs:
+        rel = (noise or {}).get(tuple(sorted(labels.items())))
+        if rel is not None:
+            noise_by_key[key(labels)] = max(noise_by_key.get(key(labels), 0.0), rel)
     agree = differ = unmatched = 0
     worst = None
     for labels, value in ours:
@@ -396,6 +487,8 @@ def _match_series(ours, theirs, tolerance):
         best = min(abs(c - value) / max(abs(c), 1e-9) for c in candidates)
         if best <= tolerance:
             agree += 1
+        elif noise_by_key.get(key(labels), 0.0) > tolerance:
+            unmatched += 1
         else:
             differ += 1
             if worst is None or best > worst[0]:
@@ -481,7 +574,11 @@ def check_values(payload: dict, packets: list, args, tolerance: float = 0.05):
         if not theirs:
             unchecked += 1
             continue
-        ok, bad, unmatched, worst = _match_series(ours, theirs, tolerance)
+        noise = _self_noise(
+            args.prometheus_url, sanitize_source_for_oracle(source, 60),
+            str(at_bucket) if at_bucket else when_iso,
+        )
+        ok, bad, unmatched, worst = _match_series(ours, theirs, tolerance, noise)
         agree += ok
         differ += bad
         unchecked += unmatched

@@ -639,3 +639,52 @@ because its gate matched `[A-Z_]+_OVER_TIME` as well as the counter functions.
 empty. The gate now matches only the DERIVATIVE family (RATE/IRATE/INCREASE/
 DELTA/DERIV), whose value in a partial boundary bucket is genuinely wrong. The
 last sample inside a partial bucket is a perfectly good last sample.
+
+---
+
+## 0h. The values gate counted irreducible sampling noise as translation defects
+
+**Status:** FIXED (in the harness, not the translator).
+
+Two independent problems made the values dimension's number untrustworthy.
+
+**1. It compared two instants a full bucket apart.** `time_bucket` is the bucket's
+START, but a bucket's value describes its whole SPAN -- `LAST_OVER_TIME` returns
+the last sample in it, near the END. At a 12-hour range that is a ~7-minute
+offset. `_bucket_end` now derives the bucket width from the spacing between
+consecutive starts and compares there, degrading to the old behaviour when the
+spacing cannot be determined.
+
+**2. Some metrics cannot be compared at a point at all.** Elasticsearch and
+Prometheus scrape INDEPENDENTLY, so for a metric that swings between consecutive
+scrapes they hold genuinely different samples. Measured on the rig for
+`node_scrape_collector_duration_seconds{collector="arp"}`:
+
+    ES    16:23:52  9.5e-05      (scrapes every 10s at :02, :12, :22, ...)
+    PROM  16:23:56  3.53e-04     (scrapes every 60s at :56.121)
+
+Four seconds apart, 3.7x. No choice of comparison instant fixes that. `_self_noise`
+now asks the REFERENCE how much it moves between adjacent instants, and a series
+whose own reference moves more than the tolerance is counted UNMATCHED rather than
+DIFFERING. This is self-calibrating -- there is no per-metric allowlist to drift.
+
+**Effect at a 12-hour range on Node Exporter Full:**
+
+| | agree | differ | unchecked |
+|---|---|---|---|
+| before | 256 | 54 | 83 |
+| bucket-end only | 262 | 49 | 82 |
+| + noise filter | 261 | **9** | 123 |
+
+and the number is now STABLE run to run (it previously swung by 3-5, with the
+Scrape Time panel alone reporting 43/46/47 across three runs of the SAME build).
+
+**The cost, stated plainly:** `unchecked` rose from 83 to 123, so the compared set
+shrank from ~311 series to ~270. Forty-one series are now excused as uncomparable
+rather than verified. That is justified by the evidence above, but it IS reduced
+coverage, and the fix for it is rig-side -- align the two scrape streams, or seed
+a metric that does not swing -- not a further loosening of the gate.
+
+The 9 that remain are real candidates worth chasing: CPU Busy (12%), Sys Load
+(24%, the FROM-path bucket mean of 0f), CPU time in user/system contexts (33%),
+and one Scrape Time collector (rapl, 48%).

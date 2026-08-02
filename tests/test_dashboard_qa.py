@@ -195,3 +195,46 @@ def test_expand_rows_reports_and_expands_only_collapsed_rows():
     ]}
     assert qa.expand_rows(payload) == 2
     assert all(not row.get("collapsed") for row in payload["panels"])
+
+
+# --------------------------------------------------------------------------- #
+# comparison instant
+# --------------------------------------------------------------------------- #
+def test_bucket_end_advances_the_compared_instant_by_one_bucket():
+    """`time_bucket` is the bucket START, but its value describes the whole span.
+
+    LAST_OVER_TIME returns the last sample in the bucket, near its END, so asking
+    Prometheus about the start compared two instants a full bucket apart.
+    """
+    stamps = ["2026-08-02T10:00:00.000Z", "2026-08-02T10:07:00.000Z", "2026-08-02T10:14:00.000Z"]
+    assert qa._bucket_end(stamps, stamps[-2]) == "2026-08-02T10:14:00+00:00Z".replace("+00:00", "")
+
+
+def test_bucket_end_degrades_to_the_start_when_it_cannot_tell():
+    """A single bucket, or an unparseable stamp, must not break the comparison."""
+    assert qa._bucket_end(["2026-08-02T10:00:00.000Z"], "2026-08-02T10:00:00.000Z") == \
+        "2026-08-02T10:00:00.000Z"
+    assert qa._bucket_end(["not-a-date", "also-not"], "not-a-date") == "not-a-date"
+
+
+def test_match_series_does_not_call_a_defect_what_the_reference_cannot_hold_still():
+    """A series whose own reference moves more than the tolerance is uncomparable.
+
+    ES and Prometheus scrape independently, so for a metric that swings between
+    consecutive scrapes they hold different samples and no comparison instant
+    helps. node_scrape_collector_duration_seconds read 9.5e-05 in ES and 3.53e-04
+    in Prometheus four seconds apart; counting that as a translation defect let
+    one panel dominate the dashboard's disagreements.
+    """
+    ours = [({"collector": "arp"}, 0.000095), ({"collector": "cpu"}, 5.0)]
+    theirs = [({"collector": "arp"}, 0.000353), ({"collector": "cpu"}, 10.0)]
+    noise = {(("collector", "arp"),): 3.7, (("collector", "cpu"),): 0.001}
+    agree, differ, unmatched, _ = qa._match_series(ours, theirs, 0.05, noise)
+    assert (agree, differ, unmatched) == (0, 1, 1)   # arp excused, cpu still a defect
+
+
+def test_match_series_without_noise_data_behaves_as_before():
+    ours = [({"d": "x"}, 1.0)]
+    theirs = [({"d": "x"}, 2.0)]
+    assert qa._match_series(ours, theirs, 0.05)[1] == 1
+
