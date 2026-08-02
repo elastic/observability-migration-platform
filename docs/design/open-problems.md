@@ -65,9 +65,19 @@ identical to the mapping failure in the bulk response.
 
 ---
 
-## 0d. Boundary buckets produce garbage rates, and `LAST` picks one of them
+## 0d. ~~Boundary buckets produce garbage rates, and `LAST` picks one of them~~ FIXED for ungrouped scalars
 
-**Status:** real defect, evidence below. Not fixed.
+**Status:** FIXED for ungrouped scalar panels. A scalar panel collapsing a
+range function now takes the penultimate bucket -- ES|QL has no OFFSET, so
+`SORT DESC | LIMIT 2 | SORT ASC | LIMIT 1` reaches it, degrading to the only
+bucket when there is just one. CPU Busy no longer disagrees with Prometheus.
+
+STILL OPEN for GROUPED panels: a pie or bar with a rate has one row per
+group, so LIMIT 1 would keep a single slice. Those need a per-group fix and
+still read their boundary bucket.
+
+Note on method: RATE semantics here were established empirically (three
+bucket widths, identical results), NOT by reading the Elasticsearch source.
 
 A gauge or stat over a rate collapses with `LAST(value, time_bucket)` (correct --
 the panel declares `lastNotNull`). But the FINAL bucket of the window is a

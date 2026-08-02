@@ -3576,6 +3576,16 @@ def _grouping_parts(bucket_expr, group_fields, frag=None):
     return by_parts, output_group_fields
 
 
+_RANGE_FUNC_IN_ESQL = re.compile(
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV|[A-Z_]+_OVER_TIME)\s*\(", re.IGNORECASE
+)
+
+
+def _parts_use_range_function(parts) -> bool:
+    """Whether the pipeline so far computes a windowed time-series function."""
+    return any(_RANGE_FUNC_IN_ESQL.search(str(line) or "") for line in parts or [])
+
+
 def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_time_bucket=False,
                                reduce_calc=""):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
@@ -3608,7 +3618,32 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
         reducer = "AVG"
     elif calc == "min":
         reducer = "MIN"
-    if calc in ("last", "lastnotnull") and len(keep_fields) == 1:
+    wants_last = calc in ("last", "lastnotnull") and len(keep_fields) == 1
+    # A rate in the FINAL bucket of the window is wrong, not merely coarse: that
+    # bucket is bounded by the window edge, so it can hold too few samples.
+    # Measured over one 7-minute span, 100*(1-avg(rate(idle[5m]))) read 1.682,
+    # 1.711 and 1.696 in interior buckets -- tracking Prometheus -- and 22.549 in
+    # the boundary one. In Kibana the window ends at "now", so a scalar panel
+    # collapsing with LAST reads that boundary bucket every time.
+    #
+    # ES|QL has no OFFSET, so the penultimate bucket is reached by taking the
+    # last two and then the older of them. With a single bucket this degrades to
+    # that bucket, which is the best available answer.
+    # Only for a genuinely scalar panel. A grouped panel (a pie by handler, say)
+    # has one row per group, so LIMIT 1 would keep a single slice and discard the
+    # rest. Grouped panels hit the same boundary-bucket problem but need a
+    # per-group fix, which this is not.
+    if wants_last and not group_fields and _parts_use_range_function(parts):
+        parts.append("| SORT time_bucket DESC")
+        parts.append("| LIMIT 2")
+        parts.append("| SORT time_bucket ASC")
+        parts.append("| LIMIT 1")
+        # Mirror the projection the LAST path produces, so panels whose spec
+        # references time_bucket (tables surface it as a date breakdown) keep it.
+        kept = ", ".join(_esql_identifier(f) for f in keep_fields)
+        parts.append(f"| KEEP time_bucket, {kept}" if keep_time_bucket else f"| KEEP {kept}")
+        return []
+    if wants_last:
         reduced = ", ".join(
             f"{_esql_identifier(field)} = LAST({_esql_identifier(field)}, time_bucket)"
             for field in keep_fields
