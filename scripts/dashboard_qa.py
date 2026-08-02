@@ -428,6 +428,13 @@ def check_values(payload: dict, packets: list, args, tolerance: float = 0.05):
     tstart_dt, tend_dt = data_window_dt(
         args.es_url, args.es_index, args.es_api_key, minutes=args.window_minutes
     )
+    # End the window BEFORE the last scrape. A panel that collapses with
+    # LAST(value, time_bucket) reads its final bucket, and if the window ends
+    # exactly at the newest document that bucket holds a single sample -- the
+    # rate computed in it is meaningless. Measured: CPU Busy read 9.65 against
+    # Prometheus's 1.82 that way, and 1.723 once the window closed a scrape
+    # earlier. This is a property of the CHECK, not of the panel.
+    tend_dt = tend_dt - dt.timedelta(seconds=90)
     # Prometheus must be asked about the SAME instant our value describes -- the
     # final bucket. Querying "now" instead made load average look 23% off when
     # both sides were right about different moments.

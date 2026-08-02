@@ -65,6 +65,38 @@ identical to the mapping failure in the bulk response.
 
 ---
 
+## 0d. ES|QL `RATE(field, window)` honours its window argument — settled
+
+Worth recording because the alternative would have been serious: if RATE used the
+enclosing bucket span instead of its argument, every rate panel's value would
+change with dashboard zoom.
+
+Measured on the rig, same 50-minute range, same 5m rate window, three bucket
+widths:
+
+| bucketing | ~width | AVG(RATE(node_cpu_seconds_total, 5m)) |
+|---|---|---|
+| TBUCKET(10) | ~5 min | 0.9828 |
+| TBUCKET(50) | ~60 s | 0.9828 |
+| TBUCKET(100) | ~30 s | 0.9828 |
+
+Identical. RATE honours its argument; bucket width does not affect it.
+
+**And "CPU Busy" is correct.** Run directly against the rig it returns 1.723 and
+1.352 for two windows, against Prometheus's 1.74-1.82. The 9.65-13.19 readings
+came from `scripts/dashboard_qa.py`, not from the panel.
+
+**Open: the values dimension mis-reads already-collapsed scalar panels.** A panel
+that ends in `LAST(value, time_bucket)` returns one row with no bucket column, so
+the harness's "use the last COMPLETE bucket" logic cannot apply -- it takes
+whatever the panel's own LAST produced for the harness's window. Ending the window
+90 s before the newest document did not fix it, so the cause is elsewhere in how
+the harness builds the window or binds params. Until that is settled, treat
+`differ` counts on scalar panels as suspect; the multi-series counts are unaffected
+because those keep their bucket column.
+
+---
+
 ## 1a. Kubernetes / Views / Namespaces "Overview": two panels ignore source geometry
 
 **Status:** diagnosed, not fixed. The only finding `scripts/dashboard_qa.py`
