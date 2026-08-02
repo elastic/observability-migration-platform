@@ -361,7 +361,7 @@ def _apply_metric_map_to_rate_on_simple(
     time_filter = rule_pack.ts_time_filter
     bucket_expr = rule_pack.ts_bucket
     outer = OUTER_AGG_MAP.get(getattr(frag, "outer_agg", None) or "", "") or "SUM"
-    stats_expr = f"{outer}(RATE({metric_field}, {window}))"
+    stats_expr = f"{outer}({_range_call('RATE', metric_field, window)})"
     return source, time_filter, bucket_expr, metric_field, stats_expr
 
 
@@ -3283,7 +3283,7 @@ def _build_stats_call(
         force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
     if esql_inner:
-        inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+        inner_expr = _range_call(esql_inner, metric_arg, range_window)
     else:
         inner_expr = metric_arg
     return _apply_outer_agg(esql_outer, inner_expr, frag)
@@ -4232,7 +4232,7 @@ def _build_measure_spec(
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         if esql_inner:
-            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+            inner_expr = _range_call(esql_inner, inner_arg, frag.range_window)
         else:
             # drop_rate → gauge: outer agg operates on the bare field.
             inner_expr = inner_arg
@@ -4276,7 +4276,7 @@ def _build_measure_spec(
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         if esql_inner:
-            inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+            inner_windowed = _range_call(esql_inner, inner_arg, frag.range_window)
         else:
             inner_windowed = inner_arg
         stats_expr = _apply_outer_agg(esql_outer, inner_windowed, frag)
@@ -4544,7 +4544,10 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
             value_expr, percentile = args[0].strip(), args[1].strip()
             return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
         return None
-    ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
+    # The window is optional: the counter family is emitted windowless (see
+    # _range_call), and requiring the comma here would drop those calls out of
+    # the CASE-wrapping branch below and into shapes Elasticsearch rejects.
+    ts_match = re.fullmatch(r"(?P<field>.+?)(?:,\s*(?P<window>\d+(?:\.\d+)?\s*(?:ms|s|m|h|d|millis(?:econds?)?|seconds?|minutes?|hours?|days?)))?", inner)
     # A top-level windowed time-series function (the *_OVER_TIME family AND the
     # counter range functions RATE/IRATE/INCREASE/DELTA/DERIV) takes the window
     # as its own trailing argument. Only the value (field) may be wrapped in
@@ -4555,27 +4558,29 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
         or agg in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}
     ) and ts_match:
         field = ts_match.group("field").strip()
-        window = ts_match.group("window").strip()
+        window = ((ts_match.group("window") or "").strip()
+                  or str(timeseries_window or "").strip() or None)
         # CASE must wrap the time-series call, not the metric field inside it.
         # ``IRATE(CASE(cond, field, NULL), window)`` ClassCasts
         # (ReferenceAttribute → Bucket) on current ES; ``CASE(cond, IRATE(field,
         # window), NULL)`` is legal.
-        return f"CASE({condition}, {agg}({field}, {window}), NULL)"
+        return f"CASE({condition}, {_range_call(agg, field, window)}, NULL)"
     nested_ts = re.fullmatch(
-        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
+        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+?)(?:,\s*(?P<window>\d+(?:\.\d+)?\s*(?:ms|s|m|h|d|millis(?:econds?)?|seconds?|minutes?|hours?|days?)))?\)",
         inner,
     )
     if nested_ts:
         func = nested_ts.group("func")
         field = nested_ts.group("field").strip()
-        window = nested_ts.group("window").strip()
+        window = ((nested_ts.group("window") or "").strip()
+                  or str(timeseries_window or "").strip() or None)
         if func in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
             # Filtering the counter argument itself makes Elasticsearch 9.5
             # crash for RATE/IRATE with a grouping Bucket cast. Apply the
             # per-series filter to the range-function result instead; the
             # enclosing aggregate still ignores non-matching rows via NULL.
-            return f"{agg}(CASE({condition}, {func}({field}, {window}), NULL))"
-        return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
+            return f"{agg}(CASE({condition}, {_range_call(func, field, window)}, NULL))"
+        return f"{agg}({_range_call(func, f'CASE({condition}, {field}, NULL)', window)})"
     # Window-less ``LAST_OVER_TIME(field)`` (and siblings) are common on the
     # counter-without-rate summary path. CASE-wrap the field the same way as the
     # windowed form so multi-target panels with divergent label filters (Express
@@ -4709,10 +4714,66 @@ _ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)
 
 
 _BARE_TS_VALUE_ARG = re.compile(
-    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    # The counter family carries no window -- it is emitted windowless so the rate
+    # follows the time bucket (see counter_range_window_rule). Requiring the comma
+    # for these would stop wrapping exactly the calls Elasticsearch rejects when
+    # they sit bare beside a CASE-wrapped sibling.
+    r"\b(?P<func>IRATE|RATE|INCREASE)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*(?:,\s*(?P<window>[^)]+))?\)"
+    # The lookback family keeps a real window, and its single-argument form
+    # (LAST_OVER_TIME(field)) is a legitimate emission, not a bare value arg.
+    r"|\b(?P<func2>DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
     r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
-    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+    rf"\((?P<field2>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window2>[^)]+)\)"
 )
+
+
+_COUNTER_RANGE_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+
+
+def _range_call(func: str, field: str, window: str | None) -> str:
+    """Render a TS range call, omitting the window for the counter family.
+
+    Elasticsearch computes RATE/IRATE/INCREASE over the TIME BUCKET, not over the
+    window: ``RateDoubleGroupingAggregatorFunction.computeRate`` derives the value
+    at ``tbucketStart``/``tbucketEnd`` and divides by that span, and the window
+    argument defaults to ``NO_WINDOW`` -- ``Duration.ZERO`` -- meaning "use the
+    bucket". Pinning a window beside an ADAPTIVE ``TBUCKET(100, ?_tstart, ?_tend)``
+    desynchronises the two as soon as the dashboard range grows.
+
+    Measured on the rig against node_cpu_seconds_total (true idle rate 0.984),
+    with the adaptive bucket the dashboards actually emit::
+
+        range   prom    RATE(x, 5m)      RATE(x)
+         1 h   0.985     0.944  (4%)   0.966 (2%)
+         6 h   0.984     0.970  (1%)   0.970 (1%)
+        12 h   0.984     1.945 (98%)   0.980 (0%)
+        24 h   0.984     5.702 (480%)  0.953 (3%)
+
+    Reproducing this REQUIRES the adaptive bucket. A fixed ``TBUCKET(432 seconds)``
+    at the same range and window reads 0.979 -- fine -- so a fixed-width probe
+    hides the defect completely; that is what made it look like a non-issue on the
+    first pass. Sweep several dashboard ranges with the adaptive form.
+
+    The ``*_OVER_TIME`` family takes its window as a genuine lookback and keeps it.
+    """
+    if func.upper() in _COUNTER_RANGE_FUNCS or not window:
+        return f"{func}({field})"
+    return f"{func}({field}, {window})"
+
+
+def _bare_ts_match_parts(match: re.Match[str]) -> tuple[str, str, str | None]:
+    """(func, field, window) from either alternation branch; window may be None."""
+    return (
+        match.group("func") or match.group("func2"),
+        match.group("field") or match.group("field2"),
+        match.group("window") or match.group("window2"),
+    )
+
+
+def _ts_call(func: str, field: str, window: str | None) -> str:
+    """Rebuild a TS call, preserving whether it carried a window."""
+    return f"{func}({field}, {window})" if window else f"{func}({field})"
 
 
 # CASE(cond, field, NULL) nested as the *value* arg of a TS range/window func.
@@ -4788,24 +4849,20 @@ def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[
                 return assignment
 
             def _repl(match: re.Match[str]) -> str:
-                return (
-                    f"CASE(true, {match.group('func')}({match.group('field')}, "
-                    f"{match.group('window')}), NULL)"
-                )
+                return f"CASE(true, {_ts_call(*_bare_ts_match_parts(match))}, NULL)"
 
             return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
 
         return [_wrap_outer(assignment) for assignment in assignments]
 
     def _repl(match: re.Match[str]) -> str:
-        func = match.group("func")
-        field, window = match.group("field"), match.group("window")
+        func, field, window = _bare_ts_match_parts(match)
         # The counter range functions reject CASE as their value argument, which
         # is why _rewrite_ts_inner_case_to_outer_case exists. Emitting the inner
         # shape for them here just recreates the form that pass removed, so keep
         # them outer. OVER_TIME genuinely uses the inner shape.
         if func.upper() in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
-            return f"CASE(true, {func}({field}, {window}), NULL)"
+            return f"CASE(true, {_ts_call(func, field, window)}, NULL)"
         return f"{func}(CASE(true, {field}, NULL), {window})"
 
     def _wrap_inner(assignment: str) -> str:
@@ -4991,19 +5048,19 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 ts_func = bare_ts.group(1)
                 ts_window = bare_ts.group(2).strip()
                 outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
-                new_expr = f"{outer}({ts_func}({metric_field}, {ts_window}))"
+                new_expr = f"{outer}({_range_call(ts_func, metric_field, ts_window)})"
                 warning = (
-                    f"Wrapped {ts_func}({metric_field}, {ts_window}) in {outer}(...) so "
+                    f"Wrapped {_range_call(ts_func, metric_field, ts_window)} in {outer}(...) so "
                     f"the grouped TS panel target validates (no bare time-series "
                     f"aggregate mixed with regular aggregates)"
                 )
             elif bare_regular:
                 outer = bare_regular.group(1)
                 ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
-                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                new_expr = f"{outer}({_range_call(ts_func, metric_field, window)})"
                 warning = (
                     f"Converted {outer}({metric_field}) to "
-                    f"{outer}({ts_func}({metric_field}, {window})) so the grouped "
+                    f"{outer}({_range_call(ts_func, metric_field, window)}) so the grouped "
                     f"TS panel target validates"
                 )
             else:
@@ -5018,10 +5075,10 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 continue
             outer = bare_regular.group(1)
             ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
-            new_expr = f"{ts_func}({metric_field}, {window})"
+            new_expr = f"{_range_call(ts_func, metric_field, window)}"
             warning = (
                 f"Converted {outer}({metric_field}) to "
-                f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+                f"{_range_call(ts_func, metric_field, window)} so mixed TS panel targets validate"
             )
 
         warnings = list(spec.warnings)
@@ -6238,6 +6295,7 @@ __all__ = [
     "_parse_logql_selector",
     "_parse_selector_matchers",
     "_quote_esql_string",
+    "_range_call",
     "_scalar_fragment_expr",
     "_selector_filters",
     "_split_top_level_csv",
@@ -6352,7 +6410,7 @@ def _render_colocated_arithmetic(frag, resolver, rule_pack, depth=0):
         window = frag.range_window or ""
         if not esql_fn or not window:
             return None
-        return (f"{esql_fn}({field_ref}, {window})", sig)
+        return (_range_call(esql_fn, field_ref, window), sig)
     return None
 
 

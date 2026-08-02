@@ -724,7 +724,7 @@ class TelemetryContractTests(unittest.TestCase):
                                     "TS metrics-*\n"
                                     '| WHERE device RLIKE "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"\n'
                                     "| STATS node_disk_reads_completed_total = "
-                                    "AVG(RATE(node_disk_reads_completed_total, 5m)) "
+                                    "AVG(RATE(node_disk_reads_completed_total)) "
                                     "BY time_bucket = TBUCKET(5 minute), device"
                                 ),
                             }
@@ -762,7 +762,7 @@ class TelemetryContractTests(unittest.TestCase):
                                             "query": (
                                                 "TS metrics-*\n"
                                                 "| STATS node_pressure_cpu_waiting_seconds_total_A = "
-                                                "RATE(node_pressure_cpu_waiting_seconds_total, 5m) "
+                                                "RATE(node_pressure_cpu_waiting_seconds_total) "
                                                 "BY time_bucket = TBUCKET(5 minute)\n"
                                                 "| EVAL CPU = node_pressure_cpu_waiting_seconds_total_A\n"
                                                 "| STATS time_bucket = MAX(time_bucket), CPU = MAX(CPU)\n"
@@ -1452,9 +1452,9 @@ class TelemetryContractTests(unittest.TestCase):
                                                 "TS metrics-*\n"
                                                 "| WHERE node_cpu_seconds_total IS NOT NULL\n"
                                                 "| STATS a = AVG(CASE((mode == \"system\"), "
-                                                "RATE(node_cpu_seconds_total, 5m), NULL)), "
+                                                "RATE(node_cpu_seconds_total), NULL)), "
                                                 "b = AVG(CASE((mode == \"idle\"), "
-                                                "RATE(node_cpu_seconds_total, 5m), NULL)) "
+                                                "RATE(node_cpu_seconds_total), NULL)) "
                                                 "BY time_bucket = TBUCKET(5 minute), cpu"
                                             )
                                         }
@@ -2357,7 +2357,7 @@ class DimensionValueHygieneTests(unittest.TestCase):
                                                 "| WHERE instance == \"$instance\" "
                                                 "AND job == \"__obs_migration_param_job\" "
                                                 "AND env == \"production\"\n"
-                                                "| STATS v = AVG(IRATE(node_network_receive_bytes_total, 5m)) "
+                                                "| STATS v = AVG(IRATE(node_network_receive_bytes_total)) "
                                                 "BY time_bucket = TBUCKET(5 minute), device"
                                             )
                                         },

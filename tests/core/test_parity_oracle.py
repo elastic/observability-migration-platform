@@ -219,7 +219,7 @@ class SingleValueReductionTests(unittest.TestCase):
     def test_multi_bucket_series_is_not_single_value(self):
         # A genuine time series whose terminal STATS still groups BY time_bucket must NOT be flagged.
         esql = ("TS metrics-* | WHERE m IS NOT NULL "
-                "| STATS m = AVG(RATE(m, 5m)) BY time_bucket = TBUCKET(5 minute), device | SORT time_bucket ASC")
+                "| STATS m = AVG(RATE(m)) BY time_bucket = TBUCKET(5 minute), device | SORT time_bucket ASC")
         self.assertFalse(po.is_single_value_reduction(esql))
 
     def test_multi_bucket_with_eval_after_is_not_single_value(self):
@@ -438,7 +438,7 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
             request,
             source_query="sum(rate(metric[5m])) by ($grouping)",
             translated_query=(
-                "TS metrics-* | STATS value = SUM(RATE(metric, 5m)) "
+                "TS metrics-* | STATS value = SUM(RATE(metric)) "
                 "BY grouping = ??grouping"
             ),
             index="metrics-*",
@@ -720,7 +720,7 @@ class ExecutionTests(unittest.TestCase):
         # (excluding the time bucket / bucket-expression assignments).
         esql = (
             "TS metrics-* "
-            "| STATS m_A = SUM(RATE(http_requests_total, 5m)), m_B = SUM(RATE(http_errors_total, 5m)) "
+            "| STATS m_A = SUM(RATE(http_requests_total)), m_B = SUM(RATE(http_errors_total)) "
             "BY time_bucket = TBUCKET(5 minute), code "
             "| EVAL A = m_A | EVAL B = m_B | KEEP time_bucket, code, A, B"
         )
@@ -1494,7 +1494,7 @@ def test_rate_on_gauge_typed_field_is_a_data_gap_not_an_error():
     cmp_ = po.Comparison(expr="rate(node_netstat_Tcp_InSegs[5m])", esql="TS i | STATS a = RATE(x)")
     cmp_.translated_error = (
         "verification_exception: Found 1 problem\nline 4:31: first argument of "
-        "[RATE(node_netstat_Tcp_InSegs, 5m)] must be [counter_long, counter_integer "
+        "[RATE(node_netstat_Tcp_InSegs)] must be [counter_long, counter_integer "
         "or counter_double], found value [node_netstat_Tcp_InSegs] type [double]"
     )
     assert cmp_.verdict() == "DATA_GAP"

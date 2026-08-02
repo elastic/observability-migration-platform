@@ -189,14 +189,14 @@ def test_merge_remaps_reserved_stats_alias_into_legend_eval():
     """Backtick syntax must not become part of the alias-map key."""
     q_in = (
         "TS metrics-*\n"
-        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total, 5m)) "
+        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total)) "
         "BY time_bucket = TBUCKET(5 minute)\n"
         "| KEEP time_bucket, `IN`\n"
         "| SORT time_bucket ASC"
     )
     q_out = (
         "TS metrics-*\n"
-        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total, 5m)) "
+        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total)) "
         "BY time_bucket = TBUCKET(5 minute)\n"
         "| KEEP time_bucket, OUT\n"
         "| SORT time_bucket ASC"
@@ -211,7 +211,7 @@ def test_merge_remaps_reserved_stats_alias_into_legend_eval():
 
     assert merged is not None
     query = merged["query"]
-    assert "IN_A = SUM(RATE(haproxy_frontend_bytes_in_total, 5m))" in query
+    assert "IN_A = SUM(RATE(haproxy_frontend_bytes_in_total))" in query
     assert "EVAL `IN` = IN_A" in query
     assert "EVAL `IN` = IN\n" not in query
     assert "EVAL OUT = OUT_B" in query
@@ -222,7 +222,7 @@ def test_merge_rewrites_reserved_alias_references_inside_eval():
     """Quoted STATS/output aliases must compare and rewrite by column name."""
     q_in = (
         "TS metrics-*\n"
-        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total, 5m)), "
+        "| STATS `IN` = SUM(RATE(haproxy_frontend_bytes_in_total)), "
         "tmp = AVG(haproxy_frontend_bytes_in_total) "
         "BY time_bucket = TBUCKET(5 minute)\n"
         "| EVAL `IN` = COALESCE(`IN`, tmp)\n"
@@ -231,7 +231,7 @@ def test_merge_rewrites_reserved_alias_references_inside_eval():
     )
     q_out = (
         "TS metrics-*\n"
-        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total, 5m)) "
+        "| STATS OUT = SUM(RATE(haproxy_frontend_bytes_out_total)) "
         "BY time_bucket = TBUCKET(5 minute)\n"
         "| KEEP time_bucket, OUT\n"
         "| SORT time_bucket ASC"
@@ -264,7 +264,7 @@ def test_merge_rewrites_inner_case_irate_to_outer_case():
         "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
         "| STATS numerator = SUM(IRATE(CASE((mode == \"user\"), "
         "node_cpu_guest_seconds_total, NULL), 1m)), "
-        "denominator = SUM(IRATE(node_cpu_seconds_total, 1m)) "
+        "denominator = SUM(IRATE(node_cpu_seconds_total)) "
         "BY time_bucket = TBUCKET(5 minute), instance\n"
         "| EVAL ratio = numerator / denominator\n"
         "| KEEP time_bucket, instance, ratio\n"
@@ -275,7 +275,7 @@ def test_merge_rewrites_inner_case_irate_to_outer_case():
         "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
         "| STATS numerator = SUM(IRATE(CASE((mode == \"nice\"), "
         "node_cpu_guest_seconds_total, NULL), 1m)), "
-        "denominator = SUM(IRATE(node_cpu_seconds_total, 1m)) "
+        "denominator = SUM(IRATE(node_cpu_seconds_total)) "
         "BY time_bucket = TBUCKET(5 minute), instance\n"
         "| EVAL ratio = numerator / denominator\n"
         "| KEEP time_bucket, instance, ratio\n"
@@ -291,8 +291,8 @@ def test_merge_rewrites_inner_case_irate_to_outer_case():
     query = merged["query"]
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
     assert 'CASE((mode == "nice"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
-    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total))" not in query
     _assert_no_inner_case_ts_value_args(query)
     _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
@@ -302,11 +302,11 @@ def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
     """Formula-plan fusion and pretranslated merge share the CASE-shape helper."""
     assignments = [
         'numerator = SUM(IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m))',
-        "denominator = SUM(IRATE(node_cpu_seconds_total, 1m))",
+        "denominator = SUM(IRATE(node_cpu_seconds_total))",
     ]
     wrapped = _wrap_bare_ts_value_args_when_case_siblings(assignments)
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in wrapped[0]
-    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in wrapped[1]
+    assert "CASE(true, IRATE(node_cpu_seconds_total), NULL)" in wrapped[1]
     assert "IRATE(CASE(" not in wrapped[0]
     assert "IRATE(CASE(" not in wrapped[1]
 
@@ -329,7 +329,7 @@ def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
             group_fields=["instance"],
             filters=[],
             alias="total",
-            stats_expr="SUM(IRATE(node_cpu_seconds_total, 1m))",
+            stats_expr="SUM(IRATE(node_cpu_seconds_total))",
             final_alias="total",
             metric_field="node_cpu_seconds_total",
         ),
@@ -339,8 +339,8 @@ def test_shared_helper_rewrites_inner_case_irate_for_formula_fusion_and_merge():
     parts, _, _ = result
     stats_line = next(line for line in parts if line.startswith("| STATS"))
     assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in stats_line
-    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in stats_line
-    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in stats_line
+    assert "CASE(true, IRATE(node_cpu_seconds_total), NULL)" in stats_line
+    assert "SUM(IRATE(node_cpu_seconds_total))" not in stats_line
     assert "IRATE(CASE(" not in stats_line
 
 
@@ -416,9 +416,9 @@ def test_join_family_emits_outer_case_irate_for_filtered_numerator():
     )
     assert ctx.feasibility == "feasible"
     query = ctx.esql_query or ""
-    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-    assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
-    assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
+    assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total), NULL)' in query
+    assert "CASE(true, IRATE(node_cpu_seconds_total), NULL)" in query
+    assert "SUM(IRATE(node_cpu_seconds_total))" not in query
     _assert_no_inner_case_ts_value_args(query)
     _assert_no_bare_ts_alongside_case(query)
     assert structural_errors(check_esql_structure(query)) == []
@@ -466,9 +466,9 @@ def test_node_exporter_fixture_smoke_slice_merge_invariants():
             assert "EVAL CPU = node_cpu_scaling_frequency_hertz\n" not in query
             _assert_eval_rhs_defined_after_stats(query)
         else:
-            assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)' in query
-            assert "SUM(IRATE(node_cpu_seconds_total, 1m))" not in query
-            assert "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)" in query
+            assert 'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total), NULL)' in query
+            assert "SUM(IRATE(node_cpu_seconds_total))" not in query
+            assert "CASE(true, IRATE(node_cpu_seconds_total), NULL)" in query
             _assert_no_inner_case_ts_value_args(query)
             _assert_no_bare_ts_alongside_case(query)
         assert structural_errors(check_esql_structure(query)) == []
@@ -747,7 +747,7 @@ def test_target_specific_filters_are_folded_not_anded_globally():
         '| WHERE job RLIKE ?job\n'
         '| WHERE mode == "idle"\n'
         "| WHERE node_cpu_seconds_total IS NOT NULL\n"
-        "| STATS node_cpu_seconds_total = AVG(RATE(node_cpu_seconds_total, 5m)) "
+        "| STATS node_cpu_seconds_total = AVG(RATE(node_cpu_seconds_total)) "
         "BY time_bucket = TBUCKET(5 minute)\n"
         "| SORT time_bucket ASC"
     )
@@ -796,10 +796,10 @@ def test_counter_range_siblings_are_wrapped_outer_not_inner():
     )
 
     out = _wrap_bare_ts_value_args_when_case_siblings([
-        'a = SUM(CASE((mode == "idle"), IRATE(cpu_seconds_total, 2m), NULL))',
-        "b = SUM(IRATE(container_cpu_usage_seconds_total, 2m))",
+        'a = SUM(CASE((mode == "idle"), IRATE(cpu_seconds_total), NULL))',
+        "b = SUM(IRATE(container_cpu_usage_seconds_total))",
     ])
-    assert "CASE(true, IRATE(container_cpu_usage_seconds_total, 2m), NULL)" in out[1]
+    assert "CASE(true, IRATE(container_cpu_usage_seconds_total), NULL)" in out[1]
     assert "IRATE(CASE(true," not in out[1]
 
     over_time = _wrap_bare_ts_value_args_when_case_siblings([
@@ -824,12 +824,12 @@ def test_outer_case_is_detected_when_the_condition_contains_a_comma():
 
     assignments = [
         'a = SUM(CASE((COALESCE(app, "") RLIKE ?app) and (COALESCE(inst, "") RLIKE ?inst), '
-        "RATE(jvm_gc_pause_seconds_sum, 1m), NULL))",
+        "RATE(jvm_gc_pause_seconds_sum), NULL))",
         "b = MAX(LAST_OVER_TIME(system_cpu_count))",
     ]
     out = _wrap_bare_ts_value_args_when_case_siblings(assignments)
     assert "RATE(CASE(true," not in out[0]
-    assert "RATE(jvm_gc_pause_seconds_sum, 1m)" in out[0]
+    assert "RATE(jvm_gc_pause_seconds_sum)" in out[0]
 
 
 def test_merge_refuses_when_the_output_column_lives_in_a_dropped_stage():

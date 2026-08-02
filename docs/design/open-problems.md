@@ -65,9 +65,9 @@ identical to the mapping failure in the bulk response.
 
 ---
 
-## 0e. A rate is wrong whenever the bucket is wider than its window — CORRECTION
+## 0e. ~~A rate is wrong whenever the bucket is wider than its window~~ FIXED
 
-**Status:** real defect, widest-reaching one found. Not fixed.
+**Status:** FIXED. Widest-reaching defect found in this pass.
 
 I previously wrote that `RATE(field, window)` "honours its window argument" and
 that bucket width does not affect it. **That was wrong, and the test behind it was
@@ -97,11 +97,38 @@ about 8 hours makes buckets wider than 5 minutes -- at which point **every rate
 panel on the dashboard reads roughly double**. A 12-hour view is entirely
 ordinary.
 
-Fix direction: the emitted rate window must be at least the bucket width, so the
-two have to be chosen together. Either pin a fixed bucket duration and match the
-window to it, or derive the window from the range the way Grafana's
-`$__rate_interval` does. Verify with the QA values dimension at several dashboard
-ranges, not just one -- a single range is exactly what hid this.
+**Fix applied:** drop the window argument entirely. Reading
+`AggregateFunction.java` settles it -- the default is
+`NO_WINDOW = Literal.timeDuration(Source.EMPTY, Duration.ZERO)`, and the word
+"window" never appears in the aggregator: `computeRate` works from
+`tbucketStart`/`tbucketEnd`. Omitting the window therefore makes the rate
+bucket-aligned by construction, at every range, with no window/bucket pair to
+keep in sync. `RATE`/`IRATE`/`INCREASE` are now emitted windowless
+(`_range_call` in `promql.py`, used by every fragment emitter, plus the
+`counter_range_window` postprocessor as a backstop). The `*_OVER_TIME` family
+takes its window as a real lookback and keeps it.
+
+Verified against Prometheus on the rig (true idle rate 0.984), with the adaptive
+bucket that dashboards actually emit:
+
+| range | prom | `RATE(x, 5m)` | `RATE(x)` |
+|---|---|---|---|
+| 1 h | 0.985 | 0.944 (4%) | 0.966 (2%) |
+| 6 h | 0.984 | 0.970 (1%) | 0.970 (1%) |
+| **12 h** | 0.984 | **1.945 (98%)** | 0.980 (0%) |
+| **24 h** | 0.984 | **5.702 (480%)** | 0.953 (3%) |
+
+**Reproducing this requires the adaptive `TBUCKET(100, ?_tstart, ?_tend)`.** A
+fixed `TBUCKET(432 seconds)` at the same 12 h range and same `5m` window reads
+0.979 -- fine. A fixed-width probe hides the defect completely, and that nearly
+led me to dismiss it a second time. Sweep several dashboard ranges *with the
+adaptive form*.
+
+Two gates keyed off the window and had silently stopped firing for windowless
+calls; both now accept either form: the structural oracle's `_BARE_TS_VALUE_ARG`
+(`STATS_CASE_BARE_TS_MIX`) and the CASE-sibling wrapper in `promql.py`, which
+must wrap a bare counter beside a CASE-wrapped one or Elasticsearch rejects the
+mix.
 
 ---
 

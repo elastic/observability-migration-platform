@@ -36,7 +36,7 @@ def _make_record(**overrides: Any) -> PanelRecord:
         dashboard_title="My Dashboard",
         t0_source_promql="rate(http_requests_total[5m])",
         t1_translator_esql=(
-            "TS metrics-* | STATS x = AVG(RATE(http_requests_total, 5m)) "
+            "TS metrics-* | STATS x = AVG(RATE(http_requests_total)) "
             "BY time_bucket = TBUCKET(5 minute)"
         ),
     )
@@ -120,7 +120,7 @@ class TestMigrationReportCollector:
                     "status": "migrated",
                     "readiness": "feasible",
                     "promql": "rate(foo[5m])",
-                    "esql": "TS metrics-* | STATS x = AVG(RATE(foo, 5m))",
+                    "esql": "TS metrics-* | STATS x = AVG(RATE(foo))",
                     "grafana_type": "timeseries",
                     "kibana_type": "lens",
                 }
@@ -468,10 +468,10 @@ class TestCompare:
     def test_t0_t1_difference_does_not_register_as_drift_axis(self):
         record = _make_record(
             t0_source_promql="rate(foo[5m])",
-            t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(foo, 5m))",
-            t2_yaml_esql="TS metrics-* | STATS x = AVG(RATE(foo, 5m))",
-            t3_ndjson_esql="TS metrics-* | STATS x = AVG(RATE(foo, 5m))",
-            t4_cluster_esql="TS metrics-* | STATS x = AVG(RATE(foo, 5m))",
+            t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
+            t2_yaml_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
+            t3_ndjson_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
+            t4_cluster_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
         )
         compare.compare_panel_record(record)
         assert "T0=T1" not in record.drift_axes

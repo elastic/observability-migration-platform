@@ -78,6 +78,7 @@ from .promql import (
     _parse_fragment,
     _parse_logql_search,
     _plan_metric_map_rate_transform,
+    _range_call,
     _resolve_frag_metric_field,
     _resolve_metric_field,
     _same_metric_range_fallback_warning,
@@ -1889,7 +1890,7 @@ def join_family_rule(context):
                 _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
             inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric), force_cast=join_cast_needed)}, {w})"
         elif is_counter:
-            inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
+            inner_expr = _range_call("RATE", physical_metric, rp.default_rate_window)
         else:
             inner_expr = physical_metric
 
@@ -2171,7 +2172,7 @@ def topk_family_rule(context):
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
         inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=topk_cast_needed)
         if esql_inner:
-            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+            inner_expr = _range_call(esql_inner, inner_arg, frag.range_window or rp.default_rate_window)
         else:
             # drop_rate / mapped gauge: outer agg operates on the bare field.
             inner_expr = inner_arg
@@ -2450,7 +2451,7 @@ def scaled_agg_family_rule(context):
         force_cast=cast_needed,
     )
     if esql_inner:
-        inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        inner_windowed = _range_call(esql_inner, inner_arg, frag.range_window)
     else:
         # drop_rate → gauge: outer agg operates on the bare field.
         inner_windowed = inner_arg
@@ -2617,7 +2618,15 @@ def nested_agg_family_rule(context):
             and nested_cast_needed
         ):
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=nested_cast_needed)}, {frag.range_window}))"
+        _inner_arg = _counter_safe_metric_arg(
+            esql_inner_name, physical_metric, is_counter, frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=nested_cast_needed,
+        )
+        first_stats_expr = (
+            f"{inner_alias} = {esql_inner_agg}"
+            f"({_range_call(esql_inner_name, _inner_arg, frag.range_window)})"
+        )
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
@@ -2999,7 +3008,7 @@ def range_agg_family_rule(context):
         force_cast=cast_needed,
     )
     if esql_inner_name:
-        inner_expr = f"{esql_inner_name}({inner_arg}, {frag.range_window})"
+        inner_expr = _range_call(esql_inner_name, inner_arg, frag.range_window)
     else:
         # drop_rate → gauge: outer agg operates on the bare field.
         inner_expr = inner_arg
@@ -3811,6 +3820,50 @@ def _projected_metric_field_from_esql(esql_query):
         if match:
             return match.group(1)
     return ""
+
+
+_COUNTER_RANGE_WINDOW_RE = re.compile(
+    r"\b(RATE|IRATE|INCREASE)\((?P<arg>[^(),]+),\s*[0-9]+(?:ms|s|m|h|d)\)", re.IGNORECASE
+)
+
+
+@QUERY_POSTPROCESSORS.register("counter_range_window", priority=93)
+def counter_range_window_rule(context):
+    """Drop the explicit window from RATE/IRATE/INCREASE so it follows the bucket.
+
+    Elasticsearch computes these over the TIME BUCKET, not over the window:
+    ``RateDoubleGroupingAggregatorFunction.computeRate`` derives the value at
+    ``tbucketStart``/``tbucketEnd`` (extrapolating to the boundaries) and divides
+    by that span. The window argument defaults to ``NO_WINDOW`` --
+    ``Duration.ZERO`` -- which means "use the bucket".
+
+    Passing a fixed window alongside an ADAPTIVE ``TBUCKET(100, ?_tstart,
+    ?_tend)`` therefore desynchronises the two as soon as the dashboard's range
+    grows. Measured on the rig with node_cpu_seconds_total, whose correct idle
+    rate is ~0.98:
+
+        50 min range, 2.5 min buckets   RATE(x, 5m) 0.982   RATE(x) 0.982
+        12 h   range, 7.2 min buckets   RATE(x, 5m) 1.937   RATE(x) 0.984
+
+    A 12-hour view is ordinary, and every rate panel on it read about double; at
+    24 hours the windowed form reads 5.70 against a true 0.984. Omitting the window
+    is correct at every range because the bucket then defines the span on both
+    sides. Note the adaptive bucket is essential to reproduce -- a fixed-width
+    TBUCKET at the same range and window looks fine.
+
+    Only the counter functions are touched. The ``*_OVER_TIME`` family takes its
+    window as a genuine lookback and keeps it.
+    """
+    query = context.esql_query
+    if not query or "(" not in query:
+        return None
+    rewritten = _COUNTER_RANGE_WINDOW_RE.sub(
+        lambda m: f"{m.group(1)}({m.group('arg')})", query
+    )
+    if rewritten == query:
+        return None
+    context.esql_query = rewritten
+    return "counter range windows follow the time bucket"
 
 
 @QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)

@@ -94,7 +94,7 @@ def test_structural_oracle_nested_on_bad_esql():
     mapping["rule_payload"]["params"]["esqlQuery"]["esql"] = (
         "TS metrics-*\n"
         '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
-        "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+        "b = SUM(IRATE(other)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     bugs = gate_bugs(check_alert_mapping(mapping))
     assert any(b.rule_id == AlertGateRuleId.STRUCTURAL_ESQL for b in bugs)

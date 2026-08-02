@@ -499,7 +499,7 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("topk(10, sum(rate(http_requests_total[5m])) by (handler))", panel_type="barchart")
 
         self.assertEqual(ctx.feasibility, "feasible")
-        self.assertIn("SUM(RATE(http_requests_total, 5m))", ctx.esql_query)
+        self.assertIn("SUM(RATE(http_requests_total))", ctx.esql_query)
         self.assertIn("BY time_bucket = TBUCKET(5 minute), handler", ctx.esql_query)
         self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY handler", ctx.esql_query)
         self.assertNotIn("value = MAX(_bucket_value)", ctx.esql_query)
@@ -630,8 +630,8 @@ class TestFailureHonesty(unittest.TestCase):
         # denominator is also outer-CASE-shaped (``CASE(true, RATE(...), NULL)``)
         # so ES does not ClassCast mixed value-arg forms.
         self.assertIn('CASE((status RLIKE "5..")', query)
-        self.assertIn("CASE(true, RATE(http_requests_total, 5m), NULL)", query)
-        self.assertNotIn("SUM(RATE(http_requests_total, 5m))", query)
+        self.assertIn("CASE(true, RATE(http_requests_total), NULL)", query)
+        self.assertNotIn("SUM(RATE(http_requests_total))", query)
         self.assertNotIn("RATE(CASE(", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
@@ -2175,7 +2175,7 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         panel = panels._build_esql_xy_panel(
             (
                 "TS metrics-*\n"
-                "| STATS v = SUM(RATE(node_cpu_seconds_total, 5m)) "
+                "| STATS v = SUM(RATE(node_cpu_seconds_total)) "
                 "BY time_bucket = TBUCKET(5 minute), service.instance.id\n"
                 "| SORT time_bucket ASC"
             ),
@@ -3423,14 +3423,45 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         # http_requests_total -> inferred counter
         mot = translate_promql_to_esql("max_over_time(http_requests_total[1h])").esql_query
         self.assertIn("MAX_OVER_TIME(TO_DOUBLE(http_requests_total)", mot)
-        # rate() consumes the counter directly: no cast
+        # rate() consumes the counter directly: no cast, and no window either
+        # (the window follows the time bucket -- see counter_range_window_rule).
         rate = translate_promql_to_esql("rate(http_requests_total[5m])").esql_query
-        self.assertIn("RATE(http_requests_total,", rate)
+        self.assertIn("RATE(http_requests_total)", rate)
         self.assertNotIn("RATE(TO_DOUBLE", rate)
         # gauge: no cast, no churn
         gauge = translate_promql_to_esql("max_over_time(node_load1[1h])").esql_query
         self.assertIn("MAX_OVER_TIME(node_load1,", gauge)
         self.assertNotIn("TO_DOUBLE", gauge)
+
+    def test_counter_range_fns_omit_the_window_but_over_time_keeps_it(self):
+        # Elasticsearch computes RATE/IRATE/INCREASE over the TIME BUCKET, not
+        # over the window argument: RateDoubleGroupingAggregatorFunction
+        # extrapolates to tbucketStart/tbucketEnd and divides by that span, and
+        # the window defaults to NO_WINDOW = Duration.ZERO ("use the bucket").
+        #
+        # Pinning a window next to an ADAPTIVE TBUCKET(100, ?_tstart, ?_tend)
+        # desynchronises them the moment the dashboard range grows. Measured on
+        # the rig against node_cpu_seconds_total (true idle rate ~0.98):
+        #     50 min range, 2.5 min buckets   RATE(x) 0.982   RATE(x) 0.982
+        #     12 h   range, 7.2 min buckets   RATE(x) 1.937   RATE(x) 0.984
+        # Every rate panel on an ordinary 12-hour view read about double.
+        #
+        # The *_OVER_TIME family takes its window as a real lookback and keeps it.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        for expr, fn in (
+            ("rate(http_requests_total[5m])", "RATE"),
+            ("irate(http_requests_total[5m])", "IRATE"),
+            ("increase(http_requests_total[1h])", "INCREASE"),
+        ):
+            q = translate_promql_to_esql(expr).esql_query
+            self.assertIn(f"{fn}(http_requests_total)", q, expr)
+            self.assertNotRegex(q, rf"\b{fn}\(http_requests_total,\s*\d", expr)
+
+        # the lookback family is untouched
+        avg = translate_promql_to_esql("avg_over_time(node_load1[1h])").esql_query
+        self.assertRegex(avg, r"AVG_OVER_TIME\(node_load1,\s*\d")
 
     def test_increase_degraded_to_gauge_fn_still_casts_to_double(self):
         # Regression for the MySQL "Network Usage Hourly" runtime failure:

@@ -48,7 +48,7 @@ def test_unknown_column_renamed_stats_alias_is_not_flagged_as_alias_bug():
 def test_unknown_metric_not_in_query_still_self_heals():
     query = (
         "TS metrics-*\n"
-        "| STATS x = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)\n"
+        "| STATS x = AVG(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     assert unknown_column_looks_like_alias_bug("http_requests_total", query) is False
 
@@ -90,7 +90,7 @@ def test_validation_failure_self_heals_false_for_alias_bug_when_legacy_query_key
 def test_validation_failure_self_heals_true_for_missing_metric_when_query_provided():
     query = (
         "TS metrics-*\n"
-        "| STATS x = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)\n"
+        "| STATS x = AVG(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     assert (
         validation_failure_self_heals(

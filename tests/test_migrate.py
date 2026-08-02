@@ -237,7 +237,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.feasibility, "feasible")
         self.assertEqual(result.clean_expr, "sum(rate(http_requests_total[3600s]))")
-        self.assertIn("RATE(http_requests_total, 1h)", result.esql_query)
+        self.assertIn("RATE(http_requests_total)", result.esql_query)
         self.assertFalse(
             any(warning.startswith("AST parse failed") for warning in result.warnings),
             result.warnings,
@@ -1651,13 +1651,13 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_filtered_outer_counter_agg_wraps_case_around_nested_ts_function(self):
         expr = promql._inline_filters_into_stats_expr(
-            "SUM(RATE(node_cpu_seconds_total, 5m))",
+            "SUM(RATE(node_cpu_seconds_total))",
             ['mode == "system"'],
         )
 
         self.assertEqual(
             expr,
-            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total, 5m), NULL))',
+            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total), NULL))',
         )
         self.assertNotIn("RATE(CASE(", expr)
 
@@ -1680,13 +1680,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         # only the value expression may be wrapped in CASE so the emitted ES|QL
         # stays a valid two-argument PERCENTILE (issue #213).
         expr = promql._inline_filters_into_stats_expr(
-            "PERCENTILE(RATE(http_requests_total, 5m), 90)",
+            "PERCENTILE(RATE(http_requests_total), 90)",
             ['mode == "user"'],
         )
 
         self.assertEqual(
             expr,
-            'PERCENTILE(CASE((mode == "user"), RATE(http_requests_total, 5m), NULL), 90)',
+            'PERCENTILE(CASE((mode == "user"), RATE(http_requests_total), NULL), 90)',
         )
 
     def test_resolve_label_prefers_source_field_when_target_has_both(self):
@@ -1881,18 +1881,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)',
+            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total), NULL)',
             translated.esql_query,
         )
         # Denominator stays IRATE (not AVG_OVER_TIME) but is outer-CASE-shaped when
         # the numerator already filters around IRATE, so ES does not ClassCast
         # mixed STATS args (and we do not nest CASE(true) inside the numerator).
         self.assertIn(
-            "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)",
+            "CASE(true, IRATE(node_cpu_seconds_total), NULL)",
             translated.esql_query,
         )
         self.assertNotIn(
-            "SUM(IRATE(node_cpu_seconds_total, 1m))",
+            "SUM(IRATE(node_cpu_seconds_total))",
             translated.esql_query,
         )
         self.assertNotIn("IRATE(CASE(", translated.esql_query)
@@ -4620,7 +4620,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         parts = [
             "TS metrics-*",
             "| WHERE A IS NOT NULL OR B IS NOT NULL OR C IS NOT NULL",
-            "| STATS A = IRATE(A, 5m), B = IRATE(B, 5m), C = IRATE(C, 5m) "
+            "| STATS A = IRATE(A), B = IRATE(B), C = IRATE(C) "
             "BY time_bucket = TBUCKET(5 minute)",
         ]
         out = _collapse_summary_ts_query(parts, ["time_bucket"], ["A", "B", "C"])
@@ -5628,9 +5628,9 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_supported_range_functions_stay_bare_with_time_bucket_only(self):
         cases = [
-            ("rate(http_requests_total[5m])", "RATE(http_requests_total, 5m)"),
-            ("irate(http_requests_total[5m])", "IRATE(http_requests_total, 5m)"),
-            ("increase(http_requests_total[5m])", "INCREASE(http_requests_total, 5m)"),
+            ("rate(http_requests_total[5m])", "RATE(http_requests_total)"),
+            ("irate(http_requests_total[5m])", "IRATE(http_requests_total)"),
+            ("increase(http_requests_total[5m])", "INCREASE(http_requests_total)"),
             ("avg_over_time(node_memory_MemFree_bytes[5m])", "AVG_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
             ("sum_over_time(node_memory_MemFree_bytes[5m])", "SUM_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
             ("max_over_time(node_memory_MemFree_bytes[5m])", "MAX_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
@@ -5666,7 +5666,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         # legendFormat ``{{device}}`` is display-only: it must not inject a BY
         # label that forces AVG(IRATE(...)) and blocks multi-target fusion.
-        self.assertIn("IRATE(node_network_receive_bytes_total, 5m)", query)
+        self.assertIn("IRATE(node_network_receive_bytes_total)", query)
         self.assertNotIn("AVG(IRATE(", query)
         self.assertNotIn(", device", query)
         self.assertFalse(
@@ -5868,7 +5868,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         q = translated.esql_query or ""
         self.assertIn("RLIKE", q)
         self.assertIn("idle", q)
-        self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), cpu", q)
+        self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(5 minute), cpu", q)
         self.assertIn("| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket", q)
 
     def test_nested_agg_range_func_stat_panel_collapses_to_scalar(self):
@@ -5969,7 +5969,7 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_validation_error_analysis_separates_label_and_metric(self):
         query = (
             "TS metrics-*\n"
-            "| STATS foo_total = SUM(INCREASE(foo_total, 5m)) BY time_bucket = TBUCKET(5 minute), status\n"
+            "| STATS foo_total = SUM(INCREASE(foo_total)) BY time_bucket = TBUCKET(5 minute), status\n"
             "| SORT time_bucket ASC"
         )
         error = (
@@ -6115,7 +6115,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS x = IRATE(foo_total, 5m) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS x = IRATE(foo_total) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6140,7 +6140,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         # query with the ORIGINAL missing-field analysis — not the discarded
         # fixed query's syntax error. The disposition is evaluated against the
         # query actually shipped, so this correctly self-heals.
-        original = "TS metrics-*\n| STATS x = RATE(foo_total, 5m)"
+        original = "TS metrics-*\n| STATS x = RATE(foo_total)"
         calls = []
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6188,7 +6188,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS x = IRATE(foo_total, 5m) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS x = IRATE(foo_total) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6404,7 +6404,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS failed = SUM(RATE(otelcol_exporter_enqueue_failed_spans, 5m)) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS failed = SUM(RATE(otelcol_exporter_enqueue_failed_spans)) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6470,7 +6470,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS node_interrupts_total = IRATE(node_interrupts_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+            "| STATS node_interrupts_total = IRATE(node_interrupts_total) BY time_bucket = TBUCKET(5 minute)\n"
             "| SORT time_bucket ASC"
         )
 
@@ -6488,7 +6488,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             result = migrate.validate_query_with_fixes(query, "http://localhost:9200", StubResolver())
 
         self.assertEqual(result["status"], "fixed")
-        self.assertIn("IRATE(node_intr_total, 5m)", result["query"])
+        self.assertIn("IRATE(node_intr_total)", result["query"])
 
     def test_validate_query_with_fixes_adjusts_tbucket_to_match_short_window(self):
         class StubResolver:
@@ -6504,7 +6504,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS value = SUM(IRATE(node_cpu_guest_seconds_total, 1m)) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS value = SUM(IRATE(node_cpu_guest_seconds_total)) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6513,7 +6513,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             return {
                 "ok": False,
                 "error": (
-                    "Unsupported window [1m] for aggregate function [IRATE(node_cpu_guest_seconds_total, 1m)]; "
+                    "Unsupported window [1m] for aggregate function [IRATE(node_cpu_guest_seconds_total)]; "
                     "the window must be larger than the time bucket [TBUCKET(5 minute)] and an exact multiple of it"
                 ),
                 "rows": 0,
@@ -7029,7 +7029,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS node_intr_total = IRATE(node_intr_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+            "| STATS node_intr_total = IRATE(node_intr_total) BY time_bucket = TBUCKET(5 minute)\n"
             "| SORT time_bucket ASC"
         )
         result.panel_results = [panel]
@@ -7046,7 +7046,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS node_interrupts_total = IRATE(node_interrupts_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+                                "| STATS node_interrupts_total = IRATE(node_interrupts_total) BY time_bucket = TBUCKET(5 minute)\n"
                                 "| SORT time_bucket ASC"
                             ),
                             "dimension": {"field": "time_bucket", "data_type": "date"},
@@ -7109,7 +7109,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-prometheus-synthetic\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         migrate.mark_panel_requires_manual_after_validation(
             panel,
@@ -7129,7 +7129,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -7153,7 +7153,7 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_mark_panel_migrated_with_missing_target_fields_keeps_visualization(self):
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
         panel.promql_expr = "irate(foo_total[5m])"
-        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total)"
         report.mark_panel_migrated_with_missing_target_fields(
             panel,
             {
@@ -7177,7 +7177,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
-        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total)"
         outcome = _apply_failed_validation_outcome(
             panel,
             {
@@ -7234,7 +7234,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         report.mark_panel_migrated_with_missing_target_fields(
             panel,
@@ -7257,7 +7257,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -7282,7 +7282,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         migrate.mark_panel_requires_manual_after_failed_validation(
             panel,
@@ -7302,7 +7302,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -10697,7 +10697,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.source_panel_id = "1"
         panel.query_language = "promql"
         panel.promql_expr = "sum(rate(foo_total[5m]))"
-        panel.esql_query = "TS metrics-*\n| STATS v = RATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS v = RATE(foo_total)"
         panel.query_ir = {"output_shape": "time_series"}
         validation_result = {
             "error": "Unknown column [foo_total]",
@@ -11488,7 +11488,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("RATE(http_requests_total, 5m)", translated.esql_query)
+        self.assertIn("RATE(http_requests_total)", translated.esql_query)
         self.assertNotIn("AVG(RATE(", translated.esql_query)
         self.assertFalse(any("Added outer AVG" in w for w in translated.warnings))
 
@@ -17148,7 +17148,7 @@ class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
         )
 
         self.assertNotIn("AVG_OVER_TIME(nginx_ingress_controller_requests, 5m)", result.esql_query)
-        self.assertIn("RATE(nginx_ingress_controller_requests, 5m)", result.esql_query)
+        self.assertIn("RATE(nginx_ingress_controller_requests)", result.esql_query)
 
 
 class TestScalarAggregationHoisting(unittest.TestCase):

@@ -38,7 +38,7 @@ def _make_record(**overrides: Any) -> PanelRecord:
         dashboard_uid="dash-1",
         dashboard_title="My Dashboard",
         t0_source_promql="rate(http_requests_total[5m])",
-        t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(http_requests_total, 5m))",
+        t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(http_requests_total))",
     )
     defaults.update(overrides)
     return PanelRecord(**defaults)

@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "panels": 4,
+    "STRUCTURAL": 4
+  },
+  "oracle_available": true,
+  "panels": [
+    {
+      "dashboard": "Sample: Host Basics",
+      "panel": "CPU by host",
+      "mode": "structural",
+      "verdict": "STRUCTURAL",
+      "semantic_gate": "Green",
+      "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+      "source_query": "",
+      "translated_query": "FROM metrics-*\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS value = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name\n| SORT time_bucket"
+    },
+    {
+      "dashboard": "Sample: Host Basics",
+      "panel": "Avg load",
+      "mode": "structural",
+      "verdict": "STRUCTURAL",
+      "semantic_gate": "Green",
+      "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+      "source_query": "",
+      "translated_query": "FROM metrics-*\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS _bucket_value = AVG(system_load_1) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)\n| STATS value = AVG(_bucket_value)"
+    },
+    {
+      "dashboard": "Sample: Host Basics",
+      "panel": "Top memory consumers",
+      "mode": "structural",
+      "verdict": "STRUCTURAL",
+      "semantic_gate": "Green",
+      "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+      "source_query": "",
+      "translated_query": "FROM metrics-*\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS _bucket_value = AVG(system_mem_used) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name\n| STATS value = AVG(_bucket_value) BY host.name\n| SORT value DESC\n| LIMIT 10"
+    },
+    {
+      "dashboard": "Sample: Host Basics",
+      "panel": "Host Map (unsupported)",
+      "mode": "structural",
+      "verdict": "STRUCTURAL",
+      "semantic_gate": "Yellow",
+      "reason": "not numerically verified (no native PROMQL oracle / non-PromQL panel)",
+      "source_query": "",
+      "translated_query": "FROM metrics-*\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS value = AVG(system_cpu_idle) BY host.name\n| SORT value DESC\n| LIMIT 100"
+    }
+  ]
+}
