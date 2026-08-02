@@ -1198,6 +1198,18 @@ def join_label_enrichment_check_rule(context):
             )
             _append_unique(context.warnings, reason)
             return reason
+        # The RHS is a confirmed info metric.  Any labels that the outer by()
+        # borrows from the group_left(...) enrichment list (stashed as
+        # ``pending_join_enrichment_labels`` at parse time because rule_pack was
+        # unavailable) are now promoted to ``pending_join_verify_labels`` so the
+        # schema-check pass below can warn about missing dimensions while keeping
+        # the panel feasible.
+        enrichment_overlap = pending_frag.extra.get("pending_join_enrichment_labels") or []
+        if enrichment_overlap:
+            existing = list(pending_frag.extra.get("pending_join_verify_labels") or [])
+            pending_frag.extra["pending_join_verify_labels"] = existing + [
+                lbl for lbl in enrichment_overlap if lbl not in existing
+            ]
 
     # A by()/without() label that is neither an on(...) match key nor a
     # group_left(...) enrichment label is assumed to survive on the primary
@@ -3475,7 +3487,6 @@ def simple_metric_family_rule(context):
     can_use_ts_aggregated_gauge = (
         (not is_counter)
         and (not can_use_direct_ts_gauge)
-        and (not (frag.extra.get("wrapped_scalar") if frag else False))
         and _gauge_can_use_ts(frag.metric, resolver, rp)
     )
 

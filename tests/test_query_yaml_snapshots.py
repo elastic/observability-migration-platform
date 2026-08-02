@@ -87,7 +87,10 @@ PROMQL_CASES: list[tuple[str, str, str]] = [
     ("timeseries_histogram_by_le", "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)", "timeseries"),
     # not_feasible shapes still produce a (markdown) panel — confirm graceful shape.
     ("timeseries_ratio_colocated", "max(node_filesystem_avail_bytes / node_filesystem_size_bytes)", "timeseries"),
-    ("stat_histogram_quantile_blocked", "histogram_quantile(0.9, rate(foo_bucket[5m]))", "stat"),
+    # sum by (instance) collapses le — quantile is not_feasible; stat shows markdown panel.
+    ("stat_histogram_quantile_no_le_blocked", "histogram_quantile(0.9, sum by (instance) (rate(foo_bucket[5m])))", "stat"),
+    # bare rate() keeps le — now feasible as PERCENTILE.
+    ("stat_histogram_quantile_bare_rate", "histogram_quantile(0.9, rate(foo_bucket[5m]))", "stat"),
 ]
 
 

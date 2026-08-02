@@ -1,5 +1,4 @@
-source: histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))
-feasibility: not_feasible
+source: histogram_quantile(0.9, sum by (instance) (rate(foo_bucket[5m])))
+status: not_feasible
+chart_type: none
 warning: histogram_quantile over a classic _bucket series requires the le label in the aggregation (e.g. sum by (le)); without it the bucket boundaries are lost or per-series breakdown cannot be preserved, so this requires manual redesign
----
-

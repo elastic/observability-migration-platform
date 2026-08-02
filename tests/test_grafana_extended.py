@@ -424,15 +424,14 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        # Bare classic _bucket series (no sum by (le)) stays not_feasible —
-        # PERCENTILE cannot preserve per-series identity without an explicit le agg.
-        panel = _make_panel(1, "histogram_quantile(0.99, rate(http_duration_bucket[5m]))")
+        # sum by (instance) collapses le — quantile is meaningless; stays not_feasible.
+        panel = _make_panel(1, "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
+        expr = "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -512,9 +511,14 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("sum without (instance) (rate(foo_total[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
-    def test_histogram_quantile_bare_bucket_series_is_not_feasible(self):
-        # Bare classic *_bucket without sum by (le) cannot preserve series identity.
+    def test_histogram_quantile_bare_bucket_series_is_feasible(self):
+        # A bare rate(bucket[w]) preserves le implicitly — translates to PERCENTILE.
         ctx = _translate("histogram_quantile(0.9, rate(http_duration_seconds_bucket[5m]))")
+        self.assertEqual(ctx.feasibility, "feasible")
+
+    def test_histogram_quantile_sum_without_le_is_not_feasible(self):
+        # sum by (instance) collapses le — PERCENTILE cannot reconstruct quantiles.
+        ctx = _translate("histogram_quantile(0.9, sum by (instance) (rate(http_duration_seconds_bucket[5m])))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
     def test_name_introspection_is_not_feasible(self):
@@ -588,7 +592,7 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
+        expr = "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)

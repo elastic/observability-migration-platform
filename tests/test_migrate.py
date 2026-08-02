@@ -3654,8 +3654,19 @@ class TranslatorRegressionTests(unittest.TestCase):
             'sum(increase(bar_errors_total{instance="$instance"}[$aggregation_interval])) by (instance) > 0',
         )
 
-    def test_histogram_quantile_is_marked_not_feasible(self):
+    def test_histogram_quantile_bare_rate_is_feasible(self):
+        # histogram_quantile(q, rate(bucket[w])) without any outer aggregation:
+        # rate() preserves the le label implicitly, so had_le_grouping is True
+        # and the panel translates to PERCENTILE().
         translated = self.translate('histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))')
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("PERCENTILE(alertmanager_notification_latency_seconds, 90)", translated.esql_query)
+
+    def test_histogram_quantile_sum_without_le_is_not_feasible(self):
+        # sum by (instance) collapses le — quantile is meaningless without it.
+        translated = self.translate(
+            'histogram_quantile(0.9, sum by (instance) (rate(alertmanager_notification_latency_seconds_bucket[5m])))'
+        )
         self.assertEqual(translated.feasibility, "not_feasible")
 
     def test_supported_range_agg_parser_backend(self):
@@ -5806,13 +5817,19 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("time_bucket", translated.esql_query)
 
     def test_scalar_wrapper_and_nested_count_feed_arithmetic(self):
+        # scalar(gauge) must use AVG(LAST_OVER_TIME) on the TS path, not AVG on
+        # FROM — the latter averages over time and disagreed ~24% with Prometheus.
         expr = (
             'scalar(node_load1{instance="$node",job="$job"}) * 100 '
             '/ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
-        self.assertIn("| EVAL computed_value =", translated.esql_query)
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query
+        self.assertIn("TS metrics", q)
+        self.assertIn("LAST_OVER_TIME(node_load1)", q)
+        self.assertIn("COUNT_DISTINCT(cpu)", q)
+        self.assertIn("| EVAL computed_value =", q)
 
     def test_scalar_wrapped_nested_count_denominator_merges_with_rate_numerator(self):
         # The canonical node_exporter "CPU busy % = per-mode rate / core count"

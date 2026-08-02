@@ -2361,7 +2361,13 @@ def _ast_call_fragment(node, expr):
             # label. A classic ``_bucket`` series needs it (e.g. ``sum by (le)``)
             # for the percentile to be meaningful; the translator degrades when
             # it's missing.
-            frag.extra["had_le_grouping"] = "le" in value_frag.group_labels
+            # A bare series (no outer aggregation) preserves ``le`` implicitly
+            # because ``rate()``/``increase()`` never collapse labels — the
+            # ``had_le_grouping`` guard only needs to block cases where an outer
+            # aggregation *explicitly dropped* ``le`` (e.g. ``sum by (instance)``).
+            frag.extra["had_le_grouping"] = (not value_frag.outer_agg) or (
+                "le" in value_frag.group_labels
+            )
             frag.metric = _strip_le_bucket_suffix(value_frag.metric)
             frag.group_labels = [g for g in value_frag.group_labels if g != "le"]
             frag.range_func = ""
@@ -2709,15 +2715,28 @@ def _ast_aggregate_fragment(node, expr):
         on_keys = set(matching.get("labels") or []) if matching.get("type") == "Include" else set()
 
         # (a) A label carried only by the group_left(...) include list has nothing
-        # to group by once the RHS is dropped.
+        # to group by once the RHS is dropped — UNLESS the RHS is an ``_info``
+        # metric (the canonical label-enrichment convention).  For info metrics,
+        # the enrichment labels are also dimensions of the primary metric by
+        # exporter convention, so the outer ``by()`` can aggregate by them once
+        # the join is dropped.  We can't verify the metric suffix against
+        # ``info_metric_suffixes`` at parse time (rule_pack unavailable), so we
+        # use the default ``_info`` suffix heuristic here and defer the definitive
+        # confirmation to ``join_label_enrichment_check_rule`` at translate time.
         overlap = [label for label in frag.group_labels if label in enrichment_labels]
         if overlap:
             rhs_metric = right_frag.metric if right_frag else ""
-            _append_not_feasible_reason(
-                frag,
-                _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
-            )
-            return frag
+            if rhs_metric.endswith("_info"):
+                # Defer: stash the overlap labels alongside the standard
+                # pending_join_verify_labels so join_label_enrichment_check_rule
+                # can schema-check them alongside any assumed labels.
+                frag.extra["pending_join_enrichment_labels"] = list(overlap)
+            else:
+                _append_not_feasible_reason(
+                    frag,
+                    _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
+                )
+                return frag
 
         # (b) When the include list couldn't be recovered (a bare ``group_left()``
         # or an ambiguous nested modifier leaves ``enrichment_labels`` empty), any
@@ -4103,7 +4122,6 @@ def _build_measure_spec(
             allow_tsds_gauge_promotion
             and (not is_counter)
             and (not can_use_direct_ts_gauge)
-            and (not (frag.extra.get("wrapped_scalar") if frag else False))
             and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
         )
         if is_counter:
