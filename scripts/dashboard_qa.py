@@ -400,6 +400,12 @@ def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
     prefix so they line up with Prometheus's own label names.
     """
     lines = query.splitlines()
+    # PROMQL passthrough: @timestamp is the evaluation instant, not a bucket
+    # start.  The 5m lookback ends AT @timestamp, so the comparison instant is
+    # @timestamp itself -- _bucket_end must NOT advance it.  The final step is
+    # also valid (unlike ES|QL RATE which has an incomplete final bucket),
+    # because PROMQL uses a fixed lookback window, not the bucket bounds.
+    is_promql = lines[0].lstrip().upper().startswith("PROMQL")
     if not re.search(r"@timestamp\s*(>=|<=)", query):
         query = "\n".join([lines[0], "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend", *lines[1:]])
     params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
@@ -422,24 +428,25 @@ def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
         return None, None  # multi-target panel: needs per-target provenance
     vi = value_idx[0]
     if bucket_idx is not None:
-        # The FINAL bucket is partial -- it holds only the scrapes that landed
-        # before the window closed, so a rate computed in it reads low (measured:
-        # Processes Forks 1.98 against Prometheus's 42.9). Compare the last
-        # COMPLETE bucket instead, which is the one a viewer actually reads.
         stamps = sorted({r[bucket_idx] for r in rows if r[bucket_idx] is not None})
         if not stamps:
             return None, None
-        chosen = stamps[-2] if len(stamps) > 1 else stamps[-1]
-        rows = [r for r in rows if r[bucket_idx] == chosen]
-        # ``time_bucket`` is the bucket's START, but a bucket's value describes its
-        # whole SPAN -- LAST_OVER_TIME returns the last sample in it, near the END.
-        # Asking Prometheus about the start therefore compared two instants a full
-        # bucket apart: at a 12-hour range that is a 7-minute offset, and on a
-        # per-scrape-noisy gauge it manufactured disagreements no tolerance could
-        # absorb (node_scrape_collector_duration_seconds swung 43/47/46 differing
-        # series across three runs of the SAME build). Compare at the bucket END,
-        # where "last sample at or before t" means the same thing on both sides.
-        chosen = _bucket_end(stamps, chosen)
+        if is_promql:
+            # The PROMQL evaluation instant is already the right comparison
+            # point -- take the last step and return it directly.
+            chosen = stamps[-1]
+            rows = [r for r in rows if r[bucket_idx] == chosen]
+        else:
+            # The FINAL bucket is partial -- it holds only the scrapes that
+            # landed before the window closed, so a rate computed in it reads
+            # low (measured: Processes Forks 1.98 against Prometheus's 42.9).
+            # Compare the last COMPLETE bucket instead.
+            chosen = stamps[-2] if len(stamps) > 1 else stamps[-1]
+            rows = [r for r in rows if r[bucket_idx] == chosen]
+            # ``time_bucket`` is the bucket's START, but a bucket's value
+            # describes its whole SPAN -- LAST_OVER_TIME returns the last
+            # sample in it, near the END.  Compare at the bucket END.
+            chosen = _bucket_end(stamps, chosen)
     else:
         chosen = None
     out = []

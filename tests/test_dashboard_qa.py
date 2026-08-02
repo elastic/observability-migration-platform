@@ -238,3 +238,65 @@ def test_match_series_without_noise_data_behaves_as_before():
     theirs = [({"d": "x"}, 2.0)]
     assert qa._match_series(ours, theirs, 0.05)[1] == 1
 
+
+# --------------------------------------------------------------------------- #
+# PROMQL passthrough comparison
+# --------------------------------------------------------------------------- #
+def _make_es_stub(columns, rows):
+    """Return a _es-compatible callable that returns the given table."""
+    def _stub(_url, _body, _key=""):
+        return {
+            "columns": [{"name": c} for c in columns],
+            "values": rows,
+        }
+    return _stub
+
+
+def test_promql_passthrough_uses_last_step_not_penultimate(monkeypatch):
+    """PROMQL @timestamp is the evaluation instant, not a bucket start.
+
+    The 5m lookback window ends AT @timestamp.  The last step is valid (PROMQL
+    uses a fixed lookback, not bucket bounds), so we use it -- not the
+    penultimate.  Using the penultimate and then advancing by the step width
+    compared ES's value at t_{n-1} against Prometheus at t_n: two different
+    5m windows, causing ~12% error on CPU Busy.
+    """
+    t1 = "2026-08-02T10:00:00.000Z"
+    t2 = "2026-08-02T10:01:00.000Z"
+    t3 = "2026-08-02T10:02:00.000Z"
+    # Three PROMQL steps; the last one has value 3.0 (distinct from 1.0 and 2.0).
+    rows = [[t1, 1.0], [t2, 2.0], [t3, 3.0]]
+    monkeypatch.setattr(qa, "_es", _make_es_stub(["@timestamp", "value"], rows))
+
+    query = "PROMQL index=metrics-* step=1m value=(avg(rate(x[5m])))"
+    series, chosen = qa._our_last_bucket_series(
+        "http://es", query, t1, t3, ""
+    )
+    # The value from the LAST step (3.0), not the penultimate (2.0).
+    assert series == [({}, 3.0)], series
+    # The comparison instant is t3 itself -- NOT advanced by _bucket_end.
+    assert chosen == t3, chosen
+
+
+def test_esql_ts_uses_penultimate_bucket_and_advances_to_end(monkeypatch):
+    """ES|QL TS queries: time_bucket is the bucket START; the final bucket is
+    partial (rate reads low), so we take the penultimate and advance to its end.
+
+    The end of the penultimate bucket equals the start of the last bucket, so
+    both sides compare at the same LAST_OVER_TIME instant.
+    """
+    t1 = "2026-08-02T10:00:00.000Z"
+    t2 = "2026-08-02T10:07:00.000Z"
+    t3 = "2026-08-02T10:14:00.000Z"
+    rows = [[t1, 1.0], [t2, 2.0], [t3, 3.0]]
+    monkeypatch.setattr(qa, "_es", _make_es_stub(["time_bucket", "value"], rows))
+
+    query = "TS metrics-*\n| STATS value = MAX(LAST_OVER_TIME(x)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
+    series, chosen = qa._our_last_bucket_series(
+        "http://es", query, t1, t3, ""
+    )
+    # Value comes from the PENULTIMATE bucket (2.0), not the last (3.0).
+    assert series == [({}, 2.0)], series
+    # Comparison instant is the END of the penultimate bucket = start of last = t3.
+    assert "10:14" in chosen, chosen
+

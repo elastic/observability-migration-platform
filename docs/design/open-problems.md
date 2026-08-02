@@ -688,3 +688,45 @@ a metric that does not swing -- not a further loosening of the gate.
 The 9 that remain are real candidates worth chasing: CPU Busy (12%), Sys Load
 (24%, the FROM-path bucket mean of 0f), CPU time in user/system contexts (33%),
 and one Scrape Time collector (rapl, 48%).
+
+---
+
+## 0i. PROMQL passthrough compared at a 1-minute-offset instant
+
+**Status:** FIXED (in the harness, not the translator).
+
+Three of the four remaining disagrees after 0h — CPU Busy (12%), CPU time in
+user/system contexts (33%), and one Scrape Time series (rapl, 48%) — all use
+the PROMQL passthrough form (`PROMQL index=metrics-* step=1m value=(...)`).
+
+The `_our_last_bucket_series` function in `dashboard_qa.py` treated all
+time-indexed queries the same:
+1. Pick the penultimate step (avoid the partial final bucket).
+2. Call `_bucket_end` to advance the comparison instant by one bucket width.
+
+For ES|QL TBUCKET queries this is correct: `time_bucket` is the bucket START,
+`LAST_OVER_TIME` returns the last sample near the END, so advancing from start
+to end aligns the comparison with what Prometheus would compute at that point.
+
+For PROMQL passthrough, `@timestamp` IS the evaluation instant — the 5m
+lookback window ends AT `@timestamp`, not at `@timestamp + step`. Advancing
+by one step (1m) asked Prometheus about a completely different 5m window:
+
+    ES evaluates at t:        rate over [t-5m, t]
+    Prometheus asked at t+1m: rate over [t-4m, t+1m]
+
+Those windows overlap by 4 minutes and differ by 2 minutes. CPU usage can
+change 12–33% in 2 minutes, which is exactly what was measured.
+
+A second error amplified this: the PROMQL last step is valid (the PromQL
+lookback is fixed and does not depend on bucket bounds), so taking the
+penultimate step and then advancing by 1m compared the value at step n-1
+against Prometheus at step n+1 — a 2-step offset rather than 1.
+
+**Fix:** detect PROMQL queries by the first line (`lines[0].startswith("PROMQL")`),
+take `stamps[-1]` (the last step), and return that timestamp directly without
+`_bucket_end` advancement.  ES|QL TS queries keep the existing
+penultimate-bucket + advance logic unchanged.
+
+Sys Load (24%, FROM path) is a different defect — cross-instance AVG on a
+panel that scopes to a single instance — and is still open.
