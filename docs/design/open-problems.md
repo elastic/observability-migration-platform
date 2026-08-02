@@ -65,35 +65,39 @@ identical to the mapping failure in the bulk response.
 
 ---
 
-## 0d. ES|QL `RATE(field, window)` honours its window argument — settled
+## 0d. Boundary buckets produce garbage rates, and `LAST` picks one of them
 
-Worth recording because the alternative would have been serious: if RATE used the
-enclosing bucket span instead of its argument, every rate panel's value would
-change with dashboard zoom.
+**Status:** real defect, evidence below. Not fixed.
 
-Measured on the rig, same 50-minute range, same 5m rate window, three bucket
-widths:
+A gauge or stat over a rate collapses with `LAST(value, time_bucket)` (correct --
+the panel declares `lastNotNull`). But the FINAL bucket of the window is a
+boundary bucket, and a rate computed there is not merely coarse, it is wrong.
 
-| bucketing | ~width | AVG(RATE(node_cpu_seconds_total, 5m)) |
-|---|---|---|
-| TBUCKET(10) | ~5 min | 0.9828 |
-| TBUCKET(50) | ~60 s | 0.9828 |
-| TBUCKET(100) | ~30 s | 0.9828 |
+Measured over the same 7 minutes, `100 * (1 - avg(rate(idle[5m])))`:
 
-Identical. RATE honours its argument; bucket width does not affect it.
+| engine | values |
+|---|---|
+| Prometheus, 60 s steps | 1.707, 1.729, 1.811, 1.823, 1.837, 1.813 |
+| ours, per bucket | 1.682, 1.711, 1.696, **22.549** |
 
-**And "CPU Busy" is correct.** Run directly against the rig it returns 1.723 and
-1.352 for two windows, against Prometheus's 1.74-1.82. The 9.65-13.19 readings
-came from `scripts/dashboard_qa.py`, not from the panel.
+Interior buckets track Prometheus closely. The boundary bucket reads 22.5. In
+Kibana the dashboard window ends at "now", so the final bucket is ALWAYS a
+boundary bucket -- which is why "CPU Busy" read 9.33 over one window and 1.72 over
+another, and why it looked like a harness defect when it is not. `dashboard_qa.py`
+reproduces the panel exactly; both return the same number.
 
-**Open: the values dimension mis-reads already-collapsed scalar panels.** A panel
-that ends in `LAST(value, time_bucket)` returns one row with no bucket column, so
-the harness's "use the last COMPLETE bucket" logic cannot apply -- it takes
-whatever the panel's own LAST produced for the harness's window. Ending the window
-90 s before the newest document did not fix it, so the cause is elsewhere in how
-the harness builds the window or binds params. Until that is settled, treat
-`differ` counts on scalar panels as suspect; the multi-series counts are unaffected
-because those keep their bucket column.
+This is the same family as the fixed `TBUCKET(1)` bug: a rate evaluated over an
+incomplete span. Prometheus never has this problem because each step is an
+independent 5-minute lookback rather than a bucket of samples.
+
+Fix direction: when a scalar panel collapses a range function with LAST, it must
+not read the final bucket. Verify against Prometheus after -- interior buckets
+already agree, so the target is known.
+
+**Also settled: `RATE(field, window)` honours its window argument.** Same range,
+same 5m window, TBUCKET(10)/(50)/(100) all return 0.9828, so bucket width does not
+rescale the rate. Recorded because the alternative -- rate values changing with
+dashboard zoom -- would have been far worse.
 
 ---
 
