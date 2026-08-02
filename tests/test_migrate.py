@@ -10003,16 +10003,17 @@ class TranslatorRegressionTests(unittest.TestCase):
         # "CPU Busy" rendered -192%; at TBUCKET(50) it matched Prometheus.
         self.assertNotIn("TBUCKET(1, ?_tstart, ?_tend)", query)
         self.assertIn("TBUCKET(", query)
-        # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
-        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
-        # not append a redundant trailing sort on the already-scalar result.
-        self.assertIn(
-            "| STATS node_cpu_seconds_total = MAX(node_cpu_seconds_total)",
-            query,
-        )
+        # No reduceOptions.calcs means Grafana's default of lastNotNull, so this
+        # takes the penultimate bucket rather than collapsing with MAX. MAX over
+        # buckets is the PEAK rate, not the latest one, and the final bucket of a
+        # range function is a boundary bucket whose rate is wrong -- hence
+        # SORT DESC | LIMIT 2 | SORT ASC | LIMIT 1 (ES|QL has no OFFSET). The real
+        # "CPU Busy" panel declares lastNotNull explicitly and already took this
+        # path; only this fixture's omitted calcs differed.
+        self.assertIn("| SORT time_bucket DESC", query)
+        self.assertIn("| LIMIT 2", query)
+        self.assertNotIn("MAX(node_cpu_seconds_total)", query)
         self.assertNotIn("time_bucket = MAX(time_bucket)", query)
-        self.assertNotIn("| SORT time_bucket DESC", query)
-        self.assertNotIn("| LIMIT 1", query)
         self.assertIn("| KEEP node_cpu_seconds_total", query)
 
     def test_translation_exposes_query_ir(self):

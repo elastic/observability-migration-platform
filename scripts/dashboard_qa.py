@@ -112,16 +112,17 @@ def check_layout(payload: dict) -> list[str]:
                 else:
                     continue
                 break
-        # Uneven bottom edges are only a DEFECT when the deeper part hangs off
-        # the right. Dashboards fill left to right, so a row whose last line is
-        # half full is deeper on the LEFT and is perfectly normal authoring --
-        # Node Exporter Full's "Storage Disk" is like that in Grafana itself, and
-        # an earlier version of this check called it a failure.
+        # Uneven bottom edges are a DEFECT only when a panel STRADDLES the band
+        # boundary -- it begins beside its neighbours but ends below them, leaving
+        # a sliver of dead grid. That is the first row's bug: the stat stack ended
+        # at 9 while the gauges beside it ended at 8.
         #
-        # The real defect looks the other way round: the first row's stat stack
-        # ended at 9 while the gauges beside it ended at 8, leaving a sliver of
-        # empty grid under the gauges. So flag only when the deepest columns do
-        # not start at x=0.
+        # A panel that begins at or after its neighbours' bottom edge is simply the
+        # next line, and a short last line is ordinary authoring whichever side the
+        # gap falls on. An earlier version keyed off "the deepest columns start at
+        # x=0", which assumed authors always fill left to right; Node Exporter
+        # Full's "System Processes" ends with a single half-width panel on the
+        # RIGHT -- in Grafana itself -- and that assumption called it ragged.
         depth: dict[int, int] = {}
         for panel in kids:
             grid = panel.get("grid") or {}
@@ -134,7 +135,17 @@ def check_layout(payload: dict) -> list[str]:
         if depth and len(set(depth.values())) > 1:
             deepest = max(depth.values())
             deep_columns = sorted(c for c, d in depth.items() if d == deepest)
-            if deep_columns and deep_columns[0] != min(depth):
+            shallowest = min(depth.values())
+            straddles = any(
+                int((p.get("grid") or {}).get("y") or 0)
+                + int((p.get("grid") or {}).get("h") or 0)
+                == deepest
+                and int((p.get("grid") or {}).get("y") or 0) < shallowest
+                for p in kids
+                if int((p.get("grid") or {}).get("w") or 0) > 0
+                and int((p.get("grid") or {}).get("h") or 0) > 0
+            )
+            if straddles:
                 issues.append(
                     f"[{row_title}] content hangs below its neighbours on the right: "
                     f"columns {deep_columns[0]}..{deep_columns[-1]} end at {deepest}, "

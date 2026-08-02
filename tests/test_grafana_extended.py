@@ -3248,13 +3248,13 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "sum by (job) (rate(foo_total[5m]))", panel_type="piechart")
         yaml_panel, result = _translate_panel(panel)
         self.assertEqual(yaml_panel["esql"]["type"], "pie")
-        # The per-group collapse now uses ``MAX`` instead of ``LAST`` so
-        # multi-target TS queries with per-series nulls inside a bucket
-        # don't render as all-null (see
+        # A piechart with no explicit reduceOptions.calcs takes Grafana's default
+        # of lastNotNull, so the per-group collapse is ``LAST`` -- which is what
+        # this test's name has always claimed. ``MAX`` was a null-safety
+        # substitute for multi-target TS queries with per-series nulls inside a
+        # bucket; that path is keyed on multi-series and still holds (see
         # ``test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts``).
-        # For a single-series query like this one the behaviour is
-        # identical, but the emitted token is now ``MAX``.
-        self.assertIn("MAX(foo_total)", result.esql_query)
+        self.assertIn("LAST(foo_total, time_bucket)", result.esql_query)
         self.assertIn("service.name", result.esql_query)
 
     def test_legacy_range_false_summary_keeps_latest_bucket(self):
@@ -3265,16 +3265,16 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "avg(node_load1)", panel_type="gauge")
         panel["targets"][0]["range"] = False
         _yaml_panel, result = _translate_panel(panel, rule_pack=rp)
-        # Scalar gauge: 1 FROM bucket (not 50) to avoid wasteful intermediate rows.
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)", result.esql_query)
-        # ``MAX(node_load1)`` replaces the previous
-        # ``LAST(node_load1, time_bucket)`` so the collapse is null-safe
-        # across multi-target TS queries; behaviour for this
-        # single-series case is identical.
+        # This gauge declares no reduceOptions.calcs, so it takes Grafana's
+        # default of lastNotNull -- which a single whole-range bucket cannot
+        # express, since AVG over one bucket is the RANGE MEAN rather than the
+        # current value ("Sys Load" read 3.48 against Grafana's 6.2). It keeps
+        # the resolution and collapses with LAST instead.
+        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
         # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
         # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS node_load1 = MAX(node_load1)",
+            "| STATS node_load1 = LAST(node_load1, time_bucket)",
             result.esql_query,
         )
         self.assertNotIn("time_bucket = MAX(time_bucket)", result.esql_query)

@@ -239,7 +239,14 @@ def test_redis_memory_ratio_uses_ts_source():
     query = yaml_panel["esql"]["query"]
 
     assert query.startswith("TS "), f"Bug 1: query should use TS source, got: {query[:50]}"
-    assert "TBUCKET(1," in query, f"Bug 3: scalar gauge should use TBUCKET(1,...), got: {query}"
+    # This gauge declares no reduceOptions.calcs, so it takes Grafana's default
+    # of lastNotNull -- which a single whole-range bucket cannot express (the
+    # value becomes the range aggregate rather than the current one). It keeps
+    # the adaptive bucket and collapses with LAST instead. Verified on the rig:
+    # both forms return 1.2334 here, so this costs nothing and fixes the panels
+    # whose value does move (Node Exporter Full's "Sys Load" read 3.48 vs 6.2).
+    assert "TBUCKET(100," in query, f"Bug 3: scalar gauge should keep resolution, got: {query}"
+    assert "LAST(computed_value, time_bucket)" in query, query
     # The core translator now handles this shape (colocated_binary_agg_family),
     # so the curated pack no longer carries a hand-written query. The alias is
     # the generic ``computed_value`` rather than the pack's ``memory_pct``; what

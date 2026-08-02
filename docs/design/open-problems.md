@@ -531,3 +531,55 @@ The through-line: every one of these produced a *plausible* result rather than a
 error. A gate whose failures are not trustworthy gets ignored, so prefer
 refusing, warning, or classifying honestly over emitting something that looks
 like it worked.
+
+---
+
+## 0f. Grafana's default reducer was read as "unspecified", not as lastNotNull
+
+**Status:** FIXED (partially -- see the Sys Load caveat below).
+
+`reduceOptions.calcs` is absent on most scalar panels, and `_panel_reduce_calc`
+returned `""` for them. Two things then went wrong at once:
+
+  * the summary collapse fell back to `MAX`, so a gauge showed the range PEAK;
+  * the scalar bucket optimisation replaced the adaptive bucket with
+    `TBUCKET(1, ...)`, and over ONE whole-range bucket `AVG(field)` is the range
+    MEAN, not the current value.
+
+Grafana defaults stat/gauge/bargauge to `lastNotNull`, so an absent `calcs` is
+not "unspecified" -- it is `lastNotNull`, and neither fallback expresses it.
+`_panel_reduce_calc` now returns `lastNotNull` for scalar panel types, and
+`_reduce_calc_survives_one_bucket` keeps the adaptive bucket unless the reducer
+is order-independent (mean/min/max/sum/count).
+
+Measured on the rig, Node Exporter Full at a 12 h range, both builds using
+`--field-profile auto`: 311 comparisons before and after, disagreements 54 -> 53.
+So this is a correctness repair with no denominator loss, but a SMALL net win --
+one panel.
+
+**It did not fix the panel that motivated it.** "Sys Load" still reads 3.15
+against Prometheus's 7.8. The bucket is now `BUCKET(@timestamp, 50, ...)` with a
+`LAST` collapse as intended, so the remaining error is a DIFFERENT defect:
+`AVG(metrics.node_load1)` averages across every exporter instance in the index
+while Prometheus's `scalar(node_load1{instance="$node"})` picks one, and
+`COUNT_DISTINCT(labels.cpu)` spans instances the same way. Cross-instance
+aggregation on a panel whose PromQL scopes to a single instance is the open
+problem; see also 0d for grouped boundary buckets.
+
+**Method note.** The first measurement of this change looked like a huge win
+(disagreements 55 -> 8) and was WRONG: it compared a `--field-profile auto` build
+against a `prometheus_native` one, so the profile, not the code, produced most of
+the difference. It also hid a 311 -> 161 DENOMINATOR COLLAPSE -- the non-auto
+profile dropped `BY labels.collector` grouping and took "Node Exporter Scrape
+Time" from 48 series to 1. Always hold the field profile fixed across a
+before/after, and always read the denominator, not just the disagreement count.
+
+### Open: does `prometheus_native` without discovery lose label breakdowns?
+
+Migrating with `--field-profile prometheus_native` (no `--es-url`) emitted
+`... BY time_bucket` where `--field-profile auto` emitted
+`... BY time_bucket, labels.collector`, costing 47 of 48 series on one panel and
+~150 series across the dashboard. This may be deliberate -- without discovery the
+translator cannot confirm the label exists -- but it is silent, and an operator
+who picks the explicit profile over `auto` gets materially poorer dashboards with
+no warning. Not investigated further.

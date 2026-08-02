@@ -415,10 +415,18 @@ def _target_summary_mode(panel_type, target):
 
 
 def _panel_reduce_calc(panel) -> str:
-    """The reducer a Grafana scalar panel declares, e.g. ``lastNotNull``."""
+    """The reducer a Grafana scalar panel declares, e.g. ``lastNotNull``.
+
+    An ABSENT ``calcs`` is not "unspecified" -- Grafana defaults stat, gauge and
+    bargauge to ``lastNotNull``, and that is what the dashboard renders. Reporting
+    "" here let the collapse fall back to MAX, so a gauge with no explicit calc
+    showed the range PEAK instead of its current value.
+    """
     calcs = (((panel or {}).get("options") or {}).get("reduceOptions") or {}).get("calcs")
     if isinstance(calcs, list) and calcs:
         return str(calcs[0] or "")
+    if str((panel or {}).get("type") or "").lower() in _SCALAR_PANEL_TYPES:
+        return "lastNotNull"
     return ""
 
 
@@ -1044,6 +1052,28 @@ def _panel_uses_range_function(panel) -> bool:
     return False
 
 
+# Reducers whose value is unchanged when the range collapses to ONE bucket.
+# mean/min/max/sum over the whole range equal themselves; a "last" reducer does
+# not -- it needs enough resolution for a final bucket to exist to be last.
+_ONE_BUCKET_SAFE_REDUCE_CALCS = frozenset({
+    "mean", "avg", "average", "min", "max", "sum", "total", "count",
+})
+
+
+def _reduce_calc_survives_one_bucket(reduce_calc: str) -> bool:
+    """Whether collapsing to a single whole-range bucket preserves the reducer.
+
+    The scalar-panel bucket optimisation replaces adaptive ``TBUCKET(100, ...)``
+    with ``TBUCKET(1, ...)``. That is sound for an order-independent reducer, but
+    it silently redefines a ``lastNotNull`` panel: with one bucket spanning the
+    dashboard window, ``AVG(field)`` is the RANGE MEAN, not the current value.
+    Node Exporter Full's "Sys Load" read 3.48 against Grafana's 6.2 for exactly
+    this reason, and ``lastNotNull`` is Grafana's DEFAULT for stat/gauge -- so an
+    absent ``calcs`` must be treated as "last" too, not as safe.
+    """
+    return (reduce_calc or "").strip().lower() in _ONE_BUCKET_SAFE_REDUCE_CALCS
+
+
 def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
 
@@ -1056,7 +1086,11 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     unchanged.
     """
     panel_type = str((panel or {}).get("type") or "").lower()
-    is_scalar = panel_type in _SCALAR_PANEL_TYPES and not _panel_uses_range_function(panel)
+    is_scalar = (
+        panel_type in _SCALAR_PANEL_TYPES
+        and not _panel_uses_range_function(panel)
+        and _reduce_calc_survives_one_bucket(_panel_reduce_calc(panel))
+    )
     interval = _grafana_panel_fixed_interval(panel)
     new_bucket = None
     new_from_bucket = None

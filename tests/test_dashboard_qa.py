@@ -74,6 +74,20 @@ def test_layout_accepts_a_half_full_last_line():
     assert qa.check_layout({"panels": [trailing]}) == []
 
 
+def test_layout_accepts_a_last_line_that_sits_on_the_right():
+    """Node Exporter Full's "System Processes" ends with one half-width panel at
+    x=24, with nothing beside it -- and it is authored that way in Grafana itself.
+
+    An earlier version of the check keyed off "the deepest columns start at x=0",
+    which assumed authors always fill left to right, and so called this ragged.
+    """
+    trailing_right = _row("System Processes", [
+        _panel("A", 0, 0, 24, 15), _panel("B", 24, 0, 24, 15),
+        _panel("C", 0, 15, 24, 15), _panel("D", 24, 15, 24, 15),
+        _panel("Threads", 24, 30, 24, 15),   # last line, RIGHT half only
+    ])
+    assert qa.check_layout({"panels": [trailing_right]}) == []
+
 def test_layout_flags_overlap_and_overflow_and_zero_size():
     bad = _row("Row", [
         _panel("A", 0, 0, 24, 6),
