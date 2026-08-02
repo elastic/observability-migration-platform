@@ -65,6 +65,46 @@ identical to the mapping failure in the bulk response.
 
 ---
 
+## 0e. A rate is wrong whenever the bucket is wider than its window — CORRECTION
+
+**Status:** real defect, widest-reaching one found. Not fixed.
+
+I previously wrote that `RATE(field, window)` "honours its window argument" and
+that bucket width does not affect it. **That was wrong, and the test behind it was
+insensitive** -- I varied only the bucket width, never the window, against a
+counter that increases linearly, so the slope came out the same either way.
+
+Reading the implementation
+(`RateDoubleGroupingAggregatorFunction`, `x-pack/plugin/esql/compute`) explains
+why. The rate is `(lastValue - firstValue) / (lastTsSec - firstTsSec)` over the
+samples **in the bucket**, then extrapolated to the bucket boundaries with a
+PromQL-inspired rule: it extrapolates fully when samples reach within ~10% of the
+average sample spacing of the boundary, and otherwise only by half that spacing.
+It is not a Prometheus-style independent lookback per step.
+
+So window and bucket width interact. Measured:
+
+| range / bucketing | emitted window | result | correct |
+|---|---|---|---|
+| 50 min, TBUCKET(20) = 2.5 min | `1m` (< bucket) | 4.759 | no |
+| 50 min, TBUCKET(20) = 2.5 min | `5m` | 0.982 | yes |
+| **12 h, TBUCKET(100) = 7.2 min** | **`5m` (< bucket)** | **1.955** | **no, ~2x** |
+| 12 h, TBUCKET(100) = 7.2 min | `10m` (>= bucket) | 0.984 | yes |
+
+We emit a hardcoded `5m` with an ADAPTIVE `TBUCKET(100, ?_tstart, ?_tend)`. The
+bucket therefore grows with the dashboard's time range, and any range beyond
+about 8 hours makes buckets wider than 5 minutes -- at which point **every rate
+panel on the dashboard reads roughly double**. A 12-hour view is entirely
+ordinary.
+
+Fix direction: the emitted rate window must be at least the bucket width, so the
+two have to be chosen together. Either pin a fixed bucket duration and match the
+window to it, or derive the window from the range the way Grafana's
+`$__rate_interval` does. Verify with the QA values dimension at several dashboard
+ranges, not just one -- a single range is exactly what hid this.
+
+---
+
 ## 0d. ~~Boundary buckets produce garbage rates, and `LAST` picks one of them~~ FIXED for ungrouped scalars
 
 **Status:** FIXED for ungrouped scalar panels. A scalar panel collapsing a
@@ -104,10 +144,9 @@ Fix direction: when a scalar panel collapses a range function with LAST, it must
 not read the final bucket. Verify against Prometheus after -- interior buckets
 already agree, so the target is known.
 
-**Also settled: `RATE(field, window)` honours its window argument.** Same range,
-same 5m window, TBUCKET(10)/(50)/(100) all return 0.9828, so bucket width does not
-rescale the rate. Recorded because the alternative -- rate values changing with
-dashboard zoom -- would have been far worse.
+**RETRACTED:** the claim that RATE "honours its window argument" and is unaffected
+by bucket width was based on a test that never varied the window. See 0e -- the
+two interact, and a bucket wider than the window roughly doubles the result.
 
 ---
 
