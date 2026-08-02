@@ -2562,7 +2562,7 @@ def main(argv: list[str] | None = None):
         print("\n[4/7] Linting generated dashboard YAML...")
         yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
     for result, yaml_path, _dashboard in dashboard_outputs:
-        if yaml_path is None:
+        if yaml_path is None or not _yaml_consumers:
             continue
         result.yaml_linted = True
         lint_ok, lint_output = yaml_lint_results.get(

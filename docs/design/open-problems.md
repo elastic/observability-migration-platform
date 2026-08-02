@@ -728,5 +728,125 @@ take `stamps[-1]` (the last step), and return that timestamp directly without
 `_bucket_end` advancement.  ES|QL TS queries keep the existing
 penultimate-bucket + advance logic unchanged.
 
-Sys Load (24%, FROM path) is a different defect — cross-instance AVG on a
-panel that scopes to a single instance — and is still open.
+Sys Load (24%, FROM path) is a different defect — see 0j below, now fixed.
+
+## 0j. ~~`scalar(gauge)` forced FROM path, producing time-mean instead of last sample~~ FIXED
+
+**Status:** FIXED (translator, `_build_measure_spec` in `promql.py` and `translate.py`).
+
+Node Exporter Full's "Sys Load" gauge formula is:
+
+```
+scalar(node_load1{instance="$node",job="$job"}) * 100
+  / count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
+```
+
+`scalar()` wraps its argument in a `_ScalarFragment` that carries
+`extra["wrapped_scalar"] = True`.  `_build_measure_spec` explicitly excluded
+`wrapped_scalar` fragments from `can_use_ts_aggregated_gauge`:
+
+```python
+and (not (frag.extra.get("wrapped_scalar") if frag else False))  # ← the culprit
+```
+
+This gating was originally a conservative safety measure.  In practice it
+pushed `scalar(node_load1)` onto the FROM path, which uses `AVG(node_load1)`
+— a time-mean over the full 14-minute bucket — instead of the TS path's
+`AVG(LAST_OVER_TIME(node_load1))` which returns the last sample per bucket.
+The difference measured ~24% on the harness.
+
+**Why the guard was safe to remove:**
+
+1. `can_use_ts_aggregated_gauge` is already gated by `allow_tsds_gauge_promotion`
+   (False during the reconciliation retry) and by `_gauge_can_use_ts` (which
+   checks the field profile).  The `wrapped_scalar` guard added no additional
+   safety once those gates were in place.
+
+2. If a `scalar(gauge)` and a FROM-only sibling end up in the same formula,
+   `_build_formula_plan`'s reconciliation retry (triggered when operands have
+   different `source_type`s) re-calls with `allow_tsds_gauge_promotion=False`,
+   which falls back both sides to FROM — same outcome as before the change.
+
+3. With the guard removed, `scalar(node_load1)` → TS and
+   `count(count(node_cpu_seconds_total) by (cpu))` → TS (counter forces TS),
+   so both operands agree → no retry needed → `TS` plan with
+   `AVG(LAST_OVER_TIME(node_load1))`.
+
+**Fix:** removed the `wrapped_scalar` line from `can_use_ts_aggregated_gauge`
+in both `promql.py` (`_build_measure_spec`) and `translate.py`
+(`_collapse_summary_ts_query`-adjacent helper).  Snapshot for
+`node-exporter-full/sys_load.txt` updated; warning changes from
+"Approximated scalar() as a direct metric value" to the standard TS
+series-collapse warning.
+
+---
+
+## 0k. ~~`histogram_quantile(q, rate(bucket[w]))` marked not_feasible without outer `sum by`~~ FIXED
+
+**Status:** FIXED (`promql.py`, `_ast_call_fragment`).
+
+`had_le_grouping` was computed as `"le" in value_frag.group_labels`, which is
+`False` for a bare `rate(bucket{...}[window])` with no outer aggregation.  The
+guard was written assuming all valid patterns look like `sum by (le, ...)
+(rate(bucket[...]))`, but a bare `rate()` call is equally valid in PromQL — `rate()` preserves
+all labels including `le` without any explicit `by` clause.
+
+Real-world evidence: all 12 Alertmanager panels of the form:
+
+```promql
+histogram_quantile(1, rate(alertmanager_oversize_gossip_message_duration_seconds_bucket{instance=~"$instance"}[$__interval]))
+```
+
+were `not_feasible` because `had_le_grouping = False`.
+
+**Fix:** changed the assignment to:
+
+```python
+frag.extra["had_le_grouping"] = (not value_frag.outer_agg) or ("le" in value_frag.group_labels)
+```
+
+A bare series (no outer aggregation) now sets `had_le_grouping = True`, while
+`sum by (instance) (rate(bucket))` — where `le` is explicitly absent from the
+`by` clause — still sets it `False` and stays `not_feasible`.  12 Alertmanager
+panels now translate to `PERCENTILE(field, q*100)`.
+
+---
+
+## 0l. ~~`sum by (enrichment_labels) (metric * ... group_left(...) _info)` not_feasible~~ FIXED
+
+**Status:** FIXED (`promql.py` `_ast_aggregate_fragment`, `translate.py` `join_label_enrichment_check_rule`).
+
+When an outer `sum by (rabbitmq_node, rabbitmq_cluster, queue)` borrows labels
+from a `group_left(rabbitmq_cluster, rabbitmq_node)` enrichment join, the parse-
+time `_ast_aggregate_fragment` check found `overlap = ["rabbitmq_node",
+"rabbitmq_cluster"]` (labels in both `frag.group_labels` and `enrichment_labels`)
+and immediately returned `not_feasible` with the reason:
+
+> "Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires
+> manual redesign: 'rabbitmq_node' only exists via `group_left(...) rabbitmq_identity_info`"
+
+The check was right in general — for an arbitrary RHS metric you cannot safely
+assume that enrichment labels also exist on the primary metric.  But for `_info`
+metrics (the Prometheus label-enrichment convention), those labels do exist on the
+primary metric by exporter design.  The check fired before `rule_pack` was
+available (parse time), so it couldn't call `_is_label_enrichment_metric`.
+
+**Fix (two parts):**
+
+1. `_ast_aggregate_fragment` (`promql.py`): when `overlap` is non-empty and the
+   RHS metric ends in `"_info"` (heuristic for the default suffix), stash the
+   overlap as `pending_join_enrichment_labels` instead of failing immediately.
+   Non-`_info` RHS metrics still fail at parse time.
+
+2. `join_label_enrichment_check_rule` (`translate.py`): after confirming the RHS
+   is an info metric, promote `pending_join_enrichment_labels` into
+   `pending_join_verify_labels`.  The schema-check pass then warns about any
+   missing dimensions (data-readiness, not infeasibility) while keeping the panel
+   feasible.
+
+Result: 23 RabbitMQ-Overview panels now translate to `SUM(...) BY time_bucket,
+rabbitmq_node, rabbitmq_cluster, queue` with a "Dropped group_left label-
+enrichment join" warning.  The Erlang `count(join == threshold)` pattern (3
+panels) remains not_feasible because the join is inside a comparison, which
+creates a `binary_expr` child rather than a `join` child — a distinct and harder
+case.
