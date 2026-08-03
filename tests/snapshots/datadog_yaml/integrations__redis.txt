@@ -4,7 +4,7 @@ widgets: 43
 panels: 36
 controls: 2
 filters: 0
-statuses: {'ok': 9, 'skipped': 7, 'warning': 27}
+statuses: {'ok': 7, 'skipped': 7, 'warning': 29}
 - title='Datadog note 8013519185925578'; kind=markdown
 - title='Datadog note 2021637053460700'; kind=markdown
 - title='Hit rate'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

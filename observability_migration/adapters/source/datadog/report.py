@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from observability_migration import __version__
 from observability_migration.core.reporting.summary_md import (
     AttentionItem,
     DashboardRow,
@@ -313,11 +314,12 @@ def save_detailed_report(
     validation_records: list[dict[str, Any]] | None = None,
     smoke_payload: dict[str, Any] | None = None,
     verification_payload: dict[str, Any] | None = None,
+    metric_map_summary: dict[str, Any] | None = None,
 ) -> None:
     """Save a detailed JSON report."""
     report: dict[str, Any] = {
         "tool": "datadog-to-kibana-migration",
-        "version": "0.1.0",
+        "version": __version__,
         "dashboards": [],
         "summary": {},
     }
@@ -340,6 +342,8 @@ def save_detailed_report(
         }
     if verification_payload:
         report["verification"] = verification_payload
+    if metric_map_summary is not None:
+        report["metric_map_summary"] = metric_map_summary
 
     total_widgets = 0
     total_ok = 0
@@ -432,6 +436,8 @@ def save_detailed_report(
                 "query_ir": pr.query_ir,
                 "verification_packet": pr.verification_packet,
                 "operational_ir": _maybe_to_dict(pr.operational_ir),
+                "visual_ir": _maybe_to_dict(getattr(pr, "visual_ir", None)),
+                "source_panel_id": getattr(pr, "source_panel_id", "") or pr.widget_id,
             }
             dashboard_entry["panels"].append(panel_entry)
 
@@ -464,6 +470,27 @@ def save_detailed_report(
         encoding="utf-8",
     )
     print(f"  Detailed report saved: {output_path}")
+
+
+def _attention_reasons(pr) -> list[str]:
+    """Return the actual blocking cause for a must-fix worklist row.
+
+    For not_feasible / requires_manual / blocked panels, ``reasons`` typically
+    holds only the target-mapping label ("timeseries → esql XY panel") while the
+    real failure cause lives in ``semantic_losses`` / ``warnings`` — the mapping
+    label alone made the worklist non-actionable (issue #238). Prefer the
+    warning/semantic-loss text (``warnings`` mirrors every semantic loss with a
+    human-readable prefix and also carries field-issue causes that never reach
+    ``semantic_losses``), falling back to ``reasons`` only when a panel carries
+    neither (e.g. planner refusals like "unsupported widget type: X" whose cause
+    lives solely in ``reasons``).
+    """
+    preferred: list[str] = []
+    for value in (getattr(pr, "warnings", None) or []):
+        _append_unique(preferred, str(value))
+    if preferred:
+        return preferred
+    return list(pr.reasons)
 
 
 def build_summary_view(results, *, review_queue=None, run_id: str = "") -> SummaryView:
@@ -554,7 +581,7 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
                         dashboard=dr.dashboard_title,
                         panel=pr.title,
                         status=pr.status,
-                        reasons=list(pr.reasons),
+                        reasons=_attention_reasons(pr),
                         source_query=query,
                     )
                 )

@@ -13,6 +13,24 @@ from .annotation import AnnotationIR
 from .control import ControlIR
 from .dashboard import DashboardIR
 from .link import LinkIR
+from .native_dashboard import (
+    MAX_DASHBOARD_ITEMS,
+    MAX_ITEMS,
+    MAX_PINNED_CONTROLS,
+    MAX_SECTION_PANELS,
+    MAX_TOTAL_ITEMS,
+    NativeControl,
+    NativeDashboard,
+    NativeGrid,
+    NativeItem,
+    NativeMappingCounts,
+    NativePanel,
+    NativeSection,
+    coalesce_loose_into_sections,
+    dashboard_item_count,
+    dashboard_leaf_panel_count,
+    sectionize,
+)
 from .operational import OperationalIR, build_operational_ir
 from .panel import PanelIR
 from .query import QueryIR, build_query_ir, infer_output_shape
@@ -30,6 +48,11 @@ from .transform import TransformIR
 from .visual import VisualIR, VisualLayout, VisualPresentation, refresh_visual_ir
 
 __all__ = [
+    "MAX_DASHBOARD_ITEMS",
+    "MAX_ITEMS",
+    "MAX_PINNED_CONTROLS",
+    "MAX_SECTION_PANELS",
+    "MAX_TOTAL_ITEMS",
     "AlertingIR",
     "AnnotationIR",
     "AssetStatus",
@@ -40,6 +63,13 @@ __all__ = [
     "FulfillmentAction",
     "FulfillmentPlan",
     "LinkIR",
+    "NativeControl",
+    "NativeDashboard",
+    "NativeGrid",
+    "NativeItem",
+    "NativeMappingCounts",
+    "NativePanel",
+    "NativeSection",
     "OperationalIR",
     "PanelIR",
     "QueryIR",
@@ -55,6 +85,10 @@ __all__ = [
     "build_alerting_ir_from_grafana_unified",
     "build_operational_ir",
     "build_query_ir",
+    "coalesce_loose_into_sections",
+    "dashboard_item_count",
+    "dashboard_leaf_panel_count",
     "infer_output_shape",
     "refresh_visual_ir",
+    "sectionize",
 ]

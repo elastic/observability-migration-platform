@@ -40,7 +40,7 @@ ES_URL = os.environ["ELASTICSEARCH_ENDPOINT"].rstrip("/")
 ES_KEY = os.environ["KEY"]
 REPORT_PATH = os.environ.get(
     "REPORT_PATH",
-    "/tmp/mig-to-kbn-e2e/parity-express-native2/dashboards/migration_report.json",
+    "/tmp/obs-migrate-e2e/parity-express-native2/dashboards/migration_report.json",
 )
 ESQL_INDEX = os.environ.get("ESQL_INDEX", "metrics-express.prometheus-parity")
 WINDOW_MINUTES = int(os.environ.get("PARITY_WINDOW_MINUTES", "10"))
@@ -521,7 +521,7 @@ def compare_panel(panel: dict[str, Any], t_start: datetime, t_end: datetime) -> 
     promql_run_combined = expand_variables(promql_original)
     cmp_.promql_run = promql_run_combined
 
-    # mig-to-kbn fuses multi-target panels by joining each target's PromQL
+    # obs-migrate fuses multi-target panels by joining each target's PromQL
     # with ``|||``. Split and run each segment separately on Prometheus,
     # then union the results before comparing against the (already-fused)
     # ES|QL output.

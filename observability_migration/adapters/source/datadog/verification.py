@@ -116,6 +116,11 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
         add("block", 2, "required", "Do not auto-promote this widget")
         return candidates
 
+    if widget_type == "image" and kibana_type == "image":
+        add("native_image_panel", 1, "preferred", "Image widget with an absolute URL maps to a native Kibana image panel")
+        add("markdown", 2, "fallback", "Relative/static-asset URLs still degrade to a markdown embed")
+        return candidates
+
     if widget_type in {"note", "free_text", "image", "iframe"}:
         add("markdown", 1, "preferred", "Text-style widgets map best to markdown panels")
         add("manual_redesign", 2, "review", "Complex formatting may still need manual cleanup")
@@ -124,7 +129,7 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     if kibana_type == "metric":
         add("native_metric_panel", 1, "preferred", "Single-value Datadog widgets map to Kibana metric-style panels")
         if backend == "lens":
-            add("lens_fallback", 2, "fallback", "Lens remains a valid fallback for aggregation-only metric widgets")
+            add("lens_fallback", 2, "fallback", "Lens is legacy-only; native Dashboards API upload requires ES|QL or markdown YAML")
     elif kibana_type == "table":
         if query_language == "datadog_log":
             add("discover_embed", 1, "preferred", "Log/event workflows often fit Discover-style tables best")
@@ -134,7 +139,7 @@ def _build_target_candidates(panel_result: Any) -> list[dict[str, Any]]:
     elif kibana_type == "xy":
         add("native_esql_panel", 1, "preferred", "Time-series widgets should prefer native ES|QL visualizations")
         if backend == "lens":
-            add("lens_fallback", 2, "fallback", "Lens remains useful for simpler aggregation-only charts")
+            add("lens_fallback", 2, "fallback", "Lens is legacy-only; native Dashboards API upload requires ES|QL or markdown YAML")
     elif kibana_type == "partition":
         add("partition_chart", 1, "preferred", "Categorical Datadog widgets map to Kibana partition charts")
     elif kibana_type == "treemap":

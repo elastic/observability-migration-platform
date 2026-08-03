@@ -52,6 +52,14 @@ from observability_migration.targets.kibana.compile import (
     sync_result_queries_to_yaml,
     validate_compiled_layout,
 )
+from observability_migration.targets.kibana.dashboards_api import (
+    upload_warnings_from_reasons,
+)
+from observability_migration.targets.kibana.native_artifacts import (
+    write_ir_artifact,
+    write_native_artifact,
+    write_native_artifact_index,
+)
 from observability_migration.targets.kibana.serverless import (
     delete_dashboards as serverless_delete_dashboards,
 )
@@ -86,6 +94,11 @@ from .extract import (
 from .links import build_links_summary, translate_dashboard_links, translate_panel_links
 from .local_ai import resolve_task_model
 from .manifest import save_migration_manifest
+from .metrics_target_guidance import (
+    MetricsTargetGuidance,
+    assess_metrics_target,
+    print_metrics_target_guidance,
+)
 from .panels import _dashboard_output_stem, _flatten_dashboard_panels, translate_dashboard
 from .polish import apply_metadata_polish
 from .preflight import (
@@ -114,7 +127,12 @@ from .runtime_features import (
 )
 from .schema import SchemaResolver
 from .smoke_integration import load_smoke_report, merge_smoke_into_results
-from .transforms import build_redesign_tasks, build_transform_summary, extract_transformations
+from .transforms import (
+    build_redesign_tasks,
+    build_transform_summary,
+    extract_transformations,
+    mark_applied_transformations,
+)
 from .verification import annotate_results_with_verification, save_verification_packets
 
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
@@ -189,7 +207,13 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--field-profile",
         default="otel",
-        help="Target field mapping profile. Grafana currently supports 'otel' only.",
+        help=(
+            "Target field mapping profile. Grafana supports 'otel', "
+            "'prometheus_remote_write', 'prometheus_metrics', "
+            "'prometheus_native', 'passthrough', and 'auto' (requires "
+            "--es-url). Datadog uses a separate profile set via the "
+            "unified CLI."
+        ),
     )
     parser.add_argument(
         "--esql-index",
@@ -205,6 +229,14 @@ def parse_args(argv: list[str] | None = None):
         "--es-url",
         default=ES_URL,
         help="Elasticsearch URL for schema discovery and query validation",
+    )
+    parser.add_argument(
+        "--control-schema",
+        default="",
+        help=(
+            "Optional JSON control-schema fixture (field_cache/cooccurrence_cache) "
+            "merged into schema discovery after --es-url probing"
+        ),
     )
     parser.add_argument(
         "--es-api-key",
@@ -257,6 +289,18 @@ def parse_args(argv: list[str] | None = None):
         action="append",
         default=[],
         help="Optional YAML/JSON rule pack to extend simple mappings",
+    )
+    parser.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames label names "
+            "to ES fields). May be repeated; later files override earlier entries and "
+            "loaded rule packs. When set with --translation-mode auto, selects ES|QL "
+            "translation so the map applies."
+        ),
     )
     parser.add_argument(
         "--plugin",
@@ -403,7 +447,40 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--upload",
         action="store_true",
-        help="Upload compiled dashboards to Kibana",
+        help="Upload dashboards to Kibana (typed Dashboards API by default)",
+    )
+    parser.add_argument(
+        "--compile",
+        dest="compile",
+        action="store_true",
+        default=False,
+        help=(
+            "Compile YAML to Kibana NDJSON via kb-dashboard-cli. Off by default: "
+            "the typed Dashboards API upload maps straight from the YAML/native "
+            "IR and never needs the compiled NDJSON. Implied by --legacy-import when combined with --upload."
+        ),
+    )
+    parser.add_argument(
+        "--no-compile",
+        dest="compile",
+        action="store_false",
+        help="Skip dashboard YAML compilation (default; retained for compatibility)",
+    )
+    parser.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (PUT /api/dashboards/{id}). "
+            "Implies --compile."
+        ),
+    )
+    parser.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--kibana-url",
@@ -619,6 +696,30 @@ def _smoke_uploaded_dashboards(
 
     smoke_output = Path(args.smoke_output) if args.smoke_output else output_dir / "uploaded_dashboard_smoke_report.json"
     dashboard_titles = [result.dashboard_title for result in uploaded_results if result.dashboard_title]
+    identifier_params_by_dashboard: dict[str, dict[str, str]] = {}
+    for result in uploaded_results:
+        defaults: dict[str, str] = {}
+        for panel_result in result.panel_results:
+            query_ir = panel_result.query_ir if isinstance(panel_result.query_ir, dict) else {}
+            metadata = query_ir.get("metadata") if isinstance(query_ir.get("metadata"), dict) else {}
+            raw_defaults = metadata.get("esql_identifier_param_defaults")
+            if not isinstance(raw_defaults, dict):
+                continue
+            defaults.update(
+                {
+                    str(name): str(value)
+                    for name, value in raw_defaults.items()
+                    if name and value not in (None, "")
+                }
+            )
+        if not defaults:
+            continue
+        for dashboard_key in (
+            result.kibana_saved_object_id,
+            result.dashboard_title,
+        ):
+            if dashboard_key:
+                identifier_params_by_dashboard[dashboard_key] = dict(defaults)
 
     print(f"\n  Smoke validating uploaded dashboards ({len(uploaded_results)})...")
     try:
@@ -639,6 +740,7 @@ def _smoke_uploaded_dashboards(
             capture_screenshots=args.capture_screenshots,
             chrome_binary=args.chrome_binary,
             verify=_resolve_tls_from_args(args),
+            identifier_params_by_dashboard=identifier_params_by_dashboard,
         )
     except Exception as exc:
         message = str(exc)
@@ -729,7 +831,10 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
                     if description and note not in panel_result.notes:
                         panel_result.notes.append(note)
 
-            transformation_entries = extract_transformations(panel_json)
+            transformation_entries = mark_applied_transformations(
+                extract_transformations(panel_json),
+                getattr(panel_result, "applied_transform_indices", None),
+            )
             transformation_tasks = build_redesign_tasks(
                 str(getattr(panel_result, "title", "")),
                 str(getattr(result, "dashboard_title", "")),
@@ -1199,6 +1304,10 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
     (issue #158): ``esql`` disables native PROMQL entirely, ``native`` forces it
     on (still probing only to warn when the command is confirmed absent), and
     ``auto`` keeps the probe behavior described above.
+
+    When ``--metric-map-file`` is set and mode is still ``auto``, prefer ES|QL
+    translation so exact metric renames actually apply (parity with Datadog).
+    Explicit ``--translation-mode native`` still wins.
     """
     mode = str(getattr(args, "translation_mode", "auto") or "auto").lower()
     es_url = getattr(args, "es_url", "") or ""
@@ -1207,6 +1316,13 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
         print(
             "  --translation-mode esql: native PROMQL disabled by user request; "
             "all panels use the ES|QL translator"
+        )
+        return False
+
+    if mode == "auto" and getattr(args, "metric_map_file", None):
+        print(
+            "  --metric-map-file set: using ES|QL translation so metric_map applies "
+            "(pass --translation-mode native to keep native PROMQL)"
         )
         return False
 
@@ -1259,6 +1375,14 @@ def _resolve_native_promql(args: argparse.Namespace, runtime_features: dict[str,
 
 def _load_configured_rule_pack(args: argparse.Namespace):
     rule_pack = load_rule_pack_files(args.rules_file)
+    if getattr(args, "metric_map_file", None):
+        from observability_migration.core.metric_mapping import (
+            load_metric_map_files,
+            load_tag_map_files,
+        )
+
+        rule_pack.metric_map.update(load_metric_map_files(args.metric_map_file))
+        rule_pack.label_rewrites.update(load_tag_map_files(args.metric_map_file))
     if args.logs_index:
         rule_pack.logs_index = args.logs_index
     if args.dataset_filter:
@@ -1267,6 +1391,14 @@ def _load_configured_rule_pack(args: argparse.Namespace):
         rule_pack.logs_dataset_filter = args.logs_dataset_filter
     load_python_plugins(args.plugin, rule_pack)
     return rule_pack
+
+
+def _load_configured_rule_pack_or_exit(args: argparse.Namespace):
+    try:
+        return _load_configured_rule_pack(args)
+    except ValueError as exc:
+        print(f"  ERROR: {exc}")
+        sys.exit(1)
 
 
 def _attach_native_promql_validator(
@@ -1404,6 +1536,14 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
         # every panel.
         rule_pack.native_promql = False
         rule_pack.native_promql_validator = None
+        # Native path clears the default ``prometheus`` dataset filter because
+        # it is wrong for OTel / mixed streams. ES|QL must do the same when the
+        # operator did not pass ``--dataset-filter`` — otherwise OTel dashboards
+        # bind ``data_stream.dataset: prometheus`` and render empty.
+        if not getattr(args, "dataset_filter", ""):
+            profile = str(getattr(args, "field_profile", "") or "").strip().lower()
+            if profile in {"", "otel", "auto", "passthrough"}:
+                rule_pack.metrics_dataset_filter = ""
 
     # Offline runs have no cluster to probe; ES|QL named-parameter binding is a
     # stable core feature, so assume it (mirroring the native-PROMQL offline
@@ -1424,13 +1564,17 @@ def _build_dashboard_run_summary(
     *,
     results: list[MigrationResult],
     validation_summary: dict[str, Any],
+    field_discovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    summary = {
         "total": len(results),
         "translation_failed": sum(1 for r in results if r.translation_error),
         "artifacts_dir": str(output_dir),
         "validation_summary": validation_summary,
     }
+    if field_discovery is not None:
+        summary["field_discovery"] = field_discovery
+    return summary
 
 
 def _run_validation_jobs(
@@ -1452,15 +1596,33 @@ def _run_validation_jobs(
     if hasattr(resolver, "_discover_concrete_indexes"):
         resolver._discover_concrete_indexes()
 
+    def identifier_defaults(panel_result: Any) -> dict[str, str]:
+        query_ir = getattr(panel_result, "query_ir", None)
+        if not isinstance(query_ir, dict):
+            return {}
+        metadata = query_ir.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        defaults = metadata.get("esql_identifier_param_defaults")
+        if not isinstance(defaults, dict):
+            return {}
+        return {
+            str(name): str(value)
+            for name, value in defaults.items()
+            if name and value not in (None, "")
+        }
+
     unique_jobs: list[tuple[Any, Any]] = []
-    unique_index_by_query: dict[str, int] = {}
+    unique_index_by_signature: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
     job_to_unique_index: list[int] = []
     for job in validation_jobs:
         query = str(getattr(job[1], "esql_query", "") or "")
-        if query not in unique_index_by_query:
-            unique_index_by_query[query] = len(unique_jobs)
+        defaults = identifier_defaults(job[1])
+        signature = (query, tuple(sorted(defaults.items())))
+        if signature not in unique_index_by_signature:
+            unique_index_by_signature[signature] = len(unique_jobs)
             unique_jobs.append(job)
-        job_to_unique_index.append(unique_index_by_query[query])
+        job_to_unique_index.append(unique_index_by_signature[signature])
 
     worker_count = max(1, min(int(workers or 1), len(unique_jobs)))
 
@@ -1473,6 +1635,7 @@ def _run_validation_jobs(
             es_api_key=es_api_key,
             narrow_limit=narrow_limit,
             result_limit=1,
+            identifier_params=identifier_defaults(panel_result),
             verify=verify,
         )
 
@@ -1518,6 +1681,7 @@ def _write_run_summary(
     requested_assets: str,
     dashboard_summary: dict[str, Any] | None,
     alert_summary: dict[str, Any] | None,
+    metrics_target: MetricsTargetGuidance | None = None,
 ) -> None:
     base_dir.mkdir(parents=True, exist_ok=True)
     run_summary = {
@@ -1527,6 +1691,9 @@ def _write_run_summary(
             "alerts": alert_summary is not None,
         },
     }
+    if metrics_target is not None:
+        # The banner scrolls past mid-run and CI only keeps the artifacts.
+        run_summary["metrics_target"] = metrics_target.as_summary()
     if dashboard_summary is not None:
         run_summary["dashboards"] = dashboard_summary
     if alert_summary is not None:
@@ -1537,18 +1704,161 @@ def _write_run_summary(
     print(f"  Run summary: {summary_path}")
 
 
+_GRAFANA_FIELD_PROFILES = (
+    "otel",
+    "prometheus_remote_write",
+    "prometheus_metrics",
+    "prometheus_native",
+    "passthrough",
+    "auto",
+)
+
+
 def _validate_field_profile(args: argparse.Namespace) -> None:
-    if args.field_profile != "otel":
-        print("Grafana supports --field-profile otel only", file=sys.stderr)
+    if args.field_profile not in _GRAFANA_FIELD_PROFILES:
+        print(
+            "Grafana supports --field-profile "
+            f"{' or '.join(_GRAFANA_FIELD_PROFILES)} only",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if args.field_profile == "auto" and not (args.es_url or "").strip():
+        print(
+            "Grafana --field-profile auto requires --es-url for live schema discovery",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
 
-def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+def _build_dashboard_schema_resolver(
+    args: argparse.Namespace,
+    rule_pack,
+    *,
+    verify: bool | str,
+) -> SchemaResolver:
+    return SchemaResolver(
+        rule_pack,
+        es_url=args.es_url or None,
+        index_pattern=args.esql_index or args.data_view,
+        es_api_key=args.es_api_key or None,
+        verify=verify,
+        field_profile=args.field_profile,
+    )
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Never return "" — an empty reason reads as "the target is fine"."""
+    return str(exc).strip() or exc.__class__.__name__
+
+
+def assess_metrics_target_from_args(
+    args: argparse.Namespace, resolver: SchemaResolver | None
+) -> MetricsTargetGuidance:
+    """Assess migrate-first / mixed-wildcard / UI-vs-query index footguns (#284)."""
+    concrete_streams: list[str] = []
+    conflicts: list[str] = []
+    discovery_error = ""
+    target_missing = False
+    es_url = str(getattr(args, "es_url", "") or "").strip()
+    if resolver is not None and es_url:
+        try:
+            concrete_streams = list(resolver.concrete_index_candidates() or [])
+            discovery_error = resolver.concrete_index_error()
+            target_missing = bool(resolver.concrete_index_missing())
+        except Exception as exc:
+            discovery_error = _describe_exception(exc)
+        try:
+            conflicts = list(resolver.tsdb_conflict_fields() or [])
+        except Exception:
+            # Conflict detection is an extra hint on top of the stream list;
+            # losing it should not suppress the rest of the guidance.
+            conflicts = []
+    return assess_metrics_target(
+        data_view=getattr(args, "data_view", "") or "",
+        esql_index=getattr(args, "esql_index", "") or "",
+        es_url=es_url,
+        concrete_streams=concrete_streams,
+        tsdb_conflict_fields=conflicts,
+        stream_discovery_error=discovery_error,
+        target_missing=target_missing,
+    )
+
+
+def _print_metrics_target_operator_guidance(
+    args: argparse.Namespace, resolver: SchemaResolver | None
+) -> MetricsTargetGuidance:
+    guidance = assess_metrics_target_from_args(args, resolver)
+    print_metrics_target_guidance(guidance)
+    return guidance
+
+
+def _print_schema_discovery_status(
+    resolver: SchemaResolver,
+    *,
+    field_profile: str,
+) -> None:
+    """Print discovery status without implying passthrough remapped fields."""
+    discovery = resolver.discovery_status()
+    summary = resolver.field_resolution_summary()
+    if discovery["status"] == "ok":
+        if field_profile == "passthrough":
+            print(
+                f"  Discovered {discovery['field_count']} fields "
+                "(field_profile=passthrough; automatic mapping disabled)"
+            )
+            return
+        print(
+            f"  Discovered {discovery['field_count']} fields, "
+            f"{len(resolver._discovered_mappings)} label mappings "
+            f"(field_profile={field_profile})"
+        )
+        planned = summary.get("planned_schema_profile")
+        detected = summary.get("detected_schema_profile")
+        if planned is not None:
+            print(f"  planned_schema_profile={planned}")
+        if detected is not None:
+            print(f"  detected_schema_profile={detected}")
+        if summary.get("profile_mismatch"):
+            print("  profile_mismatch=yes")
+        auto_fallback = summary.get("auto_fallback")
+        if auto_fallback is not None:
+            print(f"  auto_fallback={auto_fallback}")
+        profile = resolver.schema_profile() or "generic/otel"
+        if planned is None and detected is None:
+            print(f"  schema_profile={profile}")
+        if resolver.schema_profile() is None and planned is None:
+            print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
+        for warning in summary.get("profile_warnings") or []:
+            print(f"  WARNING: {warning}")
+    elif discovery["status"] == "empty":
+        print("  WARNING: schema discovery reached Elasticsearch but found no fields")
+    elif discovery["status"] == "error":
+        print(f"  WARNING: schema discovery failed: {discovery['error']}")
+    else:
+        print("  Schema discovery: offline mode")
+
+
+def _clear_dashboard_artifacts(
+    yaml_dir: Path,
+    compiled_dir: Path,
+    *,
+    native_dir: Path | None = None,
+    ir_dir: Path | None = None,
+) -> int:
     removed = 0
     if yaml_dir.exists():
         for yaml_file in yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+    for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
+        if artifact_dir is not None and artifact_dir.exists():
+            for artifact_file in artifact_dir.glob(pattern):
+                artifact_file.unlink()
+                removed += 1
+            index_file = artifact_dir / "index.json"
+            if index_file.exists():
+                index_file.unlink()
+                removed += 1
     if compiled_dir.exists():
         for child in compiled_dir.iterdir():
             if child.is_dir():
@@ -1764,6 +2074,7 @@ def _translate_dashboard_resilient(
     esql_index: str,
     rule_pack: Any,
     resolver: Any,
+    output_stem: str | None = None,
 ) -> tuple[MigrationResult, Any]:
     """Translate one dashboard; on unhandled exception return a stub result with translation_error set."""
     try:
@@ -1774,6 +2085,7 @@ def _translate_dashboard_resilient(
             esql_index=esql_index,
             rule_pack=rule_pack,
             resolver=resolver,
+            output_stem=output_stem,
         )
     except Exception as exc:
         title = dashboard.get("title") or dashboard.get("_source_file") or "unknown"
@@ -1787,6 +2099,35 @@ def _translate_dashboard_resilient(
             ),
             None,
         )
+
+
+def _allocate_dashboard_output_stem(
+    *,
+    title: str,
+    dashboard_uid: str | None,
+    used_stems: set[str],
+) -> str:
+    """Allocate a unique dashboard artifact stem for one Grafana run."""
+    base = _dashboard_output_stem(title) or "untitled"
+    if base not in used_stems:
+        used_stems.add(base)
+        return base
+
+    raw_uid = str(dashboard_uid or "").strip()
+    if raw_uid:
+        uid_suffix = _dashboard_output_stem(raw_uid)[:24]
+        uid_candidate = f"{base}_{uid_suffix}"
+        if uid_candidate not in used_stems:
+            used_stems.add(uid_candidate)
+            return uid_candidate
+
+    index = 2
+    while True:
+        candidate = f"{base}_{index}"
+        if candidate not in used_stems:
+            used_stems.add(candidate)
+            return candidate
+        index += 1
 
 
 def main(argv: list[str] | None = None):
@@ -1811,7 +2152,7 @@ def main(argv: list[str] | None = None):
         auto_enabled_upload, auto_enabled_validate = _normalize_execution_flags(args)
 
     if args.print_rule_catalog:
-        rule_pack = _load_configured_rule_pack(args)
+        rule_pack = _load_configured_rule_pack_or_exit(args)
         print(json.dumps(build_rule_catalog(rule_pack), indent=2))
         return
 
@@ -1848,7 +2189,7 @@ def main(argv: list[str] | None = None):
             )
         return
 
-    rule_pack = _load_configured_rule_pack(args)
+    rule_pack = _load_configured_rule_pack_or_exit(args)
     _apply_native_promql_to_rule_pack(rule_pack, args)
 
     if args.es_api_key:
@@ -1856,20 +2197,22 @@ def main(argv: list[str] | None = None):
 
     verify = _resolve_tls_from_args(args)
 
-    resolver = SchemaResolver(
+    resolver = _build_dashboard_schema_resolver(
+        args,
         rule_pack,
-        es_url=args.es_url or None,
-        index_pattern=args.esql_index or args.data_view,
-        es_api_key=args.es_api_key or None,
         verify=verify,
     )
 
     base_dir = dashboard_output_dir(root_output_dir)
     yaml_dir = base_dir / "yaml"
     compiled_dir = base_dir / "compiled"
+    native_dir = base_dir / "native"
+    ir_dir = base_dir / "ir"
     yaml_dir.mkdir(parents=True, exist_ok=True)
     compiled_dir.mkdir(parents=True, exist_ok=True)
-    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, compiled_dir)
+    removed_stale_artifacts = _clear_dashboard_artifacts(
+        yaml_dir, compiled_dir, native_dir=native_dir, ir_dir=ir_dir,
+    )
     if removed_stale_artifacts:
         print(f"\n  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {base_dir}")
 
@@ -1880,24 +2223,30 @@ def main(argv: list[str] | None = None):
     if args.es_url:
         print(f"\n  Schema discovery: {args.es_url}")
         resolver._discover_fields()
-        discovery = resolver.discovery_status()
-        if discovery["status"] == "ok":
-            profile = resolver.schema_profile() or "generic/otel"
-            print(
-                f"  Discovered {discovery['field_count']} fields, "
-                f"{len(resolver._discovered_mappings)} label mappings "
-                f"(schema_profile={profile})"
-            )
-            if resolver.schema_profile() is None:
-                print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
-        elif discovery["status"] == "empty":
-            print("  WARNING: schema discovery reached Elasticsearch but found no fields")
-        elif discovery["status"] == "error":
-            print(f"  WARNING: schema discovery failed: {discovery['error']}")
-        else:
-            print("  Schema discovery: offline mode")
+        control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
+        if control_schema_path:
+            schema_file = Path(control_schema_path)
+            if not schema_file.is_file():
+                raise FileNotFoundError(f"control schema not found: {schema_file}")
+            schema_payload = json.loads(schema_file.read_text(encoding="utf-8"))
+            resolver.merge_control_schema(schema_payload)
+            print(f"  Merged control schema: {schema_file}")
+        _print_schema_discovery_status(
+            resolver,
+            field_profile=args.field_profile,
+        )
+        metrics_target_guidance = _print_metrics_target_operator_guidance(args, resolver)
     else:
         print("\n  Schema discovery: disabled (pass --es-url to enable)")
+        metrics_target_guidance = _print_metrics_target_operator_guidance(args, None)
+        control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
+        if control_schema_path:
+            schema_file = Path(control_schema_path)
+            if not schema_file.is_file():
+                raise FileNotFoundError(f"control schema not found: {schema_file}")
+            schema_payload = json.loads(schema_file.read_text(encoding="utf-8"))
+            resolver.merge_control_schema(schema_payload)
+            print(f"  Merged offline control schema: {schema_file}")
 
     print(f"\n[1/7] Extracting dashboards (source={args.source})...")
     grafana_url, grafana_user, grafana_pass = _grafana_conn(args)
@@ -1949,7 +2298,13 @@ def main(argv: list[str] | None = None):
     print("\n[2/7] Translating dashboards to YAML...")
     results = []
     dashboard_outputs = []
+    used_dashboard_stems: set[str] = set()
     for dashboard in dashboards:
+        output_stem = _allocate_dashboard_output_stem(
+            title=str(dashboard.get("title") or ""),
+            dashboard_uid=str(dashboard.get("uid") or ""),
+            used_stems=used_dashboard_stems,
+        )
         result, yaml_path = _translate_dashboard_resilient(
             dashboard,
             yaml_dir,
@@ -1957,6 +2312,7 @@ def main(argv: list[str] | None = None):
             esql_index=args.esql_index or args.data_view,
             rule_pack=rule_pack,
             resolver=resolver,
+            output_stem=output_stem,
         )
         if result.translation_error:
             results.append(result)
@@ -2034,6 +2390,7 @@ def main(argv: list[str] | None = None):
             args,
             output_dir=alert_output_dir(root_output_dir),
             raw_dashboards=dashboards,
+            resolver=resolver,
         ) or {
             "artifacts_dir": str(alert_output_dir(root_output_dir)),
         }
@@ -2049,6 +2406,7 @@ def main(argv: list[str] | None = None):
             result_mapping = map_alerts_batch(
                 result_alert_irs,
                 data_view=getattr(args, "data_view", "metrics-*"),
+                resolver=resolver,
             )
             result.alert_results = [ir.to_dict() for ir in result_alert_irs]
             result_tiers = result_mapping["summary"]["by_automation_tier"]
@@ -2181,10 +2539,23 @@ def main(argv: list[str] | None = None):
         for line in yaml_lint_output.strip().splitlines()[:20]:
             print(f"    {line}")
 
+    # The typed Dashboards API upload maps straight from the YAML/native IR and
+    # never consumes the compiled NDJSON, so only run kb-dashboard-cli when a
+    # legacy import or an explicit --compile actually needs it (mirrors the
+    # datadog-migrate gate). This keeps the default native path independent of
+    # the external compiler.
+    use_dashboards_api = not getattr(args, "legacy_import", False)
+    compile_requested = getattr(args, "compile", False) or (args.upload and getattr(args, "legacy_import", False))
+
     compile_results = []
     layout_ok = False
     layout_output = ""
-    if yaml_lint_ok:
+    if not compile_requested:
+        print(
+            "\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli: skipped "
+            "(native Dashboards API path; pass --compile or --legacy-import to enable)"
+        )
+    elif yaml_lint_ok:
         print("\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli...")
         compile_results = compile_all(yaml_dir, compiled_dir)
     else:
@@ -2200,8 +2571,10 @@ def main(argv: list[str] | None = None):
         compile_results = _compile_linted_yaml_files(yaml_files, yaml_lint_results, compiled_dir)
 
     compile_map = {Path(name).stem: (ok, output) for name, ok, output in compile_results}
-    for result in results:
-        dashboard_stem = _dashboard_output_stem(result.dashboard_title)
+    for result, yaml_path, _dashboard in dashboard_outputs:
+        if yaml_path is None:
+            continue
+        dashboard_stem = Path(yaml_path).stem
         if not result.translation_error:
             result.compiled_path = str(compiled_dir / dashboard_stem / "compiled_dashboards.ndjson")
         compiled_state = compile_map.get(dashboard_stem)
@@ -2225,6 +2598,35 @@ def main(argv: list[str] | None = None):
             for line in layout_output.strip().splitlines()[:20]:
                 print(f"    {line}")
 
+    print("\n  Writing native Dashboard-as-Code review artifacts...")
+    native_index_entries: list[dict[str, Any]] = []
+    for result, yaml_path, _dashboard in dashboard_outputs:
+        if yaml_path is None or result.dashboard_ir is None or result.native_dashboard is None:
+            continue
+        stem = Path(yaml_path).stem
+        native_path = write_native_artifact(
+            dashboard_ir=result.dashboard_ir,
+            native_dashboard=result.native_dashboard,
+            native_stats=result.native_dashboard_stats,
+            native_dir=native_dir,
+            stem=stem,
+        )
+        ir_path = write_ir_artifact(dashboard_ir=result.dashboard_ir, ir_dir=ir_dir, stem=stem)
+        result.native_artifact_path = str(native_path)
+        result.ir_artifact_path = str(ir_path)
+        native_index_entries.append(
+            {
+                "stem": stem,
+                "title": result.dashboard_title,
+                "dashboard_id": result.native_dashboard.dashboard_id,
+                "native_path": str(native_path.relative_to(base_dir)),
+                "ir_path": str(ir_path.relative_to(base_dir)),
+            }
+        )
+    if native_index_entries:
+        write_native_artifact_index(native_dir, native_index_entries)
+    print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
+
     target_space = detect_space_id_from_kibana_url(args.kibana_url) or "default"
     if args.upload and args.ensure_data_views:
         _ensure_grafana_data_views(args)
@@ -2234,7 +2636,10 @@ def main(argv: list[str] | None = None):
         upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
         target_adapter = KibanaTargetAdapter()
         upload_blocker = ""
-        if any(getattr(result, "layout_validated", None) and result.layout_error for result in results):
+        if not use_dashboards_api and any(
+            getattr(result, "layout_validated", None) and result.layout_error
+            for result in results
+        ):
             upload_blocker = "Upload skipped because compiled dashboard layout validation failed."
 
         if upload_blocker:
@@ -2249,23 +2654,34 @@ def main(argv: list[str] | None = None):
                 result.upload_attempted = True
                 if yaml_path is None:
                     continue
-                if yaml_path.stem not in compiled_ok_stems:
+                if not use_dashboards_api and yaml_path.stem not in compiled_ok_stems:
                     result.uploaded = False
                     result.upload_error = "Upload skipped because this dashboard did not compile."
                     print(f"  - {yaml_path.name} skipped (dashboard did not compile)")
                     continue
+                upload_kwargs: dict[str, Any] = {
+                    "kibana_url": args.kibana_url,
+                    "space_id": upload_space,
+                    "kibana_api_key": args.kibana_api_key,
+                    "verify": verify,
+                    "use_dashboards_api": use_dashboards_api,
+                }
+                native_dashboard = getattr(result, "native_dashboard", None) if use_dashboards_api else None
+                if native_dashboard is not None:
+                    upload_kwargs["native_dashboard"] = native_dashboard
+                    upload_kwargs["native_dashboard_stats"] = getattr(result, "native_dashboard_stats", None)
                 upload_result = target_adapter.upload_dashboard(
                     yaml_path,
                     compiled_dir / yaml_path.stem,
-                    kibana_url=args.kibana_url,
-                    space_id=upload_space,
-                    kibana_api_key=args.kibana_api_key,
-                    verify=verify,
+                    **upload_kwargs,
                 )
                 ok = upload_result["success"]
                 output = upload_result["output"]
                 result.uploaded = ok
                 result.upload_error = "" if ok else output
+                result.upload_warnings = upload_warnings_from_reasons(
+                    upload_result.get("unmapped_reasons", {})
+                )
                 result.uploaded_space = upload_space or target_space
                 result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
@@ -2273,6 +2689,8 @@ def main(argv: list[str] | None = None):
                 if not ok:
                     for line in output.strip().splitlines()[:10]:
                         print(f"    {line}")
+                for warning in result.upload_warnings:
+                    print(f"    warning: {warning}", file=sys.stderr)
 
     smoke_merge_summary = {}
     integrated_smoke_output = ""
@@ -2344,10 +2762,23 @@ def main(argv: list[str] | None = None):
         )
 
     print("\n[6/7] Generating report...")
+    field_discovery = resolver.field_resolution_summary()
+    from observability_migration.core.metric_mapping.reporting import metric_map_summary_from_tracker
+
+    metric_map_summary = metric_map_summary_from_tracker(resolver)
     report_path = base_dir / "migration_report.json"
     manifest_path = base_dir / "migration_manifest.json"
     verification_path = base_dir / "verification_packets.json"
-    save_detailed_report(results, compile_results, report_path, validation_summary, validation_records, verification_payload)
+    save_detailed_report(
+        results,
+        compile_results,
+        report_path,
+        validation_summary,
+        validation_records,
+        verification_payload,
+        field_discovery=field_discovery,
+        metric_map_summary=metric_map_summary,
+    )
     save_migration_manifest(results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
     try:
@@ -2368,8 +2799,10 @@ def main(argv: list[str] | None = None):
             base_dir,
             results=results,
             validation_summary=validation_summary,
+            field_discovery=field_discovery,
         ),
         alert_summary=alert_run_summary,
+        metrics_target=metrics_target_guidance,
     )
 
     if args.preflight:
@@ -2452,7 +2885,7 @@ def main(argv: list[str] | None = None):
     except Exception as exc:  # best-effort: never fail a migration on the summary
         print(f"  Migration summary: skipped ({exc})")
 
-    print_report(results, compile_results)
+    print_report(results, compile_results, field_discovery=field_discovery)
 
     if validation_records:
         failed_validations = [
@@ -2465,7 +2898,7 @@ def main(argv: list[str] | None = None):
             for title, err in failed_validations[:20]:
                 print(f"  {title}: {err[:120]}")
 
-    if any(not ok for _, ok, _output in compile_results):
+    if (not args.upload or not use_dashboards_api) and any(not ok for _, ok, _output in compile_results):
         raise SystemExit(1)
 
 

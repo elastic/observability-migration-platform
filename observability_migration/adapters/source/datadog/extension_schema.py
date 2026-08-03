@@ -20,13 +20,14 @@ class FieldMapProfileModel(BaseModel):
     timestamp_field: str = "@timestamp"
     metrics_dataset_filter: str = ""
     logs_dataset_filter: str = ""
-    metric_map: dict[str, str] = Field(default_factory=dict)
+    metric_map: dict[str, Any] = Field(default_factory=dict)
     tag_map: dict[str, str] = Field(default_factory=dict)
+    log_tag_map: dict[str, str] = Field(default_factory=dict)
     metric_prefix: str = ""
     metric_suffix: str = ""
     tag_prefix: str = ""
 
-    @field_validator("metric_map", "tag_map", "log_index_map")
+    @field_validator("tag_map", "log_tag_map", "log_index_map")
     @classmethod
     def validate_string_mapping(cls, value: dict[str, str]) -> dict[str, str]:
         normalized: dict[str, str] = {}
@@ -37,6 +38,14 @@ class FieldMapProfileModel(BaseModel):
                 raise ValueError("mapping values must be non-empty")
             normalized[str(key)] = str(mapped_value)
         return normalized
+
+    @field_validator("metric_map")
+    @classmethod
+    def validate_metric_map(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from observability_migration.core.metric_mapping import normalize_metric_map
+
+        normalize_metric_map(value)
+        return value
 
 
 def validate_field_profile_payload(

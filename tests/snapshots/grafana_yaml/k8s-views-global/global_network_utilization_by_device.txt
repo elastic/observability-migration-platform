@@ -1,0 +1,9 @@
+title: Global Network Utilization by device
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Received', 'Transmitted']
+breakdown: device
+axis_title: BANDWIDTH
+warning: Dropped 2 incompatible target(s); showing 2 mergeable targets (dropped targets are Windows-specific)

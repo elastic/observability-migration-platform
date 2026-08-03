@@ -50,6 +50,14 @@ class MigrationResult:
     skipped: int = 0
     panel_results: list = field(default_factory=list)
     yaml_panel_results: list = field(default_factory=list)
+    # Dashboard-level warnings for template-variable -> Kibana control
+    # translation that don't fit the per-panel PanelResult model (issue
+    # #269): a control dropped because the target schema lacks its field, or
+    # a cascading/label-filtered `label_values()` variable whose scope can't
+    # be expressed as an inter-control dependency in Kibana. Controls have no
+    # PanelResult-style tracking of their own, so this is dashboard-scoped
+    # rather than per-panel.
+    control_warnings: list = field(default_factory=list)
     compiled: bool = False
     compile_error: str = ""
     source_file: str = ""
@@ -65,11 +73,19 @@ class MigrationResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    upload_warnings: list = field(default_factory=list)
     kibana_saved_object_id: str = ""
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     yaml_path: str = ""
     compiled_path: str = ""
+    # Native Dashboard-as-Code review artifacts (see
+    # targets/kibana/native_artifacts.py): the on-disk twin of
+    # `native_dashboard`/`dashboard_ir`, written before upload so the exact
+    # typed API payload can be reviewed and later deployed with
+    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    native_artifact_path: str = ""
+    ir_artifact_path: str = ""
     runtime_summary: dict = field(default_factory=dict)
     dashboard_links: list = field(default_factory=list)
     annotations: list = field(default_factory=list)
@@ -78,6 +94,16 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    # Semantic DashboardIR -- the primary working artifact of the IR-first
+    # pipeline. `native_dashboard` and the on-disk YAML are both *derived*
+    # from this (see targets.kibana.dashboards_api.native_dashboard_from_ir /
+    # DashboardIR.to_yaml_dict), not the other way around. Not JSON-serialized
+    # directly; call .to_dict() for that.
+    dashboard_ir: Any = None
+    # NativeDashboard IR built from `dashboard_ir` via native_dashboard_from_ir.
+    # Not JSON-serialized directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -113,6 +139,7 @@ class PanelResult:
     runtime_rollups: list = field(default_factory=list)
     link_migrations: list = field(default_factory=list)
     transformation_redesign_tasks: list = field(default_factory=list)
+    applied_transform_indices: list = field(default_factory=list)
     post_validation_action: str = ""
     post_validation_message: str = ""
 
@@ -250,11 +277,12 @@ def _stage_summary(completed, error):
 
 
 def build_runtime_summary(result):
-    upload_status = {"status": "not_run", "error": ""}
+    upload_status = {"status": "not_run", "error": "", "warnings": []}
     if getattr(result, "upload_attempted", False) or getattr(result, "upload_error", ""):
         upload_status = {
             "status": "pass" if getattr(result, "uploaded", False) and not getattr(result, "upload_error", "") else "fail",
             "error": getattr(result, "upload_error", "") or "",
+            "warnings": list(getattr(result, "upload_warnings", []) or []),
         }
     return {
         "yaml_lint": _stage_summary(getattr(result, "yaml_linted", None), getattr(result, "yaml_lint_error", "")),
@@ -295,7 +323,78 @@ def _element_summary(panels: int, rows: int) -> str:
     return f"{total} total ({breakdown})"
 
 
-def print_report(results, compile_results):
+def _describe_field_discovery(field_discovery):
+    """Human-readable cause for an OTel/pass-through field fallback."""
+    status = (field_discovery or {}).get("status", "")
+    index_pattern = (field_discovery or {}).get("index_pattern") or "metrics-*"
+    error = (field_discovery or {}).get("error") or ""
+    schema_profile = (field_discovery or {}).get("schema_profile")
+    if status == "offline":
+        return "target schema discovery did not run (no --es-url provided)"
+    if status == "empty":
+        return f"target schema discovery found no fields under '{index_pattern}'"
+    if status == "error":
+        detail = f": {error}" if error else ""
+        return f"target schema discovery failed{detail}"
+    # Discovery succeeded. A recognized profile that still triggered a fallback
+    # is missing some of the dashboards' fields; otherwise no layout matched.
+    if schema_profile:
+        return f"target schema '{schema_profile}' is missing some fields the dashboards use"
+    return f"target schema under '{index_pattern}' was not recognized"
+
+
+def print_field_discovery_warning(field_discovery):
+    """Print a prominent, top-of-summary warning when migrated panels query
+    unverified OTel field defaults. No-op unless ``otel_fallback`` is set, so
+    a normal run (discovery succeeded and fields resolved) prints nothing."""
+    if not field_discovery or not field_discovery.get("otel_fallback"):
+        return
+    index_pattern = field_discovery.get("index_pattern") or "metrics-*"
+    print("\n" + "!" * 70)
+    print("WARNING: migrated panels may render empty")
+    print("!" * 70)
+    if field_discovery.get("field_profile") == "passthrough":
+        if field_discovery.get("status") == "ok":
+            print(
+                f"  Raw source fields are missing from target index "
+                f"'{index_pattern}'."
+            )
+        else:
+            print(f"  {_describe_field_discovery(field_discovery)}.")
+        print(
+            "  Strict passthrough emits raw source label and metric names against\n"
+            f"  index '{index_pattern}'. Without matching target fields these names\n"
+            "  are unverified and panels can come up empty."
+        )
+        print(
+            "  Fix: ensure the target stores the raw Prometheus names, or re-run\n"
+            "       with --field-profile otel and --es-url for automatic mapping."
+        )
+        return
+    print(f"  {_describe_field_discovery(field_discovery)}.")
+    # Discovery that ran did reach the target, so don't claim the schema is
+    # missing — distinguish a recognized-but-incomplete schema from one where
+    # no known layout matched at all.
+    if field_discovery.get("status") == "ok":
+        if field_discovery.get("schema_profile"):
+            cause = "Some fields the dashboards use are absent from the target"
+        else:
+            cause = "No known Prometheus or OTel field layout was detected"
+    else:
+        cause = "The target schema is unknown"
+    print(
+        f"  {cause}, so queries fall back to OTel field defaults\n"
+        f"  (e.g. service.name) and index '{index_pattern}'. These are unverified\n"
+        "  guesses that may not match your data, so panels can come up empty."
+    )
+    print(
+        "  Fix: re-run pointing the migration at your target data —\n"
+        "       --es-url (and --es-api-key if required) for schema discovery, and\n"
+        "       --esql-index for the index/data stream your metrics live in."
+    )
+
+
+def print_report(results, compile_results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
     # from _flatten_dashboard_panels). The user-facing "renderable panels"
@@ -338,6 +437,7 @@ def print_report(results, compile_results):
     print("\n" + "=" * 70)
     print("MIGRATION REPORT")
     print("=" * 70)
+    print_field_discovery_warning(field_discovery)
     print(f"\nDashboards processed: {len(results)}")
     # One summary line surfaces both the source-side total and the panel/row
     # split so the reader can verify the math at a glance.
@@ -396,6 +496,18 @@ def print_report(results, compile_results):
             if pr.promql_expr:
                 print(f"    PromQL: {pr.promql_expr[:100]}")
 
+    # Controls have no PanelResult-style tracking of their own (issue #269),
+    # so a dropped/degraded template-variable control is otherwise invisible
+    # in this summary even though it changes what the migrated dashboard can
+    # filter on.
+    control_warnings = [
+        (r.dashboard_title, warning) for r in results for warning in getattr(r, "control_warnings", [])
+    ]
+    if control_warnings:
+        print(f"\nCONTROL WARNINGS ({len(control_warnings)}):")
+        for dash_title, warning in control_warnings[:20]:
+            print(f"  [{dash_title}] {warning}")
+
     total_alerts = sum(len(getattr(r, "alert_results", [])) for r in results)
     if total_alerts:
         automated = sum(sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated") for r in results)
@@ -413,7 +525,7 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None):
+def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
     runtime_features = {}
     for result in results:
         runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
@@ -448,6 +560,10 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
         "runtime_features": runtime_features,
         "dashboards": [],
     }
+    if field_discovery is not None:
+        report["field_discovery"] = field_discovery
+    if metric_map_summary is not None:
+        report["metric_map_summary"] = metric_map_summary
     if validation_summary or validation_records:
         report["validation"] = {
             "summary": validation_summary or {},
@@ -513,6 +629,7 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             ],
             "alert_results": getattr(r, "alert_results", []),
             "alert_summary": getattr(r, "alert_summary", {}),
+            "control_warnings": getattr(r, "control_warnings", []),
             "translation_error": r.translation_error,
         }
         report["dashboards"].append(d)
@@ -656,6 +773,16 @@ def build_summary_view(
                         reasons=list(pr.reasons),
                     )
                 )
+        control_warnings = list(getattr(r, "control_warnings", []) or [])
+        if control_warnings:
+            warning_items.append(
+                AttentionItem(
+                    dashboard=r.dashboard_title,
+                    panel="Dashboard controls",
+                    status="warning",
+                    reasons=control_warnings,
+                )
+            )
         # Red panels not already flagged above are added to the worklist (deduped).
         for pr in renderable:
             if _gate(pr, "Red") and pr.title not in seen_attention:

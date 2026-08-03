@@ -42,6 +42,7 @@ def run_smoke_report(
     virtual_time_budget_ms: int = 30000,
     screenshot_retries: int = 1,
     verify: bool | str = True,
+    identifier_params_by_dashboard: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Inspect uploaded Kibana dashboards and return a smoke report payload."""
 
@@ -96,6 +97,13 @@ def run_smoke_report(
         )
         screenshot = grafana_smoke.capture_dashboard_screenshot(saved_object, args) if capture_screenshots else None
         browser_info = grafana_smoke.capture_browser_audit(saved_object, args) if browser_audit else None
+        dashboard_key = str(saved_object.get("id") or "")
+        dashboard_title = str((saved_object.get("attributes") or {}).get("title") or "")
+        identifier_params = (
+            (identifier_params_by_dashboard or {}).get(dashboard_key)
+            or (identifier_params_by_dashboard or {}).get(dashboard_title)
+            or {}
+        )
         dashboards.append(
             grafana_smoke.inspect_dashboard(
                 saved_object,
@@ -104,6 +112,7 @@ def run_smoke_report(
                 screenshot=screenshot,
                 browser_audit=browser_info,
                 es_api_key=es_api_key,
+                identifier_params=identifier_params,
             )
         )
 

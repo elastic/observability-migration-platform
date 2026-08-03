@@ -11,6 +11,7 @@ import yaml
 
 from observability_migration.core.telemetry_contract import (
     _extract_group_fields,
+    _substitute_non_field_esql_params,
     build_combined_telemetry_contract,
     build_schema_change_report,
     build_telemetry_contract,
@@ -228,6 +229,63 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertEqual(metrics["required_values"]["http.request.method"], ["POST"])
         self.assertIn("http_requests_total", metrics["fields"])
         self.assertTrue(metrics["requires_native_promql"])
+
+    def test_contract_seeds_each_late_bound_field_control_choice(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "late-bound.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [{
+                            "title": "Late-bound grouping",
+                            "controls": [{
+                                "type": "esql",
+                                "variable_name": "grouping",
+                                "variable_type": "fields",
+                                "choices": ["exporter", "transport", "receiver"],
+                                "default": "transport",
+                            }],
+                            "panels": [{
+                                "title": "Spans by grouping",
+                                "esql": {
+                                    "query": (
+                                        "TS metrics-*\n"
+                                        "| STATS value = SUM(metric) BY "
+                                        "time_bucket = TBUCKET(5 minute), "
+                                        "grouping = ??grouping"
+                                    )
+                                },
+                            }],
+                        }]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        for field_name in ("exporter", "transport", "receiver"):
+            self.assertIn(field_name, stream["control_fields"])
+            self.assertEqual(stream["fields"][field_name]["role"], "dimension")
+        self.assertNotIn("??grouping", stream["fields"])
+        metric_requirements = [
+            requirement
+            for requirement in stream["requirements"]
+            if "metric" in requirement.get("metrics", [])
+        ]
+        cooccurring_groups = {
+            field_name
+            for requirement in metric_requirements
+            for field_name in requirement.get("group_fields", [])
+        }
+        self.assertEqual(
+            cooccurring_groups,
+            {"exporter", "transport", "receiver"},
+        )
 
     def test_contract_extracts_required_values_from_kql_function_filters(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1464,6 +1522,86 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("deployment.environment", stream["control_fields"])
         self.assertEqual(stream["required_values"]["deployment.environment"], ["production"])
 
+    def test_esql_control_value_queries_seed_presence_scoping_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "controls": [
+                                    {
+                                        "type": "esql",
+                                        "label": "Namespace",
+                                        "variable_name": "namespace",
+                                        "variable_type": "values",
+                                        "query": (
+                                            "FROM metrics-* | WHERE redis_up IS NOT NULL "
+                                            "AND namespace IS NOT NULL | STATS count = COUNT(*) "
+                                            "BY namespace | SORT namespace ASC | KEEP namespace "
+                                            "| LIMIT 1000"
+                                        ),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["redis_up"]["role"], "metric")
+        self.assertEqual(fields["namespace"]["role"], "dimension")
+
+    def test_single_line_esql_control_query_parses_by_before_inline_pipes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "controls": [
+                                    {
+                                        "type": "esql",
+                                        "label": "Namespace",
+                                        "variable_name": "namespace",
+                                        "variable_type": "values",
+                                        "query": (
+                                            "FROM metrics-* | WHERE redis_up IS NOT NULL "
+                                            "AND namespace IS NOT NULL | STATS count = COUNT(*) "
+                                            "BY namespace | SORT namespace ASC | KEEP namespace "
+                                            "| LIMIT 1000"
+                                        ),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertEqual(stream["fields"]["namespace"]["role"], "dimension")
+        self.assertEqual(stream["fields"]["redis_up"]["role"], "metric")
+        requirement = next(
+            req
+            for req in stream["requirements"]
+            if req.get("metrics") and "redis_up" in req["metrics"]
+        )
+        self.assertIn("namespace", requirement["dimensions"])
+
     def test_dashboard_control_fields_are_available_on_all_streams(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
@@ -2614,6 +2752,103 @@ class KeywordMultifieldTests(unittest.TestCase):
 
         fields = combined["streams"]["metrics-*"]["fields"]
         self.assertTrue(fields["deployment.environment"].get("keyword_multifield"))
+
+    def test_contract_extracts_interaction_canary_control_semantics(self):
+        from observability_migration.core.coverage.interaction_canary import (
+            SYNTHETIC_HOST_NAMES,
+            write_interaction_canary_artifact,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            write_interaction_canary_artifact(tmpdir)
+            contract = build_telemetry_contract(tmpdir)
+
+        stream = contract["streams"]["metrics-*"]
+        self.assertIn("service.name", stream["control_fields"])
+        self.assertIn("service.environment", stream["control_fields"])
+        self.assertIn("host.name", stream["control_fields"])
+        self.assertIn("latency_ms", stream["control_fields"])
+        self.assertGreaterEqual(
+            set(stream["required_values"]["service.name"]),
+            {"api", "worker", "frontend"},
+        )
+        self.assertNotIn("aggregate", stream["fields"])
+        self.assertNotIn("interval", stream["fields"])
+        self.assertIn("interaction_value", stream["fields"])
+        self.assertIn("latency_ms", stream["fields"])
+        self.assertGreaterEqual(
+            set(stream["required_values"]["host.name"]),
+            set(SYNTHETIC_HOST_NAMES),
+        )
+
+    def test_substitute_non_field_esql_params_uses_control_defaults(self):
+        query = (
+            "FROM metrics-* | STATS value=??aggregate(interaction_value) "
+            "BY bucket=TBUCKET(?interval)"
+        )
+        rendered = _substitute_non_field_esql_params(
+            query,
+            {"aggregate": "AVG", "interval": "5 minutes"},
+        )
+        self.assertEqual(
+            rendered,
+            "FROM metrics-* | STATS value=AVG(interaction_value) "
+            "BY bucket=TBUCKET(5 minutes)",
+        )
+        self.assertNotIn("??aggregate", rendered)
+        self.assertNotIn("?interval", rendered)
+        self.assertNotIn("value= (interaction_value)", rendered)
+
+    def test_contract_extracts_fields_wrapped_in_to_string_casts(self):
+        """Log filters like ``TO_STRING(http.status_code) == "404"`` must still
+        seed the underlying field — otherwise ES|QL fails with Unknown column.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            yaml_dir = artifact_dir / "yaml"
+            yaml_dir.mkdir(parents=True)
+            (yaml_dir / "nginx.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "NGINX",
+                                "panels": [
+                                    {
+                                        "title": "Error logs",
+                                        "esql": {
+                                            "query": (
+                                                "FROM logs-*\n"
+                                                "| WHERE @timestamp >= ?_tstart "
+                                                "AND @timestamp <= ?_tend "
+                                                "AND service.name == \"nginx\" "
+                                                "AND ((TO_STRING(http.status_code) == \"404\" "
+                                                "OR TO_STRING(http.status_code) == \"500\"))\n"
+                                                "| SORT @timestamp DESC\n"
+                                                "| KEEP @timestamp, message, log.level, "
+                                                "service.name, host.name\n"
+                                                "| LIMIT 100"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        logs = contract["streams"]["logs-*"]
+        self.assertIn("http.status_code", logs["fields"])
+        self.assertEqual(logs["fields"]["http.status_code"]["role"], "dimension")
+        self.assertEqual(
+            set(logs["required_values"]["http.status_code"]),
+            {"404", "500"},
+        )
+        self.assertIn("nginx", logs["required_values"]["service.name"])
 
 
 if __name__ == "__main__":

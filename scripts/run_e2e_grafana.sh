@@ -97,7 +97,7 @@ declare -a SOURCES=(
 # ---------------------------------------------------------------------------
 # Output directories
 # ---------------------------------------------------------------------------
-OUT_ROOT="/tmp/mig-to-kbn-e2e/grafana"
+OUT_ROOT="/tmp/obs-migrate-e2e/grafana"
 LOG_DIR="$OUT_ROOT/logs"
 mkdir -p "$LOG_DIR"
 

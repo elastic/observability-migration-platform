@@ -30,8 +30,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORT_PATH = REPO_ROOT / "docs" / "licenses" / "dependencies.md"
 
 # First-party packages to ignore entirely. The project's own editable install
-# has no license metadata exposed to pip-licenses and must not fail the gate.
-IGNORE_PACKAGES = {"obs-migrate"}
+# has no license metadata exposed to pip-licenses in a form we allowlist, and
+# must not fail the gate. Keep the old distribution name during the rename
+# transition (stale ``*.egg-info`` / older envs may still report it).
+IGNORE_PACKAGES = {
+    "elastic-observability-migration",
+    "obs-migrate",
+}
 
 # Manual license overrides for packages whose PyPI metadata is missing but
 # whose upstream LICENSE file has been inspected directly.
@@ -66,6 +71,7 @@ ALLOWED_LICENSES = {
     "Apache Software License",
     "Apache Software License; BSD License",
     "Apache-2.0 OR BSD-2-Clause",
+    "MIT AND PSF-2.0",  # greenlet (Playwright dependency) dual-licensed metadata
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSD License",

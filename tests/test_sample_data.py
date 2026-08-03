@@ -50,6 +50,27 @@ class SeedSampleDataTests(unittest.TestCase):
         self.assertEqual(summary.errors, 0)
         self.assertGreater(summary.ok, 0)
 
+    def test_seed_forwards_on_progress_to_ingest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = _write_artifact(
+                Path(tmp) / "dashboards",
+                "FROM logs-*\n| STATS count = COUNT(*) BY service.name",
+            )
+
+            def request(method, path, body=None, content_type="application/json"):
+                if path == "/_bulk":
+                    docs = [ln for ln in body.decode().splitlines() if ln.startswith('{"create"')]
+                    return {"items": [{"create": {}} for _ in docs]}
+                return {"acknowledged": True}
+
+            messages: list[str] = []
+            sample_data.seed_sample_data(
+                [artifact], request, data_hours=1, interval_sec=3600,
+                batch_docs=5000, max_combinations=12, on_progress=messages.append,
+            )
+
+        self.assertTrue(any("ingested" in m for m in messages), messages)
+
     def test_load_metric_kind_overrides_empty_without_files(self):
         self.assertEqual(sample_data.load_metric_kind_overrides([]), {})
 
@@ -346,6 +367,31 @@ class RemoveSampleDataTests(unittest.TestCase):
 
         self.assertEqual(summary.deleted_templates, [])
         self.assertTrue(summary.skipped_not_owned)
+
+
+class BulkIngestTests(unittest.TestCase):
+    def test_version_conflicts_count_as_successful_idempotent_reseed(self):
+        from observability_migration.core.telemetry_data import IngestSummary, _flush_into_summary
+
+        summary = IngestSummary()
+        _flush_into_summary(
+            ['{"create":{}}', "{}"],
+            lambda *_args, **_kwargs: {
+                "items": [
+                    {
+                        "create": {
+                            "error": {
+                                "type": "version_conflict_engine_exception",
+                                "reason": "document already exists",
+                            }
+                        }
+                    }
+                ]
+            },
+            summary,
+        )
+        self.assertEqual(summary.ok, 1)
+        self.assertEqual(summary.errors, 0)
 
 
 if __name__ == "__main__":

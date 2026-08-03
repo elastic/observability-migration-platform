@@ -1,0 +1,10 @@
+title: RAM Usage
+grafana_type: stat
+status: migrated_with_warnings
+chart_type: datatable
+metrics: ['Requests', 'Limits', 'Total']
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+warning: Applied Grafana transformation 'organize' as ES|QL rewrite
+warning: Dropped 1 incompatible target(s); showing 4 mergeable targets (dropped targets are Windows-specific)
+warning: Approximated grouped stat panel as summary table

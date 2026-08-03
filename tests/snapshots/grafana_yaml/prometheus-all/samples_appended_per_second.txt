@@ -1,0 +1,7 @@
+title: Samples Appended per second
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['prometheus_tsdb_head_samples_appended_total']
+breakdown: instance

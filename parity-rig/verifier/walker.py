@@ -24,7 +24,7 @@ CLI usage::
         --kibana-url https://<cluster>.kb.us-central1.gcp.staging.elastic.cloud \\
         --dashboard-id <kibana-uuid> \\
         --output-dir /tmp/walker-<slug>/ \\
-        [--state $HOME/.agent-browser/state/mig-to-kbn-verifier.json] \\
+        [--state $HOME/.agent-browser/state/obs-migrate-verifier.json] \\
         [--enable-react] \\
         [--merge /tmp/verifier-<slug>.json] \\
         [--wait-extra-seconds 8] \\
@@ -53,7 +53,7 @@ LOG = logging.getLogger("verifier.walker")
 
 # Default location chosen to line up with ``bootstrap.sh``; CLI users
 # can override with ``--state``.
-DEFAULT_STATE_FILE = Path.home() / ".agent-browser" / "state" / "mig-to-kbn-verifier.json"
+DEFAULT_STATE_FILE = Path.home() / ".agent-browser" / "state" / "obs-migrate-verifier.json"
 
 # Number of non-whitespace characters of an ES|QL query we use as a
 # fingerprint when matching HAR entries to panels.  60 is short enough

@@ -257,6 +257,9 @@ class GrafanaAdapterTests(unittest.TestCase):
         r.migrated_with_warnings = 1
         r.not_feasible = 1
         r.skipped = 1  # the row
+        r.control_warnings = [
+            "variable 'cluster' is broader than its chained Grafana source"
+        ]
         return r
 
     def test_build_view_maps_counts_and_attention(self):
@@ -302,7 +305,16 @@ class GrafanaAdapterTests(unittest.TestCase):
         self.assertEqual(sum(1 for a in view.attention if a.panel == "Ratio"), 1)
         # Warnings list excludes rows
         self.assertTrue(all(w.panel != "Section" for w in view.warnings))
-        self.assertEqual(len(view.warnings), 1)
+        self.assertEqual(len(view.warnings), 2)
+        control_warning = next(
+            warning
+            for warning in view.warnings
+            if warning.panel == "Dashboard controls"
+        )
+        self.assertEqual(
+            control_warning.reasons,
+            ["variable 'cluster' is broader than its chained Grafana source"],
+        )
         # Per-dashboard row carries risk from the review queue
         self.assertEqual(view.dashboards[0].risk_score, 13)
 

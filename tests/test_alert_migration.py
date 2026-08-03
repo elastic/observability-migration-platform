@@ -2067,6 +2067,37 @@ class TestBuildRuleParams(unittest.TestCase):
         self.assertTrue(params["esqlQuery"]["esql"].startswith("PROMQL "))
         self.assertEqual(params["timeField"], "@timestamp")
 
+    def test_grafana_prometheus_alert_prefixes_metric_on_otel_target(self):
+        """Regression (#270 review): the alert native-PROMQL path must apply the
+        same ``metrics.<name>`` prefix as dashboards when a resolver is supplied
+        and the target advertises the prefixed field. Without it, migrated alerts
+        silently query the missing bare field on OTel Collector indices."""
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+        resolver = SchemaResolver(RulePackConfig())
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "metrics.node_cpu_seconds_total": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        }
+        resolver._discovered_mappings = {}
+
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        params = build_es_query_rule_params(
+            ir, data_view="metrics-prometheusreceiver.otel*", resolver=resolver
+        )
+        esql = params["esqlQuery"]["esql"]
+        self.assertIn("rate(metrics.node_cpu_seconds_total{mode=\"idle\"}", esql)
+        # The aggregation operator, grouping label, and label-matcher key stay bare.
+        self.assertNotIn("metrics.avg", esql)
+        self.assertNotIn("metrics.instance", esql)
+        self.assertNotIn("metrics.mode", esql)
+
     def test_es_query_params_set_time_field_for_datadog(self):
         from observability_migration.adapters.source.datadog.field_map import load_profile
 
@@ -4677,6 +4708,129 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertFalse(created_call["enabled"], "rules must be created disabled by default")
         self.assertIn("obs-migration", created_call["tags"])
         self.assertIn("legacy-grafana", created_call["tags"])
+
+    def test_create_rules_from_payloads_resolves_custom_threshold_data_view_title_to_id(self):
+        # Regression test: Custom Threshold rule params carry a data-view
+        # TITLE in searchConfiguration.index (see
+        # build_custom_threshold_rule_params), but Kibana's Custom Threshold
+        # rule type requires the data view's actual id there -- unlike Index
+        # Threshold, which takes a raw index pattern string. Without
+        # resolution, a wildcard title like "metrics-*" would be sent as-is
+        # even though Kibana assigns a different generated id.
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(kibana_url, **kwargs):
+            return {"id": "rule-1", "name": kwargs["name"], "enabled": kwargs["enabled"], "_params": kwargs["params"]}
+
+        def _fake_ensure_data_view(kibana_url, *, title, **kwargs):
+            self.assertEqual(title, "metrics-*")
+            return {"id": "generated-id", "title": "metrics-*"}
+
+        items = [
+            {
+                "alert_id": "a1",
+                "name": "High CPU",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": "observability.rules.custom_threshold",
+                    "name": "High CPU",
+                    "params": {
+                        "criteria": [{"comparator": ">", "threshold": [0]}],
+                        "searchConfiguration": {"index": "metrics-*", "query": {"query": "", "language": "kuery"}},
+                    },
+                },
+            }
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            create_rule_fn=_fake_create,
+            ensure_data_view_fn=_fake_ensure_data_view,
+        )
+
+        self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
+        created_params = result["created"][0]
+        self.assertEqual(created_params["rule_type_id"], "observability.rules.custom_threshold")
+
+    def test_create_rules_from_payloads_leaves_resolved_custom_threshold_index_unchanged(self):
+        # When ensure_data_view returns the same id as the title (the
+        # non-wildcard case), the payload must not be needlessly rewritten.
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        captured_params: list[dict[str, Any]] = []
+
+        def _fake_create(kibana_url, **kwargs):
+            captured_params.append(kwargs["params"])
+            return {"id": "rule-1", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        def _fake_ensure_data_view(kibana_url, *, title, **kwargs):
+            return {"id": title, "title": title}
+
+        items = [
+            {
+                "alert_id": "a1",
+                "name": "High CPU",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": "observability.rules.custom_threshold",
+                    "name": "High CPU",
+                    "params": {
+                        "criteria": [{"comparator": ">", "threshold": [0]}],
+                        "searchConfiguration": {"index": "metrics-prometheus", "query": {"query": "", "language": "kuery"}},
+                    },
+                },
+            }
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            create_rule_fn=_fake_create,
+            ensure_data_view_fn=_fake_ensure_data_view,
+        )
+
+        self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(captured_params[0]["searchConfiguration"]["index"], "metrics-prometheus")
+
+    def test_create_rules_from_payloads_does_not_resolve_data_view_for_index_threshold(self):
+        # Index Threshold's `index` param is a raw index-pattern string list,
+        # not a data view id -- must not trigger ensure_data_view.
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(kibana_url, **kwargs):
+            return {"id": "rule-1", "name": kwargs["name"], "enabled": kwargs["enabled"]}
+
+        def _fake_ensure_data_view(kibana_url, *, title, **kwargs):
+            raise AssertionError("Index Threshold rules must not resolve a data view")
+
+        items = [
+            {
+                "alert_id": "a1",
+                "name": "High CPU",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".index-threshold",
+                    "name": "High CPU",
+                    "params": {"index": ["metrics-*"], "timeField": "@timestamp"},
+                },
+            }
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            create_rule_fn=_fake_create,
+            ensure_data_view_fn=_fake_ensure_data_view,
+        )
+
+        self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
 
     def test_create_rules_from_payloads_from_mapping_shape_skips_manual_required(self):
         from observability_migration.targets.kibana.alerting import (

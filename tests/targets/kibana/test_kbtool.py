@@ -64,7 +64,7 @@ class ResolverTests(unittest.TestCase):
                 _kbtool.tool_argv("kb-dashboard-cli")
         msg = str(ctx.exception)
         self.assertIn("kb-dashboard-cli", msg)
-        self.assertIn("obs-migrate[kibana]", msg)
+        self.assertIn("elastic-observability-migration[kibana]", msg)
         self.assertIn("uv", msg)
 
 

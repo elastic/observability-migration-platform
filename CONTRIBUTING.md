@@ -6,7 +6,8 @@ Thanks for contributing to `obs-migrate`.
 
 - Read `README.md` for the public project overview.
 - Use `docs/README.md` for the full documentation map.
-- Use `docs/command-contract.md` for canonical commands.
+- Use `docs/command-contract.md` for canonical operator commands, and
+  `docs/contributing/dev-commands.md` for repo-checkout gate/script commands.
 - See `AGENTS.md` for automation/repo-working rules (including the `make`
   build/test/lint targets and the commit workflow).
 
@@ -28,6 +29,17 @@ python3 -m venv .venv
 .venv/bin/pre-commit install
 ```
 
+Browser binaries are **not** part of the default unit-test setup. Only install
+Chromium when you run live dashboard interaction / Playwright work:
+
+```bash
+make setup-browser          # python -m playwright install chromium
+make test-interactions      # offline interaction-audit unit tests
+```
+
+Live control checks need a local no-SSO stack (9.5+) — see
+`docs/testing.md` and `docs/contributing/dev-commands.md`.
+
 ## Verification
 
 ```bash
@@ -47,7 +59,8 @@ demand with:
 
 For the full picture of how migration correctness is verified — the layered
 confidence pyramid, every gate (coverage matrices, fidelity ratchets, live
-validation, render audit), and how to extend them — see `docs/testing.md`.
+validation, render audit, interaction audit), and how to extend them — see
+`docs/testing.md`.
 
 ## License Compliance And SBOM
 
@@ -82,14 +95,53 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
 
 ## Releasing
 
-1. One-time: register `obs-migrate` on PyPI and add a Trusted Publisher for
-   this repo + `.github/workflows/release.yml` (environment `pypi`).
-2. Bump `version` in `pyproject.toml`; commit via PR.
-3. Tag the merge commit `vX.Y.Z` and push the tag. The release workflow builds
-   the wheel/sdist and attaches them, plus the SBOM, to a GitHub Release.
-4. Until PyPI Trusted Publishing is configured, the workflow's PyPI publish step
-   is intentionally disabled. After Trusted Publishing is enabled, re-enable that
-   step so tag pushes also publish to PyPI via OIDC.
+1. Bump the package version (also refreshes `uv.lock` and license/SBOM docs):
+
+   ```bash
+   make bump-version VERSION=X.Y.Z
+   ```
+
+   (`scripts/bump_version.py` updates `pyproject.toml`, rewrites the example
+   PyPI pin / git-tag install lines in `README.md`,
+   `docs/command-contract.md`, and the mirrored `install-obs-migrate` skills,
+   then runs `uv lock`. `make licenses` regenerates `docs/licenses/*`. Use
+   `SKIP_LICENSES=1` only for local experiments — release PRs must refresh
+   the SBOM.)
+   Open a PR with that bump (and any release notes). Do **not** hand-edit
+   version pins in the README — let `bump-version` keep them aligned.
+
+2. After merge, tag the merge commit `vX.Y.Z` and push the tag. The release
+   workflow fails fast if the tag does not match `[project].version` in
+   `pyproject.toml`, **or** if operator install pins in README / command-contract
+   / install skill drift from that version, then builds the wheel/sdist and
+   attaches them (plus the SBOM) to a GitHub Release.
+
+3. **PyPI Trusted Publishing** (configured; no Elastic PyPI org yet):
+
+   Releases publish to
+   [`elastic-observability-migration`](https://pypi.org/project/elastic-observability-migration/)
+   via OIDC from `.github/workflows/release.yml` (GitHub environment `pypi`,
+   tags `v*`). Ownership is on a personal PyPI account until an Elastic org
+   exists; then transfer the project and re-check the Trusted Publisher.
+
+   - Add maintainers as PyPI **Owner** collaborators:
+     https://pypi.org/manage/project/elastic-observability-migration/collaboration/
+   - Trusted Publisher fields (already set): Owner `elastic`, Repository
+     `observability-migration-platform`, Workflow `release.yml`, Environment
+     `pypi`.
+
+4. Tagging a matching `vX.Y.Z` (or pre-release such as `v0.4.0rc1`) publishes
+   via OIDC (no long-lived PyPI token).
+
+5. Post-publish verification:
+
+   ```bash
+   uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+   uvx --from 'elastic-observability-migration[all]' obs-migrate migrate --help
+   ```
+
+Operators install from PyPI as documented in `README.md` (git-tag `uvx` remains
+an optional fallback).
 
 ## Docs And Structure Rules
 

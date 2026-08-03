@@ -634,12 +634,12 @@ class TestPlannerGaps(unittest.TestCase):
         plan = plan_widget(w)
         self.assertEqual(plan.backend, "esql")
 
-    def test_simple_metric_chooses_lens(self):
+    def test_simple_metric_chooses_esql_for_native_dashboards_api(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = self._make_widget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
         plan = plan_widget(w)
-        self.assertEqual(plan.backend, "lens")
+        self.assertEqual(plan.backend, "esql")
 
     def test_simple_query_value_prefers_esql(self):
         mq = parse_metric_query("avg:system.cpu.user{*}")
@@ -662,12 +662,12 @@ class TestPlannerGaps(unittest.TestCase):
         plan = plan_widget(w)
         self.assertEqual(plan.backend, "esql")
 
-    def test_grouped_query_value_stays_lens(self):
+    def test_grouped_query_value_chooses_esql_for_native_dashboards_api(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = self._make_widget(id="1", widget_type="query_value", title="CPU", queries=[wq])
         plan = plan_widget(w)
-        self.assertEqual(plan.backend, "lens")
+        self.assertEqual(plan.backend, "esql")
 
     def test_count_derived_query_value_stays_esql(self):
         mq = parse_metric_query("sum:http.requests{*}.as_count()")
@@ -779,14 +779,16 @@ class TestEsqlGenerationGaps(unittest.TestCase):
 # =========================================================================
 
 class TestLensGenerationSuite(unittest.TestCase):
-    """10.8 — Prove Lens panels are generated safely."""
+    """10.8 — Prove the legacy Lens translator still works when explicitly requested."""
 
-    def test_simple_timeseries_generates_lens(self):
+    def _lens_plan(self, widget_id: str = "1", kibana_type: str = "xy") -> PanelPlan:
+        return PanelPlan(widget_id=widget_id, backend="lens", kibana_type=kibana_type)
+
+    def test_explicit_lens_plan_generates_lens(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
-        plan = plan_widget(w)
-        self.assertEqual(plan.backend, "lens")
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
         self.assertIn("type", result.yaml_panel)
@@ -796,7 +798,7 @@ class TestLensGenerationSuite(unittest.TestCase):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertIn("data_view", result.yaml_panel)
         self.assertEqual(result.yaml_panel["data_view"], "metrics-*")
@@ -805,7 +807,7 @@ class TestLensGenerationSuite(unittest.TestCase):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertEqual(result.yaml_panel["metric_field"], "system_cpu_user")
 
@@ -813,7 +815,7 @@ class TestLensGenerationSuite(unittest.TestCase):
         mq = parse_metric_query("sum:http.requests.count{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="Req", queries=[wq])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertEqual(result.yaml_panel["aggregation"], "SUM")
 
@@ -821,7 +823,7 @@ class TestLensGenerationSuite(unittest.TestCase):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertIn("host.name", result.yaml_panel.get("group_by", []))
 
@@ -829,7 +831,7 @@ class TestLensGenerationSuite(unittest.TestCase):
         mq = parse_metric_query("avg:system.cpu.user{host:web01} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = NormalizedWidget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertTrue(len(result.yaml_panel.get("filters", [])) > 0)
 
@@ -841,7 +843,7 @@ class TestLensGenerationSuite(unittest.TestCase):
             layout={"x": 0, "y": 0, "width": 4, "height": 2},
         )
         dash = NormalizedDashboard(id="1", title="Dash", widgets=[w])
-        plan = plan_widget(w)
+        plan = self._lens_plan()
         result = translate_widget(w, plan, OTEL_PROFILE)
         yaml_str = generate_dashboard_yaml(dash, [result])
         doc = yaml.safe_load(yaml_str)

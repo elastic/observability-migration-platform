@@ -1,0 +1,5 @@
+title: Namespaces
+grafana_type: stat
+status: migrated
+chart_type: metric
+primary: kube_namespace_created_count

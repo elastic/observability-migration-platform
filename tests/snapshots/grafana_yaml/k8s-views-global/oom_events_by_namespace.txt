@@ -1,0 +1,7 @@
+title: OOM Events by namespace
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['container_oom_events_total']
+breakdown: k8s.namespace.name

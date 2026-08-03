@@ -76,9 +76,22 @@ class VisualIR:
         if isinstance(yaml_panel.get("esql"), dict):
             kind = "esql"
             config = dict(yaml_panel["esql"])
+        elif isinstance(yaml_panel.get("lens"), dict):
+            # Datadog still emits a small number of Lens-backed panels
+            # (kb-dashboard-core ``lens`` blocks). Preserve them so the
+            # IR round-trip is lossless even though the typed Dashboards
+            # API mapper currently only maps ``esql``/``markdown``.
+            kind = "lens"
+            config = dict(yaml_panel["lens"])
         elif isinstance(yaml_panel.get("markdown"), dict):
             kind = "markdown"
             config = dict(yaml_panel["markdown"])
+        elif isinstance(yaml_panel.get("links"), dict):
+            kind = "links"
+            config = dict(yaml_panel["links"])
+        elif isinstance(yaml_panel.get("image"), dict):
+            kind = "image"
+            config = dict(yaml_panel["image"])
 
         resolved_kibana_type = kibana_type or str(config.get("type") or "")
         return cls(

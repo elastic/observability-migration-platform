@@ -8,7 +8,10 @@ from typing import Any
 
 import yaml
 
-from observability_migration.targets.kibana.compile import _iter_leaf_panels
+from observability_migration.targets.kibana.compile import (
+    _iter_leaf_panels,
+    _pair_yaml_leaves_to_panel_results,
+)
 
 from .local_ai import request_structured_json
 
@@ -113,13 +116,17 @@ def build_heuristic_polish_plan(result: Any, yaml_doc: dict[str, Any]) -> dict[s
     dashboard = ((yaml_doc or {}).get("dashboards") or [{}])[0]
     leaf_panels = list(_iter_leaf_panels(dashboard.get("panels", []) or []))
     visible_panel_results = _emitted_panel_results(result)
+    paired = _pair_yaml_leaves_to_panel_results(leaf_panels, visible_panel_results)
 
     panel_titles = {}
-    for idx, panel_result in enumerate(visible_panel_results):
-        if idx >= len(leaf_panels):
-            break
-        suggested = _sanitize_short_text(_suggest_panel_title(panel_result), leaf_panels[idx].get("title", "") or "Untitled")
-        current = str(leaf_panels[idx].get("title") or "").strip()
+    for idx, (leaf_panel, panel_result) in enumerate(paired):
+        if panel_result is None:
+            continue
+        suggested = _sanitize_short_text(
+            _suggest_panel_title(panel_result),
+            leaf_panel.get("title", "") or "Untitled",
+        )
+        current = str(leaf_panel.get("title") or "").strip()
         if suggested and suggested != current:
             panel_titles[str(idx)] = suggested
 
@@ -255,12 +262,15 @@ def apply_metadata_polish(
             applied["notes"] = list(applied.get("notes", [])) + ["Local AI metadata polish requested but endpoint/model were not configured"]
 
     leaf_panels = list(_iter_leaf_panels(dashboard.get("panels", []) or []))
+    paired = _pair_yaml_leaves_to_panel_results(leaf_panels, visible_panel_results)
     for key, value in (applied.get("panel_titles", {}) or {}).items():
         idx = int(key)
-        if idx >= len(leaf_panels) or idx >= len(visible_panel_results):
+        if idx >= len(paired):
             continue
-        leaf_panels[idx]["title"] = value
-        panel_result = visible_panel_results[idx]
+        leaf_panel, panel_result = paired[idx]
+        if panel_result is None:
+            continue
+        leaf_panel["title"] = value
         panel_result.metadata_polish = {
             "mode": applied.get("mode", "heuristic"),
             "original_title": panel_result.title,
@@ -277,6 +287,32 @@ def apply_metadata_polish(
         if idx >= len(dashboard.get("controls", []) or []):
             continue
         dashboard["controls"][idx]["label"] = value
+
+    polish_touched_ir = bool(applied.get("panel_titles") or applied.get("control_labels"))
+    if polish_touched_ir and (
+        getattr(result, "native_dashboard", None) is not None or getattr(result, "dashboard_ir", None) is not None
+    ):
+        # Panel titles and control labels flow into the native IR's
+        # panel/pinned-control config (see map_yaml_panel/map_yaml_control in
+        # dashboards_api.py). `DashboardIR` is the primary artifact from this
+        # point on: rebuild it from this same in-memory `dashboard` dict just
+        # polished, and derive both the native IR and the on-disk YAML *from
+        # that IR* (mirrors the rebuild in
+        # targets.kibana.compile.sync_result_queries_to_yaml), so a
+        # --polish-metadata --upload run can't ship the pre-polish IR and
+        # the two artifacts can't drift from each other.
+        from observability_migration.core.assets.dashboard import DashboardIR
+        from observability_migration.targets.kibana.dashboards_api import (
+            native_dashboard_from_ir,
+        )
+
+        dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
+        result.dashboard_ir = dashboard_ir
+        yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+        native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
+        result.native_dashboard = native_dashboard
+        native_counts_dict, native_reasons = native_counts.as_dicts()
+        result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
 
     with yaml_path.open("w") as fh:
         yaml.safe_dump(yaml_doc, fh, sort_keys=False, allow_unicode=True, width=120)

@@ -260,6 +260,8 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "folder_title": getattr(result, "folder_title", ""),
             "yaml_path": getattr(result, "yaml_path", ""),
             "compiled_path": getattr(result, "compiled_path", ""),
+            "native_artifact_path": getattr(result, "native_artifact_path", ""),
+            "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),
             "uploaded_kibana_url": getattr(result, "uploaded_kibana_url", ""),
             "runtime_summary": runtime_summary,
@@ -268,6 +270,7 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "verification_summary": getattr(result, "verification_summary", {}) or {},
             "review_explanations": getattr(result, "review_explanations", {}) or {},
             "feature_gap_summary": getattr(result, "feature_gap_summary", {}) or {},
+            "control_warnings": list(getattr(result, "control_warnings", []) or []),
             "dashboard_links": dashboard_links,
             "annotations": annotations,
             "alert_migration_tasks": alert_tasks,
@@ -364,6 +367,10 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "green": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"),
             "yellow": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"),
             "red": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"),
+            "control_warnings": sum(
+                len(dashboard.get("control_warnings", []))
+                for dashboard in dashboards
+            ),
             "uploaded_ok": sum(1 for dashboard in dashboards if (dashboard.get("runtime_summary", {}).get("upload") or {}).get("status") == "pass"),
             "layout_ok": sum(1 for dashboard in dashboards if (dashboard.get("runtime_summary", {}).get("layout") or {}).get("status") == "pass"),
         },

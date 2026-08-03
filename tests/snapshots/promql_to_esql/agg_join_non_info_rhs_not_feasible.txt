@@ -1,0 +1,5 @@
+source: sum(node_network_receive_bytes_total * on(instance) group_left(nodename) node_weight_factor)
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join with 'node_weight_factor' requires manual redesign: not recognized as a label-only metric (no info_metric_suffixes match, default '_info'); dropping it would change numeric values unless it always evaluates to 1 — if it does, add its suffix to info_metric_suffixes in your rule pack
+---
+

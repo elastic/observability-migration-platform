@@ -1,0 +1,9 @@
+title: Memory Basic
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['RAM_Total', 'RAM_Used', 'RAM_Cache_Buffer', 'RAM_Free', 'SWAP_Used']
+breakdown: series_group
+mode: stacked
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

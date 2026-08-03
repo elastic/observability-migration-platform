@@ -1,7 +1,6 @@
 source: label_replace(rate(http_requests_total[5m]), "short", "$1", "job", "prefix-(.*)")
 feasibility: feasible
 warning: label_replace('short') approximated with an anchored ES|QL GROK; rows where the regex does not match will produce null (PromQL preserves the original value)
-warning: Added outer AVG() around rate because ES|QL requires an outer aggregation when grouping TS functions by label fields
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

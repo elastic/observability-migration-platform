@@ -79,6 +79,41 @@ def test_field_gap_corruption_warns_not_fails():
     assert [p.title for p in gap] == ["canary timeseries"]
 
 
+# Issue #282: a late-bound ``by ($grouping)`` panel emits a STABLE breakdown
+# accessor — the aliased column ``grouping`` from ``STATS ... BY grouping =
+# ??grouping`` — not the field the viewer selects (``exporter``/``transport``/
+# ``receiver``). That alias is always present in the panel's own output, so an
+# "invalid column" here is a genuine Lens accessor bug (the #282 render failure
+# mode), never a data/field gap.
+_LATE_BOUND_GROUPING_PANEL = ("otel spans late-bound grouping", "line chart exporter transport receiver")
+
+
+def test_late_bound_grouping_clean_render_passes():
+    # The stable ``grouping`` alias is present, so the panel renders cleanly.
+    verdict = classify_render_per_panel(
+        [_LATE_BOUND_GROUPING_PANEL],
+        breakdown_by_title={_LATE_BOUND_GROUPING_PANEL[0]: ["grouping"]},
+        available_fields=["grouping", "exporter", "transport", "receiver"],
+    )
+    assert verdict.status == "pass"
+
+
+def test_late_bound_grouping_invalid_column_is_render_error_not_field_gap():
+    # If the breakdown accessor is ever wired to the wrong column (the #282 bug),
+    # Kibana raises "invalid column". Because the stable ``grouping`` alias IS in
+    # the target, this cannot be excused as a field gap — it must hard-fail as a
+    # render_error so the accessor-wiring regression is caught.
+    panels = [(_LATE_BOUND_GROUPING_PANEL[0], _CORRUPTIONS["invalid_column"])]
+    verdict = classify_render_per_panel(
+        panels,
+        breakdown_by_title={_LATE_BOUND_GROUPING_PANEL[0]: ["grouping"]},
+        available_fields=["grouping", "exporter", "transport", "receiver"],
+    )
+    assert verdict.status == "fail"
+    hard = [p for p in verdict.panels if p.error_class == "render_error"]
+    assert [p.title for p in hard] == [_LATE_BOUND_GROUPING_PANEL[0]]
+
+
 def test_console_render_error_is_caught():
     verdict = classify_render_per_panel(
         _CLEAN_PANELS,

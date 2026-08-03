@@ -208,5 +208,101 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         )
 
 
+class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
+    """Issue #256: when target schema discovery is offline/empty/error/
+    unrecognized, label and index resolution falls back to OTel defaults and
+    panels can render empty. The final report must surface an unmistakable,
+    top-of-summary warning with the remediation — and stay silent on a normal,
+    verified run so it doesn't cry wolf."""
+
+    def _run(self, field_discovery):
+        result = MigrationResult(dashboard_title="d", dashboard_uid="d")
+        result.panel_results = [_panel("p", "migrated", gate="Green")]
+        result.total_panels = 1
+        result.migrated = 1
+        result.compiled = True
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_report([result], [("d", True, "")], field_discovery=field_discovery)
+        return buf.getvalue()
+
+    def test_offline_fallback_emits_warning_and_remediation(self):
+        out = self._run(
+            {"otel_fallback": True, "status": "offline", "index_pattern": "metrics-*"}
+        )
+        self.assertIn("WARNING: migrated panels may render empty", out)
+        self.assertIn("did not run (no --es-url provided)", out)
+        # Remediation names both flags the user must point at their data.
+        self.assertIn("--es-url", out)
+        self.assertIn("--esql-index", out)
+        # OTel default example so the cause is concrete.
+        self.assertIn("service.name", out)
+        # The warning lands before the dashboard counts (top-of-summary).
+        self.assertLess(
+            out.index("may render empty"), out.index("Dashboards processed")
+        )
+
+    def test_empty_fallback_names_index(self):
+        out = self._run(
+            {"otel_fallback": True, "status": "empty", "index_pattern": "metrics-prod-*"}
+        )
+        self.assertIn("found no fields under 'metrics-prod-*'", out)
+
+    def test_error_fallback_includes_cause(self):
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "error",
+                "index_pattern": "metrics-*",
+                "error": "HTTP 401",
+            }
+        )
+        self.assertIn("target schema discovery failed: HTTP 401", out)
+
+    def test_known_profile_missing_field_warns_without_unrecognized_language(self):
+        # PR #262: a recognized profile that is missing some dashboard fields
+        # must warn, but must not claim the schema was "not recognized".
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "ok",
+                "schema_profile": "prometheus_remote_write",
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertIn("may render empty", out)
+        self.assertIn("prometheus_remote_write", out)
+        self.assertIn("missing some fields", out)
+        self.assertNotIn("was not recognized", out)
+
+    def test_unrecognized_schema_fallback_warns(self):
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "ok",
+                "schema_profile": None,
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertIn("was not recognized", out)
+        self.assertIn("may render empty", out)
+
+    def test_no_warning_when_resolution_verified(self):
+        out = self._run(
+            {
+                "otel_fallback": False,
+                "status": "ok",
+                "schema_profile": "prometheus_remote_write",
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertNotIn("may render empty", out)
+
+    def test_no_warning_when_field_discovery_absent(self):
+        # Back-compat: callers that don't pass field_discovery print no warning.
+        out = self._run(None)
+        self.assertNotIn("may render empty", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,10 @@
+title: Memory Active / Inactive
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['Inactive_Memory_which_has_been_less_recently_used_It_is_more_eligible_to_be_reclaimed_for_other_purposes', 'Active_Memory_that_has_been_used_more_recently_and_usually_not_reclaimed_unless_absolutely_necessary']
+breakdown: series_group
+mode: stacked
+axis_title: bytes
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

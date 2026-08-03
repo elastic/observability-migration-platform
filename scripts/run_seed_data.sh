@@ -5,7 +5,7 @@
 #
 # Seed synthetic telemetry data for all migrated dashboard artifacts.
 #
-# Discovers every output-* directory under /tmp/mig-to-kbn-e2e/ (for both
+# Discovers every output-* directory under /tmp/obs-migrate-e2e/ (for both
 # grafana and datadog sources), collects their dashboards/ sub-directories,
 # and runs setup_telemetry_data.py against the combined set.
 #
@@ -16,14 +16,14 @@
 #   - serverless_creds.env in project root (ELASTICSEARCH_ENDPOINT and KEY)
 #   - .venv with requirements.txt installed
 #   - At least one migration output directory must exist under
-#     /tmp/mig-to-kbn-e2e/{grafana,datadog}/output-*/dashboards/
+#     /tmp/obs-migrate-e2e/{grafana,datadog}/output-*/dashboards/
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-LOG_FILE="/tmp/mig-to-kbn-e2e/seed-data.log"
-E2E_ROOT="/tmp/mig-to-kbn-e2e"
+LOG_FILE="/tmp/obs-migrate-e2e/seed-data.log"
+E2E_ROOT="/tmp/obs-migrate-e2e"
 
 cd "$PROJECT_ROOT"
 
@@ -55,7 +55,7 @@ fi
 # <run-root>/<slug>/dashboards/ with a yaml/ sub-directory inside.
 ARTIFACT_DIRS=()
 
-# Grafana: /tmp/mig-to-kbn-e2e/grafana/<slug>/dashboards/
+# Grafana: /tmp/obs-migrate-e2e/grafana/<slug>/dashboards/
 for dashboards_dir in "$E2E_ROOT/grafana"/*/dashboards; do
   [ -d "$dashboards_dir/yaml" ] || continue
   ARTIFACT_DIRS+=("$dashboards_dir")

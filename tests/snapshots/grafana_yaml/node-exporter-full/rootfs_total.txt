@@ -1,0 +1,5 @@
+title: RootFS Total
+grafana_type: stat
+status: migrated
+chart_type: metric
+primary: node_filesystem_size_bytes

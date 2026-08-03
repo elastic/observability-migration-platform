@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,8 @@ UNTRANSLATABLE_FORMULA_FUNCS = {
 }
 
 TEXT_WIDGET_TYPES = {"note", "free_text", "image", "iframe"}
+
+_ABSOLUTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 # Widget types that represent a Datadog-side status/check view rather than
 # a queryable metric. These have no direct Kibana equivalent (Elastic uses
@@ -95,6 +98,29 @@ def plan_widget(widget: NormalizedWidget) -> PanelPlan:
 
 def _plan_is_complete(context: PlanContext, _detail: str | None) -> bool:
     return bool(context.plan.backend)
+
+
+@PLANNER_PRECHECKS.register(
+    "datadog.plan.image_widget",
+    priority=5,
+    summary="Route Datadog image widgets with a real absolute URL to a native Kibana image panel.",
+)
+def image_widget_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type != "image":
+        return None
+    url = str(context.widget.raw_definition.get("url") or "").strip()
+    if not _ABSOLUTE_URL_RE.match(url):
+        # Datadog's own internal /static/... asset paths (and any other
+        # relative reference) would 404 inside Kibana. Decline and let
+        # ``text_widget_rule`` fall back to the markdown placeholder, which at
+        # least surfaces the original URL for manual follow-up (degrade
+        # gracefully rather than emit a broken image panel).
+        return None
+    context.plan.backend = "image"
+    context.plan.kibana_type = "image"
+    context.plan.confidence = 1.0
+    context.plan.reasons.append("image widget with absolute URL -> native Kibana image panel")
+    return "selected native image panel"
 
 
 @PLANNER_PRECHECKS.register(
@@ -312,6 +338,39 @@ def metric_toplist_rule(context: PlanContext) -> str | None:
 
 
 @METRIC_PLANNERS.register(
+    "datadog.plan.metric_hostmap",
+    priority=35,
+    summary="Preserve grouped Datadog hostmap values as an ES|QL table.",
+)
+def metric_hostmap_rule(context: PlanContext) -> str | None:
+    if context.widget.widget_type != "hostmap":
+        return None
+    has_grouping = any(
+        query.metric_query and query.metric_query.group_by
+        for query in context.metric_queries
+    )
+    if not has_grouping:
+        context.plan.backend = "markdown"
+        context.plan.kibana_type = "markdown"
+        context.plan.warnings.append(
+            "hostmap has no grouping dimension; a host/value table cannot be "
+            "constructed automatically"
+        )
+        context.plan.reasons.append("ungrouped hostmap needs manual redesign")
+        context.plan.confidence = 0.0
+        return "selected manual placeholder for ungrouped hostmap"
+    context.plan.backend = "esql"
+    context.plan.kibana_type = "table"
+    context.plan.warnings.append(
+        "hostmap visual approximated as a grouped table; host dimensions and "
+        "metric values are preserved, but Datadog tile coloring is not"
+    )
+    context.plan.reasons.append("grouped hostmap → data-preserving ES|QL table")
+    context.plan.confidence *= 0.8
+    return "selected ES|QL table for grouped hostmap"
+
+
+@METRIC_PLANNERS.register(
     "datadog.plan.metric_table",
     priority=40,
     summary="Plan Datadog tables as Lens or ES|QL tables.",
@@ -338,7 +397,7 @@ def metric_timeseries_rule(context: PlanContext) -> str | None:
         context.plan.kibana_type = "xy"
         context.plan.reasons.append("multi-query formula → ES|QL for query-side computation")
         return "selected ES|QL XY because widget uses a multi-query formula"
-    context.plan.backend = "lens" if context.use_lens else "esql"
+    context.plan.backend = "esql"
     context.plan.kibana_type = "xy"
     context.plan.reasons.append(f"timeseries → {context.plan.backend} XY panel")
     return f"selected {context.plan.backend} XY panel"
@@ -438,7 +497,7 @@ def metric_geomap_rule(context: PlanContext) -> str | None:
     summary="Default remaining metrics widgets to Lens or ES|QL.",
 )
 def metric_default_rule(context: PlanContext) -> str | None:
-    context.plan.backend = "lens" if context.use_lens else "esql"
+    context.plan.backend = "esql"
     context.plan.reasons.append(f"default {context.plan.backend} path for {context.widget.widget_type}")
     return f"selected default {context.plan.backend} backend"
 
@@ -565,13 +624,7 @@ def _should_use_lens(
 
 
 def _metric_widget_backend(context: PlanContext) -> str:
-    if _prefer_esql_for_simple_metric_widget(
-        context.widget,
-        context.metric_queries,
-        context.has_multi_query_formula,
-    ):
-        return "esql"
-    return "lens" if context.use_lens else "esql"
+    return "esql"
 
 
 def _prefer_esql_for_simple_metric_widget(

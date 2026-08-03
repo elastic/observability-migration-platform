@@ -65,6 +65,7 @@ class QueryConfigModel(_StrictModel):
     not_feasible_patterns: list[PatternRuleModel] = Field(default_factory=list)
     warning_patterns: list[PatternRuleModel] = Field(default_factory=list)
     counter_suffixes: list[str] = Field(default_factory=list)
+    info_metric_suffixes: list[str] = Field(default_factory=list)
     default_rate_window: str | None = None
     default_gauge_agg: str | None = None
     ts_time_filter: str | None = None
@@ -82,6 +83,7 @@ class QueryConfigModel(_StrictModel):
     ignored_labels: list[str] = Field(default_factory=list)
     index_rewrites: list[IndexRewriteRuleModel] = Field(default_factory=list)
     metric_kinds: dict[str, str] = Field(default_factory=dict)
+    metric_map: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("label_candidates", mode="before")
     @classmethod
@@ -96,6 +98,15 @@ class QueryConfigModel(_StrictModel):
                 raise ValueError(
                     f"metric_kinds[{name!r}] must be 'counter' or 'gauge', got {kind!r}"
                 )
+        return value
+
+    @field_validator("metric_map")
+    @classmethod
+    def validate_metric_map(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from observability_migration.core.metric_mapping import normalize_metric_map
+
+        # Validate shape; keep raw payload for RulePackConfig normalization.
+        normalize_metric_map(value)
         return value
 
 
@@ -158,10 +169,13 @@ def normalize_rule_pack_payload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "not_feasible_patterns",
                 "warning_patterns",
                 "counter_suffixes",
+                "info_metric_suffixes",
                 "label_rewrites",
                 "label_candidates",
                 "ignored_labels",
                 "index_rewrites",
+                "metric_kinds",
+                "metric_map",
             }:
                 query_payload[field_name] = data.pop(field_name)
         if query_payload:

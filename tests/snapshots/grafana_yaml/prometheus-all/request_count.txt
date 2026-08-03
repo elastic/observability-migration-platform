@@ -1,0 +1,7 @@
+title: Request count
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['http_requests_total']
+breakdown: legend

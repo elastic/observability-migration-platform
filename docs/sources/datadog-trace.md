@@ -45,10 +45,12 @@ Datadog tags are mapped to Elasticsearch fields through profiles:
 
 ### Template Variables → Controls
 
-Datadog `template_variables` are translated into Kibana dashboard controls.
-Each variable's `tag` is resolved through the active field profile to an
-Elasticsearch field. The controls apply dashboard-level filtering, replacing
-the `$var` LIKE-broadening in individual panel queries.
+Tag-backed Datadog `template_variables` are translated into Kibana dashboard
+controls. Each variable's `tag` is resolved through the active field profile
+to an Elasticsearch field, and the control applies dashboard-level filtering.
+This does not cover Datadog's free-form `$scope`, log-query substitutions, or
+dynamic group-by variables; those shapes are reported as explicit
+degradations/manual work rather than being presented as clean replacements.
 
 ---
 
@@ -57,18 +59,18 @@ the `$var` LIKE-broadening in individual panel queries.
 <!-- GENERATED:DASHBOARD_SUMMARY -->
 | Source | Dashboard | Panels | Migrated | Warnings | Manual | Not Feasible | Skipped | Rows |
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
-| datadog | Apache - Overview | 22 | 16 | 4 | 1 | 1 | 0 | 0 |
+| datadog | Apache - Overview | 22 | 12 | 9 | 1 | 0 | 0 | 0 |
 | datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 7 | 11 | 4 | 0 | 5 | 0 |
-| datadog | Docker - Overview | 28 | 16 | 9 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 12 | 2 | 0 | 6 | 0 |
-| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 27 | 4 | 2 | 9 | 0 |
-| datadog | Kubernetes - Overview | 57 | 17 | 24 | 4 | 2 | 10 | 0 |
-| datadog | MongoDB - Overview | 43 | 15 | 18 | 1 | 0 | 9 | 0 |
+| datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
+| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
+| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 31 | 1 | 1 | 9 | 0 |
+| datadog | Kubernetes - Overview | 57 | 2 | 41 | 4 | 0 | 10 | 0 |
+| datadog | MongoDB - Overview | 43 | 12 | 21 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
-| datadog | NGINX - Overview | 27 | 12 | 5 | 2 | 2 | 6 | 0 |
+| datadog | NGINX - Overview | 27 | 12 | 6 | 2 | 1 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 11 | 23 | 6 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 10 | 27 | 3 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 9 | 27 | 0 | 0 | 7 | 0 |
 | datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
 
@@ -80,9 +82,9 @@ the `$var` LIKE-broadening in individual panel queries.
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 197 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 23 | Translated with approximations — review recommended |
-| **EXPECTED_LIMITATION** | 206 | Known unsupported feature — placeholder or skip |
+| **CORRECT** | 27 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 235 | Translated with approximations — review recommended |
+| **EXPECTED_LIMITATION** | 164 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
 <!-- GENERATED:WARNING_PATTERNS -->
@@ -90,21 +92,21 @@ the `$var` LIKE-broadening in individual panel queries.
 
 | Count | Warning |
 |------:|---------|
-| 188 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
+| 187 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
+| 136 | Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana |
+| 21 | Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 21 | Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 11 | Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
+| 10 | rollup interval is approximated in ES\|QL |
 | 9 | as_count interval semantics are approximated in ES\|QL |
-| 6 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
-| 5 | rollup interval is approximated in ES\|QL |
-| 5 | query syntax not recognized; manual review needed |
-| 5 | XY chart shows a single breakdown; additional grouping dimension(s) ['deployment.environment'] are in the query but not on the chart, so series differing only by those are visually merged |
+| 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
+| 5 | rate semantics approximated with delta over observed bucket span |
 | 5 | top(10) on timeseries approximated as ranked table of top-10 groups — ES\|QL cannot filter to N series in a single pass |
-| 4 | XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 3 | XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 3 | XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 3 | Scope filter with template variable broadened to LIKE pattern; apply specific values via Kibana dashboard controls |
-| 2 | Data source 'event_stream' has no direct Kibana equivalent; panel will be a placeholder |
-| 1 | XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter'] are in the query but not on the chart, so series differing only by those are visually merged |
-| 1 | manual review needed: grouped query used in a scalar (query_value) widget — reduce to a single value or convert to a table panel |
-| 1 | manual review needed: multi-query formulas with different groupings need a manually-designed ES\|QL query (e.g. UNION ALL or split into separate panels) — automatic translation would be semantically ambiguous |
+| 5 | Scope filter with template variable broadened to LIKE pattern; apply specific values via Kibana dashboard controls |
+| 4 | hostmap visual approximated as a grouped table; host dimensions and metric values are preserved, but Datadog tile coloring is not |
+| 4 | XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column |
+| 4 | default_zero() only coalesces returned rows; missing series or empty buckets may still be omitted |
+| 3 | XY chart grouped by multiple tags (worker, task); composited into a single breakdown column |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -120,23 +122,23 @@ the `$var` LIKE-broadening in individual panel queries.
 |-------|---------------------|--------|---------|-------------|-----------------|
 | 0 | `image` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 1 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Rate of requests | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:apache.net.request_per_s{$host,$scope} | — |
-| Apache process CPU usage (top 10 hosts) | `toplist` → `table` | warning | **CORRECT** | top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Rate of requests | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.net.request_per_s{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Apache process CPU usage (top 10 hosts) | `toplist` → `table` | warning | **MINOR_ISSUE** | top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 4 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Status of worker threads | `timeseries` → `xy` | warning | **CORRECT** | sum:apache.scoreboard.disabled{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Status of worker threads | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.scoreboard.disabled{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 6 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Async connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.conns_async_closing{$host,$scope}.rollup(max) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Requests per second per host | `hostmap` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
-| Total async connections | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:apache.conns_total{$host,$scope}.rollup(max) | — |
+| Requests per second per host | `hostmap` → `table` | warning | **MINOR_ISSUE** | avg:apache.net.request_per_s{$scope} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Total async connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.conns_total{$host,$scope}.rollup(max) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 10 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 11 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 12 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Server can connect | `check_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
-| Minimum uptime | `query_value` → `metric` | warning | **CORRECT** | min:apache.performance.uptime{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Bytes served | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:apache.net.bytes{$host,$scope} | — |
+| Minimum uptime | `query_value` → `metric` | warning | **MINOR_ISSUE** | min:apache.performance.uptime{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Bytes served | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.net.bytes{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 16 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 17 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Rate of bytes served | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:apache.net.bytes_per_s{$host,$scope} | — |
+| Rate of bytes served | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:apache.net.bytes_per_s{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 19 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Log Events | `log_stream` → `table` | ok | **CORRECT** | source:apache | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
 | 3962684562665668 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
@@ -184,7 +186,7 @@ the `$var` LIKE-broadening in individual panel queries.
 
 #### Rate of requests
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -194,17 +196,33 @@ sum:apache.net.request_per_s{$host,$scope}
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = SUM(apache_net_request_per_s) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket`
+
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Apache process CPU usage (top 10 hosts)
 
@@ -244,9 +262,9 @@ FROM metrics-*
 - Output metric: `value`
 - Output groups: `host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 4
 
@@ -344,9 +362,9 @@ FROM metrics-*
 - Output metric: `query0`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 6
 
@@ -412,32 +430,54 @@ FROM metrics-*
 - Output metric: `query0`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rollup interval is approximated in ES|QL
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; rollup interval is approximated in ES|QL
 
 **Verdict:** MINOR_ISSUE
 
 #### Requests per second per host
 
-**Translation path:** `blocked` · **Query language:** `datadog_widget` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (hostmap):**
 
+```
+avg:apache.net.request_per_s{$scope} by {host}
+```
+
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.unsupported_widget` → blocked unsupported widget type hostmap
+- `plan` / `datadog.plan.metric_hostmap` → selected ES|QL table for grouped hostmap
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (table):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = AVG(apache_net_request_per_s) BY host.name
+| SORT value DESC
+| LIMIT 100
+```
 
 **Plan:**
 
-- Backend: `blocked`
-- Kibana type: `markdown`
-- Data source: ``
-- Reasons: unsupported widget type: hostmap
+- Backend: `esql`
+- Kibana type: `table`
+- Data source: `metrics`
+- Reasons: grouped hostmap → data-preserving ES|QL table
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `host.name`
+
+**Warnings:** hostmap visual approximated as a grouped table; host dimensions and metric values are preserved, but Datadog tile coloring is not; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Total async connections
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -447,17 +487,33 @@ sum:apache.conns_total{$host,$scope}.rollup(max)
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = SUM(apache_conns_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket`
+
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; rollup interval is approximated in ES|QL
+
+**Verdict:** MINOR_ISSUE
 
 #### 10
 
@@ -570,9 +626,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -601,14 +657,14 @@ FROM metrics-*
 | Celery Monitors | `manage_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Celery Monitoring | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 109699765942540 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Celery Worker Status | `query_table` → `table` | warning | **CORRECT** | avg:celery.flower.worker.online{$worker, $host, $endpoint} by {worker} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Celery Worker Status | `query_table` → `table` | warning | **MINOR_ISSUE** | avg:celery.flower.worker.online{$worker, $host, $endpoint} by {worker} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Number of tasks currently executing by worker | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:celery.flower.events.count{$task,$endpoint} by {worker,task,type}.as_count() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Task Prefetch Time at Worker | `timeseries` → `xy` | warning | **CORRECT** | sum:celery.flower.task.prefetch_time.seconds{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Number of  Prefetch Tasks at Worker | `timeseries` → `xy` | warning | **CORRECT** | sum:celery.flower.worker.prefetched_tasks{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Number of tasks currently executing by worker | `timeseries` → `xy` | warning | **CORRECT** | sum:celery.flower.worker.executing_tasks{$task,$endpoint} by {worker} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Number of tasks currently executing by worker | `timeseries` → `xy` | warning | **CORRECT** | sum:celery.flower.events.created{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Task Prefetch Time at Worker | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:celery.flower.task.prefetch_time.seconds{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Number of  Prefetch Tasks at Worker | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:celery.flower.worker.prefetched_tasks{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Number of tasks currently executing by worker | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:celery.flower.worker.executing_tasks{$task,$endpoint} by {worker} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Number of tasks currently executing by worker | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:celery.flower.events.created{$task,$endpoint} by {worker,task} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| 1205253880262830 | `list_stream` → `table` | ok | **CORRECT** | source:celery | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
+| 1205253880262830 | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 
 <details>
 <summary>Detailed traces (17 panels)</summary>
@@ -826,7 +882,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Number of tasks currently executing by worker
 
@@ -908,9 +964,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Number of  Prefetch Tasks at Worker
 
@@ -950,9 +1006,9 @@ FROM metrics-*
 - Output metric: `tasks`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Number of tasks currently executing by worker
 
@@ -993,7 +1049,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Number of tasks currently executing by worker
 
@@ -1032,9 +1088,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, worker, task`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['task'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (worker, task); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -1066,19 +1122,19 @@ FROM metrics-*
 | Consul Monitor Status | `manage_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Catalog Node and Services | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 3272632007036748 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Nodes Critical | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.catalog.nodes_critical{$consul_service_id, $host, $consul_datacenter}... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Nodes Up | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.catalog.nodes_up{$host, $consul_datacenter, $consul_service_id} by {c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Nodes Warning | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.catalog.nodes_warning{$consul_service_id,$host, $consul_datacenter} b... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Nodes Passing | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.catalog.nodes_passing{$consul_service_id,$host, $consul_datacenter} b... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Services Warning | `sunburst` → `partition` | warning | **CORRECT** | sum:consul.catalog.services_warning{$host} by {consul_node_id,consul_datacenter,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Services Critical | `query_table` → `table` | warning | **CORRECT** | sum:consul.catalog.services_critical{$host} by {consul_node_id,consul_datacenter... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Nodes Critical | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.catalog.nodes_critical{$consul_service_id, $host, $consul_datacenter}... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Nodes Up | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.catalog.nodes_up{$host, $consul_datacenter, $consul_service_id} by {c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Nodes Warning | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.catalog.nodes_warning{$consul_service_id,$host, $consul_datacenter} b... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Nodes Passing | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.catalog.nodes_passing{$consul_service_id,$host, $consul_datacenter} b... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Services Warning | `sunburst` → `partition` | warning | **MINOR_ISSUE** | sum:consul.catalog.services_warning{$host} by {consul_node_id,consul_datacenter,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Services Critical | `query_table` → `table` | warning | **MINOR_ISSUE** | sum:consul.catalog.services_critical{$host} by {consul_node_id,consul_datacenter... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Raft Leader Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 1689828293212788 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Leader Last Contact with Followers (in ms) | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.raft.leader.lastContact.max{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Latency of Leader Commit to Disk | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.raft.leader.dispatchLog.max{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| New Leader Events | `list_stream` → `table` | requires_manual | **EXPECTED_LIMITATION** | source:consul New Consul Leader Elected $host $consul_datacenter  | — |
-| Consul Raft Commit Time | `timeseries` → `xy` | warning | **CORRECT** | sum:consul.raft.commitTime.avg{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Consul Logs | `list_stream` → `table` | ok | **CORRECT** | source:consul $host  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
+| Leader Last Contact with Followers (in ms) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.raft.leader.lastContact.max{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Latency of Leader Commit to Disk | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.raft.leader.dispatchLog.max{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| New Leader Events | `list_stream` → `table` | requires_manual | **EXPECTED_LIMITATION** |  | — |
+| Consul Raft Commit Time | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.raft.commitTime.avg{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Consul Logs | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 | Memberlist Messages | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 6987405009110066 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Memberlist TCP | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:consul.memberlist.tcp.connect{$host}.as_count() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
@@ -1314,9 +1370,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Nodes Up
 
@@ -1355,9 +1411,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Nodes Warning
 
@@ -1396,9 +1452,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Nodes Passing
 
@@ -1437,9 +1493,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, consul_service_id, consul_datacenter, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['consul_datacenter', 'host.name'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (consul_service_id, consul_datacenter, host.name); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Services Warning
 
@@ -1482,7 +1538,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -1503,41 +1559,41 @@ FROM metrics-*
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
-| Running containers by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:docker.containers.running{$scope} by {docker_image}.fill(0) | — |
-| Most RAM-intensive containers | `toplist` → `table` | warning | **CORRECT** | top(avg:docker.mem.rss{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Most CPU-intensive containers | `toplist` → `table` | warning | **CORRECT** | top(avg:docker.cpu.user{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Memory by container | `heatmap` → `heatmap` | warning | **CORRECT** | avg:docker.mem.rss{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Running containers | `query_value` → `metric` | warning | **CORRECT** | sum:docker.containers.running{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Stopped containers | `query_value` → `metric` | warning | **CORRECT** | sum:docker.containers.stopped{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| CPU by container | `heatmap` → `heatmap` | warning | **CORRECT** | avg:docker.cpu.user{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| CPU user by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.cpu.user{$scope} by {docker_image}.fill(0) | — |
-| RSS memory by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.mem.rss{$scope} by {docker_image}.fill(0) | — |
+| Running containers by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:docker.containers.running{$scope} by {docker_image}.fill(0) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Most RAM-intensive containers | `toplist` → `table` | warning | **MINOR_ISSUE** | top(avg:docker.mem.rss{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Most CPU-intensive containers | `toplist` → `table` | warning | **MINOR_ISSUE** | top(avg:docker.cpu.user{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Memory by container | `heatmap` → `heatmap` | warning | **MINOR_ISSUE** | avg:docker.mem.rss{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Running containers | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:docker.containers.running{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Stopped containers | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:docker.containers.stopped{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| CPU by container | `heatmap` → `heatmap` | warning | **MINOR_ISSUE** | avg:docker.cpu.user{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| CPU user by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.cpu.user{$scope} by {docker_image}.fill(0) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| RSS memory by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.mem.rss{$scope} by {docker_image}.fill(0) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 9 | `event_stream` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
 | 10 | `event_timeline` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
 | Running container change | `query_value` → `metric` | requires_manual | **EXPECTED_LIMITATION** | 100*(sum:docker.containers.running{$scope}/timeshift(sum:docker.containers.runni... | — |
-| CPU system by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.cpu.system{$scope} by {docker_image}.fill(0) | — |
+| CPU system by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.cpu.system{$scope} by {docker_image}.fill(0) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 13 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Cache memory by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:docker.mem.cache{$scope} by {docker_image} | — |
+| Cache memory by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:docker.mem.cache{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 15 | `image` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 16 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 17 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Swap by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.mem.swap{$scope} by {docker_image} | — |
+| Swap by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.mem.swap{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 19 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Avg. I/O bytes read by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.io.read_bytes{$scope} by {docker_image} | — |
-| Avg. I/O bytes written by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.io.write_bytes{$scope} by {docker_image} | — |
+| Avg. I/O bytes read by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.io.read_bytes{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Avg. I/O bytes written by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.io.write_bytes{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 22 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Avg. rx bytes by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.net.bytes_rcvd{$scope} by {docker_image} | — |
-| Avg. tx bytes by image | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:docker.net.bytes_sent{$scope} by {docker_image} | — |
-| Most tx-intensive containers | `toplist` → `table` | warning | **CORRECT** | top(avg:docker.net.bytes_sent{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| tx by container | `heatmap` → `heatmap` | warning | **CORRECT** | avg:docker.net.bytes_sent{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Running containers by image | `toplist` → `table` | warning | **CORRECT** | top(timeshift(sum:docker.containers.running{$scope} by {docker_image}.fill(60), ... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Avg. rx bytes by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.net.bytes_rcvd{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Avg. tx bytes by image | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:docker.net.bytes_sent{$scope} by {docker_image} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Most tx-intensive containers | `toplist` → `table` | warning | **MINOR_ISSUE** | top(avg:docker.net.bytes_sent{$scope} by {container_name}, 5, 'max', 'desc') | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| tx by container | `heatmap` → `heatmap` | warning | **MINOR_ISSUE** | avg:docker.net.bytes_sent{$scope} by {container_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Running containers by image | `toplist` → `table` | warning | **MINOR_ISSUE** | top(timeshift(sum:docker.containers.running{$scope} by {docker_image}.fill(60), ... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 
 <details>
 <summary>Detailed traces (28 panels)</summary>
 
 #### Running containers by image
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -1547,17 +1603,33 @@ sum:docker.containers.running{$scope} by {docker_image}.fill(0)
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, docker_image`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Most RAM-intensive containers
 
@@ -1597,9 +1669,9 @@ FROM metrics-*
 - Output metric: `value`
 - Output groups: `container.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Most CPU-intensive containers
 
@@ -1639,9 +1711,9 @@ FROM metrics-*
 - Output metric: `value`
 - Output groups: `container.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Memory by container
 
@@ -1679,9 +1751,9 @@ FROM metrics-*
 - Output metric: `value`
 - Output groups: `time_bucket, container.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Running containers
 
@@ -1718,9 +1790,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Stopped containers
 
@@ -1757,9 +1829,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### CPU by container
 
@@ -1797,13 +1869,13 @@ FROM metrics-*
 - Output metric: `value`
 - Output groups: `time_bucket, container.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### CPU user by image
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -1813,21 +1885,37 @@ avg:docker.cpu.user{$scope} by {docker_image}.fill(0)
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, docker_image`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### RSS memory by image
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -1837,17 +1925,33 @@ avg:docker.mem.rss{$scope} by {docker_image}.fill(0)
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, docker_image`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### 9
 
@@ -1914,7 +2018,7 @@ avg:docker.mem.rss{$scope} by {docker_image}.fill(0)
 
 #### CPU system by image
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -1924,17 +2028,33 @@ avg:docker.cpu.system{$scope} by {docker_image}.fill(0)
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = AVG(docker_cpu_system) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, docker_image`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### 13
 
@@ -1957,7 +2077,7 @@ avg:docker.cpu.system{$scope} by {docker_image}.fill(0)
 
 #### Cache memory by image
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -1967,17 +2087,33 @@ sum:docker.mem.cache{$scope} by {docker_image}
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = SUM(docker_mem_cache) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, docker_image`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -2000,25 +2136,25 @@ sum:docker.mem.cache{$scope} by {docker_image}
 | 2451661469305854 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 6085654256880802 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Overview | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Incoming Success Rate (non-5xx responses) | `query_value` → `metric` | requires_manual | **MINOR_ISSUE** | sum:haproxy.backend.response.4xx{*,*,$backend} by {haproxy_service} | — |
-| Incoming Requests Volume | `query_value` → `metric` | warning | **CORRECT** | sum:haproxy.backend.response.4xx{*,*,$backend} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Errors by Service | `sunburst` → `partition` | warning | **CORRECT** | sum:haproxy.backend.response.4xx{*,*,$backend} by {service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Incoming Success Rate (non-5xx responses) | `query_value` → `table` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.4xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Incoming Requests Volume | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.4xx{*,*,$backend} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Errors by Service | `sunburst` → `partition` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.4xx{*,*,$backend} by {service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Frontend | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Frontend Response codes | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.frontend.response.2xx{*,*,$frontend,$release} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Frontend Response codes | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.frontend.response.2xx{*,*,$frontend,$release} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 6952725003844530 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| 2xx Frontend Responses | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.frontend.response.2xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 3xx Frontend Responses | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.frontend.response.3xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 4xx Frontend Responses | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.frontend.response.4xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 5xx Frontend Responses | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.frontend.response.5xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 2xx Frontend Responses | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.frontend.response.2xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 3xx Frontend Responses | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.frontend.response.3xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 4xx Frontend Responses | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.frontend.response.4xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 5xx Frontend Responses | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.frontend.response.5xx{*,*,$frontend,$release} by {haproxy_service,re... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| HAProxy Logs | `list_stream` → `table` | ok | **CORRECT** | source:*haproxy* | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
+| HAProxy Logs | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 | Backend | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Backend response codes by Release | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 2xx Backend Responses by Release | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 3xx Backend Responses by Release | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.backend.response.3xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Backend response codes by Release | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 2xx Backend Responses by Release | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 3xx Backend Responses by Release | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.3xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 1863184948995790 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| 4xx Backend Responses by Release | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.backend.response.4xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| 5xx Backend Responses by Release | `timeseries` → `xy` | warning | **CORRECT** | sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 4xx Backend Responses by Release | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.4xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| 5xx Backend Responses by Release | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 3773616402244664 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Backend p99 Response Time | `timeseries` → `xy` | ok | **CORRECT** | avg:haproxy.backend.response.time{*,*,*,*} by {release} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Pod Statistics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
@@ -2130,17 +2266,34 @@ sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service}
 **Pipeline trace:**
 
 - `plan` / `datadog.plan.metric_query_value` → selected esql metric panel
+- `translate_metric` / `datadog.translate.metric_formula` → translated metric formula pipeline
+
+**Translated (table):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS query3 = SUM(haproxy_backend_response_4xx), query1 = SUM(haproxy_backend_response_3xx), query2 = SUM(haproxy_backend_response_2xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service
+| EVAL value = ((((query3 + query1) + query2) / (((query3 + query1) + query2) + query4)) * 100)
+| STATS value = AVG(value) BY haproxy_service
+| KEEP haproxy_service, value
+| SORT value DESC
+| LIMIT 100
+```
 
 **Plan:**
 
 - Backend: `esql`
-- Kibana type: `metric`
+- Kibana type: `table`
 - Data source: `metrics`
 - Reasons: single-value metric → esql metric panel
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; manual review needed: grouped query used in a scalar (query_value) widget — reduce to a single value or convert to a table panel
+**Query IR:**
 
-**Semantic losses:** grouped query used in a scalar (query_value) widget — reduce to a single value or convert to a table panel
+- Output metric: `value`
+- Output groups: `haproxy_service`
+
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Grouped single-value formula widget approximated as a summary table (one value per group); a metric tile shows only a single number
 
 **Verdict:** MINOR_ISSUE
 
@@ -2195,7 +2348,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Errors by Service
 
@@ -2243,7 +2396,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Frontend
 
@@ -2324,7 +2477,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 6952725003844530
 
@@ -2382,9 +2535,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 3xx Frontend Responses
 
@@ -2423,9 +2576,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 4xx Frontend Responses
 
@@ -2464,9 +2617,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 5xx Frontend Responses
 
@@ -2505,9 +2658,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, haproxy_service, release`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart shows a single breakdown; additional grouping dimension(s) ['release'] are in the query but not on the chart, so series differing only by those are visually merged
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; XY chart grouped by multiple tags (haproxy_service, release); composited into a single breakdown column
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Logs
 
@@ -2551,57 +2704,57 @@ FROM metrics-*
 | 7914240170882312 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Data Streams Monitoring | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 8756831542082047 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Kafka Topology for $topic, $env | `topology_map` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
-| Topic Health | `query_table` → `table` | not_feasible | **EXPECTED_LIMITATION** | count:data_streams.latency{type:kafka AND direction:out AND (pathway_type:edge O... | — |
+| Kafka Topology for $topic, $env | `topology_map` → `markdown` | not_feasible | **EXPECTED_LIMITATION** |  | — |
+| Topic Health | `query_table` → `table` | warning | **MINOR_ISSUE** | count:data_streams.latency{type:kafka AND direction:out AND (pathway_type:edge O... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND ((ty... |
 | Clusters Health | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Offline Partitions | `query_value` → `metric` | ok | **CORRECT** | sum:kafka.replication.offline_partitions_count{*}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Under Replicated Partitions | `query_value` → `metric` | warning | **CORRECT** | sum:kafka.replication.under_replicated_partitions{$env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| ISR Delta | `query_value` → `metric` | warning | **CORRECT** | max:kafka.replication.isr_expands.rate{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Follower Fetch Latency | `query_value` → `metric` | warning | **CORRECT** | avg:kafka.request.fetch_follower.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Consumer Fetch Latency | `query_value` → `metric` | warning | **CORRECT** | avg:kafka.request.fetch_consumer.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Produce Latency | `query_value` → `metric` | warning | **CORRECT** | avg:kafka.request.produce.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Under Replicated Partitions | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kafka.replication.under_replicated_partitions{$env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| ISR Delta | `query_value` → `metric` | warning | **MINOR_ISSUE** | max:kafka.replication.isr_expands.rate{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Follower Fetch Latency | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kafka.request.fetch_follower.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Consumer Fetch Latency | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kafka.request.fetch_consumer.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Produce Latency | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kafka.request.produce.time.avg{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Kafka Monitors | `manage_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Broker Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 3570061571959430 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Clean and Unclean Leader Elections | `timeseries` → `xy` | warning | **CORRECT** | avg:kafka.replication.leader_elections.rate{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Broker Network Throughput | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.net.bytes_in.rate{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Producer and Fetch Request Purgatory  | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.request.producer_request_purgatory.size{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Request Times | `timeseries` → `xy` | warning | **CORRECT** | avg:kafka.request.produce.time.avg{$env} by {env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Clean and Unclean Leader Elections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:kafka.replication.leader_elections.rate{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Broker Network Throughput | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.net.bytes_in.rate{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Producer and Fetch Request Purgatory  | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.request.producer_request_purgatory.size{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Request Times | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:kafka.request.produce.time.avg{$env} by {env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Producer Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 4804179441675328 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Bytes Out by Topic | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.producer.bytes_out{$env} by {topic,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Request and Response Rate | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.producer.request_rate{$env} by {host}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Average Request Latency | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.producer.request_latency_avg{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| I/O Wait Time | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.producer.io_wait{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Bytes Out by Topic | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.producer.bytes_out{$env} by {topic,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Request and Response Rate | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.producer.request_rate{$env} by {host}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Average Request Latency | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.producer.request_latency_avg{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| I/O Wait Time | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.producer.io_wait{$env} by {env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Consumer Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 2581435872418256 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Consumer Lag by Group | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.consumer_lag{$env,$consumer_group} by {host,consumer_group,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Bytes Consumed | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.consumer.bytes_in{$env,$consumer_group} by {consumer_group,env}.weight... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Messages Consumed | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.consumer.messages_in{$env,$consumer_group} by {client-id,env}.weighted... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Min Fetch Rate | `timeseries` → `xy` | warning | **CORRECT** | sum:kafka.consumer.fetch_rate{$env,$consumer_group} by {env,consumer_group}.weig... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Consumer Lag by Group | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.consumer_lag{$env,$consumer_group} by {host,consumer_group,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Bytes Consumed | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.consumer.bytes_in{$env,$consumer_group} by {consumer_group,env}.weight... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Messages Consumed | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.consumer.messages_in{$env,$consumer_group} by {client-id,env}.weighted... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Min Fetch Rate | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kafka.consumer.fetch_rate{$env,$consumer_group} by {env,consumer_group}.weig... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Lag, Throughput and Message Size | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 8236156193990667 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Top 10 Max Kafka Lag by env | `timeseries` → `table` | warning | **MINOR_ISSUE** | max:data_streams.kafka.lag_seconds{$topic ,$env} by {env,topic} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Incoming messages by env, producing service for $topic | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{direction:out,pathway_type:full,type:kafka,$... | — |
-| Outgoing messages by env, consuming service for $topic | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{direction:in,pathway_type:full,type:kafka,$t... | — |
+| Incoming messages by env, producing service for $topic | `timeseries` → `xy` | warning | **MINOR_ISSUE** | count(v: v>=0):data_streams.latency{direction:out,pathway_type:full,type:kafka,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND dire... |
+| Outgoing messages by env, consuming service for $topic | `timeseries` → `xy` | warning | **MINOR_ISSUE** | count(v: v>=0):data_streams.latency{direction:in,pathway_type:full,type:kafka,$t... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND dire... |
 | Top 10 p95 message size by env for $topic | `timeseries` → `table` | warning | **MINOR_ISSUE** | p95:data_streams.payload_size{type:kafka,$topic,$env} by {topic,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
-| Distribution of message size for $topic | `distribution` → `xy` | requires_manual | **EXPECTED_LIMITATION** | — | — |
+| Distribution of message size for $topic | `distribution` → `xy` | warning | **MINOR_ISSUE** | avg:data_streams.payload_size{type:kafka,$topic,$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
 | Zookeeper Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 3441872316411158 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| ZK File Descriptors  | `timeseries` → `xy` | warning | **CORRECT** | avg:zookeeper.max_file_descriptor_count{$env} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Active Connections | `heatmap` → `heatmap` | warning | **CORRECT** | sum:zookeeper.connections{$env} by {service,host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pending Syncs (Leader) | `timeseries` → `xy` | warning | **CORRECT** | sum:zookeeper.pending_syncs{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Average Request Latency | `timeseries` → `xy` | warning | **CORRECT** | sum:zookeeper.avg_latency{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Outstanding Requests | `heatmap` → `heatmap` | warning | **CORRECT** | sum:zookeeper.outstanding_requests{$env} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Number of Commits (Leader) | `timeseries` → `xy` | warning | **CORRECT** | sum:zookeeper.commit_count{$env,$consumer_group} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| ZK File Descriptors  | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:zookeeper.max_file_descriptor_count{$env} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Active Connections | `heatmap` → `heatmap` | warning | **MINOR_ISSUE** | sum:zookeeper.connections{$env} by {service,host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pending Syncs (Leader) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:zookeeper.pending_syncs{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Average Request Latency | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:zookeeper.avg_latency{$env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Outstanding Requests | `heatmap` → `heatmap` | warning | **MINOR_ISSUE** | sum:zookeeper.outstanding_requests{$env} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Number of Commits (Leader) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:zookeeper.commit_count{$env,$consumer_group} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Broker JVM Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 5500612573375596 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| JVM GC Count by Type | `timeseries` → `xy` | warning | **CORRECT** | sum:jvm.gc.major_collection_count{$env} by {type,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| JVM GC Time by Type | `timeseries` → `xy` | warning | **CORRECT** | sum:jvm.gc.major_collection_time{$env} by {type,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| JVM GC Count by Type | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:jvm.gc.major_collection_count{$env} by {type,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| JVM GC Time by Type | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:jvm.gc.major_collection_time{$env} by {type,env}.weighted() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 7549984154998154 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Count per Log Status | `timeseries` → `xy` | ok | **CORRECT** | source:kafka | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
-| Error Logs | `list_stream` → `table` | ok | **CORRECT** | source:kafka status:error | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
+| Error Logs | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 
 <details>
 <summary>Detailed traces (55 panels)</summary>
@@ -2688,6 +2841,10 @@ FROM metrics-*
 
 **Source (topology_map):**
 
+```
+
+```
+
 **Pipeline trace:**
 
 - `plan` / `datadog.plan.unsupported_widget` → blocked unsupported widget type topology_map
@@ -2696,7 +2853,7 @@ FROM metrics-*
 
 - Backend: `blocked`
 - Kibana type: `markdown`
-- Data source: ``
+- Data source: `data_streams`
 - Reasons: unsupported widget type: topology_map
 
 **Verdict:** EXPECTED_LIMITATION
@@ -2722,6 +2879,20 @@ max:data_streams.kafka.lag_seconds{$topic,$env} by {topic,env}
 **Pipeline trace:**
 
 - `plan` / `datadog.plan.metric_table` → selected esql table
+- `translate_metric` / `datadog.translate.metric_formula` → translated metric formula pipeline
+
+**Translated (table):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND ((type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge")) OR (type == "kafka" AND direction == "in" AND (pathway_type == "edge" OR pathway_type == "partial_edge")))
+| STATS query1 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query2 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "in" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query3 = MAX(data_streams_kafka_lag_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), topic, deployment.environment
+| EVAL messages_in = query1, messages_out = query2, max_kafka_lag = query3
+| STATS messages_in = AVG(messages_in), messages_out = AVG(messages_out), max_kafka_lag = LAST(max_kafka_lag, time_bucket) BY topic, deployment.environment
+| KEEP topic, deployment.environment, messages_in, messages_out, max_kafka_lag
+| SORT messages_in DESC
+| LIMIT 500
+```
 
 **Plan:**
 
@@ -2730,11 +2901,14 @@ max:data_streams.kafka.lag_seconds{$topic,$env} by {topic,env}
 - Data source: `metrics`
 - Reasons: table → esql table
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rate semantics approximated with delta over observed bucket span; translation error: multi-query widgets with different request aggregators are not translated safely yet
+**Query IR:**
 
-**Semantic losses:** multi-query widgets with different request aggregators are not translated safely yet
+- Output metric: `messages_in`
+- Output groups: `topic, deployment.environment`
 
-**Verdict:** EXPECTED_LIMITATION
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rate semantics approximated with delta over observed bucket span
+
+**Verdict:** MINOR_ISSUE
 
 #### Clusters Health
 
@@ -2833,7 +3007,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### ISR Delta
 
@@ -2878,7 +3052,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Follower Fetch Latency
 
@@ -2919,7 +3093,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Consumer Fetch Latency
 
@@ -2960,7 +3134,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Produce Latency
 
@@ -3001,7 +3175,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Kafka Monitors
 
@@ -3064,59 +3238,59 @@ FROM metrics-*
 | 24 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 6152894268304392 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Overview | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Clusters | `query_value` → `metric` | warning | **CORRECT** | avg:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Nodes | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.node.count{$scope,$label,$node,$service,$namespace,$cluster... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Namespaces | `query_value` → `metric` | warning | **CORRECT** | avg:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| DaemonSets | `query_value` → `metric` | warning | **CORRECT** | avg:kubernetes_state.daemonset.desired{$scope,$label,$node,$service,$daemonset,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Services | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.service.count{$scope,$label,$node,$service,$namespace,$clus... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Deployments | `query_value` → `metric` | warning | **CORRECT** | avg:kubernetes_state.deployment.replicas{$scope,$label,$node,$service,$deploymen... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Containers | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes.containers.running{$scope,$label,$node,$service,$deployment,$stat... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Clusters | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Nodes | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.node.count{$scope,$label,$node,$service,$namespace,$cluster... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Namespaces | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| DaemonSets | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kubernetes_state.daemonset.desired{$scope,$label,$node,$service,$daemonset,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Services | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.service.count{$scope,$label,$node,$service,$namespace,$clus... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Deployments | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:kubernetes_state.deployment.replicas{$scope,$label,$node,$service,$deploymen... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Containers | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes.containers.running{$scope,$label,$node,$service,$deployment,$stat... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Kubelets up | `check_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Kubelet Ping | `check_status` → `markdown` | requires_manual | **EXPECTED_LIMITATION** | — | — |
 | Events | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Events per node | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** |  | — |
-| Event logs per node | `list_stream` → `table` | requires_manual | **EXPECTED_LIMITATION** | source:kubernetes $node $cluster | — |
+| Event logs per node | `list_stream` → `table` | requires_manual | **EXPECTED_LIMITATION** |  | — |
 | Pods | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Ready state by node | `toplist` → `table` | warning | **CORRECT** | sum:kubernetes_state.pod.ready{$scope,$cluster,$namespace,$deployment,$statefuls... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND cond... |
-| Running pods per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.pods.running{$scope,$deployment,$statefulset,$replicaset,$daemons... | — |
-| Running by namespace | `toplist` → `table` | warning | **CORRECT** | sum:kubernetes.pods.running{$scope,$namespace,$cluster,$deployment,$statefulset,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Running pods per namespace | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.pods.running{$scope,$cluster,$namespace,$deployment,$statefulset,... | — |
-| Failure by namespaces | `toplist` → `table` | warning | **CORRECT** | sum:kubernetes_state.pod.status_phase{$scope,$cluster,$namespace,$deployment,$st... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
-| CrashloopBackOff by Pod | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.container.status_report.count.waiting{$cluster,$namespace,$... | — |
+| Ready state by node | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes_state.pod.ready{$scope,$cluster,$namespace,$deployment,$statefuls... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND cond... |
+| Running pods per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.pods.running{$scope,$deployment,$statefulset,$replicaset,$daemons... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Running by namespace | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes.pods.running{$scope,$namespace,$cluster,$deployment,$statefulset,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Running pods per namespace | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.pods.running{$scope,$cluster,$namespace,$deployment,$statefulset,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Failure by namespaces | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes_state.pod.status_phase{$scope,$cluster,$namespace,$deployment,$st... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
+| CrashloopBackOff by Pod | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.container.status_report.count.waiting{$cluster,$namespace,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND reas... |
 | DaemonSets | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Ready | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.daemonset.ready{$scope,$daemonset,$cluster,$label,$namespac... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods ready | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.daemonset.ready{$scope,$daemonset,$service,$namespace,$labe... | — |
-| Desired | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.daemonset.desired{$scope,$daemonset,$cluster,$label,$namesp... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods desired | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.daemonset.desired{$scope,$daemonset,$service,$namespace,$la... | — |
+| Ready | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.daemonset.ready{$scope,$daemonset,$cluster,$label,$namespac... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods ready | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.daemonset.ready{$scope,$daemonset,$service,$namespace,$labe... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Desired | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.daemonset.desired{$scope,$daemonset,$cluster,$label,$namesp... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods desired | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.daemonset.desired{$scope,$daemonset,$service,$namespace,$la... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Deployments | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Pods desired | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.deployment.replicas_desired{$scope,$deployment,$cluster,$la... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods desired | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.deployment.replicas_desired{$scope,$deployment,$cluster,$la... | — |
-| Pods available | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.deployment.replicas_available{$scope,$deployment,$cluster,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods available | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.deployment.replicas_available{$scope,$deployment,$service,$... | — |
-| Pods unavailable | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.deployment.replicas_unavailable{$scope,$deployment,$cluster... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Pods unavailable | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.deployment.replicas_unavailable{$scope,$deployment,$service... | — |
+| Pods desired | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_desired{$scope,$deployment,$cluster,$la... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods desired | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_desired{$scope,$deployment,$cluster,$la... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods available | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_available{$scope,$deployment,$cluster,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods available | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_available{$scope,$deployment,$service,$... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods unavailable | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_unavailable{$scope,$deployment,$cluster... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Pods unavailable | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.deployment.replicas_unavailable{$scope,$deployment,$service... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | ReplicaSets | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Ready | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.replicaset.replicas_ready{$scope,$deployment,$replicaset,$c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Ready | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes_state.replicaset.replicas_ready{$scope,$service,$namespace,$deplo... | — |
-| Not ready | `query_value` → `metric` | warning | **CORRECT** | sum:kubernetes_state.replicaset.replicas_desired{$scope,$deployment,$replicaset,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Not ready | `timeseries` → `xy` | warning | **CORRECT** | sum:kubernetes_state.replicaset.replicas_desired{$scope,$service,$namespace,$dep... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Ready | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.replicaset.replicas_ready{$scope,$deployment,$replicaset,$c... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Ready | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.replicaset.replicas_ready{$scope,$service,$namespace,$deplo... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Not ready | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:kubernetes_state.replicaset.replicas_desired{$scope,$deployment,$replicaset,... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Not ready | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.replicaset.replicas_desired{$scope,$service,$namespace,$dep... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Containers | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Container states | `timeseries` → `xy` | warning | **CORRECT** | sum:kubernetes_state.container.running{$scope,$deployment,$statefulset,$replicas... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Container states | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes_state.container.running{$scope,$deployment,$statefulset,$replicas... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Resource Utilization | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| CPU utilization per node | `hostmap` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
-| Sum Kubernetes CPU requests per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.cpu.requests{$scope,$deployment,$statefulset,$replicaset,$daemons... | — |
-| Most CPU-intensive pods | `toplist` → `table` | warning | **CORRECT** | sum:kubernetes.cpu.usage.total{$scope,$deployment,$statefulset,$replicaset,$daem... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
-| Memory usage per node | `hostmap` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
-| Sum Kubernetes memory requests per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.memory.requests{$scope,$deployment,$statefulset,$replicaset,$daem... | — |
-| Most memory-intensive pods | `toplist` → `table` | warning | **CORRECT** | sum:kubernetes.memory.usage{$scope,$deployment,$statefulset,$replicaset,$daemons... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
+| CPU utilization per node | `hostmap` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes.cpu.usage.total{$scope,$cluster,$label,$node} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Sum Kubernetes CPU requests per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.cpu.requests{$scope,$deployment,$statefulset,$replicaset,$daemons... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Most CPU-intensive pods | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes.cpu.usage.total{$scope,$deployment,$statefulset,$replicaset,$daem... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
+| Memory usage per node | `hostmap` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes.memory.usage{$scope,$cluster,$label,$node} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Sum Kubernetes memory requests per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.memory.requests{$scope,$deployment,$statefulset,$replicaset,$daem... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Most memory-intensive pods | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:kubernetes.memory.usage{$scope,$deployment,$statefulset,$replicaset,$daemons... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND k8s.... |
 | Disk I/O & Network | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Network in per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.network.rx_bytes{$scope,$deployment,$statefulset,$replicaset,$dae... | — |
-| Network out per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.network.tx_bytes{$scope,$deployment,$statefulset,$replicaset,$dae... | — |
-| Network errors per node | `timeseries` → `xy` | warning | **CORRECT** | sum:kubernetes.network.rx_errors{$scope,$deployment,$statefulset,$replicaset,$da... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Network errors per pod | `timeseries` → `xy` | warning | **CORRECT** | sum:kubernetes.network.rx_errors{$scope,$deployment,$statefulset,$replicaset,$da... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Disk writes per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.io.write_bytes{$scope,$service,$namespace,$deployment,$statefulse... | — |
-| Disk reads per node | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | sum:kubernetes.io.read_bytes{$scope,$service,$namespace,$deployment,$statefulset... | — |
+| Network in per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.network.rx_bytes{$scope,$deployment,$statefulset,$replicaset,$dae... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network out per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.network.tx_bytes{$scope,$deployment,$statefulset,$replicaset,$dae... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network errors per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.network.rx_errors{$scope,$deployment,$statefulset,$replicaset,$da... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network errors per pod | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.network.rx_errors{$scope,$deployment,$statefulset,$replicaset,$da... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Disk writes per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.io.write_bytes{$scope,$service,$namespace,$deployment,$statefulse... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Disk reads per node | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:kubernetes.io.read_bytes{$scope,$service,$namespace,$deployment,$statefulset... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 
 <details>
 <summary>Detailed traces (57 panels)</summary>
@@ -3233,9 +3407,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Nodes
 
@@ -3272,9 +3446,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Namespaces
 
@@ -3312,9 +3486,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### DaemonSets
 
@@ -3352,9 +3526,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Services
 
@@ -3391,9 +3565,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Deployments
 
@@ -3431,9 +3605,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Pods
 
@@ -3470,9 +3644,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Containers
 
@@ -3509,9 +3683,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Kubelets up
 
@@ -3607,38 +3781,38 @@ FROM metrics-*
 | Secondary count | `query_value` → `metric` | ok | **CORRECT** | sum:mongodb.replset.health{sharding_cluster_role:shardsvr,replset_state:secondar... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND shar... |
 | Configsvr count | `query_value` → `metric` | ok | **CORRECT** | sum:mongodb.replset.health{sharding_cluster_role:configsvr} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND shar... |
 | Replication | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Oplog usage | `timeseries` → `xy` | warning | **CORRECT** | avg:mongodb.oplog.logsizemb{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Maximum lag per replica set | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}.fill(zero... | — |
+| Oplog usage | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:mongodb.oplog.logsizemb{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Maximum lag per replica set | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}.fill(zero... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 14 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Maximum lag per replica set | `toplist` → `table` | warning | **CORRECT** | max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Maximum lag per replica set | `toplist` → `table` | warning | **MINOR_ISSUE** | max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Resource Utilization | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 21 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Percentage of client connections used (%) | `timeseries` → `xy` | warning | **CORRECT** | sum:mongodb.connections.current{*,*,$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Average memory usage | `timeseries` → `xy` | warning | **CORRECT** | avg:mongodb.mem.resident{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Percentage of client connections used (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mongodb.connections.current{*,*,$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Average memory usage | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:mongodb.mem.resident{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 27 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 24 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Number of page faults per host | `timeseries` → `xy` | warning | **CORRECT** | sum:mongodb.extra_info.page_faultsps{$scope,$replset_name} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Data size per replica set | `timeseries` → `xy` | ok | **EXPECTED_LIMITATION** | avg:mongodb.stats.datasize{$scope,$replset_name} by {replset_name} | — |
+| Number of page faults per host | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mongodb.extra_info.page_faultsps{$scope,$replset_name} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Data size per replica set | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:mongodb.stats.datasize{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Throughput | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Read requests per second | `timeseries` → `xy` | warning | **CORRECT** | sum:mongodb.opcounters.getmoreps{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Network I/O | `timeseries` → `xy` | warning | **CORRECT** | avg:mongodb.network.bytesinps{*,*,$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Write requests per second | `timeseries` → `xy` | warning | **CORRECT** | sum:mongodb.opcounters.deleteps{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Query operations per second | `timeseries` → `xy` | warning | **CORRECT** | sum:mongodb.opcounters.queryps{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Read requests per second | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mongodb.opcounters.getmoreps{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network I/O | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:mongodb.network.bytesinps{*,*,$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Write requests per second | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mongodb.opcounters.deleteps{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Query operations per second | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mongodb.opcounters.queryps{$scope,$replset_name}.fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Most Used Replica Sets | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| For reads | `toplist` → `table` | warning | **CORRECT** | sum:mongodb.opcounters.getmoreps{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| For writes | `toplist` → `table` | warning | **CORRECT** | sum:mongodb.opcounters.deleteps{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| For reads | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:mongodb.opcounters.getmoreps{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| For writes | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:mongodb.opcounters.deleteps{$scope,$replset_name} by {replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Latencies | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Command Latency | `timeseries` → `xy` | warning | **CORRECT** | max:mongodb.oplatencies.commands.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Read Latency | `timeseries` → `xy` | warning | **CORRECT** | max:mongodb.oplatencies.reads.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Write Latency | `timeseries` → `xy` | warning | **CORRECT** | max:mongodb.oplatencies.writes.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Command Latency | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:mongodb.oplatencies.commands.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Read Latency | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:mongodb.oplatencies.reads.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Write Latency | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:mongodb.oplatencies.writes.latency{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Sharding Stats | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Count of current sessions opened to the sharded cluster. | `timeseries` → `xy` | warning | **CORRECT** | avg:mongodb.sessions.count{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Count of current sessions opened to the sharded cluster. | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:mongodb.sessions.count{$scope,$replset_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Total chunks count | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:mongodb.chunks.total{$scope,$replset_name}.rollup(avg, 60).fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Jumbo chunks count | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:mongodb.chunks.jumbo{$scope,$replset_name}.rollup(avg, 60).fill(zero) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 34 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 35 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| MongoDB Logs | `log_stream` → `table` | ok | **CORRECT** | source:mongodb $scope $replset_name | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
+| MongoDB Logs | `log_stream` → `table` | warning | **MINOR_ISSUE** | source:mongodb $scope $replset_name | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
 
 <details>
 <summary>Detailed traces (43 panels)</summary>
@@ -3756,7 +3930,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rollup interval is approximated in ES|QL
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rollup interval is approximated in ES|QL; Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
 
@@ -3996,13 +4172,15 @@ FROM metrics-*
 - Output metric: `oplog_log_size`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; fill(zero) only applies to null values in returned rows; empty buckets may still be omitted
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; fill(zero) only applies to null values in returned rows; empty buckets may still be omitted; Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
-**Verdict:** CORRECT
+**Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Maximum lag per replica set
 
-**Translation path:** `lens` · **Query language:** `datadog_metric` · **Readiness:** `—`
+**Translation path:** `esql_metric` · **Query language:** `datadog_metric` · **Readiness:** `—`
 
 **Source (timeseries):**
 
@@ -4012,17 +4190,35 @@ max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}.fill(zero
 
 **Pipeline trace:**
 
-- `plan` / `datadog.plan.metric_timeseries` → selected lens XY panel
-- `translate_lens` / `datadog.translate.lens_single_query` → translated Lens metric widget
+- `plan` / `datadog.plan.metric_timeseries` → selected esql XY panel
+- `translate_metric` / `datadog.translate.metric_single_query` → translated single metric query
+
+**Translated (xy):**
+
+```
+FROM metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name
+| SORT time_bucket
+```
 
 **Plan:**
 
-- Backend: `lens`
+- Backend: `esql`
 - Kibana type: `xy`
 - Data source: `metrics`
-- Reasons: timeseries → lens XY panel
+- Reasons: timeseries → esql XY panel
 
-**Verdict:** EXPECTED_LIMITATION
+**Query IR:**
+
+- Output metric: `value`
+- Output groups: `time_bucket, replset_name`
+
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rollup interval is approximated in ES|QL; fill(zero) only applies to null values in returned rows; empty buckets may still be omitted; Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### 14
 
@@ -4082,9 +4278,11 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `replset_name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
-**Verdict:** CORRECT
+**Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -4104,17 +4302,17 @@ FROM metrics-*
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
-| MySQL connections | `timeseries` → `xy` | warning | **CORRECT** | sum:mysql.net.connections{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| MySQL reads and writes (per sec) | `timeseries` → `xy` | warning | **CORRECT** | sum:mysql.innodb.data_reads{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| MySQL fsync op count (per sec) | `timeseries` → `xy` | warning | **CORRECT** | sum:mysql.innodb.os_log_fsyncs{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| MySQL slow queries | `timeseries` → `xy` | warning | **CORRECT** | sum:mysql.performance.slow_queries{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| MySQL connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mysql.net.connections{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| MySQL reads and writes (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mysql.innodb.data_reads{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| MySQL fsync op count (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mysql.innodb.os_log_fsyncs{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| MySQL slow queries | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mysql.performance.slow_queries{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | MySQL locking rate (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:mysql.performance.table_locks_waited{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| MySQL CPU time (per sec) | `timeseries` → `xy` | warning | **CORRECT** | mysql.performance.user_time{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| System load | `timeseries` → `xy` | warning | **CORRECT** | system.load.1{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| CPU usage (%) | `timeseries` → `xy` | warning | **CORRECT** | system.cpu.idle{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| I/O wait (%) | `timeseries` → `xy` | warning | **CORRECT** | max:system.cpu.iowait{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| System memory | `timeseries` → `xy` | warning | **CORRECT** | sum:system.mem.usable{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Network traffic (per sec) | `timeseries` → `xy` | warning | **CORRECT** | sum:system.net.bytes_rcvd{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| MySQL CPU time (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | mysql.performance.user_time{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| System load | `timeseries` → `xy` | warning | **MINOR_ISSUE** | system.load.1{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| CPU usage (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | system.cpu.idle{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| I/O wait (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:system.cpu.iowait{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| System memory | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:system.mem.usable{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network traffic (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:system.net.bytes_rcvd{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 
 <details>
 <summary>Detailed traces (11 panels)</summary>
@@ -4160,9 +4358,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### MySQL reads and writes (per sec)
 
@@ -4205,9 +4403,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### MySQL fsync op count (per sec)
 
@@ -4246,9 +4444,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### MySQL slow queries
 
@@ -4287,9 +4485,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### MySQL locking rate (per sec)
 
@@ -4329,7 +4527,7 @@ FROM metrics-*
 - Output metric: `rate_query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; rate() on a query reference is approximated with bucket FIRST/LAST deltas; values may differ for non-monotonic gauges
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; rate() on a query reference is approximated with bucket FIRST/LAST deltas; values may differ for non-monotonic gauges
 
 **Verdict:** MINOR_ISSUE
 
@@ -4370,9 +4568,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### System load
 
@@ -4419,9 +4617,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### CPU usage (%)
 
@@ -4480,9 +4678,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### I/O wait (%)
 
@@ -4521,9 +4719,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### System memory
 
@@ -4567,9 +4765,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Network traffic (per sec)
 
@@ -4612,9 +4810,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -4650,15 +4848,15 @@ FROM metrics-*
 | NGINX Error logs | `log_stream` → `table` | ok | **CORRECT** | source:nginx @http.status_code:(404 OR 500) | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
 | Requests | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Requests per second | `query_value` → `metric` | ok | **CORRECT** | avg:nginx.net.request_per_s{*} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Requests per second by host | `hostmap` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
+| Requests per second by host | `hostmap` → `table` | warning | **MINOR_ISSUE** | avg:nginx.net.request_per_s{*} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 8663159993822306 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 183855449379928 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Requests: reading, writing, waiting | `timeseries` → `xy` | warning | **CORRECT** | sum:nginx.net.reading{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Requests: reading, writing, waiting | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:nginx.net.reading{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Change in overall requests per second | `change` → `table` | warning | **MINOR_ISSUE** | sum:nginx.net.request_per_s{*} by {service} | FROM metrics-* \| WHERE @timestamp >= NOW() - 14 days \| STATS current_value = S... |
 | 4851971395880802 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Connections  | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Dropped connections per second | `timeseries` → `xy` | warning | **CORRECT** | sum:nginx.net.conn_dropped_per_s{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Active connections per second | `timeseries` → `xy` | warning | **CORRECT** | sum:nginx.net.connections{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Dropped connections per second | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:nginx.net.conn_dropped_per_s{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Active connections per second | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:nginx.net.connections{$Host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 5157405700596810 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 
 <details>
@@ -4969,7 +5167,7 @@ source:nginx @http.status_code:(404 OR 500)
 
 ```
 FROM logs-*
-| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == "nginx" AND ((http.status_code == 404 OR http.status_code == 500))
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == "nginx" AND ((TO_STRING(http.status_code) == "404" OR TO_STRING(http.status_code) == "500"))
 | SORT @timestamp DESC
 | KEEP @timestamp, message, log.level, service.name, host.name
 | LIMIT 100
@@ -5006,15 +5204,15 @@ FROM logs-*
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
-| Rows fetched / returned / inserted / updated (per sec) | `timeseries` → `xy` | warning | **CORRECT** | avg:postgresql.rows_fetched{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Connections | `timeseries` → `xy` | warning | **CORRECT** | avg:postgresql.connections{$scope} by {db} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Inserts / updates / deletes (per sec) | `timeseries` → `xy` | warning | **CORRECT** | postgresql.rows_inserted{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Disk utilization (%) | `timeseries` → `xy` | warning | **CORRECT** | avg:system.io.util{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| System load | `timeseries` → `xy` | warning | **CORRECT** | system.load.1{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| CPU usage (%) | `timeseries` → `xy` | warning | **CORRECT** | system.cpu.idle{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| I/O wait (%) | `timeseries` → `xy` | warning | **CORRECT** | max:system.cpu.iowait{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| System memory | `timeseries` → `xy` | warning | **CORRECT** | sum:system.mem.usable{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Network traffic (per sec) | `timeseries` → `xy` | warning | **CORRECT** | sum:system.net.bytes_rcvd{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Rows fetched / returned / inserted / updated (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:postgresql.rows_fetched{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:postgresql.connections{$scope} by {db} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Inserts / updates / deletes (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | postgresql.rows_inserted{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Disk utilization (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:system.io.util{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| System load | `timeseries` → `xy` | warning | **MINOR_ISSUE** | system.load.1{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| CPU usage (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | system.cpu.idle{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| I/O wait (%) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | max:system.cpu.iowait{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| System memory | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:system.mem.usable{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Network traffic (per sec) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:system.net.bytes_rcvd{$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 
 <details>
 <summary>Detailed traces (9 panels)</summary>
@@ -5068,9 +5266,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Connections
 
@@ -5109,9 +5307,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, db`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Inserts / updates / deletes (per sec)
 
@@ -5158,9 +5356,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Disk utilization (%)
 
@@ -5199,9 +5397,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### System load
 
@@ -5248,9 +5446,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### CPU usage (%)
 
@@ -5309,9 +5507,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### I/O wait (%)
 
@@ -5350,9 +5548,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### System memory
 
@@ -5396,9 +5594,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Network traffic (per sec)
 
@@ -5441,9 +5639,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -5472,16 +5670,16 @@ FROM metrics-*
 | Node Status | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 4274214467814750 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Queue Pipeline per Node | `sunburst` → `partition` | warning | **MINOR_ISSUE** | sum:rabbitmq.queues.created.count{$node_name} by {rabbitmq_node}.as_count() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| % Usage of Node Memory | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.process.resident_memory_bytes{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Consumers | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.global.consumers{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| % Usage of Node Memory | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.process.resident_memory_bytes{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Consumers | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.global.consumers{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Difference of Opened vs Closed Connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.connections.opened.count{$node_name} by {rabbitmq_node}.as_count() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 6698344132861859 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Available Disk Space | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.disk_space.available_bytes{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| % Usage of Erlang Processes | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.erlang.vm.process_count{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| % Usage of Ports | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.erlang.vm.port_count{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Open Channels | `query_value` → `metric` | warning | **CORRECT** | avg:rabbitmq.channels{$node_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| % Usage of TCP Sockets | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.process.open_tcp_sockets{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| % Usage of File Descriptors | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.process.open_fds{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Available Disk Space | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.disk_space.available_bytes{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| % Usage of Erlang Processes | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.erlang.vm.process_count{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| % Usage of Ports | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.erlang.vm.port_count{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Open Channels | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:rabbitmq.channels{$node_name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| % Usage of TCP Sockets | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.process.open_tcp_sockets{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| % Usage of File Descriptors | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.process.open_fds{$node_name} by {rabbitmq_node} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Messages Pipelines | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 7327292918773178 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Messages Pipeline - Queue | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:rabbitmq.queue.messages.ready{$queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
@@ -5489,26 +5687,26 @@ FROM metrics-*
 | Messages Pipeline - Channel | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:rabbitmq.channel.messages.delivered.ack.count{*}.as_count() | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Packets in a Connection | `sunburst` → `partition` | requires_manual | **MINOR_ISSUE** | sum:rabbitmq.connection.incoming_packets.count{$rabbitmq_conn_state}.as_count() | — |
 | Queue Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Queue Depth | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Ready Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.ready{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Published Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.published.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Delivered Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.delivered.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Redelivered Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.redelivered.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Acknowledged Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.acked.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Unacknowledged Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.messages.unacked{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Consumers per Queue | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.consumers{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Queue Consumers' Ability to Take New Messages | `timeseries` → `xy` | warning | **CORRECT** | avg:rabbitmq.queue.consumer_utilisation{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Queue Depth | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Ready Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.ready{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Published Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.published.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Delivered Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.delivered.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Redelivered Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.redelivered.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Acknowledged Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.acked.count{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Unacknowledged Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.messages.unacked{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Consumers per Queue | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.consumers{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Queue Consumers' Ability to Take New Messages | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:rabbitmq.queue.consumer_utilisation{$queue} by {queue} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 5680810966566357 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| RabbitMQ Topology for $queue | `topology_map` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | — | — |
+| RabbitMQ Topology for $queue | `topology_map` → `markdown` | not_feasible | **EXPECTED_LIMITATION** |  | — |
 | Top 10 Max Time in Queue by env | `timeseries` → `table` | warning | **MINOR_ISSUE** | max:data_streams.latency{type:rabbitmq AND pathway_type:edge AND direction:in AN... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
-| Incoming Messages by env, Producing Service | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | — |
-| Outgoing Messages by env, Consuming Service | `timeseries` → `xy` | requires_manual | **EXPECTED_LIMITATION** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | — |
+| Incoming Messages by env, Producing Service | `timeseries` → `xy` | warning | **MINOR_ISSUE** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
+| Outgoing Messages by env, Consuming Service | `timeseries` → `xy` | warning | **MINOR_ISSUE** | count(v: v>=0):data_streams.latency{type:rabbitmq AND direction:in AND pathway_t... | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
 | Top 10 p95 Message Size by env | `timeseries` → `table` | warning | **MINOR_ISSUE** | p95:data_streams.payload_size{type:rabbitmq,topic:$queue.value} by {topic,env} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
-| Distribution of Message Size | `distribution` → `xy` | requires_manual | **EXPECTED_LIMITATION** | — | — |
+| Distribution of Message Size | `distribution` → `xy` | warning | **MINOR_ISSUE** | avg:data_streams.payload_size{type:rabbitmq,topic:*} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
 | 218491216894336 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Count per Log Status | `timeseries` → `xy` | ok | **CORRECT** | source:rabbitmq $node_name | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
-| Error Logs for RabbitMQ | `list_stream` → `table` | ok | **CORRECT** | source:rabbitmq status:error | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service... |
+| Count per Log Status | `timeseries` → `xy` | warning | **MINOR_ISSUE** | source:rabbitmq $node_name | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
+| Error Logs for RabbitMQ | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 
 <details>
 <summary>Detailed traces (47 panels)</summary>
@@ -5736,7 +5934,9 @@ FROM metrics-*
 - Output metric: `query1_query2_query3_query4`
 - Output groups: `rabbitmq_node`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; as_count interval semantics are approximated in ES|QL
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; as_count interval semantics are approximated in ES|QL; Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Semantic losses:** Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
 
@@ -5782,9 +5982,11 @@ FROM metrics-*
 - Output metric: `query1_query2_100`
 - Output groups: `time_bucket, rabbitmq_node`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
-**Verdict:** CORRECT
+**Semantic losses:** Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Consumers
 
@@ -5823,9 +6025,11 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, rabbitmq_node`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
-**Verdict:** CORRECT
+**Semantic losses:** Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 #### Difference of Opened vs Closed Connections
 
@@ -5869,7 +6073,9 @@ FROM metrics-*
 - Output metric: `query1_query2`
 - Output groups: `time_bucket, rabbitmq_node`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; as_count interval semantics are approximated in ES|QL
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; as_count interval semantics are approximated in ES|QL; Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Semantic losses:** Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
 
@@ -5929,9 +6135,11 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `time_bucket, rabbitmq_node`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
-**Verdict:** CORRECT
+**Semantic losses:** Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
+
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -5956,45 +6164,45 @@ FROM metrics-*
 | 8013519185925578 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | 2021637053460700 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Overview | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Hit rate | `query_value` → `metric` | warning | **CORRECT** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Blocked clients | `query_value` → `metric` | warning | **CORRECT** | sum:redis.clients.blocked{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Redis keyspace | `query_value` → `metric` | warning | **CORRECT** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Unsaved changes | `query_value` → `metric` | warning | **CORRECT** | sum:redis.rdb.changes_since_last{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Primary link down | `query_value` → `metric` | warning | **CORRECT** | sum:redis.replication.master_link_down_since_seconds{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Hit rate | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Blocked clients | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.clients.blocked{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Redis keyspace | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Unsaved changes | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.rdb.changes_since_last{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Primary link down | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.replication.master_link_down_since_seconds{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 7896589211182748 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Performance Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Latency by Host | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.info.latency_ms{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Latency by Host | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.info.latency_ms{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 18 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
 | Slowlog duration | `timeseries` → `table` | warning | **MINOR_ISSUE** | sum:redis.slowlog.micros.95percentile{$scope,$host} by {name,command} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Slowlog query rates | `toplist` → `table` | warning | **CORRECT** | sum:redis.slowlog.micros.count{$host,$scope} by {command,name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Average replication delay (offset) | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.replication.delay{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Average CPU usage | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.cpu.sys{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Cache hit rate | `query_value` → `metric` | warning | **CORRECT** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Cache hit rate | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Slowlog query rates | `toplist` → `table` | warning | **MINOR_ISSUE** | sum:redis.slowlog.micros.count{$host,$scope} by {command,name} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Average replication delay (offset) | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.replication.delay{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Average CPU usage | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.cpu.sys{$host,$scope} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Cache hit rate | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Cache hit rate | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.stats.keyspace_hits{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Memory Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Percent Used Memory by Host | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.mem.used{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Percent Used Memory by Host | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.mem.used{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 24 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Evictions | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.keys.evicted{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Total allocated memory | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.mem.rss{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Fragmentation ratio | `query_value` → `metric` | warning | **CORRECT** | avg:redis.mem.fragmentation_ratio{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Fragmentation ratio | `timeseries` → `xy` | warning | **CORRECT** | avg:redis.mem.fragmentation_ratio{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Evictions | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.keys.evicted{$scope,$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Total allocated memory | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.mem.rss{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Fragmentation ratio | `query_value` → `metric` | warning | **MINOR_ISSUE** | avg:redis.mem.fragmentation_ratio{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Fragmentation ratio | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:redis.mem.fragmentation_ratio{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Base Activity Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Connected clients | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.net.clients{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Connected clients | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.net.clients{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 12 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Blocked clients | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.clients.blocked{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Connected replicas | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.net.slaves{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Rejected connections | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.net.rejected{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Commands per second | `query_value` → `metric` | warning | **CORRECT** | sum:redis.net.commands{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Blocked clients | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.clients.blocked{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Connected replicas | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.net.slaves{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Rejected connections | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.net.rejected{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Commands per second | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.net.commands{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Key Metrics | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Total keys | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Current total | `query_value` → `metric` | warning | **CORRECT** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Total keys | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Current total | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.keys{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | 4351331682136830 | `note` → `markdown` | ok | **EXPECTED_LIMITATION** | — | — |
-| Expired keys | `timeseries` → `xy` | warning | **CORRECT** | sum:redis.keys.expired{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Keys with expiration | `query_value` → `metric` | warning | **CORRECT** | sum:redis.expires{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
-| Key length distribution | `distribution` → `xy` | warning | **CORRECT** | sum:redis.key.length{$scope, $host, $key} by {key} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Expired keys | `timeseries` → `xy` | warning | **MINOR_ISSUE** | sum:redis.keys.expired{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Keys with expiration | `query_value` → `metric` | warning | **MINOR_ISSUE** | sum:redis.expires{$scope,$host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| Key length distribution | `distribution` → `xy` | warning | **MINOR_ISSUE** | sum:redis.key.length{$scope, $host, $key} by {key} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Logs | `group` → `group` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Error Logs | `list_stream` → `table` | ok | **CORRECT** | source:redis $scope $host status:error | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("(s... |
-| All Logs | `list_stream` → `table` | ok | **CORRECT** | source:redis $scope $host | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND KQL("se... |
+| Error Logs | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
+| All Logs | `list_stream` → `table` | ok | **CORRECT** |  | FROM logs-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| SORT @ti... |
 
 <details>
 <summary>Detailed traces (43 panels)</summary>
@@ -6116,9 +6324,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Blocked clients
 
@@ -6155,9 +6363,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Redis keyspace
 
@@ -6194,9 +6402,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Unsaved changes
 
@@ -6233,9 +6441,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Primary link down
 
@@ -6272,9 +6480,9 @@ FROM metrics-*
 
 - Output metric: `value`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 7896589211182748
 
@@ -6352,9 +6560,9 @@ FROM metrics-*
 - Output metric: `latency_of_the_redis_info_command`
 - Output groups: `time_bucket, host.name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### 18
 
@@ -6415,7 +6623,7 @@ FROM metrics-*
 - Output metric: `_rank`
 - Output groups: `name, command`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; top(10) on timeseries approximated as ranked table of top-10 groups — ES|QL cannot filter to N series in a single pass
+**Warnings:** Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana; Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; top(10) on timeseries approximated as ranked table of top-10 groups — ES|QL cannot filter to N series in a single pass
 
 **Verdict:** MINOR_ISSUE
 
@@ -6458,9 +6666,9 @@ FROM metrics-*
 - Output metric: `query1`
 - Output groups: `command, name`
 
-**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
+**Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls; Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -6481,7 +6689,7 @@ FROM metrics-*
 
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
-| CPU Usage by Host | `timeseries` → `xy` | warning | **CORRECT** | avg:system.cpu.user{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
+| CPU Usage by Host | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:system.cpu.user{$host} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Memory Usage with Rollup | `timeseries` → `xy` | warning | **MINOR_ISSUE** | avg:system.mem.usable{env:$env} by {host}.rollup(avg, 60) | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Current CPU Average | `query_value` → `metric` | ok | **CORRECT** | avg:system.cpu.user{*} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
 | Top Hosts by CPU | `toplist` → `table` | ok | **CORRECT** | avg:system.cpu.user{*} by {host} | FROM metrics-* \| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend \| STATS... |
@@ -6535,7 +6743,7 @@ FROM metrics-*
 
 **Warnings:** Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 
-**Verdict:** CORRECT
+**Verdict:** MINOR_ISSUE
 
 #### Memory Usage with Rollup
 
@@ -6918,19 +7126,19 @@ From the latest trace run:
 ```
 Elements:            426 total (426 panels)
 Renderable panels:   426
-  OK:                   138 (32.4%)
-  Warning:              188 (44.1%)
-  Requires manual:       28 (6.6%)
-  Not feasible:          10 (2.3%)
+  OK:                   105 (24.6%)
+  Warning:              233 (54.7%)
+  Requires manual:       21 (4.9%)
+  Not feasible:           5 (1.2%)
   Skipped:               62 (14.6%)
 ```
 
 Verdict breakdown:
 
 ```
-  CORRECT:                  197
-  MINOR_ISSUE:               23
-  EXPECTED_LIMITATION:      206
+  CORRECT:                   27
+  MINOR_ISSUE:              235
+  EXPECTED_LIMITATION:      164
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
@@ -6939,28 +7147,17 @@ Verdict breakdown:
 ## Appendix: Not-Feasible Panel Breakdown
 
 <!-- GENERATED:NOT_FEASIBLE_BREAKDOWN -->
-Every panel marked `not_feasible` in the trace run (10 total):
+Every panel marked `not_feasible` in the trace run (5 total):
 
 | Panel Title | Dashboard | Source | Reason |
 |-------------|-----------|--------|--------|
-| Requests per second per host | Apache - Overview | datadog | — |
 | 9 | Docker - Overview | datadog | — |
 | 10 | Docker - Overview | datadog | — |
 | Kafka Topology for $topic, $env | Kafka, Zookeeper and Kafka Consumer Overview | datadog | — |
-| Topic Health | Kafka, Zookeeper and Kafka Consumer Overview | datadog | Scope filter with template variable could not be bound exactly; apply specific values via Kibana das... |
-| CPU utilization per node | Kubernetes - Overview | datadog | — |
-| Memory usage per node | Kubernetes - Overview | datadog | — |
 | Nginx Watchdog alerts | NGINX - Overview | datadog | — |
-| Requests per second by host | NGINX - Overview | datadog | — |
 | RabbitMQ Topology for $queue | RabbitMQ Overview (OpenMetrics Version) | datadog | — |
-
-**Pattern analysis:**
-
-- **1×** Scope filter with template variable could not be bound exact
-- **1×** rate semantics approximated with delta over observed bucket 
-- **1×** translation error: multi-query widgets with different reques
 <!-- /GENERATED:NOT_FEASIBLE_BREAKDOWN -->
 
 ---
 
-*Last generated: 2026-06-02 10:51 UTC*
+*Last generated: 2026-07-16 07:55 UTC*

@@ -39,6 +39,21 @@ if [ -n "${INPUT_DIR:-}" ]; then
 else
   echo "-- generate kitchen-sink canary --"
   "$PY" -c "import json; from observability_migration.core.coverage.canary import build_grafana_canary; json.dump(build_grafana_canary(), open('$WORK/in/canary.json','w'))"
+  # Issue #282: also render-audit the late-bound grouping canary so the
+  # ``by ($grouping)`` field-control path (and the concrete+variable collision
+  # degrade) is exercised in a real Kibana render every nightly run.
+  echo "-- generate late-bound grouping canaries for every field choice (issue #282) --"
+  for grouping in exporter transport receiver; do
+    "$PY" -c "import json; from observability_migration.core.coverage.canary import build_late_bound_grouping_canary; json.dump(build_late_bound_grouping_canary(default_grouping='$grouping'), open('$WORK/in/late-bound-grouping-$grouping.json','w'))"
+  done
+  # Gap A: also render-audit the label-matcher param canary so
+  # ``metric{instance="$instance"}`` → ``?instance`` + control binding is
+  # exercised in a real Kibana render every nightly run.
+  echo "-- generate label-matcher param canaries for every instance choice (gap A) --"
+  for instance in 'localhost:8888' 'remote:9100'; do
+    safe="$(printf '%s' "$instance" | tr ':' '_')"
+    "$PY" -c "import json; from observability_migration.core.coverage.canary import build_label_matcher_param_canary; json.dump(build_label_matcher_param_canary(default_instance='$instance'), open('$WORK/in/label-matcher-param-$safe.json','w'))"
+  done
 fi
 
 echo "-- migrate + upload to local Kibana (security disabled, no key) --"
@@ -83,8 +98,10 @@ PY
   "$PY" -m observability_migration.targets.kibana.render_audit_driver \
     --kibana-url "$KIBANA_URL" --dashboard-id "$did" \
     --time-from now-3h --time-to now --fail-on-error \
+    --chrome-no-sandbox \
     --elements --migration-out "$report_dir" \
     --es-url "$ES_URL" --es-index "metrics-*,logs-*" || rc=1
 done <<< "$dashboard_rows"
 
 [ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }
+echo "For live dashboard control behavior, run: make interaction-audit-local"

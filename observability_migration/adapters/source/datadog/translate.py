@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import (
     assess_field_usage,
     is_counter_metric_field,
@@ -159,6 +160,59 @@ def translate_widget(
         trace=list(plan.trace),
     )
 
+    template_group_fields = sorted(
+        {
+            str(group_field)
+            for query in widget.queries
+            if query.metric_query
+            for group_field in query.metric_query.group_by
+            if _has_template_vars(str(group_field))
+        }
+    )
+    if template_group_fields:
+        variable_label = (
+            "group-by template variable"
+            if len(template_group_fields) == 1
+            else "group-by template variables"
+        )
+        variables = ", ".join(repr(field) for field in template_group_fields)
+        detail = (
+            f"{variable_label} {variables} cannot be bound to a target field "
+            "during migration; choose a fixed Datadog tag or recreate the "
+            "dynamic grouping as a Kibana field control"
+        )
+        result.status = "requires_manual"
+        result.warnings.append(f"manual review needed: {detail}")
+        result.semantic_losses.append(detail)
+        return result
+
+    log_template_vars = sorted(
+        {
+            match.group(0)
+            for query in widget.queries
+            if query.log_query
+            for match in _TEMPLATE_VAR_RE.finditer(query.raw_query or "")
+        }
+    )
+    if log_template_vars:
+        variable_label = (
+            "template variable"
+            if len(log_template_vars) == 1
+            else "template variables"
+        )
+        variables = ", ".join(repr(variable) for variable in log_template_vars)
+        detail = (
+            f"Log filter with {variable_label} {variables} was omitted because "
+            "Datadog log template substitutions cannot be bound exactly in the "
+            "translated query; recreate the filter in Kibana"
+        )
+        result.warnings.append(detail)
+        result.semantic_losses.append(detail)
+
+    if plan.backend == "image":
+        result.status = "ok"
+        return result
+
     if plan.backend in ("markdown", "blocked"):
         is_text_widget = widget.widget_type in (
             "note", "free_text", "image", "iframe",
@@ -300,7 +354,7 @@ def _translate_single_metric(
     is_heatmap = plan.kibana_type == "heatmap"
     # bar_chart shares the toplist grouped-aggregation shape (ranked groups).
     is_toplist = widget.widget_type in ("toplist", "bar_chart")
-    is_table = widget.widget_type in ("table", "query_table") and not is_toplist
+    is_table = plan.kibana_type == "table" and not is_toplist
     is_partition = plan.kibana_type in ("partition", "treemap")
     reducer = None if is_timeseries or is_heatmap else _request_reducer_for_queries(
         [wq],
@@ -310,7 +364,27 @@ def _translate_single_metric(
         reducer = top_config.reducer
 
     if plan.kibana_type == "metric" and spec.group_fields:
-        raise ValueError("metric widget with grouped query needs a reducing formula")
+        # A single-value (query_value) widget with a `by {}` grouping computes
+        # one value per group, but a Kibana metric tile shows a single number.
+        # Rather than failing the whole panel, degrade to a ranked summary
+        # table (one value per group) — the same approximation the Grafana
+        # grouped-stat path uses and the top()-on-timeseries case below.
+        plan.kibana_type = "table"
+        _append_unique_warning(
+            result,
+            "Grouped single-value widget approximated as a summary table "
+            "(one value per group); a metric tile shows only a single number",
+        )
+        return _build_categorical_esql(
+            spec.index,
+            spec.where_str,
+            spec.agg_expr,
+            spec.group_fields,
+            sort_field="value",
+            sort_order="DESC",
+            limit=100,
+            reducer=reducer,
+        )
     if is_heatmap and not spec.group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
     if is_partition and not spec.group_fields:
@@ -350,6 +424,27 @@ def _translate_single_metric(
                 " — ES|QL cannot filter to N series in a single pass",
             )
             return "\n".join(lines)
+        if widget.widget_type == "distribution" and is_timeseries:
+            # Datadog distribution widgets show a value envelope over time.
+            # A single line loses that shape, so p50/p90/p99 percentiles are
+            # added as extra XY series — but the requested aggregator
+            # (avg/sum/min/max/...) is the one explicit thing the source
+            # dashboard asked for, so it is kept as its own series alongside
+            # the percentile envelope rather than replaced by it.
+            query = _build_distribution_percentile_esql(
+                spec.index,
+                spec.where_str,
+                spec.es_metric,
+                spec.group_fields,
+                agg_expr=spec.agg_expr,
+            )
+            _append_unique_warning(
+                result,
+                "distribution widget approximated as its requested aggregation "
+                "plus p50/p90/p99 percentile time series (ES|QL has no native "
+                "distribution histogram panel)",
+            )
+            return query
         return _build_timeseries_esql(
             spec.index, spec.where_str, spec.agg_expr, spec.group_fields,
         )
@@ -470,15 +565,45 @@ def _translate_formula_metric_widget(
         return count_formula_query
 
     used_specs = _resolve_used_specs(formulas, spec_map)
-    _ensure_formula_specs_compatible(used_specs)
+
+    # Preflight cosmetic display/smoothing functions (autosmooth, ewma_*,
+    # median_*) *before* _ensure_formula_specs_compatible unions mismatched
+    # groupings and appends its success-oriented "the panel can migrate as one
+    # ES|QL query" warning. Without this, a widget that has both a grouping
+    # mismatch and a smoothing function would emit that warning and then fail
+    # deep in AST translation with a bare ValueError -> not_feasible,
+    # contradicting the warning and regressing the operator disposition from the
+    # accurate requires_manual (a human can simply drop the cosmetic smoothing)
+    # to a hard block.
+    smoothing_funcs = _manual_review_formula_funcs(formulas)
+    if smoothing_funcs:
+        raise _RequiresManualError(
+            "formula uses Datadog display/smoothing function(s) with no ES|QL "
+            f"equivalent ({', '.join(smoothing_funcs)}); drop the cosmetic "
+            "smoothing or hand-write the query for manual review"
+        )
+
+    _ensure_formula_specs_compatible(
+        used_specs,
+        result=result,
+        kibana_type=str(plan.kibana_type or ""),
+    )
 
     if plan.kibana_type == "metric":
         if len(formulas) != 1:
             raise ValueError("metric widgets support exactly one translated formula")
         if used_specs[0].group_fields:
-            raise _RequiresManualError(
-                "grouped query used in a scalar (query_value) widget — "
-                "reduce to a single value or convert to a table panel"
+            # A formula-based query_value grouped `by {}` computes one value
+            # per group; a scalar metric tile cannot show that. Degrade to a
+            # ranked summary table (mirrors the non-formula grouped
+            # query_value path in `_translate_single_metric`) instead of
+            # failing the whole panel.
+            plan.kibana_type = "table"
+            _append_unique_warning(
+                result,
+                "Grouped single-value formula widget approximated as a "
+                "summary table (one value per group); a metric tile shows "
+                "only a single number",
             )
     if plan.kibana_type == "heatmap" and not used_specs[0].group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
@@ -498,14 +623,46 @@ def _translate_formula_metric_widget(
         top_params = _extract_top_params(formulas[0].ast)
 
     reducer = None
+    output_reducers: dict[str, str] = {}
     if plan.kibana_type not in ("xy", "heatmap"):
         used_names = {spec.query_name for spec in used_specs}
-        reducer = _request_reducer_for_queries(
-            [q for q in metric_queries if q.name in used_names],
-            default="last" if plan.kibana_type == "metric" else None,
+        used_queries = [q for q in metric_queries if q.name in used_names]
+        query_by_name = {query.name: query for query in used_queries}
+        direct_ref_formulas = all(
+            isinstance(formula.ast, FormulaRef)
+            and formula.ast.name in query_by_name
+            for formula in formulas
         )
+        if direct_ref_formulas:
+            candidate_reducers = {
+                formula.alias: _normalize_request_reducer(
+                    query_by_name[formula.ast.name].aggregator,
+                    _query_space_agg(query_by_name[formula.ast.name]),
+                )
+                for formula in formulas
+                if isinstance(formula.ast, FormulaRef)
+            }
+            if (
+                candidate_reducers
+                and all(candidate_reducers.values())
+                and len(set(candidate_reducers.values())) > 1
+            ):
+                output_reducers = {
+                    field_name: reducer_name
+                    for field_name, reducer_name in candidate_reducers.items()
+                    if reducer_name
+                }
+        if not output_reducers:
+            reducer = _request_reducer_for_queries(
+                used_queries,
+                default="last" if plan.kibana_type == "metric" else None,
+            )
 
-    include_time_bucket = plan.kibana_type in ("xy", "heatmap") or reducer is not None
+    include_time_bucket = (
+        plan.kibana_type in ("xy", "heatmap")
+        or reducer is not None
+        or bool(output_reducers)
+    )
     dim_exprs, dim_aliases = _metric_dimension_exprs(
         used_specs[0].group_fields,
         include_time_bucket=include_time_bucket,
@@ -641,7 +798,18 @@ def _translate_formula_metric_widget(
     if eval_parts:
         lines.append(f"| EVAL {', '.join(eval_parts)}")
 
-    if reducer:
+    if output_reducers:
+        group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
+        reduced_parts = [
+            f"{field} = {_series_reducer_expr(output_reducers[field], field)}"
+            for field in output_fields
+        ]
+        if group_aliases:
+            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
+        else:
+            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        keep_fields = group_aliases + output_fields
+    elif reducer:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
         reduced_parts = [
             f"{field} = {_series_reducer_expr(reducer, field)}"
@@ -700,6 +868,88 @@ def _translate_formula_metric_widget(
     return "\n".join(lines)
 
 
+def _metric_map_attribute_where_clauses(
+    field_map: FieldMapProfile,
+    metric: str,
+    source_labels: dict[str, str] | None = None,
+) -> list[str]:
+    map_result = field_map.resolve_metric_map_result(metric, source_labels=source_labels)
+    if map_result is None or not map_result.applied or map_result.entry is None:
+        return []
+    clauses: list[str] = []
+    for key, value in map_result.entry.attribute_filter.items():
+        field = _esql_identifier(key)
+        clauses.append(f'{field} == "{_esql_escape(value)}"')
+    return clauses
+
+
+def _metric_map_source_filter(
+    field_map: FieldMapProfile,
+    metric: str,
+    source_labels: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Source scope tags consumed by the selected metric_map variant."""
+    map_result = field_map.resolve_metric_map_result(metric, source_labels=source_labels)
+    if map_result is None or not map_result.applied or map_result.entry is None:
+        return {}
+    return dict(map_result.entry.source_filter)
+
+
+def _scope_filter_consumed_by_metric_map(filt: Any, consumed: dict[str, str]) -> bool:
+    if not consumed or not isinstance(filt, TagFilter):
+        return False
+    if filt.negated or filt.is_in_list:
+        return False
+    return consumed.get(filt.key) == filt.value
+
+
+def _metric_map_agg_options(
+    field_map: FieldMapProfile,
+    mq: MetricQuery,
+    metric_cap,
+    result: TranslationResult | None = None,
+) -> tuple[bool | None, float | None, str, list[str]]:
+    """Return ``(use_rate_override, unit_scale, target_index, warnings)`` from metric_map."""
+    source_labels = mq.scope_tags
+    map_result = field_map.resolve_metric_map_result(mq.metric, source_labels=source_labels)
+    transform = "none"
+    unit_scale = None
+    target_index = ""
+    if map_result is not None and map_result.applied and map_result.entry is not None:
+        transform = map_result.entry.transform
+        unit_scale = map_result.unit_scale
+        target_index = str(map_result.entry.target_index or "").strip()
+    source_has_rate = bool(mq.as_rate or _needs_rate(mq))
+    if metric_cap is None:
+        target_is_counter: bool | None = None
+    elif is_counter_metric_field(metric_cap):
+        target_is_counter = True
+    elif str(getattr(metric_cap, "time_series_metric_kind", "") or "").strip().lower() == "gauge":
+        target_is_counter = False
+    else:
+        target_is_counter = None
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=source_has_rate,
+        transform=transform,
+        target_is_counter=target_is_counter,
+    )
+    warnings: list[str] = []
+    if gap_reason:
+        if result is not None:
+            _append_unique_warning(result, gap_reason)
+        else:
+            warnings.append(gap_reason)
+    use_rate: bool | None = None
+    if action == "drop_rate":
+        use_rate = False
+    elif action in {"to_rate", "keep_source_rate"}:
+        use_rate = True
+    elif action == "gap":
+        # Fail closed: do not invent rate when the transform cannot be proven.
+        use_rate = bool(source_has_rate)
+    return use_rate, unit_scale, target_index, warnings
+
+
 def _build_metric_query_spec(
     wq: WidgetQuery,
     field_map: FieldMapProfile,
@@ -708,7 +958,14 @@ def _build_metric_query_spec(
     mq = wq.metric_query
     assert mq is not None
 
-    es_metric = field_map.map_metric(mq.metric)
+    source_labels = mq.scope_tags
+    map_result = field_map.resolve_metric_map_result(mq.metric, source_labels=source_labels)
+    if map_result is not None and not map_result.applied:
+        gap = str(map_result.gap_reason or "").strip() or (
+            f"metric_map[{mq.metric!r}] was not applied"
+        )
+        _append_unique_warning(result, gap)
+    es_metric = field_map.map_metric(mq.metric, source_labels=source_labels)
     es_agg = _resolve_agg(mq.space_agg, es_metric)
     raw_group_fields = [field_map.map_tag(tag, context="metric") for tag in mq.group_by]
     group_fields = [_esql_identifier(field_name) for field_name in raw_group_fields]
@@ -747,16 +1004,30 @@ def _build_metric_query_spec(
             raise ValueError(f"target group field `{raw_group_field}` is not aggregatable")
 
     where_clauses = [TIME_FILTER]
+    consumed_source_filters = _metric_map_source_filter(
+        field_map, mq.metric, source_labels=source_labels
+    )
     for filt in mq.scope:
+        if _scope_filter_consumed_by_metric_map(filt, consumed_source_filters):
+            continue
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
-        if _scope_item_has_template_vars(filt):
-            _append_unique_warning(
-                result,
-                "Scope filter with template variable could not be bound exactly; "
-                "apply specific values via Kibana dashboard controls",
-            )
+        template_vars = _scope_item_template_vars(filt)
+        if template_vars:
+            if any(variable.lower() == "$scope" for variable in template_vars):
+                _append_unique_warning(
+                    result,
+                    "Datadog $scope template variable cannot be represented by a "
+                    "single Kibana control and was omitted; recreate the scope "
+                    "filters manually in Kibana",
+                )
+            else:
+                _append_unique_warning(
+                    result,
+                    "Scope filter with template variable could not be bound exactly; "
+                    "apply specific values via Kibana dashboard controls",
+                )
         if isinstance(filt, TagFilter):
             if _has_template_vars(filt.value):
                 _append_unique_warning(
@@ -776,10 +1047,28 @@ def _build_metric_query_spec(
                 for warning in filter_assessment.warnings:
                     _append_unique_warning(result, warning)
 
-    if mq.as_rate or _needs_rate(mq):
+    where_clauses.extend(
+        _metric_map_attribute_where_clauses(field_map, mq.metric, source_labels=source_labels)
+    )
+    use_rate_override, unit_scale, mapped_index, map_warnings = _metric_map_agg_options(
+        field_map, mq, metric_cap, result
+    )
+    for warning in map_warnings:
+        _append_unique_warning(result, warning)
+
+    if mq.value_filter_op and mq.value_filter_threshold is not None:
+        where_clauses.append(
+            f"{_esql_identifier(es_metric)} {mq.value_filter_op} "
+            f"{_formula_number_literal(mq.value_filter_threshold)}"
+        )
+
+    if use_rate_override is not False and (mq.as_rate or _needs_rate(mq)):
         _append_unique_warning(
             result,
-            "rate semantics approximated with delta over observed bucket span",
+            "rate semantics approximated with delta over observed bucket span; "
+            "when switching Agent→OTel collection, map counters with "
+            "--metric-map-file (transform/unit_scale) so RATE() emits against "
+            "the OTel counter field",
         )
     if mq.as_count:
         _append_unique_warning(
@@ -801,10 +1090,17 @@ def _build_metric_query_spec(
     return _MetricQuerySpec(
         query_name=wq.name,
         alias=_safe_alias(wq.name or "query"),
-        index=field_map.metric_index,
+        index=mapped_index or field_map.metric_index,
         where_str=" AND ".join(where_clauses),
         group_fields=group_fields,
-        agg_expr=_format_agg_expr(es_agg, es_metric, mq),
+        agg_expr=_format_agg_expr(
+            es_agg,
+            es_metric,
+            mq,
+            is_counter=is_counter_metric_field(metric_cap),
+            use_rate=use_rate_override,
+            unit_scale=unit_scale,
+        ),
         mq=mq,
         es_metric=es_metric,
         tag_where_str=tag_where,
@@ -1076,16 +1372,42 @@ def _resolve_used_specs(
     return used
 
 
-def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
+def _ensure_formula_specs_compatible(
+    specs: list[_MetricQuerySpec],
+    *,
+    result: TranslationResult | None = None,
+    kibana_type: str = "",
+) -> None:
     base = specs[0]
     for spec in specs[1:]:
         if spec.index != base.index:
             raise ValueError("formula queries span different index patterns")
         if spec.group_fields != base.group_fields:
-            # Different per-query groupings is a semantic ambiguity DD
-            # resolves by convention; we can't reproduce it cleanly in
-            # one ES|QL pipeline. Surface as requires_manual so the
-            # widget gets a placeholder for human review.
+            # Prefer a union of grouping dims for XY/heatmap formulas when the
+            # mismatch is only "extra tags on one query". Datadog resolves that
+            # by broadcasting the ungrouped side; ES|QL can approximate the same
+            # by grouping on the union (ungrouped measures repeat per group).
+            # Fundamentally incompatible non-subset mismatches still need a
+            # human-designed query.
+            base_set = set(base.group_fields)
+            other_set = set(spec.group_fields)
+            if kibana_type in ("xy", "heatmap") and (
+                base_set.issubset(other_set) or other_set.issubset(base_set)
+            ):
+                union_fields: list[str] = []
+                for field_name in list(base.group_fields) + list(spec.group_fields):
+                    if field_name not in union_fields:
+                        union_fields.append(field_name)
+                for item in specs:
+                    item.group_fields = list(union_fields)
+                if result is not None:
+                    _append_unique_warning(
+                        result,
+                        "multi-query formula had mismatched groupings; "
+                        f"united dimensions ({', '.join(union_fields)}) so the "
+                        "panel can migrate as one ES|QL query",
+                    )
+                continue
             raise _RequiresManualError(
                 "multi-query formulas with different groupings need a "
                 "manually-designed ES|QL query (e.g. UNION ALL or split "
@@ -1093,8 +1415,7 @@ def _ensure_formula_specs_compatible(specs: list[_MetricQuerySpec]) -> None:
                 "semantically ambiguous"
             )
     # Heterogeneous filters across specs are translated via per-aggregation
-    # WHERE clauses (no error). Heterogeneous groupings still raise because
-    # they would require a UNION/join that ES|QL can't express in one STATS.
+    # WHERE clauses (no error).
 
 
 def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
@@ -1173,6 +1494,52 @@ def _formula_ref_names(node: Any) -> list[str]:
 
 _BUCKET_SPAN_FORMULA_FNS = {"per_second", "per_minute", "per_hour", "rate"}
 _DERIVATIVE_FORMULA_FNS = {"rate", "diff", "monotonic_diff"}
+
+# Datadog display/smoothing formula functions that have no ES|QL analogue but
+# are purely cosmetic: a reviewer can drop the smoothing and the underlying
+# panel still migrates. These are surfaced up-front as ``requires_manual`` (a
+# human decision) rather than being allowed to fail deep in AST translation as
+# a hard ``not_feasible`` block. Semantic transforms (clamp/timeshift/cumsum/
+# anomalies/...) are intentionally *not* here so their existing disposition is
+# preserved.
+_MANUAL_REVIEW_FORMULA_FUNCS = frozenset(
+    {
+        "autosmooth",
+        "ewma_3",
+        "ewma_5",
+        "ewma_10",
+        "ewma_20",
+        "median_3",
+        "median_5",
+        "median_7",
+        "median_9",
+    }
+)
+
+
+def _collect_formula_func_names(node: Any) -> set[str]:
+    """Return the lowercased names of every function call in a formula AST."""
+    names: set[str] = set()
+    if isinstance(node, FormulaFuncCall):
+        names.add((node.name or "").lower())
+        for arg in node.args or []:
+            names |= _collect_formula_func_names(arg)
+    elif isinstance(node, FormulaBinOp):
+        names |= _collect_formula_func_names(node.left)
+        names |= _collect_formula_func_names(node.right)
+    elif isinstance(node, FormulaUnary):
+        names |= _collect_formula_func_names(node.operand)
+    return names
+
+
+def _manual_review_formula_funcs(formulas: list[_FormulaSpec]) -> list[str]:
+    """Return sorted cosmetic-smoothing formula funcs that force manual review."""
+    return sorted(
+        name
+        for formula in formulas
+        for name in _collect_formula_func_names(formula.ast)
+        if name in _MANUAL_REVIEW_FORMULA_FUNCS
+    )
 
 
 def _formula_needs_bucket_span(node: Any) -> bool:
@@ -1341,11 +1708,22 @@ def _metric_scope_to_esql(scope_item: Any, field_map: FieldMapProfile, context: 
 
 
 def _scope_item_has_template_vars(scope_item: Any) -> bool:
+    return bool(_scope_item_template_vars(scope_item))
+
+
+def _scope_item_template_vars(scope_item: Any) -> set[str]:
     if isinstance(scope_item, TagFilter):
-        return _has_template_vars(scope_item.key) or _has_template_vars(scope_item.value)
+        return {
+            match.group(0)
+            for text in (scope_item.key, scope_item.value)
+            for match in _TEMPLATE_VAR_RE.finditer(text or "")
+        }
     if isinstance(scope_item, ScopeBoolOp):
-        return any(_scope_item_has_template_vars(child) for child in scope_item.children)
-    return False
+        variables: set[str] = set()
+        for child in scope_item.children:
+            variables.update(_scope_item_template_vars(child))
+        return variables
+    return set()
 
 
 def _append_unique_warning(result: TranslationResult, message: str) -> None:
@@ -1754,6 +2132,58 @@ def _build_timeseries_esql(
     )
 
 
+def _build_distribution_percentile_esql(
+    index: str,
+    where: str,
+    metric_field: str,
+    group_fields: list[str],
+    agg_expr: str = "",
+) -> str:
+    """Approximate a Datadog distribution widget as percentile envelopes.
+
+    ``agg_expr``, when provided, is the widget's own requested aggregator
+    (e.g. ``AVG(field)``) and is kept as its own STATS term so the source
+    aggregation is not silently dropped in favor of the (synthesized)
+    percentile envelope — both are genuinely useful series on the chart.
+    """
+    field = (metric_field or "").strip() or "value"
+    time_bucket = TIME_BUCKET_EXPR
+    group_clause = f"time_bucket = {time_bucket}"
+    if group_fields:
+        group_clause += ", " + ", ".join(group_fields)
+    stats_terms = []
+    agg_expr = (agg_expr or "").strip()
+    if agg_expr:
+        agg_alias = _distribution_agg_alias(agg_expr)
+        stats_terms.append(f"{agg_alias} = {agg_expr}")
+    stats_terms.extend(
+        [
+            f"p50 = PERCENTILE({field}, 50)",
+            f"p90 = PERCENTILE({field}, 90)",
+            f"p99 = PERCENTILE({field}, 99)",
+        ]
+    )
+    return (
+        f"FROM {index}\n"
+        f"| WHERE {where}\n"
+        f"| STATS " + ", ".join(stats_terms) + f" BY {group_clause}\n"
+        f"| SORT time_bucket"
+    )
+
+
+def _distribution_agg_alias(agg_expr: str) -> str:
+    """Derive a STATS alias for the distribution widget's own aggregator.
+
+    ``agg_expr`` looks like ``AVG(field)``; the alias is the lowercased
+    function name (``avg``), falling back to ``agg_value`` when the
+    expression's shape can't be parsed (e.g. a CASE-wrapped filtered
+    aggregate) so it never collides with the ``p50``/``p90``/``p99`` aliases.
+    """
+    match = re.match(r"\s*([A-Za-z_]+)\s*\(", agg_expr)
+    name = match.group(1).lower() if match else ""
+    return name if name and name not in {"p50", "p90", "p99"} else "agg_value"
+
+
 def _build_toplist_esql(
     index: str,
     where: str,
@@ -1845,13 +2275,33 @@ def _build_categorical_esql(
     return "\n".join(lines)
 
 
-def _format_agg_expr(agg: str, metric_field: str, mq: MetricQuery | None = None) -> str:
+def _format_agg_expr(
+    agg: str,
+    metric_field: str,
+    mq: MetricQuery | None = None,
+    is_counter: bool = False,
+    *,
+    use_rate: bool | None = None,
+    unit_scale: float | None = None,
+) -> str:
     metric_expr = _esql_identifier(metric_field)
+    rate_requested = use_rate if use_rate is not None else bool(mq and (mq.as_rate or _needs_rate(mq)))
     if mq and mq.as_rate and (mq.space_agg or "").lower() == "count":
         expr = 'COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1)'
-    elif mq and (mq.as_rate or _needs_rate(mq)):
+    elif mq and rate_requested:
         expr = _rate_approx_expr(metric_field, mq)
     else:
+        # A TSDS counter-typed field is rejected by every plain (non-rate)
+        # ES|QL numeric aggregation -- "must be [... numeric except ...
+        # counter types]" -- even though the source Datadog widget asked for
+        # a perfectly ordinary sum/avg/min/max (Datadog's own backend has no
+        # such restriction). TO_DOUBLE() is a lossless identity cast for a
+        # numeric counter field; it only strips the ES|QL counter tag so the
+        # aggregation the dashboard actually requested is allowed to run.
+        # Skip it for COUNT(...), which counts non-null docs regardless of
+        # field type and never hits this restriction.
+        if is_counter and agg != "COUNT":
+            metric_expr = f"TO_DOUBLE({metric_expr})"
         if "%" in agg:
             expr = agg.replace("%", metric_expr)
         elif agg == "COUNT":
@@ -1864,6 +2314,8 @@ def _format_agg_expr(agg: str, metric_field: str, mq: MetricQuery | None = None)
     multiplier = _rate_multiplier(mq) if mq else 1
     if multiplier != 1:
         expr = f"({expr}) * {multiplier}"
+    if unit_scale is not None and unit_scale != 1.0:
+        expr = f"({expr}) * {unit_scale}"
     return expr
 
 
@@ -1874,13 +2326,35 @@ def _resolve_agg(dd_agg: str, metric_field: str) -> str:
     raise ValueError(f"unsupported Datadog aggregator: {dd_agg or '<empty>'}")
 
 
-def _normalize_request_reducer(raw: str) -> str:
+_PERCENTILE_REDUCERS = {"p50", "p75", "p90", "p95", "p99"}
+
+
+def _normalize_request_reducer(raw: str, space_agg: str = "") -> str:
     reducer = raw.lower().strip()
     if not reducer:
         return ""
-    if reducer not in {"avg", "sum", "min", "max", "last"}:
-        raise ValueError(f"unsupported Datadog request aggregator: {raw}")
-    return reducer
+    if reducer in {"avg", "sum", "min", "max", "last"}:
+        return reducer
+    if reducer in _PERCENTILE_REDUCERS:
+        return reducer
+    # Datadog's ``percentile`` request aggregator reduces the time series by a
+    # percentile; the level lives in the query's space aggregation (``p99:``).
+    # This is the common P99/P95 latency query_value pattern, so resolve it to
+    # the query's own percentile rather than degrading the whole panel.
+    if reducer == "percentile":
+        level = (space_agg or "").lower().strip()
+        if level in _PERCENTILE_REDUCERS:
+            return level
+        raise ValueError(
+            "Datadog 'percentile' request aggregator without a percentile "
+            "query aggregation (p50/p75/p90/p95/p99) is ambiguous in ES|QL"
+        )
+    raise ValueError(f"unsupported Datadog request aggregator: {raw}")
+
+
+def _query_space_agg(q: WidgetQuery) -> str:
+    mq = getattr(q, "metric_query", None)
+    return getattr(mq, "space_agg", "") if mq else ""
 
 
 def _request_reducer_for_queries(
@@ -1888,9 +2362,9 @@ def _request_reducer_for_queries(
     default: str | None = None,
 ) -> str | None:
     reducers = {
-        _normalize_request_reducer(q.aggregator)
+        _normalize_request_reducer(q.aggregator, _query_space_agg(q))
         for q in queries
-        if q.metric_query and _normalize_request_reducer(q.aggregator)
+        if q.metric_query and _normalize_request_reducer(q.aggregator, _query_space_agg(q))
     }
     if not reducers:
         return default
@@ -1959,6 +2433,8 @@ def _extract_top_params(ast: Any) -> tuple[int, str, str] | None:
 
 def _series_reducer_expr(reducer: str, field: str) -> str:
     field_ident = _esql_identifier(field)
+    if reducer in _PERCENTILE_REDUCERS:
+        return f"PERCENTILE({field_ident}, {int(reducer[1:])})"
     return {
         "avg": f"AVG({field_ident})",
         "sum": f"SUM({field_ident})",
@@ -2177,7 +2653,7 @@ def _build_lens_widget_config(
     mq = wq.metric_query
     assert mq is not None
 
-    es_metric = field_map.map_metric(mq.metric)
+    es_metric = field_map.map_metric(mq.metric, source_labels=mq.scope_tags)
     agg = _resolve_agg(mq.space_agg, es_metric)
 
     # For scalar/metric panels the Datadog request ``aggregator`` (time
@@ -2186,7 +2662,7 @@ def _build_lens_widget_config(
     # ``last_value``, not the space-aggregation which would accumulate
     # every document in the query window.
     if plan.kibana_type == "metric":
-        request_reducer = _normalize_request_reducer(wq.aggregator) if wq.aggregator else ""
+        request_reducer = _normalize_request_reducer(wq.aggregator, mq.space_agg) if wq.aggregator else ""
         _REDUCER_TO_LENS: dict[str, str] = {
             "last": "LAST",
             "avg": "AVG",

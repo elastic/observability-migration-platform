@@ -21,6 +21,9 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "bar_chart": "table",
     "table": "table",
     "heatmap": "heatmap",
+    # Distribution widgets are percentile envelopes over time (p50/p90/p99),
+    # not a true histogram heat grid — map to XY so generate can emit multi-
+    # percentile line series instead of a single AVG line.
     "distribution": "xy",
     "change": "metric",
     "scatterplot": "xy",
@@ -33,9 +36,15 @@ WIDGET_TYPE_MAP: dict[str, str] = {
     "alert_graph": "markdown",
     "alert_value": "markdown",
     "check_status": "markdown",
-    "hostmap": "markdown",
+    # Kibana has no hostmap visual; grouped hostmap metrics degrade to a
+    # data-preserving datatable with an explicit visual-fidelity warning.
+    "hostmap": "table",
     "free_text": "markdown",
     "note": "markdown",
+    # Overridden per-widget to "image" by ``image_widget_rule`` when the
+    # widget carries a real absolute http(s) URL; this default only applies
+    # when that rule declines (relative/static URL) and the widget falls
+    # through to the generic text-widget markdown placeholder.
     "image": "markdown",
     "iframe": "markdown",
     "group": "group",
@@ -56,7 +65,7 @@ WIDGET_TYPE_MAP: dict[str, str] = {
 SUPPORTED_WIDGET_TYPES: set[str] = {
     "timeseries", "query_value", "toplist", "bar_chart", "table", "query_table",
     "heatmap", "distribution", "change", "scatterplot", "treemap",
-    "sunburst", "pie", "geomap", "log_stream", "list_stream",
+    "sunburst", "pie", "geomap", "hostmap", "log_stream", "list_stream",
     "note", "free_text", "image", "iframe", "group",
 }
 
@@ -118,6 +127,8 @@ class FunctionCall:
 class MetricQuery:
     raw: str = ""
     space_agg: str = ""
+    value_filter_op: str = ""
+    value_filter_threshold: float | None = None
     metric: str = ""
     scope: list[Any] = field(default_factory=list)
     group_by: list[str] = field(default_factory=list)
@@ -424,6 +435,7 @@ class TranslationResult:
     verification_packet: dict[str, Any] = field(default_factory=dict)
     review_explanation: dict[str, Any] = field(default_factory=dict)
     operational_ir: Any = None
+    visual_ir: Any = None
     post_validation_action: str = ""
     post_validation_message: str = ""
 
@@ -450,6 +462,13 @@ class DashboardResult:
     validation_summary: dict[str, int] = field(default_factory=dict)
     yaml_path: str = ""
     compiled_path: str = ""
+    # Native Dashboard-as-Code review artifacts (see
+    # targets/kibana/native_artifacts.py): the on-disk twin of
+    # `native_dashboard`/`dashboard_ir`, written before upload so the exact
+    # typed API payload can be reviewed and later deployed with
+    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    native_artifact_path: str = ""
+    ir_artifact_path: str = ""
     compiled: bool = False
     compile_error: str = ""
     layout_checked: bool = False
@@ -457,6 +476,7 @@ class DashboardResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    upload_warnings: list[str] = field(default_factory=list)
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     kibana_saved_object_id: str = ""
@@ -470,6 +490,16 @@ class DashboardResult:
     verification_summary: dict[str, int] = field(default_factory=dict)
     alert_results: list = field(default_factory=list)
     alert_summary: dict = field(default_factory=dict)
+    # Semantic DashboardIR -- the primary working artifact of the IR-first
+    # pipeline (Phase 2 for Datadog). `native_dashboard` and the on-disk YAML
+    # are both *derived* from this (see generate.generate_dashboard_artifacts /
+    # targets.kibana.dashboards_api.native_dashboard_from_ir). Not
+    # JSON-serialized directly; call .to_dict() for that.
+    dashboard_ir: Any = None
+    # NativeDashboard IR built from `dashboard_ir` via native_dashboard_from_ir.
+    # Not JSON-serialized directly; call .to_api_payload() for that.
+    native_dashboard: Any = None
+    native_dashboard_stats: dict = field(default_factory=dict)
 
     def recompute_counts(self) -> None:
         self.migrated = 0
@@ -503,11 +533,12 @@ class DashboardResult:
                 "status": "pass" if not self.layout_error else "fail",
                 "error": self.layout_error or "",
             }
-        upload_status = {"status": "not_run", "error": ""}
+        upload_status = {"status": "not_run", "error": "", "warnings": []}
         if self.upload_attempted or self.upload_error:
             upload_status = {
                 "status": "pass" if self.uploaded and not self.upload_error else "fail",
                 "error": self.upload_error or "",
+                "warnings": list(self.upload_warnings or []),
             }
         smoke_status = {"status": "not_run", "error": ""}
         if self.smoke_attempted or self.smoke_error:

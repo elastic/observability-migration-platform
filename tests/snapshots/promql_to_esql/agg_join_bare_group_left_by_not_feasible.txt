@@ -1,0 +1,5 @@
+source: sum(node_network_receive_bytes_total * on(instance) group_left() node_uname_info) by(nodename)
+feasibility: not_feasible
+warning: Aggregating by 'nodename' over a PromQL vector-matching join requires manual redesign: 'nodename' is not an on(...) match key and the group_left(...) enrichment labels could not be determined, so it can't be proven to exist on the primary metric 'node_network_receive_bytes_total' once the join is dropped; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
+---
+

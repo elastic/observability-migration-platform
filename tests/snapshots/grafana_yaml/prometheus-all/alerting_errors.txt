@@ -1,0 +1,9 @@
+title: Alerting errors
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['notifications_dropped_on', 'rule_evaluation_failures_on']
+breakdown: series_group
+warning: Unioned BY fields across multi-target series with mismatched grouping
+warning: Composited multi-label grouping (instance, rule_type) into a single XY breakdown column

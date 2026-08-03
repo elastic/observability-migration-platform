@@ -1,8 +1,8 @@
 {
   "version": 1,
   "totals": {
-    "panels": 335,
-    "findings": 68,
+    "panels": 1640,
+    "findings": 0,
     "errors": 0
   },
   "by_category": {
@@ -15,7 +15,7 @@
       "errors": 0
     },
     "VISUAL_SEMANTIC_DRIFT": {
-      "total": 68,
+      "total": 0,
       "errors": 0
     },
     "PLACEHOLDER_DROPPED": {

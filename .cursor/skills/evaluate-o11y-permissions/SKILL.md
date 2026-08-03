@@ -1,25 +1,40 @@
 ---
 name: evaluate-o11y-permissions
-description: Use when the user asks whether their credentials/API key has the right permissions, roles, or privileges to export from their source or to import dashboards / create alert rules into Kibana, or wants to check access before committing to a migration — verifies the credentials have what an obs-migrate / mig-to-kbn migration needs end-to-end — read/export on the source (Grafana/Datadog) and write on the Elastic/Kibana target.
+description: Use when the user asks whether their credentials/API key has the right permissions, roles, or privileges to export from their source or to import dashboards / create alert rules into Kibana, or wants to check access before committing to a migration — verifies the credentials have what an obs-migrate migration needs end-to-end — read/export on the source (Grafana/Datadog) and write on the Elastic/Kibana target.
 ---
 
 # Evaluate migration permissions (source + target)
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: give the user confidence their credentials can perform every step **before** they invest in a migration. Separate non-mutating probes from checks that change target state, and be honest about what each proves.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user **installed the package** (`pip install 'obs-migrate[all]'`): `obs-migrate`/`grafana-migrate`/`datadog-migrate` are on `PATH`. Prefix `.venv/bin/` only for a repo checkout. The alert round-trip and rule-audit checks are shipped as the `obs-migrate verify-alert-rules` and `obs-migrate audit-rules` subcommands (use these), so package users do **not** need any `scripts/...` file. `examples/` YAML also does not exist for them; use their own migrated output.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## Mental model (state this to the user)
 
 - **The source (Grafana/Datadog) is read-only.** The tool never writes back to the source. So the only source permission that matters is **read/search/export of dashboards** (and, for Datadog, monitors). If `connect-to-o11y-source` succeeded, source read is already proven.
 - **The target (Elastic/Kibana) is where write permission matters.** The migration needs an API key that can:
-  - **import** saved objects — `POST /api/saved_objects/_import` (dashboards)
-  - **read** saved objects — `POST /api/saved_objects/_export` (listing)
+  - **create/update dashboards** via the typed Dashboards API — `PUT /api/dashboards/{id}` (default `obs-migrate upload` / `migrate --upload` path)
+  - **legacy import** saved objects — `POST /api/saved_objects/_import` only when using `--legacy-import` / compile+import flows
+  - **read** saved objects / list dashboards — `obs-migrate cluster list-dashboards` (Serverless uses `_export`)
   - **manage data views** — `GET/POST/DELETE /api/data_views/...`
   - **create alert rules** (only if migrating alerts) — `POST /api/alerting/rule`
   - **read** target indices for field validation — ES `_field_caps`
+  - **delete migrated alert rules** — `obs-migrate delete-rules` (dry-run by default; `--confirm` to delete)
 
 ## Source permission check (non-mutating)
 
@@ -27,13 +42,15 @@ Reading dashboards is the proof. (See the `connect-to-o11y-source` skill for ful
 
 ```bash
 export GRAFANA_URL="https://grafana.example.com" GRAFANA_USER="..." GRAFANA_PASS="..."
-KIBANA_URL= grafana-migrate --source api --output-dir /tmp/perm-src --assets dashboards
+KIBANA_URL= obs-migrate migrate \
+  --source grafana --input-mode api \
+  --output-dir /tmp/perm-src --assets dashboards
 ```
 
 - **Pulled dashboards:** source read permission is sufficient.
 - **401/403:** the source user/token lacks read access (or is wrong).
 
-Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `datadog-migrate` exercises the Monitors API.
+Note on Grafana alerts: Grafana alert artifacts are derived from dashboard JSON during migration, **not** fetched as a separate API asset. Do not treat `--assets alerts` as a distinct source *permission* probe for Grafana. For Datadog, monitor read is a real separate scope — `--assets alerts` with `--source datadog` exercises the Monitors API.
 
 `--assets` takes exactly one value: `dashboards`, `alerts`, or `all`. It is **not** a comma list — to exercise both dashboard and monitor reads in one Datadog run use `--assets all`, not `--assets dashboards,alerts`.
 
@@ -78,10 +95,10 @@ obs-migrate cluster ensure-data-views \
 Only run these when the user accepts that they create objects. State this explicitly before running.
 
 ```bash
-# Dashboard import proof (creates a dashboard in Kibana; does not self-clean).
-# Use the user's OWN migrated YAML from a prior `obs-migrate migrate` run.
+# Dashboard write proof (creates/updates a dashboard via typed Dashboards API; does not self-clean).
+# Prefer reviewing <their-output-dir>/dashboards/native/*.native.json, then:
 obs-migrate upload \
-  --yaml-dir <their-output-dir>/dashboards \
+  --artifact-dir <their-output-dir>/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY"
 
 # Alert-rule write proof — SELF-CLEANING round trip (package-native).
@@ -95,7 +112,7 @@ obs-migrate verify-alert-rules \
   --limit 1
 ```
 
-`verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward, audit and disable/remove them with `obs-migrate audit-rules --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --disable-enabled` and delete in the Kibana UI. The dashboard import proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test.
+`verify-alert-rules` is the preferred alert write check because it cleans up after itself. If the user has no comparison report yet (no alert migration run), the alternative is `obs-migrate migrate --source grafana --input-mode api --output-dir /tmp/perm-alerts --assets alerts --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --create-alert-rules`, which creates rules **disabled** and tagged `obs-migration` but does **not** self-clean — afterward: `obs-migrate audit-rules ... --disable-enabled` to disable, then `obs-migrate delete-rules --kibana-url ... --kibana-api-key ...` (dry-run) and `... --confirm` to delete. The dashboard upload proof also leaves a dashboard behind — delete it with `obs-migrate cluster delete-dashboards` if it was only a test. `--yaml-dir` remains a compatibility alias for YAML mapping; prefer `--artifact-dir` with native artifacts.
 
 ## Serverless caveats (call these out)
 
@@ -112,7 +129,8 @@ obs-migrate verify-alert-rules \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `connect-to-o11y-source` skill — source setup and reachability.
 - `obs-migrate verify-alert-rules --help` and `obs-migrate audit-rules --help` — the self-cleaning alert write proof and the read-only rule audit (shipped in the package).
 - `obs-migrate cluster --help` and `obs-migrate migrate --help` — authoritative target/alerting flags for the installed version.
-- `docs/command-contract.md` — `cluster` actions and the alert upload flow (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — `cluster` actions and the alert upload flow (online docs / repo).

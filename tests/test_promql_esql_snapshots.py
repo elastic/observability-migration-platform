@@ -132,6 +132,42 @@ CASES: list[tuple[str, str, str]] = [
         "up{job='prom'} or vector(0)",
         "timeseries",
     ),
+    # --- or fallback wrapped in label_replace (issue #252) ------------------
+    # Dashboards commonly stamp a label onto the synthetic zero row so a
+    # ``sum()`` always returns a value even when the base series is empty
+    # (e.g. Express Prometheus Middleware's "Count by class" panel). The
+    # label_replace() wrapper is cosmetic for a single fallback operand, so
+    # this must strip the same way as a bare ``or vector(N)``.
+    (
+        "or_label_replace_vector_fallback",
+        'http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", "")',
+        "timeseries",
+    ),
+    # The dashboard shape wraps the fallback in an aggregation so ``sum()``
+    # always returns a value. The stripped zero-fill note must survive the
+    # aggregation copy, not just the bare top-level form (issue #252 review).
+    (
+        "or_label_replace_vector_fallback_sum",
+        'sum(http_requests_total{status=~"4.."} or on() label_replace(vector(0), "status", "4xx", "", ""))',
+        "timeseries",
+    ),
+    # A same-metric ``or`` with an on()/ignoring() modifier is NOT an exact
+    # WHERE-OR: the modifier suppresses right-hand series that share the matched
+    # labels, so a flat OR over-includes them. It must degrade to not_feasible
+    # instead of the unified-WHERE rewrite (issue #252 review).
+    (
+        "or_same_metric_on_modifier_refused",
+        'http_requests_total{status=~"4.."} or on(instance) http_requests_total{status=~"5.."}',
+        "timeseries",
+    ),
+    # A label-less ``ignoring()`` does not narrow the match key — it is
+    # equivalent to the full-label-set match of a bare ``or`` — so it must keep
+    # the exact unified-WHERE rewrite, not degrade like on()/ignoring(labels).
+    (
+        "or_same_metric_empty_ignoring_exact",
+        'http_requests_total{status="400"} or ignoring() http_requests_total{status="500"}',
+        "timeseries",
+    ),
     # --- uptime: time() - boot_time ----------------------------------------
     (
         "uptime_expression",
@@ -183,6 +219,116 @@ CASES: list[tuple[str, str, str]] = [
             "sum by(name)(podman_container_info"
             " * on(id) group_right(name) podman_container_memory_bytes"
             " / 1024 / 1024)"
+        ),
+        "timeseries",
+    ),
+    # --- issue #197: safe subset of aggregated group_left `_info` joins -----
+    # The dominant RabbitMQ-Overview shape: a bare sum() with no explicit
+    # by()/without() over a group_left join against a `*_info` label-enrichment
+    # metric. Safe to strip the RHS and aggregate the primary metric alone.
+    (
+        "agg_info_join_no_by_feasible",
+        (
+            "sum(rabbitmq_queue_messages_ready"
+            " * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info)"
+        ),
+        "timeseries",
+    ),
+    # A ratio of two such aggregated `_info` joins (the RabbitMQ
+    # message-size-histogram bucket-ratio pattern) resolves once each operand's
+    # join strips cleanly.
+    (
+        "agg_join_ratio_two_info_joins_feasible",
+        (
+            'sum(increase(rabbitmq_message_size_bytes_bucket{le="100.0"}[5m])'
+            " * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info)"
+            ' / sum(increase(rabbitmq_message_size_bytes_bucket{le="+Inf"}[5m])'
+            " * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info)"
+        ),
+        "timeseries",
+    ),
+    # An explicit by() that only references an on()-shared label (not an
+    # enrichment-only one) is equally safe to strip — this is exactly the
+    # existing "outer_agg_over_join_strips_rhs" case above, now expected to
+    # flip from not_feasible back to feasible (see the design doc's History
+    # section for why it was reverted).
+    #
+    # An explicit by() that requires an enrichment-only label (one that exists
+    # only via the group_left(...) join, not on the primary metric) cannot be
+    # safely approximated — stays not_feasible with a specific message naming
+    # the offending label.
+    (
+        "agg_join_by_enrichment_label_not_feasible",
+        (
+            "sum(rabbitmq_queue_messages_ready"
+            " * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info)"
+            " by(rabbitmq_node)"
+        ),
+        "timeseries",
+    ),
+    # A join partner that doesn't match the info-metric naming convention (not
+    # provably a constant `1`) must not be silently dropped.
+    (
+        "agg_join_non_info_rhs_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance) group_left(nodename) node_weight_factor)"
+        ),
+        "timeseries",
+    ),
+    # group_right stays on the existing not_feasible path, but with a message
+    # naming why (only group_left is supported).
+    (
+        "agg_join_group_right_not_feasible",
+        (
+            "sum(rabbitmq_identity_info"
+            " * on(instance, job) group_right(rabbitmq_cluster) rabbitmq_queue_messages_ready)"
+        ),
+        "timeseries",
+    ),
+    # Label filters on the `_info` join partner are dropped with the RHS. Per the
+    # design's accepted approximation the panel stays feasible (this is the
+    # dominant real RabbitMQ-Overview shape), but the warning explicitly names
+    # the dropped filter so the broadened-aggregation risk is visible instead of
+    # silent (issue #197 review finding 1).
+    (
+        "agg_join_rhs_filter_feasible_warns",
+        (
+            "sum(rabbitmq_queue_messages_ready"
+            ' * on(instance, job) group_left(rabbitmq_cluster) rabbitmq_identity_info{rabbitmq_cluster="prod"})'
+        ),
+        "timeseries",
+    ),
+    # A bare `group_left()` (empty include list) leaves the enrichment label set
+    # undeterminable, so an explicit by() naming a non-on()-key label can't be
+    # proven to exist on the primary metric — fail closed rather than emit a
+    # STATS BY over a possibly-absent column (issue #197 review finding 3).
+    (
+        "agg_join_bare_group_left_by_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance) group_left() node_uname_info) by(nodename)"
+        ),
+        "timeseries",
+    ),
+    # The join partner must be a PLAIN vector selector for the _info metric. A
+    # range/aggregate wrapper over an _info metric is not a constant-1 multiplier
+    # (its value is a rate / sum / count / 0), so it must NOT be dropped even
+    # though its summary metric name ends in _info — stays not_feasible (issue
+    # #197 review: only right_frag.metric suffix was checked before).
+    (
+        "agg_join_rate_info_rhs_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance) group_left(nodename) rate(node_uname_info[5m]))"
+        ),
+        "timeseries",
+    ),
+    (
+        "agg_join_agg_info_rhs_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance, job) group_left(nodename) sum(node_uname_info) by(instance, job))"
         ),
         "timeseries",
     ),
@@ -334,8 +480,14 @@ CASES: list[tuple[str, str, str]] = [
         "timeseries",
     ),
     (
-        "per_element_ratio_not_feasible",
+        "histogram_summary_ratio_approx",
         'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) / increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)',
+        "timeseries",
+    ),
+    # Unrelated per-element ratio (not a histogram _sum/_count pair) stays not_feasible.
+    (
+        "per_element_ratio_not_feasible",
+        "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),
     # --- schema and label handling ------------------------------------------

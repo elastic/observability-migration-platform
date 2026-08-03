@@ -48,6 +48,17 @@ DEFAULT_COUNTER_SUFFIXES = [
     "_sum",
 ]
 
+# Canonical Prometheus "info metric" naming convention (``_info``): a gauge
+# whose value is always ``1``, published solely so its labels can be joined
+# onto a real metric (``node_uname_info``, ``rabbitmq_identity_info``,
+# ``kube_pod_info``, ...). A ``group_left``/``group_right`` join against one of
+# these is pure label enrichment — multiplying by it never changes the primary
+# metric's value — so it is safe to drop the join and aggregate the primary
+# metric alone (issue #197).
+DEFAULT_INFO_METRIC_SUFFIXES = [
+    "_info",
+]
+
 
 @dataclass
 class PatternRule:
@@ -113,6 +124,7 @@ class RulePackConfig:
     not_feasible_patterns: list = field(default_factory=lambda: _pattern_rules(DEFAULT_NOT_FEASIBLE_PATTERNS))
     warning_patterns: list = field(default_factory=lambda: _pattern_rules(DEFAULT_WARNING_PATTERNS))
     counter_suffixes: list = field(default_factory=lambda: list(DEFAULT_COUNTER_SUFFIXES))
+    info_metric_suffixes: list = field(default_factory=lambda: list(DEFAULT_INFO_METRIC_SUFFIXES))
     default_rate_window: str = "5m"
     default_gauge_agg: str = "AVG"
     # Migration default: target clusters we provision ingest metrics as TSDS, so when
@@ -123,6 +135,9 @@ class RulePackConfig:
     assume_tsds_gauges: bool = True
     ts_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
     from_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
+    # Legacy frozen default kept for direct ``translate_promql_to_esql`` callers /
+    # offline unit fixtures. Dashboard panel translation overlays the adaptive
+    # ``TBUCKET(100, ?_tstart, ?_tend)`` form via ``_rule_pack_for_panel`` (issue #316).
     ts_bucket: str = "time_bucket = TBUCKET(5 minute)"
     from_bucket: str = "time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
     logs_index: str = "logs-*"
@@ -146,6 +161,8 @@ class RulePackConfig:
     # Authoritative per-metric counter/gauge classification, keyed by metric name.
     # Overrides every inferred signal when seeding telemetry (see telemetry_contract).
     metric_kinds: dict = field(default_factory=dict)
+    # Source metric name → MetricMapEntry (shared core). Empty by default.
+    metric_map: dict = field(default_factory=dict)
     panel_type_overrides: dict = field(default_factory=dict)
     skip_panel_types: list = field(default_factory=list)
     index_rewrites: list = field(default_factory=list)
@@ -243,6 +260,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
 
         for suffix in query_cfg.counter_suffixes:
             _append_unique(pack.counter_suffixes, suffix)
+        for suffix in query_cfg.info_metric_suffixes:
+            _append_unique(pack.info_metric_suffixes, suffix)
         for skip_type in panel_cfg.skip_types:
             _append_unique(pack.skip_panel_types, skip_type)
 
@@ -271,6 +290,9 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
         pack.label_rewrites.update(query_cfg.label_rewrites)
         for metric_name, kind in query_cfg.metric_kinds.items():
             pack.metric_kinds[metric_name] = str(kind).strip().lower()
+        from observability_migration.core.metric_mapping import normalize_metric_map
+
+        pack.metric_map.update(normalize_metric_map(query_cfg.metric_map))
         _merge_mapping_lists(pack.label_candidates, query_cfg.label_candidates)
         _merge_mapping_lists(pack.label_candidates, schema_cfg.label_candidates)
         pack.control_field_overrides.update(payload.controls.field_overrides)
@@ -351,6 +373,7 @@ def build_rule_catalog(rule_pack: RulePackConfig) -> dict[str, Any]:
             "registries": {name: registry.describe() for name, registry in registries.items()},
             "rule_pack": {
                 "counter_suffixes": list(rule_pack.counter_suffixes),
+                "info_metric_suffixes": list(rule_pack.info_metric_suffixes),
                 "label_rewrites": dict(rule_pack.label_rewrites),
                 "label_candidates": dict(rule_pack.label_candidates),
                 "ignored_labels": list(rule_pack.ignored_labels),

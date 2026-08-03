@@ -423,7 +423,17 @@ def _verdict(panel: PanelAudit) -> str:
         return "MINOR_ISSUE"
     if panel.warnings:
         for w in panel.warnings:
-            if any(k in w.lower() for k in ("collapsed", "approximated", "dropped", "meta-metric")):
+            if any(
+                keyword in w.lower()
+                for keyword in (
+                    "collapsed",
+                    "approximated",
+                    "dropped",
+                    "meta-metric",
+                    "could not be bound",
+                    "omitted",
+                )
+            ):
                 return "MINOR_ISSUE"
     if not panel.translated_query and panel.status != "skipped":
         return "EXPECTED_LIMITATION"
@@ -438,6 +448,18 @@ def _truncate(text: str, maxlen: int = 120) -> str:
     if len(text) <= maxlen:
         return text
     return text[:maxlen] + "..."
+
+
+def _fenced_code(text: str) -> str:
+    """Render *text* inside a fenced code block with no trailing whitespace.
+
+    Source/translated queries can carry trailing spaces (e.g. multi-target
+    PromQL joined with ``" ||| "`` where each target keeps a trailing space).
+    Emitting them verbatim makes the generated trace docs fail
+    ``git diff --check``, so strip per-line trailing whitespace here.
+    """
+    body = "\n".join(line.rstrip() for line in str(text).splitlines())
+    return f"```\n{body}\n```\n"
 
 
 def _render_query_ir(lines: list[str], qir: dict) -> None:
@@ -612,7 +634,7 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
 
                 lines.append(f"**Source ({p.source_panel_type}):**\n")
                 for sq in p.source_queries:
-                    lines.append(f"```\n{sq}\n```\n")
+                    lines.append(_fenced_code(sq))
 
                 if p.trace:
                     lines.append("**Pipeline trace:**\n")
@@ -628,7 +650,7 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
 
                 if p.translated_query:
                     lines.append(f"**Translated ({p.kibana_type}):**\n")
-                    lines.append(f"```\n{p.translated_query}\n```\n")
+                    lines.append(_fenced_code(p.translated_query))
 
                 if p.plan and p.source_type == "datadog":
                     lines.append("**Plan:**\n")
@@ -891,7 +913,8 @@ def _section_per_dashboard_traces(audits: list[DashboardAudit]) -> str:
                 lines.append(f"**Source ({p.source_panel_type}):**")
                 lines.append("")
                 for sq in p.source_queries:
-                    lines.append(f"```\n{sq}\n```")
+                    _sq = "\n".join(line.rstrip() for line in str(sq).splitlines())
+                    lines.append(f"```\n{_sq}\n```")
                     lines.append("")
 
                 if p.trace:
@@ -910,7 +933,8 @@ def _section_per_dashboard_traces(audits: list[DashboardAudit]) -> str:
                 if p.translated_query:
                     lines.append(f"**Translated ({p.kibana_type}):**")
                     lines.append("")
-                    lines.append(f"```\n{p.translated_query}\n```")
+                    _tq = "\n".join(line.rstrip() for line in str(p.translated_query).splitlines())
+                    lines.append(f"```\n{_tq}\n```")
                     lines.append("")
 
                 if p.plan and p.source_type == "datadog":
@@ -1069,7 +1093,7 @@ def _section_not_feasible_breakdown(audits: list[DashboardAudit]) -> str:
     reason_counts: dict[str, int] = {}
     for _, p in nf_panels:
         for w in p.warnings:
-            bucket = w[:60]
+            bucket = w[:60].rstrip()
             reason_counts[bucket] = reason_counts.get(bucket, 0) + 1
     if reason_counts:
         lines.append("")
@@ -1203,9 +1227,8 @@ def main():
     )
     parser.add_argument(
         "--update-docs", action="store_true",
-        help="Fill template-based docs: shared pipeline-trace.md plus "
-             "per-source grafana-trace.md and datadog-trace.md.  "
-             "Respects --source to limit which per-source doc is updated.",
+        help="Fill template-based docs. The shared pipeline-trace.md is updated "
+             "only with --source all; per-source trace updates respect --source.",
     )
     args = parser.parse_args()
 
@@ -1215,12 +1238,13 @@ def main():
         grafana_audits = [a for a in audits if a.source == "grafana"]
         datadog_audits = [a for a in audits if a.source == "datadog"]
 
-        # --- shared doc (always written when --update-docs) ---
-        if TEMPLATE_PATH.exists():
+        # The shared trace is cross-source by contract. A partial source audit
+        # must not replace its combined rows and verdict totals.
+        if args.source == "all" and TEMPLATE_PATH.exists():
             filled = _fill_template(TEMPLATE_PATH.read_text(), audits, source="all")
             DOCS_OUTPUT_PATH.write_text(filled)
             print(f"\nDocs updated: {DOCS_OUTPUT_PATH}")
-        else:
+        elif args.source == "all":
             print(f"WARNING: shared template not found at {TEMPLATE_PATH}")
 
         # --- grafana trace ---

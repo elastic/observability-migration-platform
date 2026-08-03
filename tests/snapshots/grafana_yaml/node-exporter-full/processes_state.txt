@@ -1,0 +1,8 @@
+title: Processes State
+grafana_type: timeseries
+status: migrated
+chart_type: area
+dimension: time_bucket
+metrics: ['node_processes_state']
+mode: stacked
+axis_title: counter

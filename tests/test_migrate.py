@@ -29,6 +29,7 @@ from observability_migration.adapters.source.grafana import (
 from observability_migration.core.reporting import report as report
 from observability_migration.core.verification import disposition as disposition
 from observability_migration.targets.kibana import compile as compile_module
+from observability_migration.targets.kibana import dashboards_api
 
 migrate = SimpleNamespace(
     RulePackConfig=rules.RulePackConfig,
@@ -125,29 +126,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.rule_pack = migrate.RulePackConfig()
         self.resolver = migrate.SchemaResolver(self.rule_pack)
 
-    def translate(self, expr, panel_type="graph", translation_hints=None):
+    def _resolver(self, field_profile="otel", fields=None):
+        """SchemaResolver with an explicit planned field profile."""
+        resolver = migrate.SchemaResolver(self.rule_pack, field_profile=field_profile)
+        if fields is not None:
+            self._seed_resolver(resolver, fields)
+        return resolver
+
+    def _seed_resolver(self, resolver, fields):
+        resolver._discovery_attempted = True
+        resolver._field_cache = fields
+        resolver._discovered_mappings = {}
+        resolver._schema_profile_cache_id = None
+
+    def _remote_write_resolver(self, fields):
+        return self._resolver("prometheus_remote_write", fields)
+
+    def _native_profile_resolver(self, fields):
+        return self._resolver("prometheus_native", fields)
+
+    def translate(self, expr, panel_type="graph", translation_hints=None, resolver=None):
         return migrate.translate_promql_to_esql(
             expr,
             esql_index="metrics-*",
             panel_type=panel_type,
             rule_pack=self.rule_pack,
-            resolver=self.resolver,
+            resolver=resolver or self.resolver,
             translation_hints=translation_hints,
         )
 
-    def translate_panel(self, panel):
+    def translate_panel(self, panel, resolver=None):
         return migrate.translate_panel(
             panel,
             datasource_index="metrics-*",
             esql_index="metrics-*",
             rule_pack=self.rule_pack,
-            resolver=self.resolver,
+            resolver=resolver or self.resolver,
         )
 
     def seed_field_caps(self, fields):
-        self.resolver._discovery_attempted = True
-        self.resolver._field_cache = fields
-        self.resolver._discovered_mappings = {}
+        self._seed_resolver(self.resolver, fields)
 
     def test_schema_resolver_otel_profile_covers_workload_labels(self):
         self.assertEqual(self.resolver.resolve_label("deployment"), "k8s.deployment.name")
@@ -269,11 +287,29 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("Could not extract metric name", result.warnings)
 
-    def test_grouping_template_variable_reports_specific_not_feasible_reason(self):
+    def test_grouping_template_variable_with_concrete_labels_is_rescued(self):
+        # ``by (exporter $grouping)`` — $grouping is Grafana's *optional* extra
+        # breakdown selector (its default/unset state adds no dimension). Dropping
+        # the unresolved token and grouping by the explicit label is a faithful
+        # degrade, far better than blocking the whole panel. (OpenTelemetry
+        # Collector dashboard, real-world report.)
         result = self.translate(
-            "max(otelcol_exporter_queue_size) by (exporter $grouping) "
-            "/ min(otelcol_exporter_queue_size) by (exporter $grouping)"
+            'max(otelcol_exporter_queue_size{exporter=~"$exporter"}) by (exporter $grouping)'
         )
+
+        self.assertNotEqual(result.feasibility, "not_feasible")
+        self.assertTrue(result.esql_query)
+        self.assertNotIn("label_grouping", result.esql_query)
+        self.assertNotIn("grouping", result.esql_query)
+        joined = " ".join(result.warnings)
+        self.assertIn("$grouping", joined)
+        self.assertIn("optional", joined.lower())
+
+    def test_grouping_template_variable_only_stays_not_feasible(self):
+        # ``by (${grouping})`` alone has no concrete dimension; defaulting to
+        # "aggregate everything into one series" would silently change the
+        # result, so it stays an honest not_feasible.
+        result = self.translate("sum(rate(http_requests_total[5m])) by (${grouping})")
 
         self.assertEqual(result.feasibility, "not_feasible")
         self.assertIn(
@@ -282,6 +318,114 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
         self.assertNotIn("Could not extract metric name", result.warnings)
+
+    def test_template_variable_function_name_reports_clear_reason(self):
+        # ``${metric:value}(...)`` selects the rate/increase function
+        # dynamically — genuinely manual, but the reason must be clear, not a
+        # confusing "unknown function 'label_metric'".
+        result = self.translate(
+            "sum(${metric:value}(otelcol_rpc_server_responses_per_rpc_count{}[$__rate_interval])) "
+            "by (rpc_grpc_status_code)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings).lower()
+        self.assertIn("function", joined)
+        self.assertIn("template variable", joined)
+        self.assertNotIn("unknown function", joined)
+
+    def test_template_variable_in_metric_name_suffix_is_not_feasible(self):
+        # ``otelcol_process_cpu_seconds${suffix}`` — the suffix var changes
+        # *which* metric is queried; it must not silently resolve to a garbage
+        # ``..._secondslabel_suffix`` field name.
+        result = self.translate(
+            'max(rate(otelcol_process_cpu_seconds${suffix}{job="$job"}[$__rate_interval])) by (job $grouping)'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings).lower()
+        self.assertIn("template variable", joined)
+        self.assertNotIn("label_suffix", result.esql_query or "")
+
+    def test_template_variable_prefix_glued_to_metric_is_not_feasible(self):
+        # ``${prefix:raw}rpc_server_duration_bucket`` — the prefix var makes the
+        # exact metric name dynamic; it must not produce a garbled variable name
+        # (``$prefixrpc_server_duration_bucket``) or a garbage ES|QL query
+        # referencing the non-existent field ``label_prefixrpc_server_duration_bucket``.
+        result = self.translate(
+            'sum(increase(${prefix:raw}rpc_server_duration_bucket{job="$job"}[$__rate_interval])) by (le)'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("$prefix", joined)
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        # Must NOT expose the garbled concatenated name
+        self.assertNotIn("$prefixrpc_server_duration_bucket", joined)
+        # Must NOT emit a garbage query referencing the phantom field
+        self.assertNotIn("label_prefixrpc_server_duration_bucket", result.esql_query or "")
+
+    def test_otel_collector_rpc_responses_panel_is_not_feasible(self):
+        # Regression lock for issue #283 — the exact OTel Collector community
+        # dashboard panel title "RPC server responses by GRPC status code (receivers)".
+        # It uses BOTH a template-var function name (${metric:value}) AND a
+        # prefix-glued template var (${prefix:raw}); neither must leak an
+        # "unknown function" error or a label_* garbage query.
+        result = self.translate(
+            'sum by(rpc_grpc_status_code) (${metric:value}(${prefix:raw}rpc_server_responses_per_rpc_count{job="$job"}[$__rate_interval]))'
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        joined = " ".join(result.warnings)
+        joined_lower = joined.lower()
+        self.assertIn("template variable", joined_lower)
+        self.assertIn("manual redesign", joined_lower)
+        self.assertNotIn("unknown function", joined_lower)
+        esql = result.esql_query or ""
+        self.assertNotIn("unknown function", esql)
+        self.assertNotIn("label_metric", esql)
+
+    def test_templated_range_interval_is_not_blamed_as_dynamic_metric_name(self):
+        # ``[${step}m]`` is a templated *range interval*, not a metric/label
+        # name — the metric ``node_cpu_seconds_total`` is fully concrete. The
+        # prefix-glued guardrail must NOT fire here: matching the interval var
+        # would emit a false "metric or label name is built from a Grafana
+        # template variable ($step)" diagnostic that sends operators after the
+        # wrong problem. Regression guard against the prefix regex matching
+        # template vars inside a ``[...]`` range/subquery selector.
+        for expr in (
+            # range selector: var preceded by ``[``
+            'sum(rate(node_cpu_seconds_total{job="node"}[${step}m])) by (instance)',
+            # subquery resolution: var preceded by the ``:`` separator
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m:${step}m])) by (instance)',
+            # offset modifier: templated offset duration, metric is concrete
+            'sum(rate(node_cpu_seconds_total{job="node"}[5m] offset ${off}h)) by (instance)',
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                joined = " ".join(result.warnings).lower()
+                self.assertNotIn("metric or label name is built from", joined)
+                self.assertNotIn("dynamic metric/label name", joined)
+
+    def test_prefix_glued_to_recording_rule_name_is_not_feasible(self):
+        # A template variable glued into a recording-rule metric name is still a
+        # dynamic metric name and must degrade — both when the variable leads the
+        # name (``${env}:api:...``, first char after it is ``:``) and when a
+        # variable *segment* follows a colon (``job:${env}:api:...``). The latter
+        # must not be swallowed as a subquery resolution interval: stripping
+        # range selectors leaves these colons in metric-name position.
+        for expr in (
+            "sum(${env}:api_request_latency_seconds) by (le)",
+            "sum(job:${env}:api_request_latency_seconds) by (le)",
+        ):
+            with self.subTest(expr=expr):
+                result = self.translate(expr)
+                self.assertEqual(result.feasibility, "not_feasible")
+                joined = " ".join(result.warnings).lower()
+                self.assertIn("template variable", joined)
+                self.assertIn("manual redesign", joined)
 
     def test_grouping_template_variable_is_not_hidden_by_native_promql_path(self):
         expr = "sum(rate(http_requests_total[5m])) by (${grouping})"
@@ -318,6 +462,465 @@ class TranslatorRegressionTests(unittest.TestCase):
             "grouping dimension is unknown at migration time and requires manual redesign",
             result.warnings,
         )
+
+    def _enable_late_bound_grouping(self, choices=("exporter", "transport"), default="exporter"):
+        """Turn on late-bound grouping (issue #282) for the shared rule pack.
+
+        Mirrors ``translate_dashboard``: the target must bind ES|QL parameters
+        and the grouping variable must resolve to a set of selectable fields.
+        """
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        self.rule_pack._late_bound_group_var_choices = {
+            "grouping": {
+                "choices": list(choices),
+                "default": default,
+                "label": "Grouping",
+            }
+        }
+
+    def test_grouping_template_variable_becomes_esql_field_control_when_capability_on(self):
+        # Issue #282: a *pure* late-bound ``by ($grouping)`` should migrate to an
+        # ES|QL identifier control (``STATS ... BY ??grouping``) instead of
+        # failing.
+        self._enable_late_bound_grouping()
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("??grouping", result.esql_query)
+        # The identifier control is aliased to a STABLE output column
+        # (``grouping = ??grouping``). The bare token would name the aggregated
+        # column after the substituted field (``exporter``/``transport``/...),
+        # which the fixed Lens breakdown accessor could never match — the panel
+        # would fail to render ("invalid column"). Issue #282.
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        # The raw token only ever appears aliased, never as a bare BY column that
+        # would take the substituted field's name at view time.
+        self.assertEqual(result.esql_query.count("??grouping"), 1)
+        self.assertNotIn("BY ??grouping", result.esql_query)
+        self.assertEqual(result.metadata.get("late_bound_group_controls"), ["grouping"])
+        self.assertEqual(
+            result.metadata.get("esql_identifier_param_defaults"),
+            {"grouping": "exporter"},
+        )
+        self.assertNotIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_with_concrete_label_degrades_gracefully(self):
+        # Issue #282 collision fix: a template variable *alongside* a concrete
+        # label (``by (exporter, $grouping)``) is NOT deferred to a shared field
+        # control — one Lens breakdown accessor cannot safely follow a field
+        # control whose selectable choices may collide with the concrete grouping
+        # column (the source of the "Provided column name or index is invalid"
+        # render error). Instead the concrete grouping is kept and the optional
+        # selector token is dropped with a warning, so the panel still renders.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by (exporter, $grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        stats_line = next(line for line in result.esql_query.splitlines() if "STATS" in line)
+        self.assertIn("exporter", stats_line)
+        self.assertTrue(
+            any("optional Grafana template-variable grouping dimension" in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_not_feasible_without_capability(self):
+        # No ES|QL param binding capability -> keep the pre-#282 behaviour even
+        # when a choices map is present.
+        self.rule_pack._late_bound_group_var_choices = {
+            "grouping": {"choices": ["exporter"], "default": "exporter", "label": "Grouping"}
+        }
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_not_feasible_without_resolvable_choices(self):
+        # Capability on but the variable resolves to no selectable field -> the
+        # control would be empty, so degrade gracefully to not_feasible.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        result = self.translate("sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_falls_back_when_query_shape_cannot_carry_control(self):
+        # A *pure* ``by ($grouping)`` on a binary-expression shape is eligible for
+        # deferral, but that shape never routes grouping through the ES|QL
+        # identifier seam. The late_bound_group_control validator must then revert
+        # to not_feasible rather than drop the grouping silently (issue #282).
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "max(otelcol_exporter_queue_size) by ($grouping) "
+            "/ min(otelcol_exporter_queue_size) by ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_dashboard_late_bound_grouping_emits_esql_field_control(self):
+        # Issue #282 end-to-end: a Grafana ``by ($grouping)`` panel plus its
+        # grouping variable becomes an ES|QL field control (``??grouping``) with
+        # the variable's option list as choices and its current value as default.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+        from observability_migration.targets.kibana import lint as _lint
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        dashboard = {
+            "title": "OTel Collector Spans",
+            "uid": "otel-spans",
+            "templating": {"list": [{
+                "name": "grouping",
+                "type": "custom",
+                "label": "Group by",
+                "query": "exporter,transport,receiver",
+                "current": {"text": "transport", "value": "transport"},
+                "options": [
+                    {"text": "exporter", "value": "exporter"},
+                    {"text": "transport", "value": "transport", "selected": True},
+                    {"text": "receiver", "value": "receiver"},
+                ],
+            }]},
+            "panels": [{
+                "id": 1,
+                "title": "Spans",
+                "type": "timeseries",
+                "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                "targets": [{
+                    "refId": "A",
+                    "expr": "sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping)",
+                }],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result, path = migrate.translate_dashboard(
+                dashboard,
+                tmp,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(path).read_text())
+            # The fields control binds the ??grouping identifier, so the
+            # unbound-parameter lint gate must stay clean (issue #131 gate).
+            self.assertEqual(_lint._unbound_param_findings(path), [])
+
+        dash = doc["dashboards"][0]
+        field_controls = [c for c in (dash.get("controls") or []) if c.get("variable_type") == "fields"]
+        self.assertEqual(len(field_controls), 1)
+        control = field_controls[0]
+        self.assertEqual(control["type"], "esql")
+        self.assertEqual(control["variable_name"], "grouping")
+        self.assertEqual(control["choices"], ["exporter", "transport", "receiver"])
+        self.assertEqual(control["default"], "transport")
+
+        panel = dash["panels"][0]
+        self.assertIn("??grouping", panel["esql"]["query"])
+        # The breakdown accessor must reference the STABLE aliased column
+        # (``grouping``), matching the ``grouping = ??grouping`` STATS output.
+        # Pointing the accessor at the raw ``??grouping`` token leaves Lens
+        # unable to resolve the column, so the panel renders "invalid column"
+        # even though the ES|QL runs (issue #282, caught by the render audit).
+        self.assertIn("grouping = ??grouping", panel["esql"]["query"])
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "grouping")
+        self.assertNotIn("?", panel["esql"]["breakdown"]["field"])
+        self.assertEqual(result.not_feasible, 0)
+
+    def test_dashboard_rejects_variable_used_as_value_and_field_across_panels(self):
+        # One Kibana control cannot bind the same Grafana variable as a values
+        # parameter in one panel and an identifier parameter in another. Preserve
+        # the existing values-panel behavior and degrade only the new late-bound
+        # grouping panel rather than replacing its values control with a fields
+        # control that leaves ``?grouping`` unbound.
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+        from observability_migration.targets.kibana import lint as _lint
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="probe"
+        )
+        dashboard = {
+            "title": "Dual grouping semantics",
+            "uid": "dual-grouping",
+            "templating": {"list": [{
+                "name": "grouping",
+                "type": "custom",
+                "label": "Group by",
+                "query": "exporter,transport,receiver",
+                "current": {"text": "transport", "value": "transport"},
+                "options": [
+                    {"text": "exporter", "value": "exporter"},
+                    {"text": "transport", "value": "transport", "selected": True},
+                    {"text": "receiver", "value": "receiver"},
+                ],
+            }]},
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Dynamic grouping",
+                    "type": "timeseries",
+                    "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans[5m])) "
+                            "by ($grouping)"
+                        ),
+                    }],
+                },
+                {
+                    "id": 2,
+                    "title": "Value filter",
+                    "type": "timeseries",
+                    "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+                    "targets": [{
+                        "refId": "A",
+                        "expr": (
+                            "sum(rate(otelcol_receiver_accepted_spans"
+                            '{exporter=~"$grouping"}[5m])) by (exporter)'
+                        ),
+                    }],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result, path = migrate.translate_dashboard(
+                dashboard,
+                tmp,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(path).read_text())
+            self.assertEqual(_lint._unbound_param_findings(path), [])
+
+        dash = doc["dashboards"][0]
+        panels_by_title = {panel["title"]: panel for panel in dash["panels"]}
+        self.assertIn("markdown", panels_by_title["Dynamic grouping"])
+        self.assertNotIn("esql", panels_by_title["Dynamic grouping"])
+        self.assertIn("?grouping", panels_by_title["Value filter"]["esql"]["query"])
+        self.assertNotIn(
+            "??grouping",
+            " ".join(
+                panel.get("esql", {}).get("query", "")
+                for panel in dash["panels"]
+            ),
+        )
+        controls = dash.get("controls") or []
+        self.assertEqual(
+            [(control["variable_name"], control["variable_type"]) for control in controls],
+            [("grouping", "values")],
+        )
+        self.assertEqual(result.not_feasible, 1)
+        dynamic_result = next(
+            panel_result
+            for panel_result in result.panel_results
+            if panel_result.title == "Dynamic grouping"
+        )
+        self.assertEqual(dynamic_result.status, "not_feasible")
+        self.assertNotIn(
+            "esql_identifier_param_defaults",
+            dynamic_result.query_ir.get("metadata", {}),
+        )
+        self.assertTrue(
+            any("both value and field" in reason for reason in dynamic_result.reasons),
+            dynamic_result.reasons,
+        )
+
+    def test_value_param_scanner_excludes_field_controls(self):
+        query = (
+            "TS metrics-* | WHERE service.name RLIKE ?service "
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        self.assertEqual(panels._query_param_names(query), {"service"})
+
+    def test_grouping_multiple_template_vars_in_one_clause_not_feasible(self):
+        # Issue #282: only a single late-bound grouping dimension can migrate to
+        # an ES|QL field control (a Lens XY chart renders one breakdown). A clause
+        # naming several variables (``by ($dim1, $dim2)``) is not deferred and,
+        # being fully dynamic, degrades to not_feasible.
+        self._enable_late_bound_grouping()
+        self.rule_pack._late_bound_group_var_choices = {
+            "dim1": {"choices": ["exporter"], "default": "exporter", "label": "Dim1"},
+            "dim2": {"choices": ["transport"], "default": "transport", "label": "Dim2"},
+        }
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by ($dim1, $dim2)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??dim1", result.esql_query or "")
+        self.assertNotIn("??dim2", result.esql_query or "")
+        self.assertNotIn("label_dim", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($dim1); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_without_template_variable_stays_not_feasible(self):
+        # Issue #282: ES|QL ``STATS ... BY`` is positive grouping, so a PromQL
+        # ``without ($var)`` (aggregate *away* a viewer-chosen dimension) has no
+        # faithful field-control form and stays not_feasible.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) without ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_variable_name_colliding_with_concrete_label_degrades_gracefully(self):
+        # Issue #282 collision fix: when the grouping variable is named after a
+        # concrete label present in the SAME clause (``by (exporter, $exporter)``)
+        # the concrete label makes this a non-pure clause, so it is not deferred.
+        # The concrete grouping is kept and the redundant selector token dropped
+        # with a warning, rather than emitting a colliding field control.
+        self._enable_late_bound_grouping()
+        self.rule_pack._late_bound_group_var_choices = {
+            "exporter": {"choices": ["exporter", "transport"], "default": "exporter", "label": "Exp"},
+        }
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by (exporter, $exporter)"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertNotIn("??exporter", result.esql_query or "")
+        stats_line = next(line for line in result.esql_query.splitlines() if "STATS" in line)
+        self.assertIn("exporter", stats_line)
+
+    def test_grouping_template_variable_in_preagg_comparison_filter_is_feasible(self):
+        # Issue #282: a single-level aggregation over a comparison filter
+        # (``sum(metric > 0) by ($grouping)``) routes grouping through the same
+        # seam as the main agg path, so the late-bound dimension aliases cleanly.
+        self._enable_late_bound_grouping()
+        result = self.translate("sum(node_memory_bytes > 0) by ($grouping)")
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        self.assertEqual(result.esql_query.count("??grouping"), 1)
+        self.assertEqual(result.output_group_fields, ["time_bucket", "grouping"])
+
+    def test_grouping_template_variable_in_two_stage_comparison_count_is_not_feasible(self):
+        # The two-stage count first collapses matching samples per series, then
+        # counts those series. This emitter cannot safely carry the late-bound
+        # field through both stages, so the validator rejects the query rather
+        # than ship a literal ``grouping`` column and a nonfunctional field
+        # control (issue #282).
+        self._enable_late_bound_grouping()
+        result = self.translate("count(up == 0) by ($grouping)", panel_type="stat")
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_template_variable_in_two_stage_counter_count_is_not_feasible(self):
+        # Counting counter series also uses a two-stage collapse. Until that
+        # emitter can preserve a late-bound dimension faithfully, the validator
+        # is the safety net that keeps the panel out of migrated output.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "count(http_requests_total) by ($grouping)",
+            panel_type="stat",
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertNotIn("??grouping", result.esql_query or "")
+        self.assertIn(
+            "BY/WITHOUT clause contains Grafana template variable ($grouping); "
+            "grouping dimension is unknown at migration time and requires manual redesign",
+            result.warnings,
+        )
+
+    def test_grouping_variable_reused_as_value_and_field_param_is_not_feasible(self):
+        # One Kibana control cannot bind the same name as both a value parameter
+        # (``?grouping`` in the matcher) and an identifier parameter
+        # (``??grouping`` in STATS). Shipping this shape makes the field choice
+        # double as a regex value and usually empties the panel.
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            'sum(rate(otelcol_receiver_accepted_spans{exporter=~"$grouping"}[5m])) '
+            "by ($grouping)"
+        )
+
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertTrue(
+            any("both value and field" in warning for warning in result.warnings),
+            result.warnings,
+        )
+
+    def test_topk_grouping_template_variable_keeps_stable_alias(self):
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertEqual(result.esql_query.count("grouping = ??grouping"), 1)
+        self.assertIn("BY grouping", result.esql_query)
+        self.assertEqual(result.output_group_fields, ["grouping"])
+
+    def test_double_bracket_grouping_template_variable_keeps_stable_alias(self):
+        self._enable_late_bound_grouping()
+        result = self.translate(
+            "sum(rate(otelcol_receiver_accepted_spans[5m])) by ([[grouping]])"
+        )
+
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("grouping = ??grouping", result.esql_query)
+        self.assertEqual(result.output_group_fields, ["time_bucket", "grouping"])
 
     def test_parse_failure_does_not_emit_generic_metric_name_warning(self):
         result = self.translate("sum(rate([label___range_ss]))")
@@ -458,12 +1061,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
 
     def test_panel_with_control_bound_label_matcher_routes_to_native_esql(self):
-        """Issue #230: Kibana dashboard controls cannot bind a ``?param`` that
-        lives inside the opaque PROMQL command string, so a panel whose label
-        matcher carries a control-bound template variable must route to native
-        ES|QL — where the control binds via a visible ``... RLIKE ?var`` — and
-        NOT the PROMQL command (``{instance=~?instance}``), which renders
-        ``Parameter [?instance] value not found``."""
+        """Issue #319: when PromQL label-matcher params are supported, keep native
+        PROMQL with ``?var`` inside the matcher (ES/Kibana 9.5+). Issue #230's
+        ES|QL fallthrough remains only when the feature is unsupported.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -487,12 +1088,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         yaml_panel, _result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
 
-        # The control binding must survive the migration...
-        self.assertIn("?instance", query)
-        # ...as a native ES|QL clause Kibana can actually bind, NOT trapped
-        # inside the opaque PROMQL command string (where it stays unbound).
-        self.assertNotIn("PROMQL", query)
-        self.assertIn("RLIKE ?instance", query)
+        self.assertIn("PROMQL", query)
+        self.assertIn("instance=~?instance", query)
+        self.assertNotIn("RLIKE ?instance", query)
 
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
@@ -553,6 +1151,266 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result.status, "migrated_with_warnings")
         self.assertNotIn("?host", yaml_panel["esql"]["query"])
         self.assertIn("Dropped variable-driven label filters during migration", result.reasons)
+
+    def test_dashboard_controls_keep_uncovered_variable_drop_warning(self):
+        dashboard = {
+            "title": "Partially covered variables",
+            "uid": "partial-vars",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "label_values(cpu, host)",
+                    },
+                    {
+                        "type": "query",
+                        "name": "env",
+                        "label": "Env",
+                        "hide": 2,
+                        "query": "label_values(cpu, env)",
+                    },
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by host",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'cpu{host="$host",env="$env"}',
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            payload = yaml.safe_load(yaml_path.read_text())
+
+        panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by host")
+        # Gap A binds every emitted ``$var`` matcher (including hidden templating
+        # vars) via named params + synthesized controls, so the old "dropped
+        # uncovered variable" warning no longer applies here.
+        query = panel_result.esql_query or ""
+        self.assertIn("?host", query)
+        self.assertIn("?env", query)
+        control_names = {
+            c.get("variable_name")
+            for c in payload["dashboards"][0].get("controls", [])
+        }
+        self.assertEqual(control_names, {"host", "env"})
+        self.assertNotIn(
+            "Dropped variable-driven label filters during migration",
+            panel_result.reasons,
+        )
+
+    def test_dashboard_controls_do_not_clear_warning_for_skipped_query_variable(self):
+        dashboard = {
+            "title": "Skipped control variable",
+            "uid": "skipped-control-var",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "query_result(up)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by host",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'cpu{host="$host"}'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            payload = yaml.safe_load(yaml_path.read_text())
+
+        # query_result() cannot populate a Kibana control from Grafana's query,
+        # but Gap A still synthesizes a values binding for the emitted ``?host``
+        # so the panel filter remains interactive.
+        controls = payload["dashboards"][0].get("controls", [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["variable_name"], "host")
+        self.assertTrue(
+            any("query_result" in w for w in (result.control_warnings or [])),
+            result.control_warnings,
+        )
+        panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by host")
+        self.assertIn("?host", panel_result.esql_query or "")
+        self.assertNotIn(
+            "Dropped variable-driven label filters during migration",
+            panel_result.reasons,
+        )
+
+    def test_dashboard_controls_do_not_cover_negative_variable_matchers(self):
+        for expr in ('cpu{host!="$host"}', 'cpu{host!~"$host"}'):
+            dashboard = {
+                "title": "Negative variable matcher",
+                "uid": "negative-var",
+                "templating": {
+                    "list": [
+                        {
+                            "type": "query",
+                            "name": "host",
+                            "label": "Host",
+                            "query": "label_values(cpu, host)",
+                        }
+                    ]
+                },
+                "panels": [
+                    {
+                        "id": 1,
+                        "title": "CPU excluding host",
+                        "type": "graph",
+                        "targets": [{"refId": "A", "expr": expr}],
+                    }
+                ],
+            }
+
+            with self.subTest(expr=expr), tempfile.TemporaryDirectory() as tmpdir:
+                result, _yaml_path = migrate.translate_dashboard(
+                    dashboard,
+                    pathlib.Path(tmpdir),
+                    datasource_index="metrics-*",
+                    esql_index="metrics-*",
+                    rule_pack=self.rule_pack,
+                    resolver=self.resolver,
+                )
+
+            panel_result = next(pr for pr in result.panel_results if pr.title == "CPU excluding host")
+            # Gap A binds negative matchers too (``!= ?host`` / ``NOT (... RLIKE ?host)``).
+            self.assertEqual(panel_result.status, "migrated", expr)
+            self.assertIn("?host", panel_result.esql_query or "", expr)
+            self.assertNotIn(
+                "Dropped variable-driven label filters during migration",
+                panel_result.reasons,
+            )
+
+    def test_dashboard_controls_do_not_cover_logql_text_filter_variables(self):
+        dashboard = {
+            "title": "Log text variable",
+            "uid": "log-text-var",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "svc",
+                        "label": "Service",
+                        "query": "label_values({service_name!=\"\"}, service_name)",
+                    },
+                    {
+                        "type": "query",
+                        "name": "term",
+                        "label": "Term",
+                        "hide": 2,
+                        "query": "label_values({service_name!=\"\"}, term)",
+                    },
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Logs by term",
+                    "type": "logs",
+                    "datasource": {"type": "loki", "uid": "loki"},
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": '{service_name="$svc"} |~ "$term"',
+                            "datasource": {"type": "loki", "uid": "loki"},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, _yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+
+        panel_result = next(pr for pr in result.panel_results if pr.title == "Logs by term")
+        self.assertEqual(panel_result.status, "migrated_with_warnings")
+        self.assertIn("Dropped variable-driven LogQL text filter during migration", panel_result.reasons)
+
+    def test_dashboard_controls_do_not_clear_warning_for_mismatched_label_field(self):
+        dashboard = {
+            "title": "Mismatched variable field",
+            "uid": "mismatched-var-field",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU by instance",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'cpu{instance="$host"}'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=self.resolver,
+            )
+            payload = yaml.safe_load(yaml_path.read_text())
+
+        controls = payload["dashboards"][0].get("controls", [])
+        self.assertEqual(controls[0]["variable_name"], "host")
+        self.assertEqual(controls[0]["type"], "esql")
+        panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by instance")
+        # Gap A binds ``instance="$host"`` as ``?host`` even when the control is
+        # populated from the ``host`` label — matching Grafana's variable-value
+        # semantics instead of dropping the matcher.
+        self.assertIn("?host", panel_result.esql_query or "")
+        self.assertNotIn(
+            "Dropped variable-driven label filters during migration",
+            panel_result.reasons,
+        )
 
     def test_panel_template_label_matcher_falls_back_to_esql_with_static_legend(self):
         panel = {
@@ -638,11 +1496,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("?host", rendered)
 
     def test_panel_template_label_matcher_binds_via_native_esql_when_feature_supported(self):
-        """Issue #230: with the param-binding feature supported, a control-bound
-        label matcher must route to native ES|QL so the control binds via a
-        visible ``WHERE host == ?host`` clause — even when ``native_promql`` is
-        enabled. It must NOT emit a PROMQL command with ``?host`` trapped in its
-        opaque string, where Kibana's controls can't bind it."""
+        """Issue #319: with ``promql_label_matcher_params`` supported, keep native
+        PROMQL and rewrite ``$host`` → ``?host`` inside the matcher.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
         )
@@ -668,8 +1524,8 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "migrated")
         query = yaml_panel["esql"]["query"]
-        self.assertNotIn("PROMQL", query)
-        self.assertIn("== ?host", query)
+        self.assertIn("PROMQL", query)
+        self.assertIn("host=?host", query)
 
     def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
         self.seed_field_caps({
@@ -736,7 +1592,10 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(result.status, "requires_manual")
         query = yaml_panel["esql"]["query"]
-        self.assertIn("type", query)
+        # legendFormat labels are display-only and are not promoted into BY,
+        # including labels that exist in field caps (``type``) and ones that do
+        # not (``info``).
+        self.assertNotIn(", type", query)
         self.assertNotIn(", info", query)
         self.assertNotIn("COALESCE(info", query)
 
@@ -762,7 +1621,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.warnings,
         )
 
-    def test_filtered_ts_stats_inline_case_inside_timeseries_aggregate(self):
+    def test_filtered_ts_stats_wraps_case_around_timeseries_aggregate(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM_OVER_TIME(machine_cpu_cores, 5m)",
             ['resource == "cpu"'],
@@ -770,10 +1629,10 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM_OVER_TIME(CASE((resource == "cpu"), machine_cpu_cores, NULL), 5m)',
+            'CASE((resource == "cpu"), SUM_OVER_TIME(machine_cpu_cores, 5m), NULL)',
         )
 
-    def test_filtered_outer_agg_wraps_case_inside_nested_ts_function(self):
+    def test_filtered_outer_counter_agg_wraps_case_around_nested_ts_function(self):
         expr = promql._inline_filters_into_stats_expr(
             "SUM(RATE(node_cpu_seconds_total, 5m))",
             ['mode == "system"'],
@@ -781,19 +1640,24 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(
             expr,
-            'SUM(RATE(CASE((mode == "system"), node_cpu_seconds_total, NULL), 5m))',
+            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total, 5m), NULL))',
         )
-        self.assertNotIn("CASE((mode == \"system\"), RATE(", expr)
+        self.assertNotIn("RATE(CASE(", expr)
 
-    def test_filtered_last_over_time_sum_is_not_inlined_as_regular_aggregate(self):
+    def test_filtered_last_over_time_sum_inlines_case_on_field(self):
+        # Window-less LAST_OVER_TIME (counter-without-rate summary path) must
+        # CASE-wrap the field so divergent per-target filters can fuse (Express
+        # "Count by class") instead of refusing the shared pipeline.
         expr = promql._inline_filters_into_stats_expr(
             "SUM(LAST_OVER_TIME(kube_pod_container_resource_requests))",
             ['resource == "cpu"'],
             timeseries_window="5m",
         )
 
-        self.assertIsNone(expr)
-
+        self.assertEqual(
+            expr,
+            'SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL), 5m))',
+        )
     def test_filtered_percentile_inlines_value_arg_and_keeps_percentile(self):
         # PERCENTILE(value, phi) takes the percentile as a top-level 2nd arg;
         # only the value expression may be wrapped in CASE so the emitted ES|QL
@@ -858,12 +1722,43 @@ class TranslatorRegressionTests(unittest.TestCase):
         OTEL-candidate fallback behavior so the offline migration path is
         unchanged."""
         # No seed_field_caps() call → _field_cache stays None.
-        # resolve_label() will call _discover_fields() which sets it to {} when
-        # there is no es_url. Either way, empty cache means we should fall
-        # through to PROM_TO_OTEL_CANDIDATES.
+        # resolve_label() will call _discover_fields() which leaves an empty
+        # cache when there is no es_url. Either way, empty cache means we should
+        # fall through to PROM_TO_OTEL_CANDIDATES.
         self.assertEqual(self.resolver.resolve_label("instance"), "service.instance.id")
         self.assertEqual(self.resolver.resolve_label("namespace"), "k8s.namespace.name")
         self.assertEqual(self.resolver.resolve_label("node"), "k8s.node.name")
+
+    def test_merge_control_schema_survives_offline_discover(self):
+        """Curated control-schema fields must remain source-faithful offline.
+
+        Offline scenario manifests merge a control schema before the first
+        resolve_label() call. Discovery must not wipe that cache when es_url is
+        empty, or Grafana variables fall back to OTel aliases and diverge from
+        the seeded Prometheus labels used by interaction audits.
+        """
+        self.resolver.merge_control_schema(
+            {
+                "field_cache": {
+                    "cluster": {
+                        "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                    },
+                    "job": {
+                        "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                    },
+                },
+                "cooccurrence_cache": [
+                    {"metric": "kube_node_info", "field": "cluster", "cooccurs": True},
+                    {"metric": "node_cpu_seconds_total", "field": "job", "cooccurs": True},
+                ],
+            }
+        )
+        self.assertEqual(self.resolver.resolve_label("cluster"), "cluster")
+        self.assertEqual(self.resolver.resolve_label("job"), "job")
+        self.assertEqual(
+            self.resolver.resolve_label("cluster", metric_field="kube_node_info"),
+            "cluster",
+        )
 
     def test_resolve_label_user_override_still_wins(self):
         """A user-provided label_rewrites entry trumps everything else."""
@@ -949,10 +1844,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'IRATE(CASE((mode == "user"), node_cpu_guest_seconds_total, NULL), 1m)',
+            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)',
             translated.esql_query,
         )
-        self.assertIn("IRATE(node_cpu_seconds_total", translated.esql_query)
+        # Denominator stays IRATE (not AVG_OVER_TIME) but is outer-CASE-shaped when
+        # the numerator already filters around IRATE, so ES does not ClassCast
+        # mixed STATS args (and we do not nest CASE(true) inside the numerator).
+        self.assertIn(
+            "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)",
+            translated.esql_query,
+        )
+        self.assertNotIn(
+            "SUM(IRATE(node_cpu_seconds_total, 1m))",
+            translated.esql_query,
+        )
+        self.assertNotIn("IRATE(CASE(", translated.esql_query)
         self.assertNotIn("AVG_OVER_TIME", translated.esql_query)
         disagreements = [w for w in translated.warnings if "currently types this field as gauge" in w]
         self.assertEqual(len(disagreements), 1, f"expected one disagreement warning, got: {translated.warnings}")
@@ -1085,23 +1991,38 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertGreater(value_filter_idx, value_stats_idx)
 
-    def test_grouped_rate_inside_formula_is_wrapped_for_ts_validation(self):
+    def test_grouped_rate_or_irate_formula_with_series_count_denominator_is_not_feasible(self):
+        """A three-level formula — ``(sum(rate(X) or irate(X)) by(ns)) /
+        count(Y) by(ns) * 100`` — cannot be honestly reduced by
+        ``_build_formula_plan``: the numerator's ``or`` spans different range
+        functions on the *same* series (not a plain aggregate) and the
+        denominator's ``count(Y) by(ns)`` is a series-count (nested_agg)
+        pattern that ``_build_measure_spec`` does not model as a formula
+        operand. Before the operand-safety fix, both those per-operand
+        failures fell through to the single top-level ``fragment_extract``
+        fallback, which discarded the division, the ``* 100`` scaling, and
+        the ``or`` entirely — silently emitting a bare ``AVG(RATE(x))`` with
+        no relationship to the source "CPU busy %" formula (a materially
+        larger semantic gap than a normal approximation). It must now be
+        marked ``not_feasible`` instead of emitting that unrelated number."""
         translated = self.translate(
             '(sum(rate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[$interval]) '
             'or irate(process_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}[5m])) by (node_name)) '
             '/ count(node_cpu_seconds_total{job=~".*exporter.*",node_name=~"$node_name"}) by (node_name) * 100'
         )
 
-        self.assertEqual(translated.feasibility, "feasible")
-        self.assertIn("AVG(RATE(process_cpu_seconds_total, 5m))", translated.esql_query)
-        self.assertNotIn("= RATE(process_cpu_seconds_total, 5m) BY", translated.esql_query)
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertTrue(
+            any("arithmetic" in w and "manual review" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_resolver_for_index_propagates_es_api_key(self):
         """Alternate-index resolvers (used for controls and logs) must inherit
         the parent resolver's API key so they can run `_field_caps` and pick
         up source-faithful fields. Without the key, the alternate resolver
         operated blind and silently fell back to OTEL-only mappings — the
-        exact root cause of elastic/mig-to-kbn#21 (the control bound to
+        exact root cause of elastic/observability-migration-platform#21 (the control bound to
         `instance` ended up pointing at `service.instance.id` while the
         panel WHERE clause correctly used `instance`)."""
         parent = migrate.SchemaResolver(
@@ -1127,6 +2048,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
+
+    def test_resolver_detects_prometheus_metrics_profile(self):
+        """Classic Metricbeat nested layout (use_types=false)."""
+        self.seed_field_caps({
+            "prometheus.labels.instance": {
+                "keyword": {"aggregatable": True, "time_series_dimension": True}
+            },
+            "prometheus.metrics.http_requests_total": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        self.assertEqual(self.resolver.schema_profile(), "prometheus_metrics")
 
     def test_resolver_does_not_detect_profile_when_only_otel_fields(self):
         self.seed_field_caps({
@@ -1168,33 +2101,206 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(resolver.discovery_status()["status"], "error")
         self.assertIn("401", resolver.discovery_status()["error"])
 
+    def test_field_resolution_summary_flags_offline_fallback(self):
+        # No --es-url: resolution relies on built-in OTel defaults, which the
+        # summary must flag so the run can warn the user (issue #256).
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "offline")
+        self.assertTrue(summary["otel_fallback"])
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["field_count"], 0)
+
+    def test_field_resolution_summary_flags_empty_fallback(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"fields": {}}
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "empty")
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_flags_error_fallback(self):
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=401, text="Unauthorized")
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "error")
+        self.assertTrue(summary["otel_fallback"])
+        self.assertIn("401", summary["error"])
+
+    def test_field_resolution_summary_clears_fallback_for_known_profile(self):
+        # Recognized profile where every resolved label is present as a real
+        # namespaced field: resolution is verified, so no warning.
+        resolver = migrate.SchemaResolver(
+            self.rule_pack, es_url="https://example.es", field_profile="prometheus_remote_write",
+        )
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "prometheus.labels.instance": {"keyword": {"aggregatable": True}},
+                "prometheus.labels.namespace": {"keyword": {"aggregatable": True}},
+                "prometheus.http_requests_total.counter": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+            self.assertEqual(resolver.resolve_label("namespace"), "prometheus.labels.namespace")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_warns_on_missing_label_in_known_profile(self):
+        # Planned prometheus_remote_write emits namespaced labels even when
+        # absent from live caps — preflight surfaces missing fields; resolution
+        # does not fall back to blind OTel defaults during emit.
+        resolver = migrate.SchemaResolver(
+            self.rule_pack, es_url="https://example.es", field_profile="prometheus_remote_write",
+        )
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "prometheus.labels.instance": {"keyword": {"aggregatable": True}},
+                "prometheus.http_requests_total.counter": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+            self.assertEqual(resolver.resolve_label("namespace"), "prometheus.labels.namespace")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["schema_profile"], "prometheus_remote_write")
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_clears_fallback_when_otel_fields_confirmed(self):
+        # Discovery returned live OTel fields that back resolution — every
+        # resolved label maps to a confirmed field, so no warning.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "service.instance.id": {"keyword": {"aggregatable": True}},
+                "k8s.namespace.name": {"keyword": {"aggregatable": True}},
+                "http_requests_total": {"long": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            # Both resolve to live-confirmed OTel fields (discovered mappings),
+            # not blind candidates.
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertGreater(summary["label_mappings"], 0)
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_no_warn_for_verified_bare_labels(self):
+        # Discovery succeeded and the dashboard's labels exist verbatim in the
+        # target (source-faithful), so resolution is verified even without a
+        # recognized profile or OTel mappings — no warning (review finding #1).
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "instance": {"keyword": {"aggregatable": True}},
+                "job": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "instance")
+            self.assertEqual(resolver.resolve_label("job"), "job")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["label_mappings"], 0)
+        self.assertFalse(summary["otel_fallback"])
+
+    def test_field_resolution_summary_warns_on_partial_otel_fallback(self):
+        # One label resolves to a live-confirmed OTel field, but a sibling label
+        # falls back to a blind OTel default absent from the target. A single
+        # confirmed mapping must not mask the sibling's blind fallback — the run
+        # still warns (review finding #2).
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "service.instance.id": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            # instance -> confirmed; namespace -> blind k8s.namespace.name.
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            self.assertEqual(resolver.resolve_label("namespace"), "k8s.namespace.name")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertGreater(summary["label_mappings"], 0)
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_flags_unrecognized_schema(self):
+        # Discovery succeeded but no Prometheus profile and no OTel candidate
+        # matched the live schema; an absent label resolves to a blind OTel
+        # default, so the run warns.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "totally.unrelated.field": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            self.assertEqual(resolver.resolve_label("instance"), "service.instance.id")
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertEqual(summary["label_mappings"], 0)
+        self.assertTrue(summary["otel_fallback"])
+
+    def test_field_resolution_summary_silent_when_unrecognized_schema_unused(self):
+        # Discovery succeeded, schema unrecognized, but no label ever fell back
+        # (e.g. a dashboard with no metric labels): nothing rendered empty due
+        # to fields, so the run stays silent.
+        resolver = migrate.SchemaResolver(self.rule_pack, es_url="https://example.es")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "fields": {
+                "totally.unrelated.field": {"keyword": {"aggregatable": True}},
+            }
+        }
+        with mock.patch.object(schema.requests, "get", return_value=response):
+            summary = resolver.field_resolution_summary()
+        self.assertEqual(summary["status"], "ok")
+        self.assertIsNone(summary["schema_profile"])
+        self.assertFalse(summary["otel_fallback"])
+
     def test_resolve_label_namespaces_to_prometheus_labels_when_profile_active(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
         })
-        self.assertEqual(self.resolver.resolve_label("instance"), "prometheus.labels.instance")
-        self.assertEqual(self.resolver.resolve_control_field("instance"), "prometheus.labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "prometheus.labels.instance")
+        self.assertEqual(resolver.resolve_control_field("instance"), "prometheus.labels.instance")
 
     def test_resolve_metric_field_picks_counter_suffix_for_counter_metric(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
             "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            resolver.resolve_metric_field("http_requests_total", prefer="counter"),
             "prometheus.http_requests_total.counter",
         )
 
     def test_resolve_metric_field_picks_value_suffix_for_gauge_metric(self):
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.http_requests_total.counter": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
             "prometheus.process_resident_memory_bytes.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("process_resident_memory_bytes", prefer="gauge"),
+            resolver.resolve_metric_field("process_resident_memory_bytes", prefer="gauge"),
             "prometheus.process_resident_memory_bytes.value",
         )
 
@@ -1214,20 +2320,20 @@ class TranslatorRegressionTests(unittest.TestCase):
         requested metric has no leaf at all, the fallback name must reflect
         the caller's `prefer` so the missing-field signal points at the
         right physical leaf."""
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.up.value": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="counter"),
+            resolver.resolve_metric_field("absent_metric", prefer="counter"),
             "prometheus.absent_metric.counter",
         )
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="gauge"),
+            resolver.resolve_metric_field("absent_metric", prefer="gauge"),
             "prometheus.absent_metric.value",
         )
         self.assertEqual(
-            self.resolver.resolve_metric_field("absent_metric", prefer="rate"),
+            resolver.resolve_metric_field("absent_metric", prefer="rate"),
             "prometheus.absent_metric.rate",
         )
 
@@ -1235,7 +2341,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         """End-to-end: a PromQL counter rate against a remote_write profile
         target must produce ESQL referencing `prometheus.labels.instance` and
         `prometheus.http_requests_total.counter` in the right places."""
-        self.seed_field_caps({
+        resolver = self._remote_write_resolver({
             "prometheus.labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "prometheus.labels.path": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
@@ -1244,7 +2350,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             "prometheus.http_requests_total.rate": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
         })
         translated = self.translate(
-            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)',
+            resolver=resolver,
         )
         self.assertIn('prometheus.labels.instance == "i-1"', translated.esql_query)
         # The aggregation argument is the namespaced counter field.
@@ -1304,59 +2411,60 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.schema_profile(), "prometheus_remote_write")
 
     def test_resolve_metric_field_prefixes_metrics_dot_for_native_profile(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         self.assertEqual(
-            self.resolver.resolve_metric_field("http_requests_total", prefer="counter"),
+            resolver.resolve_metric_field("http_requests_total", prefer="counter"),
             "metrics.http_requests_total",
         )
         # prefer is irrelevant for native layout (no suffix variants) — always prefixed
         self.assertEqual(
-            self.resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
+            resolver.resolve_metric_field("process_cpu_seconds_total", prefer="gauge"),
             "metrics.process_cpu_seconds_total",
         )
 
     def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "labels.job": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
-        self.assertEqual(self.resolver.resolve_label("job"), "labels.job")
-        self.assertEqual(self.resolver.resolve_control_field("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("job"), "labels.job")
+        self.assertEqual(resolver.resolve_control_field("instance"), "labels.instance")
 
     def test_is_counter_uses_metrics_prefix_field_cap_for_native_profile(self):
         """is_counter() must check `metrics.<name>` capability, not bare name."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
-        self.assertTrue(self.resolver.is_counter("http_requests_total"))
-        self.assertFalse(self.resolver.is_counter("process_resident_memory_bytes"))
+        self.assertTrue(resolver.is_counter("http_requests_total"))
+        self.assertFalse(resolver.is_counter("process_resident_memory_bytes"))
 
     def test_is_counter_respects_native_profile_gauge_cap_for_total_suffix(self):
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
 
-        self.assertFalse(self.resolver.is_counter("http_requests_total"))
+        self.assertFalse(resolver.is_counter("http_requests_total"))
 
     def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
         """End-to-end: counter rate against a native /_prometheus endpoint target
         must produce ES|QL referencing `metrics.*` metric fields and `labels.*`
         dimension fields, never bare names or prometheus.* nesting."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             "labels.method": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         translated = self.translate(
-            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)'
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance, method)',
+            resolver=resolver,
         )
         self.assertIn("metrics.http_requests_total", translated.esql_query)
         self.assertIn('labels.instance == "i-1"', translated.esql_query)
@@ -1369,7 +2477,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         """For native profile: labels not yet observed in the field cache must
         still resolve to `labels.<name>`, not fall through to wrong OTel candidates
         (e.g. service.instance.id) which don't exist in this layout."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             # Only one metric field — enough to trigger native profile detection
             # once a labels.* field is also present.
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
@@ -1377,15 +2485,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             # NOTE: labels.instance deliberately NOT present in cache.
         })
         # Must return labels.instance, not service.instance.id or bare 'instance'.
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
-        self.assertEqual(self.resolver.resolve_label("namespace"), "labels.namespace")
-        self.assertEqual(self.resolver.resolve_label("unknown_label"), "labels.unknown_label")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("namespace"), "labels.namespace")
+        self.assertEqual(resolver.resolve_label("unknown_label"), "labels.unknown_label")
 
     def test_build_discovered_mappings_skipped_for_native_profile(self):
         """_build_discovered_mappings must not populate OTel entries for native
         profile — native indices have no OTel fields and scanning them is wasted
         work that could also produce stale fallbacks."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
             # Simulate an OTel field that happens to be in the cache (edge case):
@@ -1393,22 +2501,23 @@ class TranslatorRegressionTests(unittest.TestCase):
             "service.instance.id": {"keyword": {"aggregatable": True}},
         })
         # Explicitly invoke _build_discovered_mappings the way _discover_fields does.
-        self.resolver._build_discovered_mappings()
+        resolver._build_discovered_mappings()
         # No OTel candidates should have been mapped.
-        self.assertEqual(self.resolver._discovered_mappings, {})
+        self.assertEqual(resolver._discovered_mappings, {})
         # resolve_label must still return the namespaced form, not the OTel field.
-        self.assertEqual(self.resolver.resolve_label("instance"), "labels.instance")
+        self.assertEqual(resolver.resolve_label("instance"), "labels.instance")
 
     def test_translator_gauge_metric_uses_ts_with_metrics_prefix_for_native_profile(self):
         """Gauge metrics in native profile must use TS (issue #8: FROM against a
         TSDS sums every per-sample doc and inflates the value) and still
         reference the `metrics.` prefixed field name."""
-        self.seed_field_caps({
+        resolver = self._native_profile_resolver({
             "metrics.process_resident_memory_bytes": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
             "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
         })
         translated = self.translate(
-            'avg(process_resident_memory_bytes) by (instance)'
+            'avg(process_resident_memory_bytes) by (instance)',
+            resolver=resolver,
         )
         self.assertIn("metrics.process_resident_memory_bytes", translated.esql_query)
         self.assertIn("TS metrics-*", translated.esql_query)
@@ -1416,6 +2525,374 @@ class TranslatorRegressionTests(unittest.TestCase):
         # confirms the gauge metric correctly took the TS path.
         self.assertIn("TBUCKET", translated.esql_query)
         self.assertNotIn("FROM metrics-*", translated.esql_query)
+
+    # --- OTel Collector (prometheusreceiver) metrics.<name> fallback (#270) ---
+    #
+    # The OTel Collector's `metrics-prometheusreceiver.otel*` indices store
+    # metrics as `metrics.<name>` but ship OTel-shaped labels (resource/data-
+    # point attributes), never `labels.<name>`. That means they never satisfy
+    # the prometheus_native profile's dual-signal guard (metrics.* AND labels.*)
+    # tested above, so schema_profile() stays None for this shape. Without a
+    # fallback, resolve_metric_field returned the bare name, and Kibana rejected
+    # the resulting `WHERE <bare> IS NOT NULL` with "Invalid input types for IS
+    # NOT NULL" because the bare field genuinely doesn't exist on the index.
+
+    def test_resolve_metric_field_prefixes_when_target_advertises_metrics_dot_field(self):
+        """When schema_profile() is None (OTel-shaped labels, not labels.*) but
+        the live target advertises the exact `metrics.<name>` field and not the
+        bare name, resolve_metric_field must still prefix it."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.assertIsNone(self.resolver.schema_profile())
+        self.assertEqual(
+            self.resolver.resolve_metric_field("elasticsearch_jvm_gc_collection_seconds_sum"),
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum",
+        )
+
+    def test_resolve_metric_field_leaves_bare_name_when_prefixed_field_absent(self):
+        """Guard: arbitrary custom indices without a matching `metrics.<name>`
+        field must be unaffected — no prefix is invented."""
+        self.seed_field_caps({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("some_custom_metric"),
+            "some_custom_metric",
+        )
+
+    def test_resolve_metric_field_prefers_bare_name_when_both_present(self):
+        """Source-faithful: if the bare name is also a real field (e.g. dual-
+        shipping), keep using it rather than switching to the prefixed form."""
+        self.seed_field_caps({
+            "http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+            "metrics.http_requests_total": {"long": {"aggregatable": True, "time_series_metric": "counter"}},
+        })
+        self.assertEqual(
+            self.resolver.resolve_metric_field("http_requests_total"),
+            "http_requests_total",
+        )
+
+    def test_translator_emits_metrics_prefix_where_clause_for_otel_collector_shape(self):
+        """End-to-end: the exact panel/query shape from issue #270 must emit
+        `WHERE metrics.<name> IS NOT NULL`, not the bare name that Kibana
+        rejects with 'Invalid input types for IS NOT NULL'."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        translated = self.translate("elasticsearch_jvm_gc_collection_seconds_sum")
+        self.assertIn(
+            "WHERE metrics.elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL",
+            translated.esql_query,
+        )
+        self.assertNotIn("WHERE elasticsearch_jvm_gc_collection_seconds_sum IS NOT NULL", translated.esql_query)
+
+    def test_is_counter_uses_metrics_prefix_fallback_field_cap(self):
+        """is_counter() must check the fallback-prefixed `metrics.<name>`
+        capability when the bare field doesn't exist on an OTel Collector index.
+        Uses metric names without a `_total`/`_sum`/`_bucket`-style suffix so the
+        name-heuristic short-circuit in is_counter() can't mask a broken
+        field-cap fallback."""
+        self.seed_field_caps({
+            "metrics.elasticsearch_indices_indexing_time_seconds": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.elasticsearch_process_cpu_percent": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+        })
+        self.assertTrue(self.resolver.is_counter("elasticsearch_indices_indexing_time_seconds"))
+        self.assertFalse(self.resolver.is_counter("elasticsearch_process_cpu_percent"))
+
+    # --- Native PROMQL path metrics.<name> prefix (#270) ---
+    #
+    # The native PROMQL command (`PROMQL index=... value=(<expr>)`) embeds the
+    # original PromQL expression, whose bare metric names find no field on an
+    # OTel Collector index — the panel renders empty (no error, unlike the ES|QL
+    # path). build_native_promql_query must rewrite each metric selector to its
+    # resolved `metrics.<name>` field. ES's PROMQL command accepts the dotted
+    # selector inside functions (verified live on issue #270).
+
+    def _otel_resolver(self, fields):
+        return self._resolver("otel", fields)
+
+    def _native_profile_resolver_for_promql(self, fields):
+        """Native planned profile for native-PROMQL rewrite tests."""
+        return self._resolver("prometheus_native", fields)
+
+    def test_native_profile_does_not_prefix_label_matcher_or_grouping_keys(self):
+        """Regression (#270 review): under the `prometheus_native` profile,
+        labels live under `labels.<name>` — there is no `metrics.<label>` field.
+        The rewrite must touch only the metric selector, leaving label-matcher
+        keys and `by(...)` grouping tokens bare so the PROMQL command still
+        matches labels and groups correctly."""
+        resolver = self._native_profile_resolver_for_promql({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "labels.instance": {"keyword": {"aggregatable": True}},
+        })
+        # Precondition: planned native profile prefixes metrics unconditionally.
+        self.assertEqual(resolver._effective_schema_profile(), "prometheus_native")
+        self.assertEqual(resolver.resolve_metric_field("instance"), "metrics.instance")
+        q = panels.build_native_promql_query(
+            'sum(rate(http_requests_total{instance="i-1"}[5m])) by (instance)',
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn(
+            'sum(rate(metrics.http_requests_total{instance="i-1"}[5m])) by (instance)',
+            q,
+        )
+        self.assertNotIn("metrics.instance", q)
+
+    def test_native_promql_prefixes_exact_name_matcher_value(self):
+        """Regression (#270 review): ``{__name__="foo"}`` is the metric-name
+        matcher — equivalent to selecting ``foo`` — so its exact value gets the
+        same field-cache-gated ``metrics.`` prefix a bare selector would."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="metrics.http_requests_total"})', q)
+
+    def test_native_promql_prefixes_name_matcher_alongside_other_labels(self):
+        """The ``__name__`` value is rewritten; a sibling label matcher key is
+        not (it is a real label, not a metric)."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="http_requests_total", job="api"}',
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('{__name__="metrics.http_requests_total", job="api"}', q)
+        self.assertNotIn('metrics.job', q)
+
+    def test_native_promql_leaves_regex_name_matcher_bare(self):
+        """A regex ``__name__=~`` matcher value cannot be safely prefixed
+        (prefixing a regex is fragile), so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__=~"http.*"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__=~"http.*"})', q)
+        self.assertNotIn('metrics.http', q)
+
+    def test_native_promql_leaves_negative_name_matcher_bare(self):
+        """A ``__name__!=`` matcher selects everything *but* the named metric;
+        prefixing its value would change meaning, so it is left unchanged."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            '{__name__!="http_requests_total"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__!="http_requests_total"})', q)
+        self.assertNotIn('metrics.http_requests_total', q)
+
+    def test_native_promql_leaves_name_matcher_bare_when_prefixed_field_absent(self):
+        """Same gate as bare selectors: an index storing the metric bare (no
+        ``metrics.<name>``) is untouched — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            '{__name__="some_custom_metric"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=({__name__="some_custom_metric"})', q)
+        self.assertNotIn('metrics.some_custom_metric', q)
+
+    def test_native_promql_does_not_prefix_label_key_that_collides_with_metric(self):
+        """Regression (#270 review): a label-matcher key must never be rewritten
+        even when a ``metrics.<key>`` field happens to exist in the target (a
+        label name colliding with a metric name). Only the selector position is
+        a metric reference; the brace contents are label keys/values."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.job": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            'http_requests_total{job="api"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn('value=(metrics.http_requests_total{job="api"})', q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_does_not_prefix_grouping_label_colliding_with_metric(self):
+        """A ``by(...)`` grouping label colliding with a metric field must stay
+        bare — it names an output dimension, not a metric selector."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.instance": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (instance)",
+            index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (instance)", q)
+        self.assertNotIn("metrics.instance", q)
+
+    def test_native_promql_does_not_prefix_agg_operator_in_modifier_before_args_form(self):
+        """Regression (#270 review): in the ``sum by (...) (...)`` form the
+        aggregation operator is NOT immediately followed by ``(`` (the modifier
+        comes first), so the function-call guard misses it. It must never be
+        rewritten even when a colliding ``metrics.sum`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum by (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum by (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
+    def test_native_promql_does_not_prefix_without_agg_operator_before_args(self):
+        """Same for the ``sum without (...) (...)`` form."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.sum": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "sum without (job) (http_requests_total)", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("sum without (job) (metrics.http_requests_total)", q)
+        self.assertNotIn("metrics.sum", q)
+
+    def test_native_promql_does_not_prefix_offset_keyword_colliding_with_metric(self):
+        """The ``offset`` modifier keyword must not be rewritten even when a
+        ``metrics.offset`` field exists."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "metrics.offset": {"double": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "http_requests_total offset 5m", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("metrics.http_requests_total offset 5m", q)
+        self.assertNotIn("metrics.offset", q)
+
+    def test_native_promql_prefixes_bare_metric_on_otel_collector_shape(self):
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        q = panels.build_native_promql_query(
+            "elasticsearch_jvm_gc_collection_seconds_sum",
+            index="metrics-prometheusreceiver.otel*",
+            resolver=resolver,
+        )
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", q)
+        self.assertNotIn("value=(elasticsearch_jvm_gc_collection_seconds_sum)", q)
+
+    def test_native_promql_prefixes_metric_inside_functions(self):
+        """The dotted field must land on the metric selector only — not on the
+        `sum`/`rate` function names or the `by` grouping label."""
+        resolver = self._otel_resolver({
+            "metrics.http_requests_total": {
+                "long": {"aggregatable": True, "time_series_metric": "counter"}
+            },
+        })
+        q = panels.build_native_promql_query(
+            "sum(rate(http_requests_total[5m])) by (job)",
+            index="metrics-*",
+            resolver=resolver,
+        )
+        self.assertIn("sum(rate(metrics.http_requests_total[5m])) by (job)", q)
+        self.assertNotIn("metrics.sum", q)
+        self.assertNotIn("metrics.rate", q)
+        self.assertNotIn("metrics.job", q)
+
+    def test_native_promql_leaves_bare_metric_when_prefixed_field_absent(self):
+        """Guard: an index that stores the metric bare (no `metrics.<name>`) is
+        unaffected — no prefix is invented."""
+        resolver = self._otel_resolver({
+            "some_custom_metric": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            "some_custom_metric", index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(some_custom_metric)", q)
+        self.assertNotIn("metrics.some_custom_metric", q)
+
+    def test_native_promql_does_not_prefix_label_values(self):
+        """A metric name appearing inside a label *value* string must not be
+        rewritten — only the selector position is a field reference."""
+        resolver = self._otel_resolver({
+            "metrics.up": {"long": {"aggregatable": True, "time_series_metric": "gauge"}},
+        })
+        q = panels.build_native_promql_query(
+            'up{job="up"}', index="metrics-*", resolver=resolver,
+        )
+        self.assertIn("value=(metrics.up{job=\"up\"})", q)
+        # The label value "up" stays a literal string, not metrics.up.
+        self.assertNotIn('"metrics.up"', q)
+
+    def test_native_promql_no_resolver_is_unchanged_passthrough(self):
+        q = panels.build_native_promql_query("foo", index="metrics-*")
+        self.assertIn("value=(foo)", q)
+        self.assertNotIn("metrics.foo", q)
+
+    def test_translate_panel_native_promql_emits_metrics_prefix_end_to_end(self):
+        """End-to-end via translate_panel with native PROMQL enabled: the OTel
+        Collector panel must emit `value=(metrics.<name>)`, closing the native
+        half of #270 (the ES|QL half is covered above)."""
+        resolver = self._otel_resolver({
+            "metrics.elasticsearch_jvm_gc_collection_seconds_sum": {
+                "double": {"aggregatable": True, "time_series_metric": "gauge"}
+            },
+            "resource.attributes.service.name": {"keyword": {"aggregatable": True}},
+        })
+        self.rule_pack.native_promql = True
+        self.rule_pack.runtime_features = {
+            "promql_command_v0": {"supported": True, "confidence": "verified"}
+        }
+        panel = {
+            "type": "timeseries",
+            "title": "ES JVM GC",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": "elasticsearch_jvm_gc_collection_seconds_sum"}],
+        }
+        _yaml_panel, result = migrate.translate_panel(
+            panel,
+            datasource_index="metrics-prometheusreceiver.otel*",
+            esql_index="metrics-prometheusreceiver.otel*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        self.assertIn("PROMQL", result.esql_query)
+        self.assertIn("value=(metrics.elasticsearch_jvm_gc_collection_seconds_sum)", result.esql_query)
 
     def test_dynamic_interval_variable_is_normalized(self):
         clean = migrate.preprocess_grafana_macros(
@@ -1478,7 +2955,234 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotEqual(translated.feasibility, "not_feasible")
         self.assertIn("http_requests_total", translated.esql_query or "")
         reasons = " ".join(getattr(translated, "warnings", []) or [])
-        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand")
+        self.assertRegex(reasons, r"(?i)or.*fallback|fallback.*or|left operand|COALESCE|kept both")
+
+    def test_set_or_same_metric_rate_or_irate_prefers_left(self):
+        """Grafana MySQL/Percona idiom: ``rate(M[$interval]) or irate(M[5m])``.
+
+        Same metric + same matchers; the right side is only a short-window
+        fallback when ``rate`` lacks enough samples. Prefer the left operand
+        (dashboard-interval ``rate``) instead of marking the panel not_feasible
+        — the previous hole between the same-metric WHERE-OR rewrite (which
+        forbids range funcs) and the cross-metric COALESCE rewrite (which
+        requires distinct metric names).
+        """
+        expr = (
+            'rate(mysql_global_status_queries{instance="$host"}[5m]) '
+            'or irate(mysql_global_status_queries{instance="$host"}[5m])'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_queries", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("IRATE(", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(
+            reasons,
+            r"(?i)rate.*irate|irate.*fallback|preferred left|same-metric.*or",
+        )
+
+    def test_set_or_same_metric_max_over_time_window_fallback_prefers_left(self):
+        """``max_over_time(M[$interval]) or max_over_time(M[5m])`` — same
+        range func, different windows; prefer the left (dashboard interval)."""
+        expr = (
+            'max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m]) '
+            'or max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])'
+        )
+        # Distinct windows after macro expansion in real dashboards; use
+        # explicit different windows here.
+        expr = (
+            'max_over_time(mysql_global_status_threads_connected{instance="$host"}[2m]) '
+            'or max_over_time(mysql_global_status_threads_connected{instance="$host"}[5m])'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_threads_connected", esql)
+        self.assertIn("2m", esql)
+        self.assertNotIn("5m", esql.split("STATS", 1)[-1] if "STATS" in esql else esql)
+
+    def test_set_or_same_metric_rate_scaled_prefers_left(self):
+        """``rate(M[5m]) * 1024 or irate(M[5m]) * 1024`` (MySQL I/O Activity)."""
+        expr = (
+            'rate(node_vmstat_pgpgin{instance="$host"}[5m]) * 1024 '
+            'or irate(node_vmstat_pgpgin{instance="$host"}[5m]) * 1024'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("node_vmstat_pgpgin", esql)
+        self.assertIn("RATE(", esql)
+        self.assertIn("1024", esql)
+        self.assertNotIn("IRATE(", esql)
+
+    def test_set_or_same_metric_topk_rate_or_irate_prefers_left(self):
+        """``topk(5, rate(M[5m])>0) or topk(5, irate(M[5m])>0)``."""
+        expr = (
+            'topk(5, rate(mysql_global_status_commands_total{instance="$host"}[5m])>0) '
+            'or topk(5, irate(mysql_global_status_commands_total{instance="$host"}[5m])>0)'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible")
+        esql = translated.esql_query or ""
+        self.assertIn("mysql_global_status_commands_total", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("IRATE(", esql)
+
+    def test_load_over_nested_cpu_count_aligns_groupings(self):
+        """Docker/node Load panel: ``load / count by(job, instance)(count by(..., cpu)(...))``.
+
+        The nested count(count()) must COUNT_DISTINCT the exclusive inner
+        label (``cpu``), and the ungrouped load gauge must inherit the
+        outer count's grouping so the two measures can share one STATS.
+        """
+        expr = (
+            'node_load1{instance=~"$server:.*"} '
+            "/ count by(job, instance)("
+            "count by(job, instance, cpu)(node_cpu{instance=~\"$server:.*\"})"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("node_load1", esql)
+        self.assertIn("COUNT_DISTINCT(cpu)", esql)
+        self.assertIn("computed_value", esql)
+
+    def test_multi_exclusive_nested_count_stays_not_feasible(self):
+        """``... / count by(job)(count by(job, instance, cpu)(node_cpu))``.
+
+        The outer count() counts distinct ``(instance, cpu)`` *tuples* per
+        job. ES|QL COUNT_DISTINCT takes a single field, so collapsing to one
+        exclusive inner label (``instance``) would under-count whenever an
+        instance has multiple CPUs. There is no faithful single-field
+        expression, so the nested count must fail closed as not_feasible
+        rather than emit ``COUNT_DISTINCT(instance)`` (wrong math).
+        """
+        expr = (
+            "node_load1 "
+            "/ count by(job)("
+            "count by(job, instance, cpu)(node_cpu)"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertNotIn("COUNT_DISTINCT(instance)", translated.esql_query or "")
+
+    def test_standalone_multi_exclusive_nested_count_stays_not_feasible(self):
+        """Standalone ``count by(job)(count by(job, instance, cpu)(node_cpu))``.
+
+        This is the same undercounting hazard as the ``/`` arithmetic form, but
+        it flows through ``translate.py::nested_agg_family_rule`` instead of the
+        formula/measure path in ``promql.py``. The outer count() counts distinct
+        ``(instance, cpu)`` tuples per job; collapsing to a single exclusive
+        label (``instance``) drops the ``cpu`` dimension and under-counts hosts
+        with multiple CPUs. Both paths must fail closed identically rather than
+        emit ``COUNT_DISTINCT(instance)`` (wrong math).
+        """
+        expr = "count by(job)(count by(job, instance, cpu)(node_cpu))"
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertNotIn("COUNT_DISTINCT", translated.esql_query or "")
+
+    def test_single_exclusive_nested_count_still_feasible(self):
+        """The single-exclusive shortcut stays faithful and must not regress.
+
+        ``count by(job, instance)(count by(job, instance, cpu)(node_cpu))`` has
+        exactly one exclusive inner label (``cpu``), so ``COUNT_DISTINCT(cpu)``
+        per ``(job, instance)`` is the correct translation. The multi-exclusive
+        fail-closed guard must not also reject this valid single-label case.
+        """
+        expr = "count by(job, instance)(count by(job, instance, cpu)(node_cpu))"
+        translated = self.translate(expr)
+        self.assertEqual(
+            translated.feasibility,
+            "feasible",
+            msg=f"esql={translated.esql_query!r} warnings={translated.warnings}",
+        )
+        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query or "")
+
+    def test_k8s_mixed_os_plus_prefers_linux_left_operand(self):
+        """Kubernetes Views Global idiom: Linux sum + on(ns) (Windows join or 0*Linux).
+
+        The Windows side needs a vector-matching join that ES|QL cannot
+        express; prefer the Linux left operand (correct for Linux-only
+        clusters) and warn that the Windows contribution was dropped.
+        """
+        expr = (
+            'sum(rate(container_cpu_usage_seconds_total{image!="",cluster="$cluster"}[5m])) '
+            "by (namespace) "
+            "+ on (namespace) ("
+            "sum(rate(windows_container_cpu_usage_seconds_total{container_id!=\"\",cluster=\"$cluster\"}[5m]) "
+            "* on (container_id) group_left (container, pod, namespace) "
+            "max by (container, container_id, pod, namespace) ("
+            "windows_pod_container_info{container_id!=\"\",cluster=\"$cluster\"})"
+            ") by (namespace) "
+            "or on (namespace) ("
+            "0 * sum(rate(container_cpu_usage_seconds_total{image!=\"\",cluster=\"$cluster\"}[5m])) "
+            "by (namespace))"
+            ")"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("container_cpu_usage_seconds_total", esql)
+        self.assertNotIn("windows_container_cpu_usage_seconds_total", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(
+            reasons,
+            r"(?i)windows|mixed-os|preferred left|dropped.*windows|zero-fill",
+        )
+
+    def test_k8s_mixed_os_or_nested_inside_sum_prefers_linux(self):
+        """Community Views Global form: OR nested inside ``sum(...) by (ns)``.
+
+        ``linux + on(ns) (sum(windows_join OR kube_namespace_created * 0) by (ns))``
+        — the zero-fill is a different metric scaled by 0, and the OR sits
+        under the outer aggregation rather than beside it.
+        """
+        expr = (
+            'sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[5m])) '
+            "by (namespace) "
+            "+ on (namespace) ("
+            "sum(rate(windows_container_cpu_usage_seconds_total{container_id!=\"\", cluster=\"$cluster\"}[5m]) "
+            "* on (container_id) group_left (container, pod, namespace) "
+            "max by (container, container_id, pod, namespace) ("
+            "kube_pod_container_info{container_id!=\"\", cluster=\"$cluster\"}"
+            ") OR kube_namespace_created{cluster=\"$cluster\"} * 0) by (namespace))"
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("container_cpu_usage_seconds_total", esql)
+        self.assertNotIn("windows_container_cpu_usage_seconds_total", esql)
+        reasons = " ".join(translated.warnings or [])
+        self.assertRegex(reasons, r"(?i)windows|mixed-os|preferred left|zero.?fill")
 
     def test_set_and_between_metrics_is_not_feasible(self):
         translated = self.translate("http_requests_total and http_other_total")
@@ -1848,9 +3552,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"unexpected under-count caveat for grouped count: {translated.warnings}",
         )
 
-    def test_xy_panel_with_extra_grouping_dimension_warns(self):
-        # A query grouped by two non-time dimensions can only show one as the XY
-        # breakdown; the dropped dimension must be surfaced, not hidden.
+    def test_xy_panel_with_extra_grouping_dimension_composites_breakdown(self):
+        # A query grouped by two non-time dimensions can only show a single
+        # Lens XY breakdown field. Rather than picking one dimension and
+        # silently merging series that differ only in the other, both labels
+        # are composited into one synthetic ``series_group`` column so every
+        # distinct label tuple stays a separate series; the approximation is
+        # disclosed via a warning, not hidden.
         panel = {
             "title": "Pods",
             "type": "timeseries",
@@ -1859,11 +3567,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, result = self.translate_panel(panel)
         self.assertEqual(result.status, "migrated_with_warnings")
-        # Only one field is used as the visual breakdown.
-        self.assertIn("breakdown", yaml_panel["esql"])
+        # A single composite field is used as the visual breakdown.
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "series_group")
         self.assertTrue(
-            any("not on the chart" in w for w in result.reasons),
-            f"Expected dropped-dimension warning, got {result.reasons}",
+            any("Composited multi-label grouping" in w for w in result.reasons),
+            f"Expected composite-breakdown disclosure, got {result.reasons}",
         )
 
     def test_xy_panel_with_single_grouping_dimension_does_not_warn(self):
@@ -2346,7 +4054,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate("sum(conflicted_metric)")
 
         self.assertEqual(translated.source_type, "FROM")
-        self.assertIn("SUM(conflicted_metric)", translated.esql_query)
+        # Issue #245: a field with conflicting exact types across indices makes
+        # ES|QL reject even a bare reference ("ambiguities in index mappings"),
+        # so the aggregation must cast to double regardless of source routing.
+        self.assertIn("SUM(TO_DOUBLE(conflicted_metric))", translated.esql_query)
 
     def test_native_promql_panel_records_promql_contract(self):
         self.rule_pack.native_promql = True
@@ -2998,7 +4709,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         # approximation would collapse them into one STATS pipeline.
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        self.assertNotIn("STATS", query)
+        # Gauge tiles collapse the range via LAST (not same-bucket ES|QL math).
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         # No approximation: the same-bucket ES|QL fallback warning must not
         # be attached.
         joined = " ".join(result.notes) + " ".join(result.reasons)
@@ -3037,7 +4750,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_time_seconds", query)
         self.assertIn("node_boot_time_seconds", query)
-        self.assertNotIn("STATS", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -3079,7 +4793,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_network_receive_bytes_total", query)
         self.assertIn("node_network_transmit_bytes_total", query)
-        self.assertNotIn("STATS", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -3092,8 +4807,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         two metrics, so the single-value gate keeps it native. When multiple
         instances are scraped this matches per-instance and fans out to one
         series each rather than collapsing to a single scalar — so the gauge
-        surfaces a multi-row instant result. This is intended (#146): the
-        instant query preserves the original arithmetic and Kibana
+        surfaces a multi-row latest-value result. This is intended (#146): the
+        range+LAST query preserves the original arithmetic and Kibana
         reduces/repeats the multi-row result the same way Grafana does,
         mirroring #138's accepted line-chart behavior. The gate's
         distinct-metric count is a deliberate proxy for "derived value", not a
@@ -3123,8 +4838,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("PROMQL", query)
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        # Stays on the native instant path — not the aggregating ES|QL fallback.
-        self.assertNotIn("STATS", query)
+        # Multi-series keep one latest value per series.
+        self.assertIn("| STATS value = LAST(value, step) BY _timeseries", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -3135,9 +4851,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         """The canonical Prometheus error-rate ratio divides the *same* metric
         under two different label selectors (``rate(http_requests_total
         {code=~"5.."}[5m]) / rate(http_requests_total[5m])``). With no outer
-        aggregation the shape is ``['_timeseries']`` (per-series instant
+        aggregation the shape is ``['_timeseries']`` (per-series
         result), so it reaches the single-value gate. This is genuine derived
-        arithmetic that the instant query preserves and collapses to a latest
+        arithmetic that the native query preserves and collapses to a latest
         value — exactly like the distinct-metric ratio #146 keeps native. The
         gate counts metric *occurrences*, not distinct names, so a same-metric
         ratio (two occurrences of one name) is NOT mistaken for a bare
@@ -3166,9 +4882,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("PROMQL", query)
         self.assertIn("http_requests_total", query)
-        # The native command preserves the ratio; the ES|QL approximation would
-        # collapse it into one STATS pipeline instead.
-        self.assertNotIn("STATS", query)
+        # Native ratio preserved; LAST collapses the range for the gauge tile.
+        self.assertIn("| STATS value = LAST(value, step) BY _timeseries", query)
+        self.assertNotIn("computed_value", query)
         joined = " ".join(result.notes) + " ".join(result.reasons)
         self.assertNotIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
@@ -3304,11 +5020,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         self.assertIn("AVG(node_systemd_units)", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
-        # Issue #8: proven TSDS gauge takes the TS path (TBUCKET), not FROM (BUCKET).
-        self.assertIn("BY time_bucket = TBUCKET(5 minute), state", query)
+        # Issue #8 / #316: proven TSDS gauge takes the TS path with adaptive TBUCKET.
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
-        self.assertTrue(any("No explicit aggregation" in r for r in result.reasons))
+        self.assertFalse(any("No explicit aggregation" in r for r in result.reasons))
         self.assertFalse(any("only 1 could be migrated" in r for r in result.reasons))
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "ts")
@@ -3425,6 +5141,61 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertTrue(by_ref["A"].get("whole_translated"))
         self.assertIn("rate(node_cpu_seconds_total", by_ref["A"]["source_expr"])
         self.assertIn("primary target only", by_ref["B"].get("unsupported_reason", ""))
+
+    def test_mixed_windows_and_non_windows_drops_are_not_mislabeled_windows_only(self):
+        """When a panel drops both a Windows-specific target AND an unrelated
+        non-Windows target, the warning must not claim the drops are
+        "Windows-specific" — that phrasing implies nothing of value was lost
+        for a Linux-only cluster and hides the real, unrelated gap."""
+        panel = {
+            "id": 104,
+            "type": "stat",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": 'sum(rate(node_cpu_seconds_total{mode!="idle"}[5m]))', "refId": "Real Linux"},
+                {"expr": 'sum(rate(windows_cpu_time_total{mode!="idle"}[5m]))', "refId": "Real Windows"},
+                {"expr": 'sum(kube_pod_container_resource_requests{resource="cpu"})', "refId": "Requests"},
+                {"expr": 'sum(kube_pod_container_resource_limits{resource="cpu"})', "refId": "Limits"},
+                {"expr": "sum(machine_cpu_cores)", "refId": "Total"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        combined = " ".join(result.reasons)
+        # Multi-target summary fusion now keeps Linux + Windows + request/limit
+        # targets in one shared measure pipeline, so there is no drop warning to
+        # mislabel. Guard the old Windows-only phrasing and confirm fusion.
+        self.assertNotIn("(dropped targets are Windows-specific)", combined)
+        self.assertFalse(
+            any("dropped targets" in w.lower() for w in result.reasons),
+            f"expected fused multi-target panel without drops, got: {result.reasons}",
+        )
+        query = (_yaml_panel or {}).get("esql", {}).get("query", "")
+        self.assertIn("node_cpu_seconds_total", query)
+        self.assertIn("windows_cpu_time_total", query)
+        self.assertIn("kube_pod_container_resource_requests", query)
+
+    def test_all_windows_drops_keep_unqualified_windows_specific_message(self):
+        """When every dropped target really is Windows-specific, the simpler
+        unqualified message is accurate and should be kept as-is."""
+        panel = {
+            "id": 105,
+            "type": "graph",
+            "title": "CPU Usage 2",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": ('sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) '
+                          '/ on(instance) sum by (instance) (rate(node_cpu_seconds_total[5m]))'),
+                 "refId": "A"},
+                {"expr": 'avg(sum by (core) (rate(windows_cpu_time_total{mode!="idle"}[5m])))',
+                 "refId": "B"},
+            ],
+        }
+        _yaml_panel, result = self.translate_panel(panel)
+        self.assertTrue(
+            any("(dropped targets are Windows-specific)" in w for w in result.reasons),
+            f"expected unqualified Windows-specific warning, got: {result.reasons}",
+        )
 
     def test_multi_target_live_gauge_with_divergent_filters_keeps_all_series(self):
         self.seed_field_caps(
@@ -3609,6 +5380,58 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(metrics_by_field["transmit"].get("format"), {"type": "bytes", "suffix": "/s"})
         self.assertNotIn("Merged compatible panel targets into a single ES|QL query", result.reasons)
 
+    def test_series_override_stack_false_marks_overlay_metrics(self):
+        """kubernetes-mixin CPU/Memory Usage: stack containers but not requests/limits."""
+        panel = {
+            "id": 912,
+            "type": "graph",
+            "title": "CPU Usage",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "stack": True,
+            "lines": True,
+            "seriesOverrides": [
+                {"alias": "requests", "stack": False, "fill": 0},
+                {"alias": "limits", "stack": False, "fill": 0},
+            ],
+            "targets": [
+                {
+                    "expr": "sum(rate(container_cpu_usage_seconds_total[1m])) by (container)",
+                    "refId": "A",
+                    "legendFormat": "{{container}}",
+                },
+                {
+                    "expr": "sum(kube_pod_container_resource_requests_cpu_cores)",
+                    "refId": "B",
+                    "legendFormat": "requests",
+                },
+                {
+                    "expr": "sum(kube_pod_container_resource_limits_cpu_cores)",
+                    "refId": "C",
+                    "legendFormat": "limits",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql.get("mode"), "stacked")
+        metrics_by_label = {
+            str(m.get("label") or m.get("field")): m for m in esql.get("metrics") or []
+        }
+        self.assertTrue(metrics_by_label.get("requests", {}).get("stack") is False)
+        self.assertTrue(metrics_by_label.get("limits", {}).get("stack") is False)
+
+        from observability_migration.targets.kibana.dashboards_api import _cfg_xy
+
+        native = _cfg_xy("CPU Usage", esql, esql["query"])
+        layer_types = [layer.get("type") for layer in native.get("layers") or []]
+        self.assertIn("area_stacked", layer_types)
+        self.assertTrue(
+            any(t in {"line", "area"} for t in layer_types),
+            f"expected unstacked overlay layer, got {layer_types}",
+        )
+
     def test_regex_series_override_yaxis_preserved_on_merged_metric(self):
         panel = {
             "id": 910,
@@ -3698,13 +5521,14 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         yaml_panel, result = self.translate_panel(panel)
 
-        # Grouped by (instance, quantile): one dimension drives the XY
-        # breakdown and the other is surfaced as a dropped-dimension warning.
+        # Grouped by (instance, quantile): Lens XY allows one breakdown, so both
+        # labels are composited into ``series_group`` (not silently dropped).
         self.assertEqual(result.status, "migrated_with_warnings")
         self.assertTrue(
-            any("not on the chart" in w for w in result.reasons),
-            f"Expected dropped-dimension warning, got {result.reasons}",
+            any("Composited multi-label grouping" in w for w in result.reasons),
+            f"Expected series_group composite warning, got {result.reasons}",
         )
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "series_group")
         metric = yaml_panel["esql"]["metrics"][0]
         self.assertEqual(metric["label"], "Queue length")
         self.assertEqual(metric["axis"], "right")
@@ -3803,9 +5627,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("AVG(IRATE(node_network_receive_bytes_total, 5m))", query)
-        self.assertIn(", device", query)
-        self.assertTrue(
+        # legendFormat ``{{device}}`` is display-only: it must not inject a BY
+        # label that forces AVG(IRATE(...)) and blocks multi-target fusion.
+        self.assertIn("IRATE(node_network_receive_bytes_total, 5m)", query)
+        self.assertNotIn("AVG(IRATE(", query)
+        self.assertNotIn(", device", query)
+        self.assertFalse(
             any(
                 "requires an outer aggregation when grouping TS functions by label fields" in reason
                 for reason in result.reasons
@@ -3948,27 +5775,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| EVAL computed_value =", translated.esql_query)
 
     def test_scalar_wrapped_nested_count_denominator_merges_with_rate_numerator(self):
+        # The canonical node_exporter "CPU busy % = per-mode rate / core count"
+        # idiom (e.g. the "CPU"/"CPU Basic" panels in the node-exporter-full
+        # dashboard). The numerator needs TS (counter irate); the denominator
+        # is a plain COUNT_DISTINCT(cpu) with no time-series-specific
+        # semantics, so it can share the numerator's TS source instead of
+        # being forced onto FROM (which can never merge with a TS sibling).
         expr = (
             'sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__rate_interval])) '
             '/ scalar(count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertEqual(translated.feasibility, "not_feasible")
-        self.assertTrue(
-            any("divergent filters/groupings" in w for w in translated.warnings),
-            translated.warnings,
-        )
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("TS metrics", translated.esql_query)
+        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
+        self.assertIn('CASE((mode == "system"), IRATE(', translated.esql_query)
+        self.assertIn("| EVAL computed_value =", translated.esql_query)
 
-    def test_agg_over_ratio_of_range_funcs_is_not_feasible(self):
-        # sum(increase(A) / increase(B)) computes a per-element ratio then
-        # aggregates — semantically distinct from sum(A)/sum(B) and cannot
-        # be expressed accurately in ES|QL.
+    def test_agg_over_histogram_summary_ratio_approximates_as_ratio_of_sums(self):
+        # sum(increase(m_sum)/increase(m_count)) is the Prometheus histogram-mean
+        # idiom. Exact per-element semantics cannot be preserved, but the
+        # ratio-of-aggregates form is the standard ES|QL-expressible approximation.
         expr = (
             'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) '
             '/ increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)'
         )
         translated = self.translate(expr, panel_type="graph")
-        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("prometheus_tsdb_compaction_duration_sum", translated.esql_query)
+        self.assertIn("prometheus_tsdb_compaction_duration_count", translated.esql_query)
+        self.assertTrue(
+            any("Approximated sum(" in w for w in translated.warnings),
+            translated.warnings,
+        )
 
     def test_sum_over_metric_subtraction_applies_linearity(self):
         # Bug A fix: sum(A - B) = sum(A) - sum(B) by linearity of SUM.
@@ -4643,6 +6482,104 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIsNotNone(tend)
         self.assertRegex(tend, r"^\d{4}-\d{2}-\d{2}T")
 
+    def test_run_esql_query_binds_late_bound_identifier_default(self):
+        captured = {}
+
+        def fake_post(url, json, params, headers, timeout, **kwargs):
+            captured["params"] = json.get("params")
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"values": [], "columns": []},
+                headers={"content-type": "application/json"},
+            )
+
+        query = (
+            "TS metrics-*\n"
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        with mock.patch.object(esql_validate.requests, "post", side_effect=fake_post):
+            probe = esql_validate._run_esql_query(
+                query,
+                "http://localhost:9200",
+                identifier_params={"grouping": "exporter"},
+            )
+
+        self.assertTrue(probe["ok"])
+        self.assertEqual(captured["params"], [{"grouping": "exporter"}])
+
+    def test_identifier_control_marks_validation_rows_param_dependent(self):
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        self.assertTrue(esql_validate._has_dashboard_params(query))
+
+    def test_sync_result_queries_to_yaml_pairs_by_title_when_leaf_order_diverges(self):
+        """Regression: section/layout reorder must not zip validation fixes onto
+        the wrong panel (docker-4271 visual_ir / YAML bleed)."""
+        result = migrate.MigrationResult("Dashboard", "uid")
+        containers = migrate.PanelResult("Containers", "singlestat", "metric", "migrated", 0.9)
+        containers.source_panel_id = "31"
+        containers.esql_query = "FROM metrics-*\n| STATS containers = COUNT(*)"
+        load = migrate.PanelResult("Load [1m]", "singlestat", "metric", "migrated", 0.9)
+        load.source_panel_id = "27"
+        load.esql_query = "FROM metrics-*\n| STATS load = AVG(node_load1)"
+        report.mark_panel_requires_manual_after_validation(
+            load,
+            {"error": "Found 1 problem", "analysis": {}},
+        )
+        # Translation order: Containers then Load.
+        result.panel_results = [containers, load]
+        result.yaml_panel_results = [containers, load]
+
+        # YAML leaf order diverges (Uptime-first section order from audit).
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Dashboard Row",
+                        "section": {
+                            "collapsed": False,
+                            "panels": [
+                                {
+                                    "title": "Load [1m]",
+                                    "_source_panel_id": "27",
+                                    "esql": {
+                                        "type": "metric",
+                                        "query": "FROM metrics-*\n| STATS load = AVG(node_load1)",
+                                    },
+                                },
+                                {
+                                    "title": "Containers",
+                                    "_source_panel_id": "31",
+                                    "esql": {
+                                        "type": "metric",
+                                        "query": "FROM metrics-*\n| STATS containers = COUNT(*)",
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        section_panels = rewritten["dashboards"][0]["panels"][0]["section"]["panels"]
+        load_yaml = next(p for p in section_panels if p["title"] == "Load [1m]")
+        containers_yaml = next(p for p in section_panels if p["title"] == "Containers")
+        self.assertIn("markdown", load_yaml)
+        self.assertNotIn("esql", load_yaml)
+        self.assertIn("esql", containers_yaml)
+        self.assertNotIn("markdown", containers_yaml)
+        self.assertEqual(load.visual_ir.title, "Load [1m]")
+        self.assertEqual(containers.visual_ir.title, "Containers")
+        self.assertEqual(load.visual_ir.presentation.kind, "markdown")
+        self.assertEqual(containers.visual_ir.presentation.kind, "esql")
+
     def test_sync_result_queries_to_yaml_persists_validation_fixes(self):
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
@@ -4680,6 +6617,128 @@ class TranslatorRegressionTests(unittest.TestCase):
             panel.visual_ir.presentation.config["query"],
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
+
+    def test_sync_result_queries_to_yaml_rebuilds_stale_native_dashboard(self):
+        # Regression test for PR #278 review: a --validate --upload run must
+        # not upload the pre-validation native IR after ES|QL fixes have been
+        # applied. sync_result_queries_to_yaml is the last point where
+        # `result` is aligned with the corrected YAML before upload, so it
+        # must rebuild `result.native_dashboard` in place.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+
+            # Simulate the pre-validation native IR built at translation time,
+            # from the same (stale) dashboard doc that is about to be fixed.
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+            stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+            self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
+
+            updated = migrate.sync_result_queries_to_yaml(result, path)
+
+        self.assertTrue(updated)
+        rebuilt_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+        self.assertEqual(rebuilt_query, "FROM metrics-prometheus-synthetic\n| LIMIT 10")
+
+    def test_sync_result_queries_to_yaml_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+        # IR-first: the sync must refresh `result.dashboard_ir` (not just
+        # `result.native_dashboard`), and the on-disk YAML it writes must be
+        # exactly what that rebuilt IR serializes to.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+
+            migrate.sync_result_queries_to_yaml(result, path)
+            on_disk = yaml.safe_load(path.read_text())
+
+        self.assertIsNotNone(result.dashboard_ir)
+        self.assertEqual(
+            result.dashboard_ir.panels[0].visual.presentation.config["query"],
+            "FROM metrics-prometheus-synthetic\n| LIMIT 10",
+        )
+        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+
+    def test_sync_result_queries_to_yaml_leaves_missing_native_dashboard_alone(self):
+        # Callers that never set result.native_dashboard (e.g. legacy-only
+        # runs) must not trip the rebuild path or its deferred import.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            updated = migrate.sync_result_queries_to_yaml(result, path)
+
+        self.assertTrue(updated)
+        self.assertIsNone(result.native_dashboard)
 
     def test_sync_result_queries_to_yaml_adds_controls_for_new_params(self):
         result = migrate.MigrationResult("Dashboard", "uid")
@@ -4753,6 +6812,89 @@ class TranslatorRegressionTests(unittest.TestCase):
         operation = next(c for c in controls if c.get("variable_name") == "operation")
         self.assertEqual(operation["default"], ".*")
         self.assertIn("WHERE operation IS NOT NULL", operation["query"])
+
+    def test_sync_result_queries_does_not_create_values_control_for_field_param(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Grouped", "timeseries", "line", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| STATS value = SUM(metric) BY grouping = ??grouping"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [{
+                    "title": "Grouped",
+                    "esql": {
+                        "type": "line",
+                        "query": "TS metrics-*\n| STATS value = SUM(metric)",
+                    },
+                }],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        controls = rewritten["dashboards"][0].get("controls", [])
+        self.assertFalse(
+            any(
+                control.get("variable_name") == "grouping"
+                and control.get("variable_type") == "values"
+                for control in controls
+            ),
+            controls,
+        )
+
+    def test_sync_result_queries_replaces_stale_field_control_for_value_param(self):
+        result = migrate.MigrationResult("Dashboard", "uid")
+        panel = migrate.PanelResult("Filtered", "timeseries", "line", "migrated", 0.85)
+        panel.esql_query = (
+            "TS metrics-*\n"
+            "| WHERE exporter RLIKE ?grouping\n"
+            "| STATS value = SUM(metric)"
+        )
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "controls": [{
+                    "type": "esql",
+                    "label": "Group by",
+                    "variable_name": "grouping",
+                    "variable_type": "fields",
+                    "choices": ["exporter", "transport"],
+                    "default": "exporter",
+                }],
+                "panels": [{
+                    "title": "Filtered",
+                    "esql": {
+                        "type": "line",
+                        "query": "TS metrics-*\n| STATS value = SUM(metric)",
+                    },
+                }],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            path.write_text(yaml.dump(payload, sort_keys=False))
+            migrate.sync_result_queries_to_yaml(result, path)
+            rewritten = yaml.safe_load(path.read_text())
+
+        controls = [
+            control
+            for control in rewritten["dashboards"][0].get("controls", [])
+            if control.get("variable_name") == "grouping"
+        ]
+        self.assertEqual(len(controls), 1, controls)
+        self.assertEqual(controls[0]["variable_type"], "values")
 
     def test_sync_result_queries_to_yaml_updates_metric_field_after_query_alias_change(self):
         result = migrate.MigrationResult("Dashboard", "uid")
@@ -5067,9 +7209,35 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls, [])
 
-    def test_query_variable_skips_missing_control_fields(self):
+    def test_visible_query_result_variable_drop_is_surfaced_as_control_warning(self):
+        warnings = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "total",
+                "label": "total_servers",
+                "query": 'query_result(count(node_uname_info{job=~"$job"}))',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+            collect_warnings=warnings,
+        )
+
+        self.assertEqual(controls, [])
+        self.assertTrue(
+            any(
+                "query_result" in warning
+                and "no Kibana control was emitted" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
+
+    def test_query_variable_keeps_missing_control_fields_with_warning(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
         resolver.field_exists = lambda field: field != "k8s.namespace.name"
+        warnings = []
         controls = migrate.translate_variables(
             [{
                 "type": "query",
@@ -5080,8 +7248,18 @@ class TranslatorRegressionTests(unittest.TestCase):
             datasource_index="logs-*",
             rule_pack=self.rule_pack,
             resolver=resolver,
+            collect_warnings=warnings,
         )
-        self.assertEqual(controls, [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["field"], "k8s.namespace.name")
+        self.assertTrue(
+            any(
+                "variable 'namespace' kept" in warning
+                and "k8s.namespace.name" in warning
+                for warning in warnings
+            ),
+            warnings,
+        )
 
     def test_query_variable_skips_conflicting_control_fields(self):
         resolver = migrate.SchemaResolver(self.rule_pack)
@@ -5254,13 +7432,20 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(len(controls), 1)
         query = controls[0]["query"]
+        # No concrete ``current`` → default is match-all (".*"), so the
+        # VALUES_FROM_QUERY must include that token via MV_APPEND while still
+        # keeping the source-metric scope from label_values(metric, label).
         self.assertEqual(
             query,
             "FROM metrics-* | WHERE redis_up IS NOT NULL AND "
             "`service.instance.id` IS NOT NULL"
             " | STATS count = COUNT(*) BY `service.instance.id`"
-            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
-            " | LIMIT 1000",
+            ' | EVAL options = MV_APPEND(".*", `service.instance.id`)'
+            " | MV_EXPAND options"
+            " | STATS count = COUNT(*) BY options"
+            " | KEEP options"
+            " | RENAME options AS `service.instance.id`"
+            " | SORT `service.instance.id` ASC | LIMIT 1000",
         )
 
     def test_query_variable_control_unscoped_when_no_source_metric(self):
@@ -5293,8 +7478,170 @@ class TranslatorRegressionTests(unittest.TestCase):
             query,
             "FROM metrics-* | WHERE `service.instance.id` IS NOT NULL"
             " | STATS count = COUNT(*) BY `service.instance.id`"
-            " | SORT `service.instance.id` ASC | KEEP `service.instance.id`"
-            " | LIMIT 1000",
+            ' | EVAL options = MV_APPEND(".*", `service.instance.id`)'
+            " | MV_EXPAND options"
+            " | STATS count = COUNT(*) BY options"
+            " | KEEP options"
+            " | RENAME options AS `service.instance.id`"
+            " | SORT `service.instance.id` ASC | LIMIT 1000",
+        )
+
+    def _device_scope_resolver(self):
+        """Resolver where ``device`` and ``node_disk_read_bytes_total`` both
+        resolve to themselves and exist (issue #312 fixtures)."""
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "offline"
+        resolver._field_cache = {
+            "device": {
+                "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+            },
+            "node_disk_read_bytes_total": {
+                "double": {"type": "double", "aggregatable": True, "searchable": True}
+            },
+        }
+        resolver.resolve_metric_field = lambda name, **kw: name
+        return resolver
+
+    def test_query_variable_control_preserves_exclude_filter(self):
+        """Issue #312: ``label_values(metric{device!="nbd1"}, device)`` excludes
+        ``nbd1`` in Grafana, so the migrated values control must keep that
+        exclusion (``AND device != "nbd1"``) instead of listing every device."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "current": {"text": ["vda"], "value": ["vda"]},
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+        )
+        self.assertEqual(len(controls), 1)
+        query = controls[0]["query"]
+        self.assertEqual(
+            query,
+            "FROM metrics-* | WHERE node_disk_read_bytes_total IS NOT NULL"
+            ' AND device IS NOT NULL AND device != "nbd1"'
+            " | STATS count = COUNT(*) BY device"
+            " | SORT device ASC | KEEP device | LIMIT 1000",
+        )
+
+    def test_query_variable_control_skips_absent_scope_filter(self):
+        """If live caps prove a selector filter field is absent, do not emit an
+        ES|QL predicate that would break the control's population query."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = self._device_scope_resolver()
+        resolver._field_cache.pop("device", None)
+        resolver._field_cache["instance"] = {
+            "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+        }
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance_filtered",
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+            collect_warnings=warnings,
+        )
+
+        query = controls[0]["query"]
+        self.assertNotIn("device !=", query)
+        self.assertTrue(
+            any("device" in warning and "not present" in warning for warning in warnings),
+            warnings,
+        )
+
+    def test_query_variable_control_skips_metric_name_scope_filter(self):
+        """``__name__`` is a Prometheus metric selector, not a stored label
+        column, so it must not be emitted as an ES|QL control predicate."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        resolver = self._device_scope_resolver()
+        resolver._field_cache["instance"] = {
+            "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+        }
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "instance_filtered",
+                "query": 'label_values({__name__=~"node_.*"},instance)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+            collect_warnings=warnings,
+        )
+
+        query = controls[0]["query"]
+        self.assertNotIn("__name__", query)
+        self.assertTrue(
+            any("__name__" in warning and "metric-name" in warning for warning in warnings),
+            warnings,
+        )
+
+    def test_query_variable_multi_select_scalar_bind_reports_gap(self):
+        """Issue #312: a multi-select Grafana variable that must bind a scalar
+        ES|QL parameter is forced single-select. That loss must be reported as a
+        user-facing control gap (not left as a silent internal trace)."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+            collect_warnings=warnings,
+        )
+        self.assertIs(controls[0]["multiple"], False)
+        self.assertTrue(
+            any(
+                "device_filtered" in warning
+                and "multi-select" in warning
+                and "single-select" in warning
+                for warning in warnings
+            ),
+            warnings,
         )
 
     def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
@@ -5353,6 +7700,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["default"], ".*")
+        # Match-all must appear in the VALUES_FROM_QUERY result set so Kibana
+        # does not mark the selection as incompatible.
+        self.assertIn('MV_APPEND(".*"', controls[0]["query"])
 
     def test_query_variable_control_default_mirrors_current_value(self):
         """A concrete Grafana ``current`` selection is mirrored as the control's
@@ -5379,6 +7729,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["default"], "host-01")
+        self.assertNotIn("MV_APPEND", controls[0]["query"])
 
     def test_esql_path_preserves_template_matcher_as_param_when_capability_on(self):
         """Issue #64: when the target binds ``?var`` params, the ES|QL path must
@@ -5591,16 +7942,78 @@ class TranslatorRegressionTests(unittest.TestCase):
         # No generic data-view control should leak alongside the ES|QL binding.
         self.assertTrue(all(c.get("type") == "esql" for c in controls if c.get("label") == "Host"))
 
+    def test_dashboard_controls_clear_variable_drop_warning(self):
+        """A dropped Grafana variable matcher is not a panel warning once the
+        dashboard emits a Kibana control for that variable.
+        """
+        rule_pack = rules.RulePackConfig()
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Control warning rewrite",
+            "uid": "control-warning-rewrite",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": False,
+                        "current": {"text": "host-01", "value": "host-01"},
+                        "query": "label_values(http_requests_total, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Requests",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": 'sum(rate(http_requests_total{host="$host"}[5m])) by (host)',
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        controls = doc["dashboards"][0].get("controls", [])
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["label"], "Host")
+        self.assertEqual(controls[0]["variable_name"], "host")
+        self.assertEqual(controls[0]["type"], "esql")
+        self.assertEqual(controls[0]["variable_type"], "values")
+        panel_result = result.yaml_panel_results[0]
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertEqual(panel_result.operational_ir.status, "migrated")
+        self.assertEqual(panel_result.operational_ir.confidence, panel_result.confidence)
+        self.assertEqual(result.migrated, 1)
+        self.assertEqual(result.migrated_with_warnings, 0)
+        self.assertNotIn(
+            "Variable-driven label filters applied via Kibana dashboard controls",
+            panel_result.reasons,
+        )
+
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
-        includeAll must bind a regex match (``RLIKE ?var``) so the control's
-        ".*" default selects every series on first load (PR #133).
+        includeAll must loosen to a regex match so the control's ``.*`` default
+        selects every series on first load (PR #133).
 
-        Even with ``native_promql`` enabled, a control-bound label matcher must
-        route to native ES|QL — where the control binds — instead of the PROMQL
-        command, which would trap ``?var`` in its opaque string and leave it
-        unbound (issue #230). The includeAll loosening (regex, not exact) is
-        preserved on the ES|QL path: ``RLIKE ?var`` rather than ``== ?var``."""
+        When ``promql_label_matcher_params`` is supported (#319), keep native
+        PROMQL with ``host=~?host`` (issue #230's ES|QL fallthrough only applies
+        when that feature is unsupported — see the companion test below)."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -5648,9 +8061,61 @@ class TranslatorRegressionTests(unittest.TestCase):
             doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
 
         rendered = yaml.dump(doc)
-        # Bound via native ES|QL (control binds), not trapped in a PROMQL command.
+        self.assertIn("PROMQL", rendered)
+        self.assertIn("host=~?host", rendered)
+        self.assertNotIn("RLIKE ?host", rendered)
+
+    def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
+        """Issue #230: without PromQL label-matcher params, control-bound matchers
+        must route to ES|QL (``RLIKE ?var``) so Kibana can bind the control."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=False, source="probe"
+        )
+        resolver = migrate.SchemaResolver(rule_pack)
+        dashboard = {
+            "title": "Native Equality All Fallback",
+            "uid": "native-equality-all-fallback",
+            "templating": {
+                "list": [
+                    {
+                        "type": "query",
+                        "name": "host",
+                        "label": "Host",
+                        "multi": True,
+                        "includeAll": True,
+                        "query": "label_values(cpu, host)",
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$host"})'}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _result, yaml_path = panels.translate_dashboard(
+                dashboard,
+                tmpdir,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+
+        rendered = yaml.dump(doc)
         self.assertNotIn("PROMQL", rendered)
-        # includeAll -> regex match so the ".*" default selects every series.
         self.assertIn("RLIKE ?host", rendered)
         self.assertNotIn("== ?host", rendered)
 
@@ -5775,6 +8240,39 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("health_status", control_names)
         binding = next(c for c in controls if c.get("variable_name") == "health_status")
         self.assertEqual(binding["default"], ".*")
+        self.assertNotIn("query", binding)
+        self.assertEqual(
+            binding["choices"],
+            [".*", "Healthy", "Progressing", "Degraded"],
+        )
+
+    def test_custom_regex_variable_uses_static_binding_not_variable_named_field(self):
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        resolver = migrate.SchemaResolver(rule_pack)
+        controls = panels._ensure_param_controls(
+            [],
+            {"diskdevices"},
+            [{
+                "type": "custom",
+                "name": "diskdevices",
+                "query": "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+",
+                "current": {
+                    "value": "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+",
+                },
+            }],
+            "metrics-*",
+            resolver=resolver,
+            rule_pack=rule_pack,
+        )
+
+        self.assertEqual(len(controls), 1)
+        binding = controls[0]
+        self.assertNotIn("query", binding)
+        self.assertEqual(binding["variable_name"], "diskdevices")
+        self.assertEqual(
+            binding["choices"],
+            ["[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+"],
+        )
 
     def test_dashboard_emits_a_control_for_every_emitted_param(self):
         """Issue #131: every ?var a panel emits must have a binding control, so
@@ -6269,6 +8767,26 @@ class TranslatorRegressionTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()):
                 parse_args(["--no-native-promql"])
 
+    def test_parse_args_skips_legacy_compile_by_default(self):
+        """The default native Dashboards API path never needs the compiled
+        NDJSON, so kb-dashboard-cli compilation is off unless asked (matches
+        datadog-migrate)."""
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        args = parse_args([])
+
+        self.assertFalse(args.compile)
+
+    def test_parse_args_compile_opts_into_legacy_compile(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertTrue(parse_args(["--compile"]).compile)
+
+    def test_parse_args_can_disable_default_compile(self):
+        from observability_migration.adapters.source.grafana.cli import parse_args
+
+        self.assertFalse(parse_args(["--no-compile"]).compile)
+
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
             _apply_native_promql_to_rule_pack,
@@ -6539,6 +9057,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual([item[2]["query"] for item in outputs], ["FROM one", "FROM two"])
         self.assertEqual(validate.call_count, 2)
 
+    def test_run_validation_jobs_passes_identifier_defaults_from_query_ir(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        panel = SimpleNamespace(
+            esql_query="TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping",
+            title="Grouped",
+            source_panel_id="1",
+            query_ir={
+                "metadata": {
+                    "esql_identifier_param_defaults": {"grouping": "exporter"},
+                }
+            },
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            return_value={
+                "status": "pass",
+                "query": panel.esql_query,
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ) as validate:
+            _run_validation_jobs(
+                [(result, panel)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=1,
+            )
+
+        self.assertEqual(
+            validate.call_args.kwargs["identifier_params"],
+            {"grouping": "exporter"},
+        )
+
     def test_run_validation_jobs_prewarms_resolver_caches_before_parallel_work(self):
         from observability_migration.adapters.source.grafana.cli import (
             _run_validation_jobs,
@@ -6602,6 +9160,46 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(len(outputs), 2)
         self.assertEqual([item[2]["query"] for item in outputs], ["FROM shared", "FROM shared"])
         self.assertEqual(validate.call_count, 1)
+
+    def test_run_validation_jobs_keeps_distinct_identifier_defaults(self):
+        from observability_migration.adapters.source.grafana.cli import (
+            _run_validation_jobs,
+        )
+
+        result = SimpleNamespace(dashboard_title="A", dashboard_uid="a")
+        query = "TS metrics-* | STATS value = SUM(metric) BY grouping = ??grouping"
+        exporter = SimpleNamespace(
+            esql_query=query,
+            title="Exporter",
+            source_panel_id="1",
+            query_ir={"metadata": {"esql_identifier_param_defaults": {"grouping": "exporter"}}},
+        )
+        receiver = SimpleNamespace(
+            esql_query=query,
+            title="Receiver",
+            source_panel_id="2",
+            query_ir={"metadata": {"esql_identifier_param_defaults": {"grouping": "receiver"}}},
+        )
+        with mock.patch(
+            "observability_migration.adapters.source.grafana.cli.validate_query_with_fixes",
+            side_effect=lambda q, *_args, **_kwargs: {
+                "status": "pass",
+                "query": q,
+                "error": "",
+                "fix_attempts": [],
+                "analysis": {},
+            },
+        ) as validate:
+            _run_validation_jobs(
+                [(result, exporter), (result, receiver)],
+                es_url="http://localhost:9200",
+                resolver=object(),
+                es_api_key=None,
+                narrow_limit=10,
+                workers=2,
+            )
+
+        self.assertEqual(validate.call_count, 2)
 
     def test_resolve_native_promql_uses_detection_when_auto(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -7230,7 +9828,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("BY time_bucket = TBUCKET(5 minute)", query)
+        # Dashboard panels use adaptive TBUCKET (issue #316); summary gauges still
+        # collapse over that bucket with a null-safe MAX reduction.
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)", query)
         self.assertIn("| SORT time_bucket ASC", query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
         self.assertIn(
@@ -7497,10 +10097,16 @@ class TranslatorRegressionTests(unittest.TestCase):
                 resolver=self.resolver,
             )
             migrate.annotate_results_with_verification([result], [])
+            result.control_warnings = ["variable 'job' needs manual scope review"]
             manifest_path = pathlib.Path(tmpdir) / "migration_manifest.json"
             migrate.save_migration_manifest([result], manifest_path)
             manifest = json.loads(manifest_path.read_text())
         self.assertEqual(manifest["summary"]["dashboards"], 1)
+        self.assertEqual(manifest["summary"]["control_warnings"], 1)
+        self.assertEqual(
+            manifest["dashboards"][0]["control_warnings"],
+            ["variable 'job' needs manual scope review"],
+        )
         self.assertEqual(manifest["dashboards"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["inventory"]["links"], 1)
         self.assertEqual(manifest["panels"][0]["query_language"], "promql")
@@ -7710,6 +10316,130 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(emitted.title, "Foo Total")
         self.assertEqual(emitted.visual_ir.title, "Foo Total")
         self.assertEqual(manual.title, "Manual Panel")
+
+    def test_apply_metadata_polish_rebuilds_stale_native_dashboard(self):
+        # Regression test: metadata polish runs before --validate/--upload
+        # and rewrites panel titles/control labels into YAML, but the native
+        # IR was already built from the pre-polish doc. A --polish-metadata
+        # --upload run must not ship the pre-polish title on the native path.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+
+            # Simulate the pre-polish native IR built at translation time,
+            # from the same (stale) dashboard doc that is about to be polished.
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+            stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+            self.assertEqual(stale_title, "graph")
+
+            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        rebuilt_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+        self.assertEqual(rebuilt_title, "Foo Total")
+
+    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+        # IR-first: metadata polish must refresh `result.dashboard_ir` (not
+        # just `result.native_dashboard`), and the on-disk YAML it writes
+        # must be exactly what that rebuilt IR serializes to.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+
+            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+            result.native_dashboard = stale_native
+            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+
+            migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+            on_disk = yaml.safe_load(yaml_path.read_text())
+
+        self.assertIsNotNone(result.dashboard_ir)
+        self.assertEqual(result.dashboard_ir.panels[0].title, "Foo Total")
+        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+
+    def test_apply_metadata_polish_leaves_missing_native_dashboard_alone(self):
+        # Callers that never set result.native_dashboard must not trip the
+        # rebuild path or its deferred import.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        payload = {
+            "dashboards": [{
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {
+                            "type": "line",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            }]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
+            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        self.assertIsNone(result.native_dashboard)
 
     def test_verification_packet_marks_green_for_clean_panel(self):
         dashboard = {
@@ -8426,6 +11156,174 @@ class TranslatorRegressionTests(unittest.TestCase):
         hints = _target_translation_hints(panel, "timeseries", target)
         self.assertEqual(hints.get("preferred_group_labels"), ["a", "b"])
 
+    def test_translation_hints_do_not_infer_labels_for_explicit_aggregations(self):
+        """Dashboard-wide label inference must not widen expressions whose
+        PromQL aggregation already chose to collapse labels.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            'sum(redis_db_keys{instance=~"$instance"})',
+            '(sum(redis_db_keys{instance=~"$instance"}))',
+            # Ungrouped aggregations wrapped in unary/scalar arithmetic still
+            # collapse labels, so dashboard-wide inference must not widen them.
+            '-sum(redis_db_keys{instance=~"$instance"})',
+            '100 * sum(redis_db_keys{instance=~"$instance"})',
+            '1 - avg(redis_db_keys{instance=~"$instance"})',
+            '(100 * sum(redis_db_keys{instance=~"$instance"}))',
+            '(sum(redis_db_keys{instance=~"$instance"})) * 100',
+            '(sum(redis_db_keys{instance=~"$instance"})) / 100',
+            '-(sum(redis_db_keys{instance=~"$instance"}))',
+            # Label-preserving function wrappers around an ungrouped aggregation
+            # keep the collapsed shape, so inference must not widen them either.
+            'clamp_max(sum(redis_db_keys{instance=~"$instance"}), 100)',
+            'clamp_min(avg(redis_db_keys{instance=~"$instance"}), 0)',
+            'abs(sum(redis_db_keys{instance=~"$instance"}))',
+            'round(-sum(redis_db_keys{instance=~"$instance"}))',
+            'clamp_max((sum(redis_db_keys{instance=~"$instance"})), 100)',
+            '100 * clamp_max(sum(redis_db_keys{instance=~"$instance"}), 5)',
+            'clamp_max((sum(redis_db_keys{instance=~"$instance"})) * 100, 5)',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "keys",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"redis_db_keys": ["db", "instance"]},
+            )
+
+            self.assertNotIn("preferred_group_labels", hints, expr)
+            self.assertNotIn("preferred_group_labels_origin", hints, expr)
+
+    def test_translation_hints_do_not_infer_labels_for_scalar_functions(self):
+        """Dashboard-wide label inference must not widen functions that return
+        scalar/unlabeled results.
+        """
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            'scalar(redis_db_keys{instance=~"$instance"})',
+            'time()',
+            'vector(1)',
+            'absent(redis_db_keys{instance=~"$instance"})',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"redis_db_keys": ["db", "instance"]},
+            )
+
+            self.assertNotIn("preferred_group_labels", hints, expr)
+            self.assertNotIn("preferred_group_labels_origin", hints, expr)
+
+    def test_translation_hints_still_infer_for_scalar_scaled_non_aggregations(self):
+        """Peeling leading scalar/unary arithmetic must not over-block: a
+        label-preserving vector expression (no ungrouped aggregation) should
+        still receive dashboard-inferred grouping."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            '100 * rate(redis_db_keys{instance=~"$instance"}[5m])',
+            '-redis_db_keys{instance=~"$instance"}',
+            # Function wrappers around a label-preserving (non-aggregation)
+            # vector keep per-series labels, so inference should still apply.
+            'clamp_max(rate(redis_db_keys{instance=~"$instance"}[5m]), 100)',
+            'abs(redis_db_keys{instance=~"$instance"})',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"redis_db_keys": ["db", "instance"]},
+            )
+
+            self.assertEqual(
+                hints.get("preferred_group_labels_origin"),
+                "dashboard_inferred",
+                expr,
+            )
+
+    def test_translation_hints_infer_for_label_preserving_topk(self):
+        """topk/bottomk preserve input series labels, so dashboard label
+        inference should still recover their per-series breakdown."""
+        from observability_migration.adapters.source.grafana.panels import (
+            _target_translation_hints,
+        )
+
+        panel = {"type": "graph", "targets": []}
+        for expr in (
+            'topk(5, rate(http_requests_total{job="$job"}[5m]))',
+            'bottomk(5, rate(http_requests_total{job="$job"}[5m]))',
+            'sort_desc(topk(5, rate(http_requests_total{job="$job"}[5m])))',
+        ):
+            target = {
+                "expr": expr,
+                "legendFormat": "",
+                "format": "time_series",
+            }
+            hints = _target_translation_hints(
+                panel,
+                "graph",
+                target,
+                metric_series_labels={"http_requests_total": ["job"]},
+            )
+
+            self.assertEqual(hints.get("preferred_group_labels"), ["job"], expr)
+            self.assertEqual(
+                hints.get("preferred_group_labels_origin"),
+                "dashboard_inferred",
+                expr,
+            )
+
+    def test_grouped_rate_outer_avg_is_not_a_warning(self):
+        translated = self.translate(
+            "rate(http_requests_total[5m])",
+            translation_hints={
+                "preferred_group_labels": ["handler"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+
+        self.assertIn("RATE(http_requests_total, 5m)", translated.esql_query)
+        self.assertNotIn("AVG(RATE(", translated.esql_query)
+        self.assertFalse(any("Added outer AVG" in w for w in translated.warnings))
+
+    def test_grouped_gauge_default_downsample_is_not_a_warning(self):
+        translated = self.translate(
+            "node_memory_MemAvailable_bytes",
+            translation_hints={
+                "preferred_group_labels": ["handler"],
+                "preferred_group_labels_origin": "dashboard_inferred",
+            },
+        )
+
+        self.assertIn("AVG(node_memory_MemAvailable_bytes)", translated.esql_query)
+        self.assertFalse(any("faithful gauge downsample" in w for w in translated.warnings))
+
     def test_translation_hints_table_style_patterns_do_not_set_legend_origin(self):
         """When panel-style patterns contribute, the origin must NOT be
         marked as legend (so the consumer still unions with explicit by())."""
@@ -8460,8 +11358,10 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
         self.assertIn("BY time_bucket", translated.esql_query)
-        self.assertIn("type", translated.esql_query)
-        self.assertIn("info", translated.esql_query)
+        # legendFormat-derived preferred groups are display-only and must not
+        # widen the BY clause (that forced AVG(IRATE) and blocked fusion).
+        self.assertNotIn(", type", translated.esql_query)
+        self.assertNotIn(", info", translated.esql_query)
 
     def test_translator_keeps_explicit_by_when_legend_origin_is_legend(self):
         """When PromQL has explicit `by(handler)`, a legend that mentions extra
@@ -8513,6 +11413,85 @@ class TranslatorRegressionTests(unittest.TestCase):
         target = {"legendFormat": "{{ method }}"}
         hints = _target_translation_hints(panel, panel_type="timeseries", target=target)
         self.assertNotIn("legend_format_template", hints)
+
+    def test_multi_by_xy_composites_series_group_breakdown(self):
+        """Lens XY has one breakdown field; multi-label ``by (a, b)`` must
+        composite into ``series_group`` instead of silently merging on ``a``."""
+        panel = {
+            "id": 1,
+            "title": "Pods",
+            "type": "timeseries",
+            "gridPos": {"w": 24, "h": 8, "x": 0, "y": 0},
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "sum by (namespace, pod) (kube_pod_info)",
+                }
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "line")
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        self.assertIn("EVAL series_group = CONCAT(", esql["query"])
+        self.assertTrue(
+            any("Composited multi-label grouping" in r for r in result.reasons),
+            result.reasons,
+        )
+        self.assertFalse(
+            any("XY chart shows a single breakdown" in r for r in result.reasons),
+            result.reasons,
+        )
+
+    def test_mysql_network_traffic_fuses_both_or_chain_targets(self):
+        """MySQL Overview "Network Traffic" has receive + transmit OR-chains;
+        both must land as series columns, not 'only 1 could be migrated'.
+
+        The panel below is an inlined minimal repro of the receive/transmit
+        OR-chain shape (the upstream grafana.com MySQL Overview dashboard JSON
+        is intentionally not committed; fetch it via the pinned
+        ``community_corpus.json`` when you need the full dashboard)."""
+        panel = {
+            "title": "Network Traffic",
+            "type": "graph",
+            "targets": [
+                {
+                    "expr": (
+                        'sum(rate(node_network_receive_bytes_total{instance="$host", device!="lo"}[$interval])) '
+                        'or sum(irate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
+                        'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[$interval])) '
+                        'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[5m]))'
+                    ),
+                    "legendFormat": "Inbound",
+                    "refId": "B",
+                },
+                {
+                    "expr": (
+                        'sum(rate(node_network_transmit_bytes_total{instance="$host", device!="lo"}[$interval])) '
+                        'or sum(irate(node_network_transmit_bytes_total{instance="$host", device!="lo"}[5m])) '
+                        'or sum(max_over_time(rdsosmetrics_network_tx{instance="$host"}[$interval])) '
+                        'or sum(max_over_time(rdsosmetrics_network_tx{instance="$host"}[5m]))'
+                    ),
+                    "legendFormat": "Outbound",
+                    "refId": "A",
+                },
+            ],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIsNotNone(yaml_panel)
+        metrics = [m["field"] for m in yaml_panel["esql"]["metrics"]]
+        self.assertGreaterEqual(len(metrics), 2, metrics)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(
+            ("receive" in query.lower() and "transmit" in query.lower())
+            or ("Inbound" in metrics and "Outbound" in metrics),
+            query,
+        )
+        self.assertFalse(
+            any("only 1 could be migrated" in r for r in result.reasons),
+            result.reasons,
+        )
 
     def test_apply_composite_legend_to_xy_panel_inserts_concat(self):
         from observability_migration.adapters.source.grafana.panels import (
@@ -9053,6 +12032,27 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         self.assertEqual(data["runtime_features"], result.runtime_features)
         os.unlink(path)
 
+    def test_report_records_field_discovery_summary(self):
+        from observability_migration.core.reporting.report import save_detailed_report
+
+        result = migrate.MigrationResult("Dash", "uid-1")
+        result.total_panels = 1
+        result.migrated = 1
+        field_discovery = {
+            "status": "offline",
+            "schema_profile": None,
+            "index_pattern": "metrics-*",
+            "otel_fallback": True,
+        }
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            path = f.name
+        save_detailed_report([result], [], path, field_discovery=field_discovery)
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data["field_discovery"], field_discovery)
+        os.unlink(path)
+
 
 class TestDisplayMetadata(unittest.TestCase):
     """Tests for Grafana display metadata extraction."""
@@ -9096,6 +12096,13 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertIn("suffix", fmt)
 
     def test_unit_to_yaml_format_duration_seconds(self):
+        # A bare ``{type: duration}`` is the only shape the kb-dashboard-core
+        # YAML schema accepts here (``ESQLMetricFormat`` et al reject
+        # ``from``/``to`` outright). The typed Dashboards API's own
+        # multi-column format schema separately requires ``from``/``to``, but
+        # ``dashboards_api._api_format`` defaults those independently when
+        # mapping this YAML into the native API payload -- see
+        # test_dashboards_api.py::test_api_format_accepts_bare_duration.
         from observability_migration.targets.kibana.emit.display import grafana_unit_to_yaml_format
         fmt = grafana_unit_to_yaml_format("s")
         self.assertEqual(fmt, {"type": "duration"})
@@ -10337,9 +13344,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         controls = yaml_doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
         self.assertEqual(controls[0]["label"], "Instance")
+        self.assertEqual(controls[0]["variable_name"], "instance")
         self.assertTrue(
-            controls[0]["field"],
-            "Field should be resolved (may be mapped from 'instance' to ES equivalent)",
+            controls[0].get("field") or controls[0].get("variable_name"),
+            "Control should resolve a field or variable binding",
         )
 
     # ------------------------------------------------------------------
@@ -10569,6 +13577,167 @@ class TextboxVariableTests(unittest.TestCase):
         self.assertEqual(len(controls), 0)
 
 
+class ChainedVariableControlFidelityTests(unittest.TestCase):
+    """Regression tests for issue #269: metric-scoped, label-filtered, and
+    chained Grafana query variables must not silently drop/degrade in the
+    migrated Kibana controls without a surfaced warning."""
+
+    def setUp(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        self.rule_pack = migrate.RulePackConfig()
+        set_runtime_feature(
+            self.rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=True,
+            source="test",
+            confidence="assumed",
+        )
+        self.resolver = migrate.SchemaResolver(self.rule_pack)
+        # Issue #269's exact repro: `$id` is scoped to the currently selected
+        # `$instance` (`label_values(container_memory_cache{instance="$instance"}, id)`),
+        # and the panel filters on `$id` alone.
+        self.dashboard = {
+            "title": "Label-filter control repro (container_memory_cache)",
+            "uid": "label-filter-repro-01",
+            "panels": [
+                {
+                    "id": 2,
+                    "type": "timeseries",
+                    "title": "container_memory_cache",
+                    "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+                    "targets": [{"expr": 'avg(container_memory_cache{id="$id"})', "refId": "A"}],
+                }
+            ],
+            "templating": {
+                "list": [
+                    {
+                        "name": "instance",
+                        "type": "query",
+                        "definition": "label_values(container_memory_cache,instance)",
+                        "current": {"text": "cadvisor:8080", "value": "cadvisor:8080"},
+                        "options": [],
+                    },
+                    {
+                        "name": "id",
+                        "type": "query",
+                        "definition": 'label_values(container_memory_cache{instance="$instance"},id)',
+                        "current": {"text": "id_1", "value": "id_1"},
+                        "options": [],
+                    },
+                ]
+            },
+        }
+
+    def _translate(self, resolver):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, yaml_path = migrate.translate_dashboard(
+                self.dashboard,
+                pathlib.Path(tmpdir),
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=self.rule_pack,
+                resolver=resolver,
+            )
+            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        return result, doc["dashboards"][0]
+
+    def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
+        # Defect 2: the migrated `id` control lists every `id` regardless of
+        # the selected `instance` -- Kibana ES|QL controls have no
+        # cross-control dependency mechanism. That is an accepted
+        # degradation (not a silent one): it must be reported as a
+        # dashboard-level control warning.
+        _result, doc = self._translate(self.resolver)
+        controls = {c["variable_name"]: c for c in doc["controls"]}
+        self.assertIn("id", controls)
+        self.assertNotIn("instance", controls["id"]["query"])
+        self.assertNotIn("?instance", controls["id"]["query"])
+
+        result, _doc = self._translate(self.resolver)
+        self.assertTrue(
+            any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_control_for_absent_target_field_is_kept_with_a_surfaced_warning(self):
+        # Defect 1: target-schema discovery may positively confirm that the
+        # resolved field is absent because telemetry has not arrived yet. Keep
+        # the source control so offline/live output stays deterministic and the
+        # dropdown self-heals once the field is ingested, but surface the
+        # data-readiness gap explicitly.
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertIn("instance", variable_names)
+        self.assertTrue(
+            any(
+                "variable 'instance' kept" in w and "service.instance.id" in w
+                for w in result.control_warnings
+            ),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_absent_referenced_control_is_not_reported_dropped_then_resynthesized(self):
+        # A panel that binds ?instance requires the corresponding ES|QL
+        # control. Historically query_variable_rule reported it as dropped,
+        # then _ensure_param_controls silently synthesized it again, leaving
+        # the report and artifact in direct contradiction.
+        self.dashboard["panels"][0]["targets"][0]["expr"] = (
+            'avg(container_memory_cache{instance="$instance",id="$id"})'
+        )
+        orig_field_exists = self.resolver.field_exists
+
+        def field_exists(field):
+            if field == "service.instance.id":
+                return False
+            return orig_field_exists(field)
+
+        self.resolver.field_exists = field_exists
+
+        result, doc = self._translate(self.resolver)
+        instance_controls = [
+            control
+            for control in doc["controls"]
+            if control.get("variable_name") == "instance"
+        ]
+        self.assertEqual(len(instance_controls), 1)
+        self.assertIn("?instance", doc["panels"][0]["esql"]["query"])
+        self.assertTrue(
+            any("variable 'instance' kept" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+        self.assertFalse(
+            any("variable 'instance' dropped" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_offline_migrate_keeps_both_controls_with_only_the_scope_warning(self):
+        # Without a resolver (offline migrate, no --es-url) the source-
+        # faithful scope is kept for the `instance` control itself; only the
+        # inter-control dependency (Defect 2) is unrepresentable.
+        result, doc = self._translate(None)
+        variable_names = {c["variable_name"] for c in doc["controls"]}
+        self.assertEqual(variable_names, {"instance", "id"})
+        self.assertEqual(len(result.control_warnings), 1)
+        self.assertIn("scoped by $instance", result.control_warnings[0])
+
+
 class LokiDashboardIntegrationTests(unittest.TestCase):
     """End-to-end tests for a synthetic LogQL dashboard migration."""
 
@@ -10739,13 +13908,19 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                 yaml_doc = yaml.safe_load(f)
         dash = yaml_doc["dashboards"][0]
         controls = dash.get("controls", [])
-        control_fields = [c.get("field", "") for c in controls]
-        has_namespace = any("namespace" in f for f in control_fields)
-        has_pod = any("pod" in f for f in control_fields)
+        control_ids = [
+            " ".join(
+                str(c.get(key) or "")
+                for key in ("field", "variable_name", "label", "query")
+            ).lower()
+            for c in controls
+        ]
+        has_namespace = any("namespace" in text for text in control_ids)
+        has_pod = any("pod" in text for text in control_ids)
         self.assertTrue(has_namespace,
-                        f"Expected a namespace control, got fields: {control_fields}")
+                        f"Expected a namespace control, got: {controls}")
         self.assertTrue(has_pod,
-                        f"Expected a pod control, got fields: {control_fields}")
+                        f"Expected a pod control, got: {controls}")
 
     def test_layout_preserves_full_width(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -10952,7 +14127,9 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
 
     def test_node_exporter_full_panel_count(self):
         result, _yaml_doc = self._translate_dashboard("node-exporter-full.json")
-        self.assertEqual(result.total_panels, 132)
+        # 132 source elements plus one rendered links panel synthesized from
+        # dashboard-level external-link metadata.
+        self.assertEqual(result.total_panels, 133)
         self.assertGreater(result.migrated + result.migrated_with_warnings, 90,
                            "Most panels should migrate")
 
@@ -12402,7 +15579,12 @@ class NativePromqlTests(unittest.TestCase):
         panel = self._make_panel("avg_over_time(cpu_usage[10m])")
         _yaml_panel, result = self.translate_panel(panel)
         self.assertIn("PROMQL", result.esql_query)
-        self.assertIn("step=1m", result.esql_query)
+        # Migrated dashboard panel: adaptive resolution, no baked-in step (#272).
+        self.assertNotIn("step=", result.esql_query)
+        self.assertNotIn("time=?_tend", result.esql_query)
+        # avg_over_time is not rate()/increase(), so its explicit window stays
+        # verbatim (only rate/increase go windowless, issue #273).
+        self.assertIn("avg_over_time(cpu_usage[10m])", result.esql_query)
 
     # ── query builder ──
 
@@ -12442,6 +15624,288 @@ class NativePromqlTests(unittest.TestCase):
         q = build_native_promql_query('node_filesystem_avail_bytes {instance="node-1"}', index="metrics-*")
         self.assertIn('node_filesystem_avail_bytes{instance="node-1"}', q)
 
+    # ── adaptive step (#272) and adaptive rate window (#273) ──
+
+    def test_adaptive_step_omits_step_param(self):
+        """Issue #272: a range dashboard panel opts into ``adaptive_step`` so no
+        fixed ``step=`` is baked in; Elastic sizes the resolution to the view via
+        the dashboard time picker. A bare stepless command is rejected by ES
+        ("provide either [step] or all of [start], [end], and [buckets]"), so the
+        adaptive form binds ``start=?_tstart end=?_tend buckets=50`` (Kibana
+        materializes the params at render). The command still emits the ``step``
+        time column."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query("up", index="metrics-*", kibana_type="line", adaptive_step=True)
+        self.assertTrue(q.startswith("PROMQL index=metrics-*"))
+        self.assertNotIn("step=", q)
+        self.assertNotIn("time=?_tend", q)
+        # Adaptive-but-executable: bound to the time picker, not stepless.
+        self.assertIn("start=?_tstart end=?_tend buckets=50", q)
+        self.assertIn("value=(up)", q)
+
+    def test_adaptive_step_ignored_for_instant_tile(self):
+        """An instant tile carries no step at all, so ``adaptive_step`` is a
+        no-op there: it stays ``time=?_tend`` with no ``step=``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "up", index="metrics-*", kibana_type="metric", instant=True, adaptive_step=True
+        )
+        self.assertIn("time=?_tend", q)
+        self.assertNotIn("step=", q)
+
+    def test_explicit_step_wins_over_adaptive_step(self):
+        """An explicit ``step`` (e.g. a migrated alert honoring the source query
+        interval, #209) is always honored even if ``adaptive_step`` is set."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "up", index="metrics-*", kibana_type="line", step="30s", adaptive_step=True
+        )
+        self.assertIn("step=30s", q)
+
+    def test_adaptive_rate_interval_emits_windowless_rate(self):
+        """Issue #273: ``rate(x[$__rate_interval])`` from Grafana carries adaptive
+        intent, so a dashboard panel emits a windowless ``rate(x)`` (window sized
+        to the step) rather than freezing a fixed ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[$__rate_interval])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total))", q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("step=", q)
+
+    def test_adaptive_increase_interval_emits_windowless_increase(self):
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'increase(container_memory_cache{pod="p"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(increase(container_memory_cache{pod="p"}))', q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_explicit_rate_window_preserved_verbatim_when_adaptive(self):
+        """Issue #273: a pinned explicit window is kept exactly, even on the
+        adaptive dashboard path — only ``$__rate_interval`` goes windowless."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[5m])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
+
+    def test_adaptive_window_only_applies_to_rate_and_increase(self):
+        """Only ``rate``/``increase`` have a confirmed windowless form. Another
+        range function with an adaptive macro keeps a fixed window so the emitted
+        query stays valid."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "avg_over_time(cpu_usage[$__interval])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(avg_over_time(cpu_usage[1m]))", q)
+        self.assertNotIn("$__interval", q)
+
+    def test_adaptive_rate_window_fixed_on_instant_tile(self):
+        """A windowless rate needs a step to size its lookback; an instant tile
+        has none, so its rate window stays fixed even with ``adaptive_step``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[$__rate_interval])",
+            index="metrics-*", kibana_type="metric", instant=True, adaptive_step=True,
+        )
+        self.assertIn("time=?_tend", q)
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
+
+    def test_adaptive_window_keeps_fixed_range_when_offset_present(self):
+        """Issue #273 review: an adaptive-macro range vector carrying an
+        ``offset`` modifier must NOT go windowless (``rate(foo offset 5m)``
+        drops the range before the offset). It falls back to the valid
+        fixed-window form the pre-#273 code emitted."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[$__rate_interval] offset 5m)",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total[5m] offset 5m))", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_keeps_fixed_range_when_at_modifier_present(self):
+        """Same guard for the ``@`` modifier, which — like ``offset`` — attaches
+        to the range vector and has no confirmed windowless form."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "increase(http_requests_total[$__rate_interval] @ end())",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(increase(http_requests_total[5m] @ end()))", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_spaced_selector(self):
+        """Issue #273 review: upstream dashboards space out the selector
+        (``metric {job="api"}``). The adaptive rewrite must still fire and go
+        windowless instead of falling back to a frozen ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total {job="api"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate(http_requests_total{job="api"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_fixed_window_normalizes_space_after_close_brace(self):
+        """The offset fallback keeps a fixed window, so a spaced
+        ``foo{...} [5m]`` selector must be normalized to ``foo{...}[5m]`` rather
+        than emit a malformed ``} [`` range."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total {job="api"} [$__rate_interval] offset 1h)',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate(http_requests_total{job="api"}[5m] offset 1h))', q)
+        self.assertNotIn("} [", q)
+
+    def test_adaptive_window_handles_name_selector_only_vector(self):
+        """Issue #273 review: a selector-only vector (``{__name__="..."}`` with no
+        leading metric identifier) is accepted by ``can_use_native_promql`` and
+        must go windowless on the adaptive dashboard path, not freeze to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({__name__="http_requests_total"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({__name__="http_requests_total"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_label_selector_only_vector(self):
+        """A selector-only vector matched purely by labels (``{job="api"}``) has
+        no leading metric name but is still native-supported, so it must stay
+        adaptive on the dashboard range path (issue #273 review)."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_braced_interval_macro(self):
+        """Issue #273 review: Grafana's braced macro spelling
+        (``${__rate_interval}``) carries the same adaptive intent as the unbraced
+        form, so it must go windowless rather than freeze to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[${__rate_interval}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total))", q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("__rate_interval", q)
+
+    def test_adaptive_window_handles_braced_interval_macro_sibling(self):
+        """The braced handling covers the sibling adaptive macros too, e.g.
+        ``${__interval}`` on an ``increase`` goes windowless instead of the
+        frozen ``[1m]`` default."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "increase(http_requests_total[${__interval}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(increase(http_requests_total))", q)
+        self.assertNotIn("[1m]", q)
+        self.assertNotIn("__interval", q)
+
+    def test_adaptive_window_handles_selector_only_with_braced_macro(self):
+        """The selector-only and braced-macro fixes compose: a purely
+        label-matched vector windowed by a braced macro still goes windowless."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[${__rate_interval}])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("__rate_interval", q)
+
+    def test_adaptive_window_keeps_fixed_range_for_selector_only_with_offset(self):
+        """The offset guard (issue #273 review) still applies to selector-only
+        vectors: an ``offset`` modifier forces the valid fixed-window fallback
+        rather than dropping the range before the modifier."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({job="api"}[$__rate_interval] offset 5m)',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({job="api"}[5m] offset 5m))', q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_leaves_non_macro_braced_window_fixed(self):
+        """A braced *custom* variable window (not one of Grafana's adaptive
+        macros) must NOT be treated as adaptive: it keeps the fixed-window
+        fallback so the emitted rate stays a valid range query."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            "rate(http_requests_total[${my_window}])",
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn("value=(rate(http_requests_total[5m]))", q)
+
+    def test_adaptive_window_handles_brace_in_label_value(self):
+        """Issue #273 review: a quoted label value may itself contain ``{``/``}``
+        (a route template like ``route="/api/{id}"``). The adaptive rewrite must
+        scan past those braces inside the quoted value and still go windowless
+        rather than freeze the whole selector to ``[5m]``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate(http_requests_total{route="/api/{id}"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_brace_in_label_value_selector_only(self):
+        """The brace-in-value scan also applies to selector-only vectors (no
+        leading metric name), e.g. ``{route="/api/{id}"}``."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate({route="/api/{id}"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn('value=(rate({route="/api/{id}"}))', q)
+        self.assertNotIn("[5m]", q)
+        self.assertNotIn("$__rate_interval", q)
+
+    def test_adaptive_window_handles_brace_in_label_value_multi_label(self):
+        """A brace-bearing value alongside other matchers still goes windowless;
+        the scan must not stop at the first brace inside the quoted value."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}",method="GET"}[$__rate_interval])',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn(
+            'value=(rate(http_requests_total{route="/api/{id}",method="GET"}))', q
+        )
+        self.assertNotIn("[5m]", q)
+
+    def test_adaptive_window_keeps_fixed_range_for_brace_value_with_offset(self):
+        """The offset guard still wins when the label value contains braces: the
+        vector falls back to the valid fixed-window form rather than dropping the
+        range before the modifier."""
+        from observability_migration.adapters.source.grafana.panels import build_native_promql_query
+        q = build_native_promql_query(
+            'rate(http_requests_total{route="/api/{id}"}[$__rate_interval] offset 5m)',
+            index="metrics-*", kibana_type="line", adaptive_step=True,
+        )
+        self.assertIn(
+            'value=(rate(http_requests_total{route="/api/{id}"}[5m] offset 5m))', q
+        )
+        self.assertNotIn("$__rate_interval", q)
+
     def test_native_promql_rejects_double_bracket_label_variable(self):
         self.assertFalse(panels.can_use_native_promql('rate(foo{instance=~"[[instance]]"}[5m])'))
         with self.assertRaises(ValueError):
@@ -12460,6 +15924,24 @@ class NativePromqlTests(unittest.TestCase):
         self.assertTrue(can_use_native_promql("up"))
         self.assertTrue(can_use_native_promql("rate(foo[5m])"))
         self.assertTrue(can_use_native_promql('sum by (job) (rate(http_requests_total[5m]))'))
+        self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
+
+    def test_rejects_nested_aggregation_for_native_promql(self):
+        """Nested aggregations (count(count(...))) pass offline can_use historically
+        but fail at ES PROMQL runtime (docker Load [1m]). Defer to ES|QL."""
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(
+            can_use_native_promql(
+                'avg(node_load1) / count(count(node_cpu) by (cpu))'
+            )
+        )
+        self.assertFalse(can_use_native_promql("count(count(node_cpu) by (cpu))"))
+        self.assertFalse(
+            can_use_native_promql(
+                "avg(sum by (job) (rate(http_requests_total[5m])))"
+            )
+        )
+        # Range-vector wrappers are not nested aggregations.
         self.assertTrue(can_use_native_promql("max(avg_over_time(cpu[10m]))"))
 
     def test_rejects_range_selector_on_aggregation(self):
@@ -12615,8 +16097,11 @@ class NativePromqlTests(unittest.TestCase):
         self.assertNotIn("PROMQL index=", query)
         # Both targets are gauges and now assume TSDS -> TS/TBUCKET. The test's intent is
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
-        self.assertIn("BY time_bucket = TBUCKET(5 minute), device", query)
+        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), device", query)
         self.assertNotIn(", interface", query)
+        self.assertIn("EVAL Operational_state_UP = node_network_up_A", query)
+        self.assertIn("EVAL Physical_link_state = node_network_carrier_B", query)
+        self.assertNotIn("EVAL Operational_state_UP = node_network_up\n", query)
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         # TS is the time-series-faithful source the PromQL contract wants, so the gauge

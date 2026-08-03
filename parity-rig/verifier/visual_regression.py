@@ -8,10 +8,9 @@ PromQL and Kibana ES|QL; this module proves *visual* parity by driving
 ``agent-browser`` over both products and pixel-diffing the rendered
 panels.
 
-It is the measurement instrument the layout redesign
-(``parity-rig/verifier/verifier-plans/LAYOUT-REDESIGN-2026-05-12.md``)
-gates on: every layout change must hold or improve the median diff
-score across all parity dashboards.
+It is the measurement instrument layout changes gate on: every layout
+change must hold or improve the median diff score across all parity
+dashboards.
 
 Architecture
 ------------
@@ -38,7 +37,7 @@ CLI
 ::
 
     python -m verifier.visual_regression \\
-        --migration-out  /tmp/mig-to-kbn-e2e/parity-out-<slug>/dashboards \\
+        --migration-out  /tmp/obs-migrate-e2e/parity-out-<slug>/dashboards \\
         --grafana-url    http://localhost:23000 \\
         --grafana-uid    <grafana-dashboard-uid> \\
         --kibana-url     https://<cluster>.kb.elastic.cloud \\
@@ -46,7 +45,7 @@ CLI
         --api-key        $KEY \\
         --output-dir     /tmp/visual-regression/<slug>/ \\
         --report         /tmp/visual-regression/<slug>/report.json \\
-        [--state         $HOME/.agent-browser/state/mig-to-kbn-verifier.json] \\
+        [--state         $HOME/.agent-browser/state/obs-migrate-verifier.json] \\
         [--from now-1h --to now]                          \\
         [--threshold 0.15]                                 \\
         [--wait-extra-seconds 4]

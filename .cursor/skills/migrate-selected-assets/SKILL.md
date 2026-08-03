@@ -5,13 +5,26 @@ description: Use when the user wants to migrate "these specific dashboards", "on
 
 # Migrate selected dashboards / alerting rules
 
+**Audience:** operators of the published `obs-migrate` CLI (PyPI/`uvx`), using public docs and their real source + Elastic/Kibana — not a repo lab harness.
+
 Goal: migrate a **deliberately chosen subset** of the user's source assets into Kibana — more than the single-dashboard trial, less than a full sweep. Scope with the uniform `--select-*` metadata flags (folder / tag / datasource / team / last-updated / starred), available on `obs-migrate migrate` for **both** sources and **both** dashboards and alerts. Some dimensions a given source/asset genuinely cannot supply — those **degrade gracefully** (the asset is kept and a `WARN` names the skipped dimension), so be explicit about what filters effectively and what passes through.
 
 This skill writes the selected assets to the target. It is otherwise read-only on the source.
 
-## Which command form to use (package vs. repo)
+## Prerequisites (install)
 
-Assume the user **installed the package** (`obs-migrate`, `grafana-migrate`, `datadog-migrate` on `PATH`); prefix `.venv/bin/` only for a repo checkout. Every command and artifact below ships in the installed wheel — no `scripts/`, `infra/`, or `examples/` directory is required.
+These skills help **operators** of the published CLI (not a repo checkout).
+If `obs-migrate` is missing or `doctor` is not **Ready**, follow
+`install-obs-migrate` first — that skill owns PyPI/`uvx`/pip, extras, and
+Python/`uv` gotchas. Do not invent alternate install commands here.
+
+```bash
+uvx --from 'elastic-observability-migration[all]' obs-migrate doctor
+# After a persistent install, the same check is: obs-migrate doctor
+```
+
+Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
+
 
 ## The selection surface (read this before scoping)
 
@@ -61,7 +74,8 @@ obs-migrate migrate \
   --grafana-url "$GRAFANA_URL" --grafana-token "$GRAFANA_TOKEN" \
   --select-folder Production --select-tag team:infra \
   --select-updated-after 2026-01-01 \
-  --output-dir selected_out --assets dashboards --data-view "metrics-*"
+  --output-dir selected_out --assets dashboards \
+  --data-view "metrics-*" --esql-index "metrics-*"
 
 # Datadog dashboards + monitors for the payments team (team: tag), one sweep:
 obs-migrate migrate \
@@ -120,10 +134,11 @@ obs-migrate migrate \
   --input-dir ./selected_dashboards \
   --output-dir selected_out \
   --assets dashboards \
-  --data-view "metrics-*"
+  --data-view "metrics-*" \
+  --esql-index "metrics-*"
 ```
 
-Export each chosen dashboard's JSON from the Grafana UI (*Share → Export → Save to file*) or `GET /api/dashboards/uid/<uid>`, into the same directory. The selection **is** the directory contents.
+Export each chosen dashboard's JSON from the Grafana UI (*Share → Export → Save to file*) or `GET /api/dashboards/uid/<uid>`, into the same directory. The selection **is** the directory contents. Prefer setting `--esql-index` for Prometheus query/discovery target when it may differ from `--data-view`.
 
 ### Grafana alerts — subset with `--select-*`
 
@@ -136,12 +151,17 @@ Add the target endpoints you have, re-run Step 1 with live validation, then uplo
 ```bash
 export ELASTICSEARCH_ENDPOINT="https://...es..." KIBANA_ENDPOINT="https://...kbn..." KEY="<api-key>"
 
-# Dashboards: re-run Step 1 appending live discovery, then upload:
+# Dashboards: re-run Step 1 appending live discovery, review native artifacts, then upload:
 #   ...append: --es-url "$ELASTICSEARCH_ENDPOINT" --es-api-key "$KEY"
+#   Review: selected_out/dashboards/native/*.native.json  (upload payload; edits honored)
+#           selected_out/dashboards/ir/*.ir.json          (translator decisions; inspection-only)
 obs-migrate upload \
-  --yaml-dir selected_out/dashboards \
+  --artifact-dir selected_out/dashboards \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY"
+
+# Or one-shot migrate+upload (same Kibana flags + --upload on migrate):
+# obs-migrate migrate … --kibana-url "$KIBANA_ENDPOINT" --kibana-api-key "$KEY" --upload
 
 # Alerts (selected): create the rules in one shot, disabled + tagged:
 obs-migrate migrate \
@@ -152,23 +172,29 @@ obs-migrate migrate \
   --create-alert-rules
 ```
 
-- `obs-migrate upload` recompiles YAML internally via `kb-dashboard-cli` and accepts either the `yaml/` directory or the dashboard artifacts dir with a sibling `yaml/` (so `selected_out/dashboards` works).
+- Default `obs-migrate upload --artifact-dir` uses typed Dashboards API payloads from `native/` (`--artifact-format auto`). `--yaml-dir` is a compatibility alias for YAML mapping, not the primary path.
 - `--create-alert-rules` requires an alert-capable selection (`--assets alerts` or `all`) plus `--kibana-url` and `--kibana-api-key`. Rules land **disabled** — enable them in Kibana (or audit with `obs-migrate audit-rules`) after review.
+- Watch the run for `Selected N of M …` and exact degrade lines such as
+  `WARN: folder selection requested but unavailable for datadog dashboard; kept without folder filtering`.
+- A `--select-*` set that matches **no dashboards** prints
+  `ERROR: no Datadog dashboards matched the --select-* criteria.` and exits
+  non-zero; for alerts it can yield an empty alert set.
 - **Custom-CA / self-signed clusters:** every CLI here accepts `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) for testing only. They cover source, Elasticsearch, Kibana, and the Node upload step.
 
 ## Step 3 — Confirm the selection landed
 
-- **Dashboards:** read `selected_out/dashboards/migration_summary.md` (verdict, scorecard, per-dashboard table, must-fix worklist); drill into `selected_out/dashboards/migration_manifest.json` (`dashboards[]`, `panels[].status`, `panels[].reasons`). Confirm the count matches what you selected.
+- **Dashboards:** read `selected_out/dashboards/migration_summary.md` (verdict, scorecard, per-dashboard table, must-fix worklist); drill into `selected_out/dashboards/migration_manifest.json` (`dashboards[]`, `panels[].status`, `panels[].reasons`). Confirm the count matches what you selected. Treat `migrated_with_warnings` as reviewed approximations unless the reason says otherwise (`explain-migration-gaps`).
+- **Post-upload checks (recommended):** `--smoke` / `grafana-validate-uploaded`, `obs-migrate compare` or `validate-side-by-side`, and render audit when the question is "does Lens actually render?" (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
 - **Alerts:** the rule-creation summary is `selected_out/alerts/monitor_rule_upload_results.json` (Datadog) or `selected_out/alerts/alert_rule_upload_results.json` (Grafana). Then `obs-migrate audit-rules --kibana-url ... --kibana-api-key ...` lists the migrated rules in Kibana and reports which are enabled.
 
 ## Honest limits (tell the user)
 
 - **Some dimensions degrade per source/asset.** `--select-*` is uniform, but not every dimension is supplyable everywhere (see the availability table): Datadog dashboard folders live in the Dashboard-Lists API the engine doesn't fetch; Datadog/Grafana-unified starred and Datadog-monitor folder/datasource aren't available; Grafana dashboards have no first-class team. Those **degrade gracefully** (asset kept + `WARN`) rather than dropping assets — surface the `WARN` lines, don't pretend the filter applied.
-- **Selectors are exact + client-side.** Matching is case-insensitive exact (no prefix/glob); filtering happens after extraction. A `--select-*` set that matches nothing for **dashboards** exits non-zero; for alerts it yields an empty alert set.
+- **Selectors are exact + client-side.** Matching is case-insensitive exact (no prefix/glob); filtering happens after extraction. A `--select-*` set that matches nothing for **dashboards** errors and exits non-zero; for alerts it yields an empty alert set.
 - **`--monitor-query` is Datadog-side.** Its expressiveness is Datadog's, not ours; it composes with `--select-*` (which then narrows further client-side).
 - **No id selector for Grafana.** Grafana has no `--dashboard-ids` or alert-id flag — scope Grafana by `--select-*` or a curated `--input-dir`.
 - **Created rules are disabled.** A selected alert migration does not arm anything; rules are disabled and tagged `obs-migration` until a human enables them.
-- **Degrade gracefully (panels too):** unsupported panels/rules in the selection are surfaced as `requires_manual` / `not_feasible` with reasons — relay them, never hide them.
+- **Degrade gracefully (panels too):** unsupported panels/rules in the selection are surfaced as `requires_manual` / `not_feasible` with reasons; many former hard cases now migrate with warnings (approximations) — relay both, never hide them.
 
 ## Do NOT
 
@@ -180,10 +206,12 @@ obs-migrate migrate \
 
 ## See also
 
+- `install-obs-migrate` — install/doctor when the CLI is missing or not Ready.
 - `scan-o11y-environment` skill — inventory the assets so the user knows what to select.
 - `assess-migration-readiness` skill — feasibility verdict + evidence level before committing the selection.
 - `try-one-source-dashboard` skill — one dashboard end-to-end for a side-by-side.
 - `migrate-all-supported-assets` skill — migrate everything supported (use when selection isn't needed).
+- `explain-migration-gaps` skill — warn vs rebuild triage after the selection lands.
 - `revert-migration` skill — remove the selected assets if the user changes their mind.
 - `obs-migrate migrate --help` — authoritative selector list for the installed version.
-- `docs/command-contract.md` — asset-scope contract, selectors, and artifact paths (online docs / repo).
+- `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` — asset-scope contract, selectors, and artifact paths (online docs / repo).

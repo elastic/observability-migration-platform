@@ -96,7 +96,7 @@ The local dashboard workflow may also invoke `kb-dashboard-cli` and
 `kb-dashboard-lint`, but those tools are not themselves tracked artifacts in
 this repository.
 
-### `obs-migrate[kibana]` Extra
+### `elastic-observability-migration[kibana]` Extra
 
 The optional `[kibana]` dependency group (installed via
 `pip install ".[kibana]"`, resolved only on **Python 3.12+** per the
@@ -141,7 +141,7 @@ workflow artifact named `sbom-cyclonedx`.
 
 Because the gate runs on Python 3.11, the `[kibana]` extra's `kb-dashboard-*`
 tools (gated to Python 3.12+) are intentionally absent from this 3.11 inventory
-and SBOM; their licenses are documented in the `obs-migrate[kibana]` Extra
+and SBOM; their licenses are documented in the `elastic-observability-migration[kibana]` Extra
 section above.
 
 To regenerate locally (requires Python 3.11 to match CI):

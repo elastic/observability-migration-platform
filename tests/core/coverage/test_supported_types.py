@@ -3,8 +3,7 @@
 
 """Coverage-completeness gate: keep the supported-type registry honest against
 the code's actual routing tables, and assert every chart-bearing type has matrix
-coverage. See docs/superpowers/specs/2026-06-25-migration-confidence-pyramid-design.md
-(specs are gitignored)."""
+coverage."""
 
 from observability_migration.core.coverage import supported_types as st
 
@@ -49,10 +48,10 @@ def test_datadog_registry_covers_all_planner_widget_types():
     )
 
 
-# Types that carry no query (text/markdown/group/stream) — matrix-exempt by design.
+# Types that carry no query (text/markdown/image/group/stream) — matrix-exempt by design.
 _GRAFANA_MATRIX_EXEMPT = {"text"}  # -> markdown, no query
 _DATADOG_MATRIX_EXEMPT = {
-    "note", "free_text", "image", "iframe",  # text widgets
+    "note", "free_text", "image", "iframe",  # non-query content widgets
     "group", "powerpack",                       # containers
     "log_stream", "list_stream",                # log/event streams (dedicated tests)
     "check_status", "manage_status",            # status widgets -> markdown placeholders

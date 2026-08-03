@@ -41,6 +41,7 @@ from observability_migration.adapters.source.datadog.execution import build_sour
 from observability_migration.adapters.source.datadog.field_map import (
     OTEL_PROFILE,
     PASSTHROUGH_PROFILE,
+    PROMETHEUS_NATIVE_PROFILE,
     PROMETHEUS_PROFILE,
     FieldMapProfile,
     load_profile,
@@ -54,6 +55,7 @@ from observability_migration.adapters.source.datadog.log_parser import (
 )
 from observability_migration.adapters.source.datadog.manifest import build_migration_manifest
 from observability_migration.adapters.source.datadog.models import (
+    ConditionalFormat,
     DashboardResult,
     FormulaBinOp,
     FormulaFuncCall,
@@ -66,6 +68,7 @@ from observability_migration.adapters.source.datadog.models import (
     LogTerm,
     NormalizedDashboard,
     NormalizedWidget,
+    TemplateVariable,
     TranslationResult,
     WidgetFormula,
     WidgetQuery,
@@ -84,8 +87,10 @@ from observability_migration.adapters.source.datadog.report import save_detailed
 from observability_migration.adapters.source.datadog.rollout import build_rollout_plan
 from observability_migration.adapters.source.datadog.translate import translate_widget
 from observability_migration.adapters.source.datadog.verification import annotate_results_with_verification
+from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.core.verification.field_capabilities import FieldCapability
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
+from observability_migration.targets.kibana.dashboards_api import _api_color
 
 # =========================================================================
 # Metric Query Parser Tests
@@ -135,6 +140,20 @@ class TestMetricQueryParser(unittest.TestCase):
     def test_query_with_multi_group_by(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host,env}")
         self.assertEqual(mq.group_by, ["host", "env"])
+
+    def test_value_filtered_count_aggregator(self):
+        mq = parse_metric_query(
+            "count(v: v>=0):data_streams.latency{type:kafka} "
+            "by {service,env}.as_rate().rollup(10)"
+        )
+
+        self.assertEqual(mq.space_agg, "count")
+        self.assertEqual(mq.metric, "data_streams.latency")
+        self.assertEqual(mq.value_filter_op, ">=")
+        self.assertEqual(mq.value_filter_threshold, 0.0)
+        self.assertEqual(mq.group_by, ["service", "env"])
+        self.assertTrue(mq.as_rate)
+        self.assertIsNotNone(mq.rollup)
 
     def test_query_with_rollup(self):
         mq = parse_metric_query("avg:system.disk.free{*}.rollup(avg, 60)")
@@ -600,6 +619,42 @@ class TestNormalization(unittest.TestCase):
         self.assertEqual(len(disk_widget.formulas), 1)
         self.assertEqual(disk_widget.formulas[0].raw, "query1 + query2")
 
+    def test_distribution_histogram_request_query_is_extracted(self):
+        # A Datadog `distribution` widget's histogram request nests its query
+        # definition under a singular `query` dict (request_type: histogram),
+        # not the standard `queries` array every other widget type uses.
+        # Missing this shape drops the widget's only query entirely, so the
+        # normalizer must accept it too.
+        raw = {
+            "title": "Distribution",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "distribution",
+                        "title": "Distribution of message size",
+                        "requests": [
+                            {
+                                "request_type": "histogram",
+                                "query": {
+                                    "data_source": "metrics",
+                                    "name": "query1",
+                                    "aggregator": "avg",
+                                    "query": "avg:data_streams.payload_size{type:kafka}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        self.assertEqual(widget.widget_type, "distribution")
+        self.assertEqual(len(widget.queries), 1)
+        self.assertEqual(widget.queries[0].data_source, "metrics")
+        self.assertIsNotNone(widget.queries[0].metric_query)
+        self.assertEqual(widget.queries[0].metric_query.metric, "data_streams.payload_size")
+
     def test_legacy_q_arithmetic_part_normalizes_to_metric_queries_and_formula(self):
         raw = {
             "title": "Legacy arithmetic",
@@ -738,6 +793,56 @@ class TestNormalization(unittest.TestCase):
         plan = plan_widget(nd.widgets[0])
         self.assertEqual(plan.backend, "markdown")
 
+    def test_list_stream_logs_query_string_preserves_status_filter(self):
+        """list_stream widgets use query.query_string, not query.query.
+
+        The singular ``query`` dict path (shared with distribution histograms)
+        must read ``query_string`` so Error Logs keep ``status:error`` instead
+        of collapsing to a match-all time filter.
+        """
+        raw = {
+            "title": "Redis",
+            "widgets": [
+                {
+                    "definition": {
+                        "type": "list_stream",
+                        "title": "Error Logs",
+                        "requests": [
+                            {
+                                "response_format": "event_list",
+                                "query": {
+                                    "data_source": "logs_stream",
+                                    "query_string": "source:redis $scope $host status:error",
+                                    "indexes": [],
+                                },
+                                "columns": [{"field": "content", "width": "compact"}],
+                            }
+                        ],
+                    }
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        self.assertEqual(widget.queries[0].query_type, "log")
+        self.assertEqual(
+            widget.queries[0].raw_query,
+            "source:redis $scope $host status:error",
+        )
+        self.assertIsNotNone(widget.queries[0].log_query)
+        self.assertIsNotNone(widget.queries[0].log_query.ast)
+
+        from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+        from observability_migration.adapters.source.datadog.planner import plan_widget
+        from observability_migration.adapters.source.datadog.translate import (
+            _build_log_widget_query,
+        )
+
+        plan = plan_widget(widget)
+        esql = _build_log_widget_query(widget, plan, OTEL_PROFILE)
+        self.assertIn('log.level == "error"', esql)
+        self.assertIn('service.name == "redis"', esql)
+
     def test_modern_bare_metric_query_is_parsed(self):
         raw = {
             "title": "Bare metric",
@@ -839,12 +944,12 @@ class TestPlanner(unittest.TestCase):
         plan = plan_widget(w)
         self.assertIn(plan.backend, ("blocked", "markdown"))
 
-    def test_metric_timeseries_plans_lens_or_esql(self):
+    def test_metric_timeseries_plans_esql_for_native_dashboards_api(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="avg:system.cpu.user{*} by {host}", metric_query=mq, query_type="metric")
         w = self._make_widget(id="1", widget_type="timeseries", title="CPU", queries=[wq])
         plan = plan_widget(w)
-        self.assertIn(plan.backend, ("esql", "lens"))
+        self.assertEqual(plan.backend, "esql")
         self.assertEqual(plan.kibana_type, "xy")
 
     def test_query_value_plans_metric(self):
@@ -871,7 +976,7 @@ class TestPlanner(unittest.TestCase):
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = self._make_widget(id="1", widget_type="bar_chart", title="Bars", queries=[wq])
         plan = plan_widget(w)
-        self.assertIn(plan.backend, ("esql", "lens"))
+        self.assertEqual(plan.backend, "esql")
         self.assertEqual(plan.kibana_type, "table")
         self.assertNotIn(
             "unsupported widget type: bar_chart",
@@ -894,12 +999,12 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(plan.backend, "esql")
         self.assertEqual(plan.kibana_type, "table")
 
-    def test_grouped_query_value_stays_lens(self):
+    def test_grouped_query_value_plans_esql_for_native_dashboards_api(self):
         mq = parse_metric_query("avg:system.cpu.user{*} by {host}")
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query="...", metric_query=mq, query_type="metric")
         w = self._make_widget(id="1", widget_type="query_value", title="CPU Avg", queries=[wq])
         plan = plan_widget(w)
-        self.assertEqual(plan.backend, "lens")
+        self.assertEqual(plan.backend, "esql")
         self.assertEqual(plan.kibana_type, "metric")
 
     def test_log_timeseries_plans_esql(self):
@@ -1092,6 +1197,105 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("| EVAL value = current_value - previous_value", result.esql_query)
         self.assertIn("service.name", result.esql_query)
 
+    def test_grouped_change_widget_surfaces_delta_value_column(self):
+        # The change widget ranks by the computed delta `value`; the emitted
+        # table must surface it as the leading metric column, not only the
+        # intermediate current_value/previous_value.
+        raw_query = "sum:nginx.net.request_per_s{*} by {service}"
+        mq = parse_metric_query(raw_query)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="change",
+            title="Change in overall requests per second",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=raw_query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+            time={"live_span": "1w"},
+            raw_definition={
+                "type": "change",
+                "time": {"live_span": "1w"},
+                "requests": [
+                    {
+                        "change_type": "absolute",
+                        "order_dir": "desc",
+                        "compare_to": "week_before",
+                        "order_by": "change",
+                        "q": raw_query,
+                    }
+                ],
+            },
+        )
+
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        generate_dashboard_yaml(dash, [result])
+
+        metrics = [m["field"] for m in result.yaml_panel["esql"].get("metrics", [])]
+        self.assertTrue(metrics, "change table emitted no metrics")
+        self.assertEqual(metrics[0], "value")
+        self.assertIn("current_value", metrics)
+
+    def test_grouped_query_value_degrades_to_summary_table(self):
+        # A query_value (single-value) widget with a `by {}` grouping computes
+        # one value per group. A Kibana metric tile shows a single number, so
+        # instead of failing the whole panel (not_feasible), it must degrade to
+        # a ranked summary table — the same approximation the Grafana grouped
+        # stat path uses. (Regression from the ES|QL-everywhere planner change.)
+        raw = "avg:system.cpu.user{*} by {host}"
+        mq = parse_metric_query(raw)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU by host",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=raw,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "table")
+        self.assertTrue(result.esql_query, "grouped query_value produced no ES|QL")
+        self.assertIn("host.name", result.esql_query)
+
+    def test_ungrouped_query_value_stays_a_metric(self):
+        # Guard: a plain single-value widget (no grouping) must still be a
+        # scalar metric tile, not get rerouted to a table.
+        raw = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(raw)
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=raw,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "metric")
+
     def test_toplist_produces_sorted_esql(self):
         result = self._translate_metric_widget("avg:system.cpu.user{*} by {host}", widget_type="toplist", force_esql=True)
         self.assertIn("ORDER BY", result.esql_query.upper().replace("SORT", "ORDER BY") if "SORT" in result.esql_query.upper() else result.esql_query.upper())
@@ -1128,6 +1332,29 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("host.name", result.esql_query)
         self.assertIn("web01", result.esql_query)
 
+    def test_scope_template_variable_reports_manual_recreation_not_missing_control(self):
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{$scope}",
+            force_esql=True,
+        )
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(
+            any(
+                "$scope" in warning
+                and "cannot be represented by a single Kibana control" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+        self.assertFalse(
+            any(
+                "apply specific values via Kibana dashboard controls" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+
     def test_negated_filter_translated(self):
         result = self._translate_metric_widget("avg:system.cpu.user{!env:staging}", force_esql=True)
         self.assertIn("!=", result.esql_query)
@@ -1135,6 +1362,22 @@ class TestTranslation(unittest.TestCase):
     def test_group_by_mapped(self):
         result = self._translate_metric_widget("avg:system.cpu.user{*} by {host}", force_esql=True)
         self.assertIn("host.name", result.esql_query)
+
+    def test_group_by_template_variable_requires_manual_review(self):
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{*} by {$service}",
+            force_esql=True,
+        )
+
+        self.assertEqual(result.status, "requires_manual")
+        self.assertEqual(result.esql_query, "")
+        self.assertTrue(
+            any(
+                "group-by template variable '$service'" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
 
     def test_field_map_applied(self):
         result = self._translate_metric_widget("avg:system.cpu.user{*}", force_esql=True)
@@ -1227,6 +1470,16 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("MAX(", result.esql_query)
         self.assertIn("MIN(", result.esql_query)
 
+    def test_as_rate_warning_mentions_agent_to_otel_metric_map(self):
+        result = self._translate_metric_widget("sum:http.requests{*}.as_rate()")
+        self.assertTrue(
+            any(
+                "Agent→OTel" in str(w) and "--metric-map-file" in str(w)
+                for w in (result.warnings or [])
+            ),
+            result.warnings,
+        )
+
     def test_metric_template_variable_becomes_broad_match(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:$host}", force_esql=True)
         self.assertNotIn("$host", result.esql_query)
@@ -1287,6 +1540,34 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
         self.assertIn("| EVAL value = (query1 * 100)", result.esql_query)
+
+    def test_grouped_formula_query_value_degrades_to_table_instead_of_manual(self):
+        # A formula-based query_value (e.g. `query1 * 100`) whose underlying
+        # query groups `by {host}` computes one value per host, which a
+        # scalar metric tile cannot show. This must degrade to a ranked
+        # summary table like the non-formula grouped query_value path,
+        # instead of failing the whole panel with requires_manual.
+        query = "avg:system.cpu.user{*} by {host}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="query1 * 100")
+        wf.expression = parse_formula("query1 * 100")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU % by host",
+            queries=[wq],
+            formulas=[wf],
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "requires_manual")
+        self.assertNotEqual(result.status, "not_feasible")
+        self.assertEqual(plan.kibana_type, "table")
+        self.assertIn("host.name", result.esql_query)
+        self.assertIn("| EVAL value = (query1 * 100)", result.esql_query)
+        self.assertIn("| SORT value", result.esql_query)
+        self.assertIn("| LIMIT", result.esql_query)
 
     def test_legacy_q_arithmetic_metric_expression_translates_to_formula_panel(self):
         raw = {
@@ -1453,6 +1734,58 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(widget, plan_widget(widget), profile)
         self.assertIn("TS metrics-*", result.esql_query)
         self.assertIn("INCREASE(parity_counter, 5 minute)", result.esql_query)
+
+    def test_plain_sum_over_counter_typed_metric_wraps_to_double(self):
+        # A plain (non-rate) sum:/avg: request against a TSDS counter-typed
+        # field is rejected live by ES|QL: "argument of [SUM(...)] must be
+        # [... numeric except unsigned_long or counter types]" -- even though
+        # Datadog's own backend has no such restriction and the source
+        # dashboard is asking for an ordinary sum. TO_DOUBLE() is a lossless
+        # identity cast that only strips the counter tag so the aggregation
+        # the widget actually requested is allowed to run. No `rate()`/`diff()`
+        # formula is involved here, so this must NOT go through the TS|QL
+        # RATE()/INCREASE() path -- it's still a plain FROM+STATS query.
+        from copy import deepcopy
+
+        from observability_migration.core.verification.field_capabilities import (
+            FieldCapability,
+        )
+
+        profile = deepcopy(OTEL_PROFILE)
+        profile.field_caps["apache_conns_total"] = FieldCapability(
+            name="apache_conns_total",
+            type="counter_double",
+            time_series_metric_kind="counter",
+        )
+
+        query = "sum:apache.conns.total{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Total async connections",
+            queries=[wq],
+        )
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertEqual(result.status, "ok")
+        self.assertIn("FROM metrics-*", result.esql_query)
+        self.assertIn("SUM(TO_DOUBLE(apache_conns_total))", result.esql_query)
+
+    def test_plain_avg_over_gauge_typed_metric_is_unwrapped(self):
+        # No counter capability injected -- a plain gauge field must NOT get
+        # the TO_DOUBLE() wrap (it's unnecessary and would be a needless
+        # diff from today's emitted ES|QL for the overwhelming majority of
+        # metrics, which are gauges).
+        query = "avg:docker.net.bytes_rcvd{*} by {image}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="Avg. rx bytes by image",
+            queries=[wq],
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertEqual(result.status, "ok")
+        self.assertIn("AVG(docker_net_bytes_rcvd)", result.esql_query)
+        self.assertNotIn("TO_DOUBLE", result.esql_query)
 
     def test_rate_formula_falls_back_to_first_last_for_gauges(self):
         # No counter capability injected — current FIRST/LAST behaviour
@@ -1696,6 +2029,41 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket) BY replset_name", result.esql_query)
 
+    def test_query_value_percentile_request_aggregator_reduces_over_time(self):
+        # Datadog P99 latency query_value: the query's space aggregation is a
+        # percentile (``p99:``) and the request aggregator is ``percentile``,
+        # meaning "reduce the time series by the same percentile". This is an
+        # extremely common real-world pattern (SLO/latency panels) and maps
+        # cleanly to a two-level ES|QL PERCENTILE reduction.
+        query = "p99:cockroachdb.sql.service.latency{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            aggregator="percentile",
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="SQL Statements, P99",
+            queries=[wq],
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertEqual(result.status, "ok")
+        self.assertIn(
+            "| STATS _bucket_value = PERCENTILE(cockroachdb_sql_service_latency, 99) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            result.esql_query,
+        )
+        self.assertIn("| STATS value = PERCENTILE(_bucket_value, 99)", result.esql_query)
+        # No leftover "unsupported request aggregator" degradation.
+        joined = " ".join(result.warnings)
+        self.assertNotIn("unsupported Datadog request aggregator", joined)
+
     def test_multi_query_formula_with_different_filters_uses_per_agg_where(self):
         # Two queries with identical metric and grouping but different
         # tag filters — the kafka data_streams.latency pattern. The
@@ -1726,6 +2094,102 @@ class TestTranslation(unittest.TestCase):
         self.assertIn(' OR ', result.esql_query)
         # Formula is applied as EVAL.
         self.assertIn("query1_query2 = (query1 / query2)", result.esql_query)
+
+    def test_query_table_direct_ref_formulas_use_independent_request_reducers(self):
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "kafka.json"
+        )
+        dashboard = normalize_dashboard(json.loads(path.read_text(encoding="utf-8")))
+
+        def _iter(widgets):
+            for widget in widgets or []:
+                yield widget
+                yield from _iter(getattr(widget, "children", []) or [])
+
+        widget = next(
+            item
+            for item in _iter(dashboard.widgets)
+            if item.title == "Topic Health"
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(result.esql_query)
+        self.assertIn("messages_in = AVG(messages_in)", result.esql_query)
+        self.assertIn("messages_out = AVG(messages_out)", result.esql_query)
+        self.assertIn(
+            "max_kafka_lag = LAST(max_kafka_lag, time_bucket)",
+            result.esql_query,
+        )
+        self.assertNotIn(
+            "different request aggregators",
+            " ".join(result.warnings),
+        )
+
+    def test_hostmap_with_grouping_degrades_to_data_preserving_table(self):
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "apache.json"
+        )
+        dashboard = normalize_dashboard(json.loads(path.read_text(encoding="utf-8")))
+        widget = next(
+            item
+            for item in dashboard.widgets
+            if item.title == "Requests per second per host"
+        )
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(result.kibana_type, "table")
+        self.assertIn("host.name", result.esql_query)
+        self.assertIn("apache_net_request_per_s", result.esql_query)
+        self.assertTrue(
+            any(
+                "hostmap visual approximated as a grouped table" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+
+    def test_value_filtered_count_corpus_widget_translates(self):
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "kafka.json"
+        )
+        dashboard = normalize_dashboard(json.loads(path.read_text(encoding="utf-8")))
+
+        def _iter(widgets):
+            for widget in widgets or []:
+                yield widget
+                yield from _iter(getattr(widget, "children", []) or [])
+
+        widget = next(
+            item
+            for item in _iter(dashboard.widgets)
+            if item.title.startswith("Incoming messages by env")
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(result.esql_query)
+        self.assertIn("data_streams_latency >= 0", result.esql_query)
+        self.assertIn("COUNT(*)", result.esql_query)
+        self.assertIn("service.name", result.esql_query)
+        self.assertIn("deployment.environment", result.esql_query)
 
     def test_log_widget_translation(self):
         lq = parse_log_query("service:web AND status:error")
@@ -1874,6 +2338,15 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertNotIn("$svc", result.esql_query)
         self.assertNotIn("service.name ==", result.esql_query)
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(
+            any(
+                "log filter with template variable '$svc' was omitted"
+                in warning.lower()
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
 
     def test_wildcard_filter_translated(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:web*}", force_esql=True)
@@ -2028,7 +2501,7 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(panel["esql"]["breakdown"]["field"], "host.name")
         self.assertEqual([metric["field"] for metric in panel["esql"]["metrics"]], ["value"])
 
-    def test_lens_percentile_aggregation_uses_schema_percentile_field(self):
+    def test_percentile_aggregation_emits_native_esql_metric(self):
         query = "p95:trace.http.request.duration{*} by {resource_name}"
         mq = parse_metric_query(query)
         widget = NormalizedWidget(
@@ -2052,10 +2525,126 @@ class TestYAMLGeneration(unittest.TestCase):
 
         panel = yaml.safe_load(generate_dashboard_yaml(dash, [result]))["dashboards"][0]["panels"][0]
 
-        metric = panel["lens"]["metrics"][0]
-        self.assertEqual(metric["aggregation"], "percentile")
-        self.assertEqual(metric["percentile"], 95)
-        self.assertEqual(metric["field"], "trace_http_request_duration")
+        self.assertNotIn("lens", panel)
+        self.assertEqual(panel["esql"]["type"], "line")
+        self.assertIn("PERCENTILE(trace_http_request_duration, 95)", panel["esql"]["query"])
+        self.assertEqual(panel["esql"]["dimension"]["field"], "time_bucket")
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "resource_name")
+        self.assertEqual([metric["field"] for metric in panel["esql"]["metrics"]], ["value"])
+
+    def test_distribution_widget_emits_percentile_envelope(self):
+        raw = {
+            "title": "Distribution",
+            "widgets": [
+                {
+                    "id": "d1",
+                    "definition": {
+                        "type": "distribution",
+                        "title": "Distribution of message size",
+                        "requests": [
+                            {
+                                "request_type": "histogram",
+                                "query": {
+                                    "data_source": "metrics",
+                                    "name": "query1",
+                                    "aggregator": "avg",
+                                    "query": "avg:data_streams.payload_size{type:kafka}",
+                                },
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "width": 4, "height": 2},
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertIn(result.status, ("ok", "warning"))
+        # The requested aggregator (avg) is kept as its own series alongside
+        # the synthesized percentile envelope, not replaced by it.
+        self.assertIn("AVG(", result.esql_query)
+        self.assertIn("PERCENTILE(", result.esql_query)
+        self.assertIn("p50", result.esql_query)
+        self.assertIn("p99", result.esql_query)
+        panel = yaml.safe_load(generate_dashboard_yaml(nd, [result]))["dashboards"][0]["panels"][0]
+        metric_fields = [m["field"] for m in panel["esql"]["metrics"]]
+        self.assertEqual(metric_fields, ["avg", "p50", "p90", "p99"])
+        self.assertIsNotNone(result.visual_ir)
+        self.assertEqual(result.visual_ir.title, "Distribution of message size")
+        self.assertEqual(result.visual_ir.presentation.kind, "esql")
+
+    def test_xy_multi_tag_composites_series_group_breakdown(self):
+        query = "avg:system.cpu.user{*} by {host,service}"
+        mq = parse_metric_query(query)
+        widget = NormalizedWidget(
+            id="xy1",
+            widget_type="timeseries",
+            title="CPU by host/service",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+        panel = yaml.safe_load(generate_dashboard_yaml(dash, [result]))["dashboards"][0]["panels"][0]
+        self.assertEqual(panel["esql"]["breakdown"]["field"], "series_group")
+        self.assertIn("EVAL series_group = CONCAT(", panel["esql"]["query"])
+        self.assertTrue(
+            any("composited into a single breakdown column" in w for w in result.warnings),
+            result.warnings,
+        )
+
+    def test_formula_subset_groupings_are_united(self):
+        raw = {
+            "title": "Formula groups",
+            "widgets": [
+                {
+                    "id": "f1",
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "CPU Usage by Pod",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "a",
+                                        "query": "avg:kubernetes.cpu.usage.total{*} by {pod_name}",
+                                    },
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "b",
+                                        "query": "avg:kubernetes.cpu.limits{*}",
+                                    },
+                                ],
+                                "formulas": [{"formula": "a / b"}],
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "width": 4, "height": 2},
+                }
+            ],
+        }
+        nd = normalize_dashboard(raw)
+        widget = nd.widgets[0]
+        plan = plan_widget(widget)
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertNotEqual(result.status, "requires_manual")
+        self.assertTrue(result.esql_query)
+        self.assertTrue(
+            any("united dimensions" in w for w in result.warnings),
+            result.warnings,
+        )
 
     def test_markdown_panel_for_note(self):
         path = Path(__file__).parent.parent / "infra" / "datadog" / "dashboards" / "sample_dashboard.json"
@@ -2104,6 +2693,105 @@ class TestYAMLGeneration(unittest.TestCase):
         generate_dashboard_yaml(dash, [result])
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["type"], "number")
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["suffix"], "%")
+
+    def test_display_enrichment_applies_precision_to_metric_format(self):
+        query = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[wq],
+            custom_unit="percent",
+            precision=3,
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+
+        generate_dashboard_yaml(dash, [result])
+
+        self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["decimals"], 3)
+
+    def test_query_value_conditional_format_emits_native_dynamic_color(self):
+        # The YAML schema's ``primary_metric`` color is ``MetricChartColor``
+        # (``apply_to`` + ascending ``thresholds``); the target mapper
+        # (``dashboards_api._api_color``) turns that into the native
+        # Dashboards API's dynamic ``range``/``steps`` color-by-value. A
+        # single ">" conditional format becomes a single open-ended band from
+        # its threshold up.
+        query = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[wq],
+            conditional_formats=[
+                ConditionalFormat(comparator=">", value=80, palette="white_on_red"),
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+
+        generate_dashboard_yaml(dash, [result])
+
+        color = result.yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color["apply_to"], "background")
+        self.assertEqual(len(color["thresholds"]), 1)
+        threshold = color["thresholds"][0]
+        self.assertEqual(threshold["up_to"], 80)
+        self.assertTrue(threshold["color"].startswith("#"))
+
+        native = _api_color(color)
+        self.assertEqual(native["type"], "dynamic")
+        self.assertEqual(native["range"], "absolute")
+        self.assertEqual(len(native["steps"]), 1)
+        step = native["steps"][0]
+        self.assertEqual(step["gte"], 80)
+        self.assertNotIn("lt", step)
+        self.assertTrue(step["color"].startswith("#"))
+
+    def test_query_value_multi_conditional_formats_build_contiguous_bands(self):
+        # Two ">" rules (warn at 70, critical at 90) become contiguous absolute
+        # bands: [70, 90) warn, [90, ..) critical. The higher threshold wins.
+        query = "avg:system.cpu.user{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[wq],
+            conditional_formats=[
+                ConditionalFormat(comparator=">", value=90, palette="white_on_red"),
+                ConditionalFormat(comparator=">", value=70, palette="white_on_yellow"),
+            ],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
+
+        generate_dashboard_yaml(dash, [result])
+
+        color = result.yaml_panel["esql"]["primary"]["color"]
+        thresholds = color["thresholds"]
+        self.assertEqual(thresholds[0]["up_to"], 90)
+
+        steps = _api_color(color)["steps"]
+        self.assertEqual(steps[0]["gte"], 70)
+        self.assertEqual(steps[0]["lt"], 90)
+        self.assertEqual(steps[1]["gte"], 90)
+        self.assertNotIn("lt", steps[1])
 
     def test_formula_metric_uses_keep_field_for_primary(self):
         query = "avg:system.cpu.user{*}"
@@ -2411,11 +3099,13 @@ class TestYAMLGeneration(unittest.TestCase):
         generate_dashboard_yaml(dash, [result])
         self.assertEqual(len(result.yaml_panel["esql"]["breakdowns"]), 2)
 
-    def test_timeseries_with_two_group_dims_warns_about_dropped_breakdown(self):
+    def test_timeseries_with_two_group_dims_composites_breakdown(self):
         # A Datadog timeseries grouped by two tags maps to a Kibana XY chart that
-        # can only break the series down by a single field. The second dimension
-        # is in the ES|QL output but not on the chart, so series differing only by
-        # it are visually merged. That must surface as a warning, not silently.
+        # can only break the series down by a single field. Rather than picking
+        # one dimension and silently merging series that differ only in the
+        # other, both tags are composited into a single ``series_group`` column
+        # so every distinct tag pair stays a separate series; the approximation
+        # is disclosed via a warning, not hidden.
         query = "avg:cassandra.gc.minor.collection_time{*} by {cloud_region,host}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(
@@ -2439,13 +3129,13 @@ class TestYAMLGeneration(unittest.TestCase):
         dash = NormalizedDashboard(id="1", title="Dash", widgets=[widget])
         generate_dashboard_yaml(dash, [result])
         esql = result.yaml_panel["esql"]
-        # only one breakdown is rendered (the first non-time dimension)
+        # Both grouping dimensions are folded into one composite breakdown.
         self.assertIn("breakdown", esql)
-        self.assertIn(esql["breakdown"]["field"], ("cloud_region", "cloud.region"))
-        # ...so the dropped dimension must be called out in the warnings
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        # ...and the approximation must be called out in the warnings.
         self.assertTrue(
-            any("not on the chart" in w or "visually merged" in w for w in result.warnings),
-            f"expected a dropped-breakdown warning, got: {result.warnings}",
+            any("composited into a single breakdown column" in w for w in result.warnings),
+            f"expected a composite-breakdown disclosure, got: {result.warnings}",
         )
 
     def test_timeseries_with_single_group_dim_does_not_warn(self):
@@ -2925,6 +3615,72 @@ class TestSemanticPipelineRoundTrip(unittest.TestCase):
             f"expected a group-related warning, got {result.warnings}",
         )
 
+    def test_autosmooth_formula_widget_is_requires_manual_not_feasible(self):
+        # Regression for the pinned HAProxy "CPU Usage by Pod" widget: its two
+        # requests both apply autosmooth() (a Datadog display transform with no
+        # ES|QL analogue) and have mismatched groupings (one `by {pod_name}`,
+        # one ungrouped). The grouping-union shortcut must NOT report "the panel
+        # can migrate as one ES|QL query" and then fail as not_feasible; the
+        # untranslatable display function is caught up-front so the panel is
+        # surfaced for manual review (requires_manual) with an accurate reason.
+        from observability_migration.adapters.source.datadog.normalize import (
+            normalize_dashboard,
+        )
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra" / "datadog" / "dashboards" / "integrations" / "haproxy.json"
+        )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        dashboard = normalize_dashboard(raw)
+
+        def _iter(widgets):
+            for widget in widgets or []:
+                yield widget
+                yield from _iter(getattr(widget, "children", []) or [])
+
+        result = None
+        for widget in _iter(dashboard.widgets):
+            if getattr(widget, "title", "") == "CPU Usage by Pod":
+                result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+                break
+        self.assertIsNotNone(result, "CPU Usage by Pod widget not found in fixture")
+        self.assertEqual(
+            result.status,
+            "requires_manual",
+            msg=f"warnings={result.warnings} esql={result.esql_query!r}",
+        )
+        joined = " ".join(result.warnings or [])
+        self.assertIn("autosmooth", joined)
+        # The success-oriented grouping-union warning must never be emitted for
+        # a panel that ultimately cannot migrate automatically.
+        self.assertNotIn("can migrate as one ES|QL query", joined)
+
+    def test_manual_review_formula_funcs_flags_smoothing_only(self):
+        from observability_migration.adapters.source.datadog.models import (
+            FormulaFuncCall,
+            FormulaRef,
+        )
+        from observability_migration.adapters.source.datadog.translate import (
+            _FormulaSpec,
+            _manual_review_formula_funcs,
+        )
+
+        smoothed = _FormulaSpec(
+            ast=FormulaFuncCall(name="autosmooth", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="autosmooth(query1)",
+        )
+        # A semantic transform (anomalies) is NOT flagged for manual review here
+        # so its existing not_feasible disposition is preserved.
+        semantic = _FormulaSpec(
+            ast=FormulaFuncCall(name="anomalies", args=[FormulaRef(name="query1")]),
+            alias="value",
+            raw="anomalies(query1)",
+        )
+        self.assertEqual(_manual_review_formula_funcs([smoothed]), ["autosmooth"])
+        self.assertEqual(_manual_review_formula_funcs([semantic]), [])
+
     def test_log_widget_with_modern_search_query_translates(self):
         # Modern Datadog log widgets put the filter in raw_q["search"]["query"]
         # instead of raw_q["query"]. Verify normalize captures it.
@@ -3019,6 +3775,225 @@ class TestFieldMap(unittest.TestCase):
         fields = [c["field"] for c in controls]
         self.assertEqual(fields, ["host.name", "consul_service_id"])
 
+    def test_options_list_control_strips_keyword_multifield_suffix(self):
+        # Options-list fails with "Could not locate field: *.keyword" when the
+        # control binds a multi-field child; use the parent dimension instead.
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+            _options_list_field_name,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        self.assertEqual(
+            _options_list_field_name("k8s.node.name.keyword"),
+            "k8s.node.name",
+        )
+        self.assertEqual(
+            _options_list_field_name("deployment.environment"),
+            "deployment.environment",
+        )
+
+        class _KeywordPreferringMap:
+            def map_tag(self, tag, context="metric"):
+                return {
+                    "host": "k8s.node.name.keyword",
+                    "env": "deployment.environment.keyword",
+                }[tag]
+
+        controls = _build_controls_from_template_vars(
+            [
+                TemplateVariable(name="host", tag="host", default="*", defaults=[]),
+                TemplateVariable(name="env", tag="env", default="prod", defaults=[]),
+            ],
+            "metrics-*",
+            _KeywordPreferringMap(),
+        )
+        self.assertEqual(
+            [c["field"] for c in controls],
+            ["k8s.node.name", "deployment.environment"],
+        )
+
+    def test_controls_preserve_defaults_and_multi_select_intent(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+
+        tvs = [
+            TemplateVariable(name="env", tag="env", default="prod", defaults=["prod", "staging"]),
+            TemplateVariable(name="service", tag="service", default="checkout", defaults=[]),
+        ]
+
+        controls = _build_controls_from_template_vars(tvs, "metrics-*", OTEL_PROFILE)
+
+        # env → deployment.environment is a remap, so Datadog default "prod" is
+        # not preselected (would empty panels against OTel "production").
+        self.assertEqual(controls[0]["field"], "deployment.environment")
+        self.assertIs(controls[0]["multiple"], True)
+        self.assertNotIn("preselected", controls[0])
+        self.assertEqual(controls[1]["field"], "service.name")
+        self.assertIs(controls[1]["multiple"], False)
+        self.assertNotIn("preselected", controls[1])
+
+    def test_identity_mapped_template_defaults_stay_preselected(self):
+        from observability_migration.adapters.source.datadog.field_map import FieldMapProfile
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+        from observability_migration.adapters.source.datadog.models import TemplateVariable
+
+        identity = FieldMapProfile(
+            name="identity",
+            tag_map={"env": "env", "service": "service"},
+        )
+        controls = _build_controls_from_template_vars(
+            [
+                TemplateVariable(name="env", tag="env", default="prod", defaults=["prod", "staging"]),
+                TemplateVariable(name="service", tag="service", default="checkout", defaults=[]),
+            ],
+            "metrics-*",
+            identity,
+        )
+        self.assertEqual(controls[0]["preselected"], ["prod", "staging"])
+        self.assertEqual(controls[1]["preselected"], ["checkout"])
+
+    def test_log_only_template_variable_uses_logs_data_view_and_log_field_mapping(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            _build_controls_from_template_vars,
+        )
+
+        raw_query = "status:$status"
+        log_query = parse_log_query(raw_query)
+        widget = NormalizedWidget(
+            id="logs",
+            widget_type="log_stream",
+            title="Logs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="logs",
+                    raw_query=raw_query,
+                    log_query=log_query,
+                    query_type="log",
+                )
+            ],
+        )
+
+        controls = _build_controls_from_template_vars(
+            [TemplateVariable(name="status", tag="status")],
+            "metrics-*",
+            OTEL_PROFILE,
+            logs_data_view="logs-*",
+            widgets=[widget],
+        )
+
+        self.assertEqual(controls[0]["data_view"], "logs-*")
+        self.assertEqual(controls[0]["field"], "log.level")
+
+    def test_datadog_control_ir_preserves_preselected_and_available_values(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        dashboard = NormalizedDashboard(
+            id="controls",
+            title="Controls",
+            template_variables=[
+                TemplateVariable(
+                    name="env",
+                    tag="env",
+                    default="prod",
+                    defaults=["prod"],
+                    available_values=["prod", "staging"],
+                )
+            ],
+        )
+
+        yaml_string, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            [],
+            field_map=OTEL_PROFILE,
+        )
+
+        # Remapped env → deployment.environment drops Datadog default "prod"
+        # as a preselected filter (would empty panels against OTel values).
+        self.assertEqual(dashboard_ir.controls[0].selected_options, [])
+        self.assertEqual(
+            dashboard_ir.controls[0].available_options,
+            ["prod", "staging"],
+        )
+        self.assertNotIn("available_options:", yaml_string)
+
+    def test_mixed_metric_log_template_variable_surfaces_data_view_warning(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        metric_query_text = "avg:system.cpu.user{status:$status}"
+        metric_query = parse_metric_query(metric_query_text)
+        log_query_text = "status:$status"
+        dashboard = NormalizedDashboard(
+            id="mixed-controls",
+            title="Mixed controls",
+            template_variables=[TemplateVariable(name="status", tag="status")],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="timeseries",
+                    title="Metric",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="metrics",
+                            raw_query=metric_query_text,
+                            metric_query=metric_query,
+                            query_type="metric",
+                        )
+                    ],
+                ),
+                NormalizedWidget(
+                    id="log",
+                    widget_type="log_stream",
+                    title="Logs",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="logs",
+                            raw_query=log_query_text,
+                            log_query=parse_log_query(log_query_text),
+                            query_type="log",
+                        )
+                    ],
+                ),
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id=widget.id,
+                title=widget.title,
+                status="ok",
+                backend="markdown",
+                kibana_type="markdown",
+            )
+            for widget in dashboard.widgets
+        ]
+
+        _yaml, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(dashboard_ir.controls[0].data_view, "metrics-*")
+        for result in results:
+            self.assertEqual(result.status, "warning")
+            self.assertTrue(
+                any(
+                    "used by both metric and log widgets" in warning
+                    for warning in result.warnings
+                ),
+                result.warnings,
+            )
+
     def test_otel_tag_map_prefers_otel_kubernetes_semconv_fields(self):
         self.assertEqual(OTEL_PROFILE.map_tag("pod_name"), "k8s.pod.name")
         self.assertEqual(OTEL_PROFILE.map_tag("kube_namespace"), "k8s.namespace.name")
@@ -3094,6 +4069,76 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system_cpu_user")
         self.assertEqual(PASSTHROUGH_PROFILE.map_tag("host"), "host")
 
+    def test_prometheus_metricbeat_profile_uses_prometheus_metrics_and_labels(self):
+        """Metricbeat remote_write layout: prometheus.metrics.* + prometheus.labels.*."""
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_metric("http.requests"),
+            "prometheus.metrics.http_requests",
+        )
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("host"), "prometheus.labels.instance")
+        self.assertEqual(PROMETHEUS_PROFILE.map_tag("env"), "prometheus.labels.env")
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("kube_namespace"),
+            "prometheus.labels.kube_namespace",
+        )
+        # Unmapped tags still land under prometheus.labels.* via tag_prefix.
+        self.assertEqual(
+            PROMETHEUS_PROFILE.map_tag("custom_dim"),
+            "prometheus.labels.custom_dim",
+        )
+        # Must not emit ECS host.name / kubernetes.* under this layout.
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "host.name")
+        self.assertNotEqual(PROMETHEUS_PROFILE.map_tag("host"), "instance")
+
+    def test_prometheus_native_profile_uses_metrics_and_labels_prefixes(self):
+        """Native Elasticsearch /_prometheus write: metrics.* + labels.*."""
+        profile = load_profile("prometheus_native")
+        self.assertEqual(profile.name, "prometheus_native")
+        self.assertEqual(profile.map_metric("http.requests"), "metrics.http_requests")
+        self.assertEqual(profile.map_tag("host"), "labels.instance")
+        self.assertEqual(profile.map_tag("env"), "labels.env")
+        self.assertEqual(profile.map_tag("kube_namespace"), "labels.kube_namespace")
+        self.assertEqual(profile.map_tag("custom_dim"), "labels.custom_dim")
+        self.assertEqual(profile.metric_index, "metrics-*.prometheus-*")
+        self.assertEqual(PROMETHEUS_NATIVE_PROFILE.map_metric("http.requests"), "metrics.http_requests")
+
+    def test_prometheus_profiles_keep_log_queries_on_ecs_fields(self):
+        parsed = parse_log_query("service:web status:error host:api01")
+
+        for profile in (PROMETHEUS_PROFILE, PROMETHEUS_NATIVE_PROFILE):
+            with self.subTest(profile=profile.name):
+                where = log_ast_to_esql_where(parsed.ast, profile)
+                self.assertEqual(
+                    where,
+                    'service.name == "web" AND log.level == "error" AND host.name == "api01"',
+                )
+                self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+                self.assertEqual(profile.map_log_field("host"), "host.name")
+                self.assertNotIn("prometheus.labels.", where)
+                self.assertNotIn("labels.service", where)
+
+    def test_custom_profile_can_split_metric_and_log_tag_maps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_path = Path(tmpdir) / "profile.yaml"
+            profile_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "split",
+                        "tag_map": {"service": "prometheus.labels.service"},
+                        "log_tag_map": {"service": "service.name"},
+                        "tag_prefix": "prometheus.labels.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = load_profile(str(profile_path))
+
+        self.assertEqual(profile.map_tag("service", context="metric"), "prometheus.labels.service")
+        self.assertEqual(profile.map_tag("custom", context="metric"), "prometheus.labels.custom")
+        self.assertEqual(profile.map_tag("service", context="log"), "service.name")
+        self.assertEqual(profile.map_tag("custom", context="log"), "custom")
+
     def test_load_builtin_profile(self):
         profile = load_profile("otel")
         self.assertEqual(profile.name, "otel")
@@ -3131,6 +4176,15 @@ class TestFieldMap(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_profile("nonexistent")
 
+    def test_load_profile_rejects_auto(self):
+        """Datadog stays explicit-only — no Grafana-style auto profile."""
+        with self.assertRaises(ValueError) as ctx:
+            load_profile("auto")
+        message = str(ctx.exception)
+        self.assertIn("auto", message.lower())
+        self.assertIn("otel", message)
+        self.assertNotIn("prometheus_remote_write", message)
+
 
 class TestDatadogCliFieldProfileContract(unittest.TestCase):
     def test_parse_args_defaults_field_profile_to_otel(self):
@@ -3148,8 +4202,13 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
         with self.assertRaises(SystemExit):
             datadog_cli.parse_args(["--source", "files", "--input-mode", "api"])
 
-    def test_parse_args_compiles_dashboards_by_default(self):
+    def test_parse_args_skips_legacy_compile_by_default(self):
         args = datadog_cli.parse_args([])
+
+        self.assertFalse(args.compile)
+
+    def test_parse_args_compile_still_opts_into_legacy_compile(self):
+        args = datadog_cli.parse_args(["--compile"])
 
         self.assertTrue(args.compile)
 
@@ -3255,6 +4314,41 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
         self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+
+    def test_target_readiness_contract_includes_counter_expectations_for_as_rate(self):
+        field_map = load_profile("otel")
+        metric_cap = FieldCapability(name="http_requests", type="double")
+        metric_cap.aggregatable = True
+        metric_cap.time_series_metric_kind = "counter"
+        field_map.metric_field_caps = {"http_requests": metric_cap}
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "sum:http.requests{*}.as_rate()"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="timeseries",
+            title="Reqs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                ),
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract(
+            [dashboard],
+            field_map,
+        )
+
+        self.assertIn("http_requests", contract.get("counter_expectations") or {})
+        self.assertTrue(
+            contract["counter_expectations"]["http_requests"]["expected_counter"],
+        )
+        self.assertEqual(contract["totals"].get("counters_expected"), 1)
 
     def test_dashboard_pipeline_writes_target_readiness_contract(self):
         args = argparse.Namespace(
@@ -3734,8 +4828,13 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                 return_value=dashboard,
             ), patch.object(
                 datadog_cli,
-                "generate_dashboard_yaml",
-                return_value="dashboard: current\n",
+                "generate_dashboard_artifacts",
+                return_value=(
+                    "dashboard: current\n",
+                    NativeDashboard(title="Current Dashboard"),
+                    {},
+                    None,
+                ),
             ), patch.object(
                 datadog_cli,
                 "annotate_results_with_verification",
@@ -3791,7 +4890,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(stem, "test_2")
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_skips_compile_failures(self, mock_upload_dashboard):
+    def test_upload_all_dashboards_skips_compile_failures_for_legacy_import(self, mock_upload_dashboard):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
             yaml_path = output_dir / "yaml" / "dash.yaml"
@@ -3815,6 +4914,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                         "kibana_url": "https://kibana.example",
                         "kibana_api_key": "secret",
                         "space_id": "shadow",
+                        "legacy_import": True,
                     },
                 )(),
                 KibanaTargetAdapter(),
@@ -3824,6 +4924,92 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             self.assertFalse(dr.uploaded)
             self.assertIn("compile failed", dr.upload_error)
             mock_upload_dashboard.assert_not_called()
+
+    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
+    def test_upload_all_dashboards_native_path_allows_uncompiled_yaml(self, mock_upload_dashboard):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_path = output_dir / "yaml" / "dash.yaml"
+            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml_path.write_text("dashboards: []", encoding="utf-8")
+            mock_upload_dashboard.return_value = {
+                "success": True,
+                "output": "",
+                "kibana_url": "https://kibana.example",
+            }
+
+            dr = DashboardResult(
+                dashboard_title="Dash",
+                yaml_path=str(yaml_path),
+                compiled=False,
+                compile_error="",
+            )
+
+            datadog_cli._upload_all_dashboards(
+                [dr],
+                output_dir,
+                type(
+                    "Args",
+                    (),
+                    {
+                        "kibana_url": "https://kibana.example",
+                        "kibana_api_key": "secret",
+                        "space_id": "shadow",
+                        "legacy_import": False,
+                    },
+                )(),
+                KibanaTargetAdapter(),
+            )
+
+            self.assertTrue(dr.upload_attempted)
+            self.assertTrue(dr.uploaded)
+            mock_upload_dashboard.assert_called_once()
+
+    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
+    def test_upload_all_dashboards_native_path_passes_native_dashboard_ir(self, mock_upload_dashboard):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_path = output_dir / "yaml" / "dash.yaml"
+            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml_path.write_text("dashboards: []", encoding="utf-8")
+            native_dashboard = NativeDashboard(title="Dash")
+            mock_upload_dashboard.return_value = {
+                "success": True,
+                "output": "",
+                "kibana_url": "https://kibana.example",
+            }
+
+            dr = DashboardResult(
+                dashboard_title="Dash",
+                yaml_path=str(yaml_path),
+                compiled=False,
+                native_dashboard=native_dashboard,
+                native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+            )
+
+            datadog_cli._upload_all_dashboards(
+                [dr],
+                output_dir,
+                type(
+                    "Args",
+                    (),
+                    {
+                        "kibana_url": "https://kibana.example",
+                        "kibana_api_key": "secret",
+                        "space_id": "shadow",
+                        "legacy_import": False,
+                    },
+                )(),
+                KibanaTargetAdapter(),
+            )
+
+            self.assertTrue(dr.uploaded)
+            mock_upload_dashboard.assert_called_once()
+            self.assertIs(mock_upload_dashboard.call_args.kwargs["native_dashboard"], native_dashboard)
+            self.assertEqual(
+                mock_upload_dashboard.call_args.kwargs["native_dashboard_stats"],
+                {"mapped": 1, "unmapped": 0, "reasons": {}},
+            )
 
     def test_compile_all_dashboards_layout_validates_each_successful_dashboard(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3862,7 +5048,12 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             mock_layout.assert_called_once_with(output_dir / "compiled" / "good")
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_skips_layout_failures(self, mock_upload_dashboard):
+    def test_upload_all_dashboards_skips_layout_failures_for_legacy_import(self, mock_upload_dashboard):
+        # Legacy ``kb-dashboard-cli`` layout validation only gates the legacy
+        # ``--legacy-import`` upload path -- it inspects the compiled NDJSON
+        # layout, which the native Dashboards API upload never touches (see
+        # test_upload_all_dashboards_native_path_ignores_legacy_layout_failures
+        # below, and the matching Grafana CLI behavior).
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
             yaml_path = output_dir / "yaml" / "dash.yaml"
@@ -3887,6 +5078,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                         "kibana_url": "https://kibana.example",
                         "kibana_api_key": "secret",
                         "space_id": "shadow",
+                        "legacy_import": True,
                     },
                 )(),
                 KibanaTargetAdapter(),
@@ -3896,6 +5088,51 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             self.assertFalse(dr.uploaded)
             self.assertIn("layout validation failed", dr.upload_error)
             mock_upload_dashboard.assert_not_called()
+
+    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
+    def test_upload_all_dashboards_native_path_ignores_legacy_layout_failures(self, mock_upload_dashboard):
+        # A stale/irrelevant legacy-compile layout error (e.g. left over from
+        # an earlier ``--compile`` run) must not block the default native
+        # Dashboards API upload path -- mirrors the Grafana CLI's
+        # ``not use_dashboards_api`` gate on its own layout-error check.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            yaml_path = output_dir / "yaml" / "dash.yaml"
+            yaml_path.parent.mkdir(parents=True, exist_ok=True)
+            yaml_path.write_text("dashboards: []", encoding="utf-8")
+            mock_upload_dashboard.return_value = {
+                "success": True,
+                "output": "",
+                "kibana_url": "https://kibana.example",
+            }
+
+            dr = DashboardResult(
+                dashboard_title="Dash",
+                yaml_path=str(yaml_path),
+                compiled=True,
+                layout_checked=True,
+                layout_error="1 overlap(s), 0 invalid size(s), 0 out-of-bounds panel(s)",
+            )
+
+            datadog_cli._upload_all_dashboards(
+                [dr],
+                output_dir,
+                type(
+                    "Args",
+                    (),
+                    {
+                        "kibana_url": "https://kibana.example",
+                        "kibana_api_key": "secret",
+                        "space_id": "shadow",
+                        "legacy_import": False,
+                    },
+                )(),
+                KibanaTargetAdapter(),
+            )
+
+            self.assertTrue(dr.upload_attempted)
+            self.assertTrue(dr.uploaded)
+            mock_upload_dashboard.assert_called_once()
 
     def test_smoke_uploaded_dashboards_updates_dashboard_and_panel_runtime_state(self):
         panel_fail = TranslationResult(
@@ -5391,6 +6628,91 @@ class TestDatadogWritesMarkdownSummary(unittest.TestCase):
             self.assertIn("# Migration Summary — Datadog → Kibana", text)
             self.assertIn(f"`{rollout['run_id']}`", text)
             self.assertIn("Widgets", text)
+
+
+class TestConditionalFormatColorFidelity(unittest.TestCase):
+    """Bug #2 (palette semantics) + Bug #3 (inclusive-boundary color steps)."""
+
+    @staticmethod
+    def _color(palette):
+        from observability_migration.adapters.source.datadog.display import _palette_to_color
+
+        return _palette_to_color(palette)
+
+    @staticmethod
+    def _steps(formats):
+        from observability_migration.adapters.source.datadog.display import (
+            _conditional_format_color,
+        )
+
+        color = _conditional_format_color(formats)
+        assert color is not None, "expected a dynamic color from conditional formats"
+        # ``_conditional_format_color`` returns the YAML-schema shape
+        # (``thresholds``/``range_min``); run it through the same target
+        # mapper the real upload path uses to get the native step bounds
+        # these tests assert on.
+        native = _api_color(color)
+        assert native is not None, "expected the YAML color to map to a native dynamic color"
+        return native["steps"]
+
+    @staticmethod
+    def _decode(steps, value):
+        # Kibana evaluates ascending steps; the first band whose bounds contain
+        # the value wins. ``gte``/``lte`` are inclusive, ``lt`` is exclusive.
+        for step in steps:
+            if "gte" in step and value < step["gte"]:
+                continue
+            if "lt" in step and not value < step["lt"]:
+                continue
+            if "lte" in step and not value <= step["lte"]:
+                continue
+            return step["color"]
+        return None
+
+    def test_palette_prefers_semantic_hue_over_neutral_background(self):
+        # ``<hue>_on_white`` is a colored value on a white background: the status
+        # color is the non-neutral hue, never the white background.
+        self.assertEqual(self._color("green_on_white"), self._color("white_on_green"))
+        self.assertEqual(self._color("red_on_white"), self._color("white_on_red"))
+        self.assertNotEqual(self._color("green_on_white"), "#FFFFFF")
+
+    def test_palette_light_variants_keep_hue(self):
+        self.assertEqual(self._color("black_on_light_red"), self._color("white_on_red"))
+        self.assertEqual(self._color("black_on_light_green"), self._color("white_on_green"))
+
+    def test_inclusive_lower_bound_keeps_zero_in_lower_band(self):
+        # kafka "Offline Partitions": ``<= 0`` healthy (green), ``> 0`` critical.
+        steps = self._steps([
+            ConditionalFormat(comparator="<=", value=0, palette="green_on_white"),
+            ConditionalFormat(comparator=">", value=0, palette="red_on_white"),
+        ])
+        self.assertEqual(self._decode(steps, 0), self._color("white_on_green"))
+        self.assertEqual(self._decode(steps, 5), self._color("white_on_red"))
+
+    def test_inclusive_three_band_boundaries(self):
+        # kafka "Under Replicated Partitions": <=0 green, <=10 yellow, >10 red.
+        steps = self._steps([
+            ConditionalFormat(comparator="<=", value=0, palette="green_on_white"),
+            ConditionalFormat(comparator="<=", value=10, palette="yellow_on_white"),
+            ConditionalFormat(comparator=">", value=10, palette="red_on_white"),
+        ])
+        self.assertEqual(self._decode(steps, 0), self._color("white_on_green"))
+        self.assertEqual(self._decode(steps, 5), self._color("white_on_yellow"))
+        self.assertEqual(self._decode(steps, 10), self._color("white_on_yellow"))
+        self.assertEqual(self._decode(steps, 15), self._color("white_on_red"))
+
+    def test_strict_greater_than_bands_stay_severe_side(self):
+        # Regression guard: pure ">" rules keep the existing gte/lt behavior
+        # (the threshold value renders in the more-severe upper band).
+        steps = self._steps([
+            ConditionalFormat(comparator=">", value=90, palette="white_on_red"),
+            ConditionalFormat(comparator=">", value=70, palette="white_on_yellow"),
+        ])
+        self.assertEqual(steps[0]["gte"], 70)
+        self.assertEqual(steps[0]["lt"], 90)
+        self.assertEqual(steps[1]["gte"], 90)
+        self.assertNotIn("lt", steps[1])
+        self.assertNotIn("lte", steps[1])
 
 
 if __name__ == "__main__":

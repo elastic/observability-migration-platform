@@ -1,0 +1,9 @@
+title: Sockstat Memory Size
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['mem_bytes_TCP_sockets_in_that_state', 'mem_bytes_UDP_sockets_in_that_state', 'FRAG_memory_Used_memory_for_frag']
+breakdown: series_group
+axis_title: bytes
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

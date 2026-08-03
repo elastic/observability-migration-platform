@@ -11,7 +11,7 @@ body:
       value: |
         Use this template for stability, reliability, correctness, or quality issues in the migration engine.
         The `stability` label is pre-applied and triggers auto-linking under the
-        [Stability, Quality & Reliability tracker](https://github.com/elastic/mig-to-kbn/issues/30).
+        [Stability, Quality & Reliability tracker](https://github.com/elastic/observability-migration-platform/issues/30).
   - type: dropdown
     id: component
     attributes:

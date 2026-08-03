@@ -1,0 +1,12 @@
+title: Global CPU  Usage
+grafana_type: bargauge
+status: migrated_with_warnings
+chart_type: bar
+dimension: label
+metrics: ['value']
+axis_extent: custom [0.0, 1.0]
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+warning: Applied Grafana transformation 'organize' as ES|QL rewrite
+warning: Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific)
+warning: Approximated bargauge as bar chart

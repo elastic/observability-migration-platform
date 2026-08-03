@@ -1,0 +1,7 @@
+title: Memory
+grafana_type: graph
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['Total_resident_memory', 'Total_llocated_bytes']
+breakdown: instance

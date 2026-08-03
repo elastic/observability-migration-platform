@@ -1,0 +1,7 @@
+title: Network Traffic by Packets
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['Receive', 'Transmit']
+axis_title: packets out (-) / in (+)

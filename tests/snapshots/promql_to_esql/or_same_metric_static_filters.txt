@@ -1,6 +1,5 @@
 source: http_requests_total{instance="i",status=~"4.."} or http_requests_total{instance="i",status=~"5.."}
 feasibility: feasible
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
 warning: Rewrote PromQL set-or between same metric as a unified WHERE OR clause
 ---

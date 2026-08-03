@@ -45,10 +45,12 @@ Datadog tags are mapped to Elasticsearch fields through profiles:
 
 ### Template Variables → Controls
 
-Datadog `template_variables` are translated into Kibana dashboard controls.
-Each variable's `tag` is resolved through the active field profile to an
-Elasticsearch field. The controls apply dashboard-level filtering, replacing
-the `$var` LIKE-broadening in individual panel queries.
+Tag-backed Datadog `template_variables` are translated into Kibana dashboard
+controls. Each variable's `tag` is resolved through the active field profile
+to an Elasticsearch field, and the control applies dashboard-level filtering.
+This does not cover Datadog's free-form `$scope`, log-query substitutions, or
+dynamic group-by variables; those shapes are reported as explicit
+degradations/manual work rather than being presented as clean replacements.
 
 ---
 

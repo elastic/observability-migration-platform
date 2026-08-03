@@ -85,8 +85,17 @@ def _normalize_widget(
     if not queries and widget_type in ("log_stream", "list_stream"):
         queries = _extract_log_stream_queries(defn)
 
+    # Datadog stores conditional formats either at the widget definition level
+    # or (more commonly for query_value/query_table) per request. Gather both,
+    # preserving list order, since the target color resolution depends on it.
+    raw_conditional_formats = list(defn.get("conditional_formats", []))
+    for request in defn.get("requests", []):
+        if isinstance(request, dict):
+            raw_conditional_formats.extend(request.get("conditional_formats", []))
     conditional_formats = []
-    for cf in defn.get("conditional_formats", []):
+    for cf in raw_conditional_formats:
+        if not isinstance(cf, dict):
+            continue
         conditional_formats.append(ConditionalFormat(
             comparator=cf.get("comparator", ""),
             value=cf.get("value", 0),
@@ -155,7 +164,37 @@ def _extract_queries_and_formulas(
     formulas: list[WidgetFormula] = []
     seen_names: set[str] = set()
 
-    for req in defn.get("requests", []):
+    raw_requests = defn.get("requests", [])
+    if isinstance(raw_requests, dict):
+        # Hostmap widgets use a keyed request object
+        # (``{"fill": {"q": ...}, "size": {"q": ...}}``) instead of the
+        # request array used by standard metric widgets. Normalize each keyed
+        # metric as a named query so the regular planner/translator can preserve
+        # the grouped values in a fallback visualization.
+        for request_name, request in raw_requests.items():
+            if not isinstance(request, dict):
+                continue
+            query_text = str(request.get("q") or "").strip()
+            if not query_text:
+                continue
+            _extract_from_request(
+                {
+                    "queries": [
+                        {
+                            "name": str(request_name),
+                            "data_source": "metrics",
+                            "query": query_text,
+                            "aggregator": request.get("aggregator", ""),
+                        }
+                    ]
+                },
+                queries,
+                formulas,
+                seen_names,
+                defn.get("type", ""),
+            )
+
+    for req in raw_requests if isinstance(raw_requests, list) else []:
         if isinstance(req, dict):
             _extract_from_request(req, queries, formulas, seen_names, defn.get("type", ""))
         elif isinstance(req, list):
@@ -182,7 +221,15 @@ def _extract_from_request(
     widget_type: str = "",
 ) -> None:
     request_name_map: dict[str, str] = {}
-    for raw_q in req.get("queries", []):
+    raw_queries = req.get("queries", [])
+    if not raw_queries and isinstance(req.get("query"), dict):
+        # A `distribution` widget's histogram request (request_type:
+        # "histogram") nests its single query definition under a singular
+        # `query` dict instead of the `queries` array every other widget
+        # type uses. Without this, the widget's only query is silently
+        # dropped and the panel falls back to "no queries found".
+        raw_queries = [req["query"]]
+    for raw_q in raw_queries:
         original_name = raw_q.get("name", f"query{len(queries)}") or f"query{len(queries)}"
         name = original_name
         if name in seen_names:
@@ -199,10 +246,14 @@ def _extract_from_request(
         # Modern Datadog log/event queries put the filter expression in a
         # nested `search.query` field; fall back to it when the legacy
         # `query` field is empty so we don't lose the filter.
+        # list_stream / logs_stream widgets instead use `query_string` on the
+        # singular `query` dict (no `queries[]` array and no `query` string).
         if not raw_query_str and data_source in LOG_DATA_SOURCES:
             search = raw_q.get("search")
             if isinstance(search, dict):
                 raw_query_str = search.get("query", "") or ""
+            if not raw_query_str:
+                raw_query_str = raw_q.get("query_string", "") or ""
 
         wq = WidgetQuery(
             name=name,

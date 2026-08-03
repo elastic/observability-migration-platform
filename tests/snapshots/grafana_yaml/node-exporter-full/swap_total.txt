@@ -1,0 +1,5 @@
+title: SWAP Total
+grafana_type: stat
+status: migrated
+chart_type: metric
+primary: node_memory_SwapTotal_bytes

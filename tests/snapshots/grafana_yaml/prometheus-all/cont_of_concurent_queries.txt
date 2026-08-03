@@ -1,0 +1,8 @@
+title: Cont of concurent queries
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['Current_count', 'Max_count']
+breakdown: series_group
+warning: Composited multi-label grouping (instance, handler) into a single XY breakdown column

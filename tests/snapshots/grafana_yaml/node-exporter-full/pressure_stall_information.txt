@@ -1,0 +1,8 @@
+title: Pressure Stall Information
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['CPU_some', 'Memory_some', 'Memory_full', 'I_O_some', 'I_O_full']
+breakdown: series_group
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

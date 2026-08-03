@@ -1,0 +1,9 @@
+title: TCP Direct Transition
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['ActiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_SENT_state_from_the_CLOSED_state', 'PassiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_RCVD_state_from_the_LISTEN_state']
+breakdown: series_group
+axis_title: connections
+warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -1,0 +1,5 @@
+source: sum(rabbitmq_identity_info * on(instance, job) group_right(rabbitmq_cluster) rabbitmq_queue_messages_ready)
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join requires manual redesign; only a group_left(...) label-enrichment multiplication join can be safely approximated today, and this is a group_right(...) vector-matching join
+---
+

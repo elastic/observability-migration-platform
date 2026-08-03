@@ -36,7 +36,19 @@ from observability_migration.adapters.source.grafana import panels, rules, schem
 _LABEL_POOL = ("job", "instance", "namespace", "pod", "method")
 
 # panel type -> Grafana panel "type" string
-_PANEL_TYPES = ("timeseries", "barchart", "gauge", "stat", "table", "piechart", "heatmap")
+_PANEL_TYPES = (
+    "timeseries",
+    "barchart",
+    "gauge",
+    "stat",
+    "table",
+    "piechart",
+    "heatmap",
+    # Discrete-state visualizations approximated as line charts; exercised here
+    # so the approximation still produces well-formed, accessor-valid panels.
+    "state-timeline",
+    "status-history",
+)
 
 # query families: name -> expr template using {m} metric and {by} clause
 _FAMILIES: dict[str, str] = {

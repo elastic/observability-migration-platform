@@ -1,0 +1,9 @@
+title: Memory Utilization by namespace
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: k8s.namespace.name
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : preferred left (Linux) operand and dropped the Windows join contribution; Windows namespaces will under-report until the join is redesigned

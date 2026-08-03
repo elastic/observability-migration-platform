@@ -6,7 +6,7 @@ intent is to compress a 1500-panel verifier report into a triage queue
 where each row already says *what* class of fix is needed, not just
 that the panel is broken.
 
-Categories are tied to documented mig-to-kbn failure modes. Each rule
+Categories are tied to documented obs-migrate failure modes. Each rule
 matches on cheap structural signals (regex on T5 errors, presence of
 notes, drift axes, visual diff score) so the classifier is fast and
 deterministic.
@@ -119,7 +119,7 @@ _CIRCUIT_BREAKER_RES = (
     re.compile(r"circuit_breaker_exception", re.IGNORECASE),
 )
 
-# Documented mig-to-kbn feasibility gaps for PROMQL primitives we cannot
+# Documented obs-migrate feasibility gaps for PROMQL primitives we cannot
 # express in ES|QL today; matching one of these in a not_feasible note
 # escalates the verdict from "unknown" to "feasibility_gap".
 _FEASIBILITY_NOTE_TOKENS = (

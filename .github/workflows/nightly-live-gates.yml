@@ -127,3 +127,53 @@ jobs:
           path: run/*.json
           if-no-files-found: warn
           retention-days: 30
+
+  community-fidelity:
+    name: Community corpus fidelity gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync locked environment
+        run: UV_PROJECT_ENVIRONMENT=.venv uv sync --locked --python 3.12 --all-extras
+
+      # Materializes the pinned third-party dashboards on demand (they are never
+      # committed) and verifies each canonical-JSON sha256, so the corpus is
+      # reproducible and tamper-evident.
+      - name: Fetch pinned community corpus
+        run: .venv/bin/python scripts/fetch_community_corpus.py --output-dir run/community
+
+      - name: Migrate community corpus (offline)
+        run: |
+          .venv/bin/python -m observability_migration.adapters.source.grafana.cli \
+            --source files --input-dir run/community \
+            --output-dir run/community_out --assets dashboards
+
+      # Backs the committed fidelity_baseline_community.json with a real,
+      # reproducible run: fails if Layer-9 invariant ERRORs regress or the panel
+      # denominator shrinks vs the baseline (refresh intentionally with
+      # `verifier.scorecard --update`; see docs/testing.md).
+      - name: Community fidelity ratchet (no --update; fails on regression)
+        run: |
+          PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
+            --migration-out run/community_out/dashboards \
+            --baseline parity-rig/benchmark/fidelity_baseline_community.json
+
+      - name: Upload community fidelity report
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: community-fidelity-report
+          path: run/community_out/**/migration_report.json
+          if-no-files-found: warn
+          retention-days: 30

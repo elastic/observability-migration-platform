@@ -1,0 +1,5 @@
+source: sum(node_network_receive_bytes_total * on(instance) group_left(nodename) rate(node_uname_info[5m]))
+feasibility: not_feasible
+warning: Aggregating over a PromQL vector-matching join requires manual redesign: the group_left(...) partner is a rate(...) range expression, not a plain `<metric>_info{...}` vector selector, so it is not a constant-1 label-only metric and dropping it would change the numeric value
+---
+

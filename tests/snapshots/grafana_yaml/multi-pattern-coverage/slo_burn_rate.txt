@@ -1,0 +1,8 @@
+title: SLO Burn Rate
+grafana_type: gauge
+status: migrated
+chart_type: gauge
+metric: slo_burn_rate
+gauge_shape: arc
+gauge_range: [0, 100]
+gauge_thresholds: 2:#54B399, 5:#D6BF57, 100:#E7664C

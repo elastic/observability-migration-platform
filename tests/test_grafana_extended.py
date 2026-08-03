@@ -424,14 +424,15 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        # histogram_quantile() is hard-blocked and always not_feasible
-        panel = _make_panel(1, "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))")
+        # Bare classic _bucket series (no sum by (le)) stays not_feasible —
+        # PERCENTILE cannot preserve per-series identity without an explicit le agg.
+        panel = _make_panel(1, "histogram_quantile(0.99, rate(http_duration_bucket[5m]))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
+        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -511,8 +512,9 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("sum without (instance) (rate(foo_total[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
-    def test_histogram_quantile_is_not_feasible(self):
-        ctx = _translate("histogram_quantile(0.9, rate(bucket[5m]))")
+    def test_histogram_quantile_bare_bucket_series_is_not_feasible(self):
+        # Bare classic *_bucket without sum by (le) cannot preserve series identity.
+        ctx = _translate("histogram_quantile(0.9, rate(http_duration_seconds_bucket[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
     def test_name_introspection_is_not_feasible(self):
@@ -586,7 +588,7 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "histogram_quantile(0.99, sum(rate(http_duration_bucket[5m])) by (le))"
+        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -623,9 +625,14 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate(expr)
         self.assertEqual(ctx.feasibility, "feasible")
         query = ctx.esql_query or ""
-        # Numerator scoped via CASE on the extra filter; denominator unscoped.
+        # Numerator scoped via outer CASE on the extra filter (ES 9.5-safe).
+        # When any STATS sibling already uses that shape, the unscoped
+        # denominator is also outer-CASE-shaped (``CASE(true, RATE(...), NULL)``)
+        # so ES does not ClassCast mixed value-arg forms.
         self.assertIn('CASE((status RLIKE "5..")', query)
-        self.assertIn("RATE(http_requests_total, 5m)", query)
+        self.assertIn("CASE(true, RATE(http_requests_total, 5m), NULL)", query)
+        self.assertNotIn("SUM(RATE(http_requests_total, 5m))", query)
+        self.assertNotIn("RATE(CASE(", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
         # Final percentage EVAL composes the two stats columns.
@@ -905,6 +912,45 @@ class TestLogQLHonesty(unittest.TestCase):
         ctx = _translate('{service_name="api"} |~ "error"', panel_type="logs")
         self.assertIn("message", ctx.esql_query)
 
+    def test_logql_service_object_parent_maps_to_service_name(self):
+        """Live ECS caps advertise ``service`` as a non-searchable object parent.
+
+        Prefer ``service.name`` so ES|QL does not 400 with
+        ``Unknown column [service], did you mean [service.name]?``.
+        """
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp, field_profile="otel")
+        resolver._discovery_attempted = True
+        resolver._field_cache = {
+            "service": {
+                "object": {
+                    "type": "object",
+                    "searchable": False,
+                    "aggregatable": False,
+                }
+            },
+            "service.name": {
+                "keyword": {
+                    "type": "keyword",
+                    "searchable": True,
+                    "aggregatable": True,
+                }
+            },
+            "message": {
+                "text": {
+                    "type": "text",
+                    "searchable": True,
+                    "aggregatable": False,
+                }
+            },
+        }
+        self.assertEqual(resolver.resolve_label("service"), "service.name")
+        ctx = _translate('{service="api"} |~ "timeout|error"', panel_type="logs", resolver=resolver)
+        self.assertEqual(ctx.feasibility, "feasible", ctx.warnings)
+        self.assertIn('service.name == "api"', ctx.esql_query)
+        self.assertNotIn("WHERE service ==", ctx.esql_query)
+        self.assertIn("KEEP @timestamp, service.name, message", ctx.esql_query)
+
 
 # =========================================================================
 # Panel Type Coverage
@@ -953,6 +999,52 @@ class TestPanelTypeCoverage(unittest.TestCase):
         panel = _make_panel(1, "rate(foo_total[5m])", panel_type="heatmap")
         _, result = _translate_panel(panel)
         self.assertIn(result.kibana_type, ("heatmap", "line"))
+
+    def test_state_timeline_approximated_as_line_with_disclosure(self):
+        panel = _make_panel(1, "max(up)", panel_type="state-timeline", title="Pod state")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertEqual(result.grafana_type, "state-timeline")
+        self.assertEqual(result.kibana_type, "line")
+        self.assertTrue(result.esql_query or (yaml_panel and yaml_panel.get("esql")))
+        note = panels.APPROXIMATED_VIS_TYPE_NOTES["state-timeline"]
+        joined = " ".join(result.reasons or [])
+        self.assertIn(note.split(":")[0], joined)
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_status_history_approximated_as_line_with_disclosure(self):
+        panel = _make_panel(1, "max(up)", panel_type="status-history", title="Check status")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertEqual(result.grafana_type, "status-history")
+        self.assertEqual(result.kibana_type, "line")
+        self.assertTrue(result.esql_query or (yaml_panel and yaml_panel.get("esql")))
+        note = panels.APPROXIMATED_VIS_TYPE_NOTES["status-history"]
+        joined = " ".join(result.reasons or [])
+        self.assertIn(note.split(":")[0], joined)
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_discrete_state_panels_survive_native_dashboard_ir(self):
+        """state-timeline / status-history must land as native vis items, not drops."""
+        dashboard = {
+            "uid": "discrete-state",
+            "title": "Discrete state",
+            "panels": [
+                _make_panel(1, "max(up)", panel_type="state-timeline", title="State"),
+                _make_panel(2, "max(up)", panel_type="status-history", title="History"),
+            ],
+        }
+        result, _payload = _translate_dashboard(dashboard)
+        by_type = {pr.grafana_type: pr for pr in result.panel_results}
+        self.assertIn("state-timeline", by_type)
+        self.assertIn("status-history", by_type)
+        for pr in by_type.values():
+            self.assertEqual(pr.kibana_type, "line")
+            self.assertEqual(pr.status, "migrated_with_warnings")
+            self.assertTrue(pr.esql_query)
+        native = getattr(result, "native_dashboard", None)
+        if native is not None:
+            leaf_types = [item.type for item in native.items if getattr(item, "type", None)]
+            self.assertGreaterEqual(len(leaf_types), 2)
+            self.assertTrue(all(t == "vis" for t in leaf_types[:2]))
 
     def test_stacked_timeseries_becomes_area(self):
         panel = _make_panel(1, "rate(foo_total[5m])", panel_type="timeseries")
@@ -1303,6 +1395,219 @@ class TestCounterLongAggregationWarning(unittest.TestCase):
         self.assertFalse(
             any("counter_long" in w for w in ctx.warnings),
             f"did not expect the counter uncertainty warning for missing target data: {ctx.warnings}",
+        )
+
+
+class TestConflictingTypeAcrossIndices(unittest.TestCase):
+    """Issue #245: dual-shipped/inconsistently-ingested indices can map the
+    same field name with conflicting type information. Two distinct failure
+    shapes fall out of this:
+
+    - A metric is counter-typed in one index and gauge-typed in another (e.g.
+      a Cassandra JMX-exporter field like ``cassandra_stats``): the disagreement
+      used to make ``is_counter()`` confidently say "not a counter", emitting
+      a bare SUM/MAX/SUM_OVER_TIME that ES|QL rejects with no warning at all.
+    - A metric has genuinely conflicting *exact* types (e.g. ``long`` in one
+      index, ``double`` in another) with no counter signal at all: nothing
+      checked this before, so the bare field reference hit ES|QL's
+      "ambiguities in index mappings" error.
+    """
+
+    @staticmethod
+    def _live_resolver(field_cache):
+        rp = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._field_cache = dict(field_cache)
+        resolver._discovery_status = "ok"
+        return resolver
+
+    def test_conflicting_kind_is_detected_as_counter(self):
+        # One index types it counter (via plain long + time_series_metric),
+        # another types it a gauge double. The counter signal must win.
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        self.assertTrue(resolver.is_counter("cassandra_stats"))
+        self.assertFalse(resolver.refutes_counter("cassandra_stats"))
+
+    def test_conflicting_kind_bare_max_uses_last_over_time(self):
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        ctx = _translate("max(cassandra_stats)", resolver=resolver)
+        self.assertIn("MAX(LAST_OVER_TIME(cassandra_stats))", ctx.esql_query)
+        self.assertNotIn("MAX(cassandra_stats)", ctx.esql_query)
+
+    def test_conflicting_kind_sum_over_time_casts_to_double(self):
+        resolver = self._live_resolver(
+            {
+                "cassandra_stats": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "counter"},
+                }
+            }
+        )
+        ctx = _translate("sum_over_time(cassandra_stats[5m])", resolver=resolver)
+        self.assertIn("SUM_OVER_TIME(TO_DOUBLE(cassandra_stats), 5m)", ctx.esql_query)
+
+    def test_conflicting_exact_type_bare_max_casts_to_double(self):
+        # Pure long-vs-double mismatch, no counter signal anywhere: is_counter
+        # stays False, but the bare field is still unsafe to reference directly.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        self.assertFalse(resolver.is_counter("process_virtual_memory_max_bytes"))
+        self.assertTrue(resolver.has_conflicting_types("process_virtual_memory_max_bytes"))
+        ctx = _translate("max(process_virtual_memory_max_bytes)", resolver=resolver)
+        self.assertIn("MAX(TO_DOUBLE(process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_irate_degrades_and_casts(self):
+        # irate() cannot be cast (it requires the raw counter type), so a
+        # conflicting-type field must degrade to the gauge analogue, which can
+        # then be cast to resolve the mapping ambiguity.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("irate(process_virtual_memory_max_bytes[5m])", resolver=resolver)
+        self.assertNotIn("IRATE(", ctx.esql_query)
+        self.assertIn("AVG_OVER_TIME(TO_DOUBLE(process_virtual_memory_max_bytes), 5m)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_no_conflict_leaves_bare_aggregation_unchanged(self):
+        # A clean, single-typed gauge field must not be cast -- no needless
+        # snapshot churn for the overwhelmingly common case.
+        resolver = self._live_resolver(
+            {"node_load1": {"double": {"type": "double", "time_series_metric": "gauge"}}}
+        )
+        ctx = _translate("max(node_load1)", resolver=resolver)
+        self.assertIn("MAX(node_load1)", ctx.esql_query)
+        self.assertEqual(ctx.warnings, [])
+
+    def test_keyword_vs_double_conflict_is_not_treated_as_castable(self):
+        # A conflict against a non-numeric type (keyword) is a field-name
+        # collision between two unrelated series, not the same metric stored
+        # inconsistently -- casting to double would not resolve it, so the
+        # plain aggregation must be left alone.
+        resolver = self._live_resolver(
+            {
+                "ambiguous_gauge": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "keyword": {"type": "keyword"},
+                }
+            }
+        )
+        ctx = _translate("max(ambiguous_gauge)", resolver=resolver)
+        self.assertIn("MAX(ambiguous_gauge)", ctx.esql_query)
+
+    def test_conflicting_exact_type_plain_metric_panel_casts_to_double(self):
+        # Issue #245 follow-up: a bare metric panel with no explicit PromQL
+        # aggregator (the common "Instant" stat/gauge panel shape) goes
+        # through the implicit default-aggregation path, which must also
+        # defend against a cross-index numeric type conflict.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("process_virtual_memory_max_bytes", resolver=resolver)
+        self.assertIn("TO_DOUBLE(process_virtual_memory_max_bytes)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_topk_wrapped_rate_casts_to_double(self):
+        # Issue #245 follow-up: topk()/binary/nested composed paths route
+        # range functions through a different code path than a standalone
+        # panel and must get the same defensive cast, not just the warning
+        # text implying one happened.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("topk(5, rate(process_virtual_memory_max_bytes[5m]))", resolver=resolver)
+        self.assertNotIn("RATE(process_virtual_memory_max_bytes,", ctx.esql_query)
+        self.assertIn("AVG_OVER_TIME(TO_DOUBLE(process_virtual_memory_max_bytes), 5m)", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_native_profile_physical_field_casts(self):
+        # Issue #245 follow-up: the conflict lives on the *resolved* physical
+        # field (prometheus_native's ``metrics.<metric>`` layout), not the
+        # bare logical PromQL name, which never appears in the live cache at
+        # all for this profile. The check must be profile-aware.
+        resolver = self._live_resolver(
+            {
+                "metrics.process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                },
+                "labels.job": {"keyword": {"type": "keyword"}},
+            }
+        )
+        ctx = _translate("max(process_virtual_memory_max_bytes)", resolver=resolver)
+        self.assertIn("MAX(TO_DOUBLE(metrics.process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
+        )
+
+    def test_conflicting_exact_type_pre_aggregation_comparison_casts(self):
+        # Issue #245 follow-up: sum(metric > 0) runs the comparison filter
+        # and the outer aggregation on the same conflicting-type field
+        # through a dedicated code path (issue #148's pre_agg_filter branch)
+        # that bypassed the new cast entirely.
+        resolver = self._live_resolver(
+            {
+                "process_virtual_memory_max_bytes": {
+                    "double": {"type": "double", "time_series_metric": "gauge"},
+                    "long": {"type": "long", "time_series_metric": "gauge"},
+                }
+            }
+        )
+        ctx = _translate("sum(process_virtual_memory_max_bytes > 0)", resolver=resolver)
+        self.assertIn("WHERE TO_DOUBLE(process_virtual_memory_max_bytes) > 0", ctx.esql_query)
+        self.assertIn("SUM(TO_DOUBLE(process_virtual_memory_max_bytes))", ctx.esql_query)
+        self.assertTrue(
+            any("conflicting types" in w for w in ctx.warnings),
+            f"expected a conflicting-types warning, got {ctx.warnings}",
         )
 
 
@@ -1722,6 +2027,87 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(result.visual_ir.title, yaml_panel["title"])
         self.assertEqual(result.query_ir.get("target_query"), query)
 
+    def test_native_promql_xy_visual_ir_carries_api_safe_display_metadata(self):
+        panel = _make_panel(
+            1,
+            "rate(http_requests_total[5m])",
+            panel_type="graph",
+            title="Traffic",
+        )
+        panel["targets"][0]["legendFormat"] = "Requests"
+        panel["legend"] = {"show": True, "rightSide": True}
+        panel["fieldConfig"] = {
+            "defaults": {
+                "unit": "Bps",
+                "min": 0,
+                "max": 100,
+                "custom": {
+                    "axisLabel": "Throughput",
+                    "scaleDistribution": {"type": "log"},
+                },
+            },
+            "overrides": [],
+        }
+        panel["yaxes"] = [
+            {"label": "Throughput", "format": "Bps", "min": 0, "max": 100},
+            {"label": "Error %", "format": "percent"},
+        ]
+        panel["seriesOverrides"] = [{"alias": "Requests", "yaxis": 2}]
+
+        yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        esql = yaml_panel["esql"]
+        metric = esql["metrics"][0]
+        self.assertEqual(metric["label"], "Requests")
+        self.assertEqual(metric["axis"], "right")
+        self.assertEqual(metric["format"]["suffix"], "%")
+        self.assertEqual(esql["legend"], {"visible": "show", "position": "right", "truncate_labels": 1})
+        self.assertEqual(esql["appearance"]["y_left_axis"]["title"], "Throughput")
+        self.assertEqual(
+            esql["appearance"]["y_left_axis"]["extent"],
+            {"mode": "custom", "min": 0.0, "max": 100.0},
+        )
+        self.assertEqual(result.visual_ir.presentation.config["metrics"][0]["axis"], "right")
+        self.assertEqual(result.visual_ir.presentation.config["appearance"], esql["appearance"])
+
+    def test_native_promql_gauge_visual_ir_carries_metric_color_bounds_and_shape(self):
+        panel = _make_panel(
+            2,
+            "max(cpu_usage_percent)",
+            panel_type="gauge",
+            title="CPU Usage",
+        )
+        panel["fieldConfig"] = {
+            "defaults": {
+                "unit": "percent",
+                "min": 0,
+                "max": 100,
+                "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                        {"color": "green", "value": None},
+                        {"color": "yellow", "value": 70},
+                        {"color": "red", "value": 90},
+                    ],
+                },
+            },
+            "overrides": [],
+        }
+
+        yaml_panel, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql["type"], "gauge")
+        self.assertEqual(esql["metric"]["label"], "CPU Usage")
+        self.assertEqual(esql["metric"]["format"]["suffix"], "%")
+        self.assertEqual(esql["minimum"], {"field": "_gauge_min"})
+        self.assertEqual(esql["maximum"], {"field": "_gauge_max"})
+        self.assertEqual(esql["goal"], {"field": "_gauge_goal"})
+        self.assertEqual(esql["appearance"]["shape"], "arc")
+        self.assertEqual(esql["color"]["thresholds"][-1]["up_to"], 100)
+        self.assertNotIn("color", esql["metric"])
+        self.assertEqual(result.visual_ir.presentation.config["color"], esql["color"])
+
     def test_native_promql_grouped_multi_label_legend_uses_composite_breakdown(self):
         panel = _make_panel(
             1,
@@ -1858,36 +2244,52 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         _, result = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertNotEqual(result.status, "not_feasible", result.reasons)
 
-    def test_stat_panel_emits_native_instant_query(self):
-        """Issue #127 / instant-query semantics: a single-value (stat) panel
-        must emit a native PROMQL *instant* query bound to ``time=?_tend`` (the
-        time-picker end), not a ``step=`` range query that the metric viz then
-        has to collapse."""
+    def test_stat_panel_emits_range_collapsed_latest_value(self):
+        """Single-value (stat) tiles collapse a PROMQL *range* over the
+        dashboard window via ``LAST(value, step)`` instead of instant
+        ``time=?_tend``. Instant-at-now returns empty when the latest sample
+        lags the picker end (seed gaps / scrape stalls); ES|QL gauges already
+        reduce over the view. Alert instant (#200) is unchanged — it calls
+        ``build_native_promql_query`` directly."""
         panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="stat")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         esql = yaml_panel["esql"]
         self.assertEqual(esql["type"], "metric")
-        self.assertIn("time=?_tend", esql["query"])
-        self.assertNotIn("step=", esql["query"])
+        query = esql["query"]
+        self.assertNotIn("time=?_tend", query)
+        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
 
-    def test_gauge_panel_emits_native_instant_query(self):
+    def test_gauge_panel_emits_range_collapsed_latest_value(self):
         panel = _make_panel(1, "max(process_start_time_seconds)", panel_type="gauge")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         esql = yaml_panel["esql"]
         self.assertEqual(esql["type"], "gauge")
-        self.assertIn("time=?_tend", esql["query"])
+        query = esql["query"]
+        self.assertNotIn("time=?_tend", query)
+        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
 
-    def test_timeseries_panel_keeps_range_step_query(self):
-        """A real time-series (line) panel must still use a ``step=`` range
-        query so it plots over time."""
+    def test_timeseries_panel_emits_adaptive_range_query(self):
+        """A real time-series (line) panel is a range plot, but a migrated
+        dashboard panel omits ``step=`` so Kibana/Elastic re-buckets it to the
+        dashboard time range like Grafana (issue #272). It must still be a range
+        query (no ``time=?_tend``) and keep the ``step`` time column as its
+        x-axis dimension."""
         panel = _make_panel(1, "rate(http_requests_total[5m])", panel_type="timeseries")
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
-        query = yaml_panel["esql"]["query"]
-        self.assertIn("step=", query)
+        esql = yaml_panel["esql"]
+        query = esql["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        # #272: no baked-in resolution -> adaptive at view time.
+        self.assertNotIn("step=", query)
+        # Still a range query, not an instant snapshot.
         self.assertNotIn("time=?_tend", query)
+        # The range command still emits the ``step`` column for the x-axis.
+        self.assertEqual((esql.get("dimension") or {}).get("field"), "step")
 
     def test_build_native_promql_query_instant_opt_in_only(self):
         """The instant form is opt-in: callers that post-process the ``step``
@@ -1921,9 +2323,11 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertIn("time=?_tend", esql["query"])
         self.assertNotIn("step=", esql["query"])
 
-    def test_range_table_panel_keeps_step_query(self):
-        """A table panel WITHOUT ``instant`` stays a ``step=`` range query: it
-        is a normal range table, not an instant snapshot."""
+    def test_range_table_panel_emits_adaptive_range_query(self):
+        """A table panel WITHOUT ``instant`` is a normal range table, not an
+        instant snapshot. As a migrated dashboard panel it omits ``step=`` (auto
+        resolution, issue #272) while staying a range query (no
+        ``time=?_tend``)."""
         panel = _make_panel(
             1, "sum by (http.route) (rate(http_requests_total[5m]))",
             panel_type="table",
@@ -1932,7 +2336,8 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
         self.assertIsNotNone(yaml_panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("step=", query)
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertNotIn("step=", query)
         self.assertNotIn("time=?_tend", query)
 
     def test_build_native_promql_query_instant_datatable(self):
@@ -1988,10 +2393,13 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         """Regression (#135 review): ``_target_summary_mode`` returns True
         unconditionally for ``bargauge``, but ``bargauge`` maps to the XY
         ``bar`` kibana type whose spec x-axes on the ``step`` time column. An
-        instant query emits no ``step``, so widening ``instant`` to summary-mode
-        must NOT reach ``bar``: doing so binds the x-axis to a phantom ``step``
-        column (the #127 failure mode). A native-path ``bargauge`` must keep its
-        ``step=`` range query and a valid ``step`` x-axis dimension."""
+        instant query emits no ``step`` column, so widening ``instant`` to
+        summary-mode must NOT reach ``bar``: doing so would bind the x-axis to a
+        phantom ``step`` column (the #127 failure mode). A native-path
+        ``bargauge`` must stay a range query (never ``time=?_tend``) with a valid
+        ``step`` x-axis dimension. The range command emits the ``step`` column
+        regardless of whether a ``step=`` resolution is pinned, so the migrated
+        dashboard panel omits it for adaptive bucketing (issue #272)."""
         panel = _make_panel(
             1, "rate(http_requests_total[5m])", panel_type="bargauge",
         )
@@ -2002,14 +2410,126 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         # Only assert the phantom-axis invariant when the native PROMQL path
         # actually handled this panel (PROMQL command emitted).
         if query.startswith("PROMQL"):
-            self.assertIn("step=", query)
+            # Must be a range query so the ``step`` x-axis column exists.
             self.assertNotIn("time=?_tend", query)
+            # Adaptive resolution: no baked-in ``step=`` (issue #272).
+            self.assertNotIn("step=", query)
             dimension = esql.get("dimension") or {}
-            if dimension.get("field") == "step":
-                self.assertIn(
-                    "step=", query,
-                    "bar x-axis binds to step but query emits no step column",
-                )
+            self.assertEqual(
+                dimension.get("field"), "step",
+                "bar x-axis must bind to the step time column",
+            )
+
+    def test_dashboard_rate_interval_panel_is_windowless_and_stepless(self):
+        """End-to-end (#272 + #273): a migrated line panel whose Grafana source
+        used ``rate(x[$__rate_interval])`` emits a windowless ``rate(x)`` with no
+        baked-in ``step=`` — fully adaptive like the Grafana original."""
+        panel = _make_panel(1, "rate(http_requests_total[$__rate_interval])")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertIn("value=(rate(http_requests_total))", query)
+        self.assertNotIn("$__rate_interval", query)
+        self.assertNotIn("[5m]", query)
+        self.assertNotIn("step=", query)
+        self.assertNotIn("time=?_tend", query)
+
+    def test_dashboard_explicit_rate_window_panel_keeps_window_but_drops_step(self):
+        """End-to-end (#273): a pinned explicit window survives verbatim while
+        the panel step still goes adaptive (#272)."""
+        panel = _make_panel(1, "rate(http_requests_total[5m])")
+        yaml_panel, _ = _translate_panel(panel, rule_pack=self.rp, resolver=self.resolver)
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("value=(rate(http_requests_total[5m]))", query)
+        self.assertNotIn("step=", query)
+
+    def test_multi_target_overlay_is_windowless_and_stepless(self):
+        """The multi-target native overlay path (the ``label_replace + or``
+        fallback) also emits adaptive resolution: no ``step=`` (#272), windowless
+        rate for ``$__rate_interval`` targets, and explicit windows preserved
+        (#273). Exercised directly because the overlay is only reached as a
+        fallback when the ES|QL merge is not_feasible."""
+        panel = {
+            "id": 1, "type": "timeseries", "title": "Overlay", "targets": [],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        }
+        targets_with_expr = [
+            ({"expr": "rate(http_requests_total[$__rate_interval])", "refId": "A",
+              "legendFormat": "reqs", "datasource": {"type": "prometheus"}},
+             "rate(http_requests_total[$__rate_interval])"),
+            ({"expr": "rate(http_errors_total[5m])", "refId": "B",
+              "legendFormat": "errors", "datasource": {"type": "prometheus"}},
+             "rate(http_errors_total[5m])"),
+        ]
+        out = panels._translate_multi_target_native_promql(
+            panel, {}, "Overlay", "timeseries", "line",
+            {"type": "prometheus"}, "metrics-*", self.rp, [], {},
+            targets_with_expr, resolver=self.resolver,
+        )
+        self.assertIsNotNone(out)
+        yaml_panel, _ = out
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL index=metrics-*"), query)
+        self.assertNotIn("step=", query)
+        self.assertNotIn("$__rate_interval", query)
+        # $__rate_interval target -> windowless; explicit [5m] target -> kept.
+        self.assertIn('label_replace(rate(http_requests_total), "__series"', query)
+        self.assertIn('label_replace(rate(http_errors_total[5m]), "__series"', query)
+
+    def test_multi_series_bargauge_defers_native_promql_to_bar_chart(self):
+        """Native PROMQL must not short-circuit multi-series bargauge into a
+        single gauge tile (Disk Usage per Mount / {{mountpoint}})."""
+        panel = _make_panel(
+            1,
+            '100 - ((node_filesystem_avail_bytes{mountpoint!~".*pods.*"} '
+            "/ node_filesystem_size_bytes) * 100)",
+            panel_type="bargauge",
+            title="Disk Usage per Mount",
+        )
+        panel["targets"][0]["legendFormat"] = "{{mountpoint}}"
+        panel["targets"][0]["instant"] = True
+        yaml_panel, result = _translate_panel(
+            panel, rule_pack=self.rp, resolver=self.resolver
+        )
+        self.assertIsNotNone(yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "bar")
+        self.assertNotEqual(
+            (result.query_ir or {}).get("family"),
+            "native_promql",
+            "multi-series bargauge must fall through to bargauge_panel_rule",
+        )
+        self.assertIn("Approximated bargauge as bar chart", result.reasons)
+
+    def test_instant_alerts_table_defers_native_promql_for_label_columns(self):
+        """Instant ALERTS tables must not emit a value-only native PROMQL
+        datatable that drops alertname/severity label columns."""
+        panel = _make_panel(
+            1,
+            'ALERTS{alertstate="firing"}',
+            panel_type="table",
+            title="Active Alerts",
+        )
+        panel["targets"][0]["instant"] = True
+        panel["targets"][0]["format"] = "table"
+        yaml_panel, result = _translate_panel(
+            panel, rule_pack=self.rp, resolver=self.resolver
+        )
+        self.assertIsNotNone(yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["type"], "datatable")
+        self.assertNotEqual(
+            (result.query_ir or {}).get("family"),
+            "native_promql",
+            "label-rich instant tables must use the ES|QL path",
+        )
+        query = yaml_panel["esql"]["query"]
+        # ES|QL path keeps projected label/metric columns; native was value-only.
+        self.assertFalse(
+            query.startswith("PROMQL") and "KEEP" not in query,
+            f"unexpected value-only native PROMQL table: {query}",
+        )
 
 
 # =========================================================================
@@ -2568,7 +3088,7 @@ class TestBinaryExpressions(unittest.TestCase):
         ES|QL equivalent. The translator used to silently emit an
         approximation; it now refuses, surfacing a clear ``not_feasible``
         marker so the panel is reported rather than rendered with a
-        dropped operand. See parity-rig RESULTS.md."""
+        dropped operand."""
         ctx = _translate("rate(foo_total[5m]) unless rate(bar_total[5m])")
         self.assertEqual(ctx.feasibility, "not_feasible")
         reasons = " ".join(getattr(ctx, "warnings", []) or [])
@@ -3220,6 +3740,71 @@ class TestGaugeSeriesFidelity(unittest.TestCase):
         self.assertNotIn(", instance", ctx.esql_query)
         self.assertFalse(any("Added outer AVG" in w for w in ctx.warnings))
 
+    def test_rate_with_legend_format_drops_phantom_by_no_outer_avg(self):
+        # rate()/irate()/increase always run on TS. legendFormat {{input}} must not
+        # invent a BY label (Grafana display-only) or force AVG(RATE(...)) — that
+        # also breaks multi-target fusion when each series has a different legend
+        # placeholder (Redis Network I/O: {{input}} vs {{output}}).
+        ctx = self._translate(
+            'rate(redis_net_input_bytes_total{job="redis"}[5m])',
+            hints={
+                "preferred_group_labels": ["input"],
+                "preferred_group_labels_origin": "legend",
+            },
+        )
+        self.assertEqual(ctx.source_type, "TS")
+        self.assertIn("RATE(redis_net_input_bytes_total", ctx.esql_query)
+        self.assertNotIn("AVG(RATE(", ctx.esql_query)
+        self.assertNotIn(", input", ctx.esql_query)
+        self.assertEqual(ctx.output_group_fields, ["time_bucket"])
+
+    def test_redis_network_io_multi_target_fuses_both_series(self):
+        # Infra corpus: redis-11835 "Network I/O" — two rate() targets with
+        # legendFormat {{input}} / {{output}} must fuse into one multi-metric XY.
+        import json
+        from pathlib import Path
+
+        from observability_migration.adapters.source.grafana import panels as panels_mod
+        from observability_migration.adapters.source.grafana.rules import RulePackConfig
+        from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+        path = (
+            Path(__file__).parent.parent
+            / "infra"
+            / "grafana"
+            / "dashboards"
+            / "redis-11835.json"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+
+        def walk(items):
+            for item in items or []:
+                if isinstance(item, dict):
+                    yield item
+                    yield from walk(item.get("panels") or [])
+
+        panel = next(p for p in walk(data.get("panels")) if p.get("title") == "Network I/O")
+        _yaml, result = panels_mod.translate_panel(
+            panel,
+            rule_pack=RulePackConfig(),
+            resolver=SchemaResolver(RulePackConfig()),
+            datasource_index="metrics-*",
+        )
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        self.assertTrue(result.esql_query)
+        self.assertIn("redis_net_input_bytes_total", result.esql_query)
+        self.assertIn("redis_net_output_bytes_total", result.esql_query)
+        self.assertFalse(
+            any("only 1 could be migrated" in (r or "") for r in (result.reasons or [])),
+            result.reasons,
+        )
+        # legendFormat placeholders become series aliases (EVAL/KEEP), not BY dims.
+        self.assertNotIn("BY time_bucket = TBUCKET(5 minute), input", result.esql_query)
+        self.assertNotIn("BY time_bucket = TBUCKET(5 minute), output", result.esql_query)
+        self.assertNotIn("AVG(RATE(", result.esql_query)
+        self.assertIn("RATE(redis_net_input_bytes_total", result.esql_query)
+        self.assertIn("RATE(redis_net_output_bytes_total", result.esql_query)
+
     def test_formula_range_func_non_tsds_keeps_legend_label(self):
         # Issue #99 review: the formula path applies the same TS-eligibility gate.
         # A non-TSDS *_over_time field keeps its legend label (old AVG behavior)
@@ -3525,6 +4110,34 @@ class TestNativePromqlLiveValidationFallback(unittest.TestCase):
             '{"type":"verification_exception","reason":"line 1:54: Unknown column [host]"}',
         )
         self.assertTrue(self._native_query(rp).startswith("PROMQL "))
+
+    def test_validator_receives_adaptive_windowless_query(self):
+        """Regression (#272/#273): the live parse gate must validate the *actual*
+        emitted adaptive form — stepless and windowless — not a fixed-window
+        proxy. If the validator were handed a ``step=…``/``[5m]`` shape it could
+        pass while the real windowless query that ships to Kibana is never
+        checked (or vice-versa, a valid adaptive panel could wrongly degrade)."""
+        seen = []
+
+        def validator(query):
+            seen.append(query)
+            return True, ""
+
+        rp = rules.RulePackConfig(native_promql=True)
+        rp.native_promql_validator = validator
+        _yaml, pr = _translate_panel(
+            _make_panel(1, "rate(http_requests_total[$__rate_interval])"),
+            rule_pack=rp,
+        )
+        # Panel stayed native (validator accepted the query).
+        self.assertTrue((getattr(pr, "esql_query", "") or "").startswith("PROMQL "))
+        # The validator saw the real adaptive output: windowless rate, no step.
+        self.assertTrue(seen, "native-PROMQL validator was never invoked")
+        validated = seen[-1]
+        self.assertIn("value=(rate(http_requests_total))", validated)
+        self.assertNotIn("$__rate_interval", validated)
+        self.assertNotIn("[5m]", validated)
+        self.assertNotIn("step=", validated)
 
 
 if __name__ == "__main__":

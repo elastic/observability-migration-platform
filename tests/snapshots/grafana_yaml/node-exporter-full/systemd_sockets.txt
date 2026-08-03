@@ -1,0 +1,7 @@
+title: Systemd Sockets
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['node_systemd_socket_accepted_connections_total']
+axis_title: counter

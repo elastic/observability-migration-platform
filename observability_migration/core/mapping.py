@@ -1010,8 +1010,14 @@ def _threshold_where_clause_from_source(ir: AlertingIR) -> str:
     return f"value {comparator} {threshold_val}"
 
 
-def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
-    """Generate a source-faithful query for an alert rule when possible."""
+def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = None) -> str:
+    """Generate a source-faithful query for an alert rule when possible.
+
+    *resolver* is the target ``SchemaResolver``; when supplied it lets the native
+    PROMQL builder rewrite bare metric selectors to their ``metrics.<name>``
+    field on OTel Collector indices, exactly as the dashboard path does (#270).
+    Without it the query keeps the bare name (unchanged, graceful passthrough).
+    """
     if ir.kind not in {"grafana_unified", "grafana_legacy"} or not _has_source_faithful_query(ir):
         return ""
 
@@ -1027,13 +1033,59 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
     try:
         from observability_migration.adapters.source.grafana.panels import (
             _promql_label_matcher_has_template_variable,
+            _promql_uses_rule_pack_label_overrides,
+            _record_passthrough_native_labels,
         )
         primary_expr = str(_primary_source_query(ir).get("expr", "") or "")
         has_control_bound_matcher = _promql_label_matcher_has_template_variable(primary_expr)
+        _record_passthrough_native_labels(primary_expr, resolver)
+        requires_esql_for_label_rules = bool(
+            getattr(resolver, "_passthrough", False)
+            and _promql_uses_rule_pack_label_overrides(
+                primary_expr,
+                getattr(resolver, "_rule_pack", None),
+            )
+        )
     except ImportError:
         has_control_bound_matcher = False
+        requires_esql_for_label_rules = False
     if has_control_bound_matcher:
         return ""
+
+    if requires_esql_for_label_rules:
+        from observability_migration.adapters.source.grafana.promql import (
+            _esql_identifier,
+        )
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+
+        translated = translate_promql_to_esql(
+            primary_expr,
+            datasource_index=data_view,
+            esql_index=data_view,
+            panel_type="stat",
+            rule_pack=getattr(resolver, "_rule_pack", None),
+            resolver=resolver,
+            query_language="promql",
+        )
+        query = str(getattr(translated, "esql_query", "") or "").strip()
+        if getattr(translated, "feasibility", "") == "not_feasible" or not query:
+            return ""
+        if _promql_expr_has_comparison(primary_expr):
+            return query
+        if not _has_explicit_threshold(ir):
+            return ""
+        where_clause = _threshold_where_clause_from_source(ir)
+        output_field = str(
+            getattr(translated, "output_metric_field", "") or "value"
+        )
+        where_clause = re.sub(
+            r"\bvalue\b",
+            _esql_identifier(output_field),
+            where_clause,
+        )
+        return f"{query} | WHERE {where_clause}" if where_clause else ""
 
     exact_rank_spec = _grafana_unified_exact_topk_bottomk_spec(ir)
     if exact_rank_spec:
@@ -1045,6 +1097,7 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
             exact_rank_spec["inner_expr"],
             index=_default_promql_index(data_view),
             kibana_type="metric",
+            resolver=resolver,
         )
         query = "\n".join(
             [
@@ -1092,6 +1145,7 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
         kibana_type="metric",
         instant=instant,
         step=step_info[0] if step_info else None,
+        resolver=resolver,
     )
     if step_info:
         _record_promql_step_provenance(ir, step_info[0], step_info[1])
@@ -1107,11 +1161,13 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str) -> str:
     return f"{query} | WHERE {where_clause}"
 
 
-def build_es_query_rule_params(ir: AlertingIR, data_view: str = "metrics-*") -> dict[str, Any]:
+def build_es_query_rule_params(
+    ir: AlertingIR, data_view: str = "metrics-*", resolver: Any = None
+) -> dict[str, Any]:
     """Build Kibana ES query rule params from an AlertingIR."""
     query = str(ir.translated_query or "").strip()
     if not query:
-        query = _generate_esql_for_alert(ir, data_view)
+        query = _generate_esql_for_alert(ir, data_view, resolver=resolver)
     if not query:
         return {}
 
@@ -1196,6 +1252,7 @@ def map_alert_to_kibana_payload(
     *,
     preflight: dict[str, Any] | None = None,
     data_view: str = "metrics-*",
+    resolver: Any = None,
 ) -> dict[str, Any]:
     """Map an AlertingIR to a complete Kibana rule creation payload.
 
@@ -1264,7 +1321,7 @@ def map_alert_to_kibana_payload(
         }
 
     if rule_type == ES_QUERY_RULE_TYPE:
-        params = build_es_query_rule_params(ir, data_view=data_view)
+        params = build_es_query_rule_params(ir, data_view=data_view, resolver=resolver)
     elif rule_type == INDEX_THRESHOLD_RULE_TYPE:
         params = build_index_threshold_rule_params(ir, index=data_view)
     elif rule_type == CUSTOM_THRESHOLD_RULE_TYPE:
@@ -1371,6 +1428,7 @@ def map_alerts_batch(
     *,
     preflight: dict[str, Any] | None = None,
     data_view: str = "metrics-*",
+    resolver: Any = None,
 ) -> dict[str, Any]:
     """Map a batch of AlertingIR instances and return a summary.
 
@@ -1385,7 +1443,9 @@ def map_alerts_batch(
     total_losses: list[str] = []
 
     for ir in alerts:
-        mapping = map_alert_to_kibana_payload(ir, preflight=preflight, data_view=data_view)
+        mapping = map_alert_to_kibana_payload(
+            ir, preflight=preflight, data_view=data_view, resolver=resolver
+        )
         results.append({
             "alert_id": ir.alert_id,
             "name": ir.name,

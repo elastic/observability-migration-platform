@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 import argparse
+import contextlib
+import io
 import json
 import pathlib
 import subprocess
@@ -10,6 +12,67 @@ import unittest
 from unittest import mock
 
 from observability_migration.adapters.source.grafana import smoke
+
+
+def _smoke_args(**overrides):
+    """Build a fully-populated argparse.Namespace for smoke.main() tests."""
+    base = dict(
+        kibana_url="http://localhost:5601",
+        kibana_api_key="",
+        es_url="http://localhost:9200",
+        es_api_key="",
+        space_id="",
+        output="uploaded_dashboard_smoke_report.json",
+        timeout=30,
+        saved_objects_per_page=1000,
+        dashboard_title=[],
+        dashboard_id=[],
+        dashboards_from=[],
+        include_deleted=False,
+        capture_screenshots=False,
+        segmented_screenshots=False,
+        browser_audit=False,
+        screenshot_dir="",
+        browser_audit_dir="",
+        chrome_binary="",
+        time_from="now-1h",
+        time_to="now",
+        window_width=1600,
+        window_height=2200,
+        segment_count=0,
+        segment_overlap=200,
+        validation_workers=4,
+        virtual_time_budget_ms=15000,
+        screenshot_retries=1,
+        fail_on_runtime_errors=False,
+        fail_on_layout_issues=False,
+        fail_on_empty_panels=False,
+        fail_on_not_runtime_checked=False,
+        fail_on_browser_errors=False,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _clean_dashboard_result(dashboard_id="dashboard-123", title="Dashboard"):
+    return {
+        "id": dashboard_id,
+        "title": title,
+        "total_panels": 0,
+        "esql_panels": 0,
+        "runtime_checked_panels": 0,
+        "failing_panels": [],
+        "empty_panels": [],
+        "not_runtime_checked_panels": [],
+        "lens_by_design_panels": [],
+        "unexpected_runtime_gap_panels": [],
+        "non_query_panels": [],
+        "layout": {"overlaps": [], "invalid_sizes": [], "out_of_bounds": [], "max_x": 0, "max_y": 0},
+        "screenshot": {"status": "not_requested", "path": "", "error": "", "url": ""},
+        "browser_audit": {"status": "not_requested", "path": "", "error": "", "issues": [], "url": ""},
+        "status": "clean",
+        "panels": [],
+    }
 
 
 class _FakeResponse:
@@ -310,6 +373,32 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(captured["body"]["params"], [{"job": ".*"}, {"instance": ".*"}])
 
+    def test_validate_esql_sends_identifier_control_params(self):
+        captured = {}
+
+        def fake_post(url, params, json, headers, timeout):
+            captured["body"] = json
+            return _FakeResponse(
+                {
+                    "columns": [{"name": "grouping"}, {"name": "value"}],
+                    "values": [["transport"], [1]],
+                }
+            )
+
+        with mock.patch.object(smoke.requests, "post", side_effect=fake_post):
+            result = smoke.validate_esql(
+                "http://localhost:9200",
+                (
+                    "TS metrics-*\n"
+                    "| STATS value = SUM(metric) BY grouping = ??grouping"
+                ),
+                timeout=30,
+                identifier_params={"grouping": "transport"},
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(captured["body"]["params"], [{"grouping": "transport"}])
+
     def test_validate_esql_sends_api_key_header(self):
         captured = {}
 
@@ -581,6 +670,57 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
 
         self.assertEqual(result["runtime_checked_panels"], 2)
         self.assertEqual(mock_validate.call_count, 2)
+
+    def test_inspect_dashboard_threads_identifier_control_defaults(self):
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {
+                "title": "Dashboard",
+                "panelsJSON": json.dumps(
+                    [{
+                        "panelIndex": "lens-1",
+                        "type": "lens",
+                        "embeddableConfig": {
+                            "attributes": {
+                                "state": {
+                                    "query": {
+                                        "esql": (
+                                            "TS metrics-* | STATS value = SUM(metric) "
+                                            "BY grouping = ??grouping"
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        "gridData": {"x": 0, "y": 0, "w": 24, "h": 8},
+                    }]
+                ),
+            },
+        }
+
+        with mock.patch.object(
+            smoke,
+            "validate_esql",
+            return_value={
+                "status": "pass",
+                "rows": 1,
+                "columns": ["grouping", "value"],
+                "error": "",
+                "materialized_query": "TS metrics-* | LIMIT 1",
+            },
+        ) as mock_validate:
+            result = smoke.inspect_dashboard(
+                saved_object,
+                "http://localhost:9200",
+                timeout=30,
+                identifier_params={"grouping": "transport"},
+            )
+
+        self.assertEqual(result["runtime_checked_panels"], 1)
+        self.assertEqual(
+            mock_validate.call_args.kwargs["identifier_params"],
+            {"grouping": "transport"},
+        )
 
     def test_extract_panel_queries_reads_recursive_query_locations(self):
         panel = {
@@ -1134,6 +1274,265 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
                                 smoke.main()
 
         self.assertIn("Smoke validation failed", str(ctx.exception))
+
+    def test_load_scope_from_artifact_prefers_ids_from_smoke_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "smoke.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "dash-1", "title": "One"},
+                            {"id": "dash-2", "title": "Two"},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        self.assertEqual(ids, ["dash-1", "dash-2"])
+        self.assertEqual(titles, [])
+
+    def test_load_scope_from_artifact_reads_titles_from_migration_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"title": "Alpha", "uid": "a"},
+                            {"title": "Beta", "uid": "b"},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        self.assertEqual(ids, [])
+        self.assertEqual(titles, ["Alpha", "Beta"])
+
+    def test_load_scope_from_artifact_dedupes_and_ignores_blank_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "dash-1", "title": "One"},
+                            {"id": "dash-1", "title": "One"},
+                            {"title": ""},
+                            {},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        self.assertEqual(ids, ["dash-1"])
+        self.assertEqual(titles, [])
+
+    def test_load_scope_from_artifact_uses_upload_saved_object_id(self):
+        # Datadog (and Grafana) detailed reports: top-level ``id`` is the SOURCE
+        # dashboard id; the Kibana saved-object id lives under upload.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dd_report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "abc-def-ghi", "title": "DD One", "upload": {"saved_object_id": "kib-1"}},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        # The source id "abc-def-ghi" must never be used as a Kibana id.
+        self.assertEqual(ids, ["kib-1"])
+        self.assertEqual(titles, [])
+
+    def test_load_scope_from_artifact_falls_back_to_title_when_not_uploaded(self):
+        # A migration report that never uploaded exposes an empty saved_object_id;
+        # scope by title rather than the source id.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = pathlib.Path(tmpdir) / "dd_report.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "dashboards": [
+                            {"id": "abc-def-ghi", "title": "DD One", "upload": {"saved_object_id": ""}},
+                        ]
+                    }
+                )
+            )
+            ids, titles = smoke.load_scope_from_artifact(path)
+
+        self.assertEqual(ids, [])
+        self.assertEqual(titles, ["DD One"])
+
+    def test_should_include_dashboard_can_opt_into_deleted_placeholders(self):
+        deleted = {"id": "old-dashboard", "attributes": {"title": "[DELETED] old-dashboard"}}
+
+        self.assertFalse(smoke.should_include_dashboard(deleted, [], []))
+        self.assertTrue(smoke.should_include_dashboard(deleted, [], [], include_deleted=True))
+
+    def test_should_include_dashboard_unions_ids_and_titles(self):
+        by_id = {"id": "dash-1", "attributes": {"title": "Loaded By Id"}}
+        by_title = {"id": "dash-2", "attributes": {"title": "Wanted Title"}}
+        unrelated = {"id": "dash-3", "attributes": {"title": "Unrelated"}}
+
+        # A dashboard matching only the id, or only the title, is included; a
+        # dashboard matching neither is excluded (union, not intersection).
+        self.assertTrue(smoke.should_include_dashboard(by_id, ["Wanted Title"], ["dash-1"]))
+        self.assertTrue(smoke.should_include_dashboard(by_title, ["Wanted Title"], ["dash-1"]))
+        self.assertFalse(smoke.should_include_dashboard(unrelated, ["Wanted Title"], ["dash-1"]))
+
+    def test_main_unions_artifact_ids_with_title_scope(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = pathlib.Path(tmpdir) / "prior_smoke.json"
+            artifact.write_text(json.dumps({"dashboards": [{"id": "dashboard-123", "title": "By Id"}]}))
+            args = _smoke_args(
+                output=str(pathlib.Path(tmpdir) / "report.json"),
+                dashboards_from=[str(artifact)],
+                dashboard_title=["By Title"],
+            )
+            by_id_item = {"id": "dashboard-123", "attributes": {"title": "By Id", "panelsJSON": "[]"}}
+            space_items = [
+                {"id": "dashboard-123", "attributes": {"title": "By Id", "panelsJSON": "[]"}},
+                {"id": "dashboard-456", "attributes": {"title": "By Title", "panelsJSON": "[]"}},
+                {"id": "dashboard-789", "attributes": {"title": "Ignored", "panelsJSON": "[]"}},
+            ]
+
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards", return_value=space_items):
+                    with mock.patch.object(smoke, "load_dashboard", return_value=by_id_item):
+                        with mock.patch.object(
+                            smoke,
+                            "inspect_dashboard",
+                            side_effect=lambda item, *a, **k: _clean_dashboard_result(
+                                item["id"], item["attributes"]["title"]
+                            ),
+                        ):
+                            smoke.main()
+
+            report = json.loads((pathlib.Path(tmpdir) / "report.json").read_text())
+
+        # The id-scoped and title-scoped dashboards are both validated, exactly
+        # once each, and the unrelated dashboard is left out.
+        inspected = sorted(d["id"] for d in report["dashboards"])
+        self.assertEqual(inspected, ["dashboard-123", "dashboard-456"])
+
+    def test_main_refuses_all_space_run_when_requested_scope_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Parses fine but carries no dashboards -> no ids/titles resolved.
+            artifact = pathlib.Path(tmpdir) / "empty.json"
+            artifact.write_text(json.dumps({"dashboards": []}))
+            args = _smoke_args(
+                output=str(pathlib.Path(tmpdir) / "report.json"),
+                dashboards_from=[str(artifact)],
+            )
+
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards") as mock_load_dashboards:
+                    with mock.patch.object(smoke, "load_dashboard") as mock_load_dashboard:
+                        with mock.patch.object(smoke, "inspect_dashboard") as mock_inspect:
+                            with self.assertRaises(SystemExit) as ctx:
+                                smoke.main()
+
+        self.assertIn("No dashboards resolved from the requested scope", str(ctx.exception))
+        mock_load_dashboards.assert_not_called()
+        mock_load_dashboard.assert_not_called()
+        mock_inspect.assert_not_called()
+
+    def test_main_scopes_by_ids_from_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = pathlib.Path(tmpdir) / "prior_smoke.json"
+            artifact.write_text(json.dumps({"dashboards": [{"id": "dashboard-123", "title": "Dashboard"}]}))
+            args = _smoke_args(
+                output=str(pathlib.Path(tmpdir) / "report.json"),
+                dashboards_from=[str(artifact)],
+            )
+            dashboard_item = {"id": "dashboard-123", "attributes": {"title": "Dashboard", "panelsJSON": "[]"}}
+
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards") as mock_load_dashboards:
+                    with mock.patch.object(
+                        smoke, "load_dashboard", return_value=dashboard_item
+                    ) as mock_load_dashboard:
+                        with mock.patch.object(
+                            smoke, "inspect_dashboard", return_value=_clean_dashboard_result()
+                        ):
+                            smoke.main()
+
+        mock_load_dashboards.assert_not_called()
+        mock_load_dashboard.assert_called_once()
+        self.assertEqual(mock_load_dashboard.call_args.args[3], "dashboard-123")
+
+    def test_main_prints_per_dashboard_progress(self):
+        args = _smoke_args()
+        items = [
+            {"id": "dashboard-1", "attributes": {"title": "First", "panelsJSON": "[]"}},
+            {"id": "dashboard-2", "attributes": {"title": "Second", "panelsJSON": "[]"}},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args.output = str(pathlib.Path(tmpdir) / "report.json")
+            buffer = io.StringIO()
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards", return_value=items):
+                    with mock.patch.object(
+                        smoke, "inspect_dashboard", side_effect=lambda item, *a, **k: _clean_dashboard_result(
+                            item["id"], item["attributes"]["title"]
+                        )
+                    ):
+                        with contextlib.redirect_stdout(buffer):
+                            smoke.main()
+
+        output = buffer.getvalue()
+        self.assertIn("[1/2] First", output)
+        self.assertIn("[2/2] Second", output)
+
+    def test_main_warns_when_validation_is_unscoped(self):
+        args = _smoke_args()
+        items = [{"id": "dashboard-1", "attributes": {"title": "First", "panelsJSON": "[]"}}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args.output = str(pathlib.Path(tmpdir) / "report.json")
+            buffer = io.StringIO()
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards", return_value=items):
+                    with mock.patch.object(
+                        smoke, "inspect_dashboard", return_value=_clean_dashboard_result("dashboard-1", "First")
+                    ):
+                        with contextlib.redirect_stdout(buffer):
+                            smoke.main()
+
+        output = buffer.getvalue()
+        self.assertIn("WARNING", output)
+        self.assertIn("no dashboard scope provided", output.lower())
+        self.assertIn("validating all", output.lower())
+
+    def test_main_reports_skipped_deleted_placeholders(self):
+        args = _smoke_args()
+        items = [
+            {"id": "dashboard-1", "attributes": {"title": "First", "panelsJSON": "[]"}},
+            {"id": "old", "attributes": {"title": "[DELETED] old", "panelsJSON": "[]"}},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args.output = str(pathlib.Path(tmpdir) / "report.json")
+            buffer = io.StringIO()
+            with mock.patch.object(smoke, "parse_args", return_value=args):
+                with mock.patch.object(smoke, "load_dashboards", return_value=items):
+                    with mock.patch.object(
+                        smoke, "inspect_dashboard", return_value=_clean_dashboard_result("dashboard-1", "First")
+                    ):
+                        with contextlib.redirect_stdout(buffer):
+                            smoke.main()
+
+        output = buffer.getvalue()
+        self.assertIn("[DELETED]", output)
+        self.assertIn("1", output)
 
 
 if __name__ == "__main__":

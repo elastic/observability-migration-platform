@@ -12,6 +12,7 @@ import json
 import math
 import random
 import re
+import zlib
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -205,9 +206,11 @@ def _seed_metric_fields(
                 or _static_invariant_denominator(field_name, metric_fields)
             )
             ceiling = gauge_values.get(denominator) if denominator else None
+            seed_range = info.get("seed_range")
             value = _gauge_value(
                 field_name, hour, combo_idx, rng,
                 ceiling=ceiling, now_epoch=now_epoch,
+                seed_range=seed_range if isinstance(seed_range, list) else None,
             )
             gauge_values[field_name] = value
         doc[field_name] = round(value, 4)
@@ -225,7 +228,13 @@ def generate_documents(
     now = now or datetime.datetime.now(datetime.UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.UTC)
-    timestamps = _document_timestamps(now, data_hours=data_hours, interval_sec=interval_sec)
+    lookback_hours = _contract_lookback_hours(contract)
+    timestamps = _document_timestamps(
+        now,
+        data_hours=data_hours,
+        interval_sec=interval_sec,
+        lookback_hours=lookback_hours,
+    )
     rng = random.Random(42)
     counter_state: dict[tuple[str, str, int], float] = {}
 
@@ -388,6 +397,7 @@ def ingest_documents(
     request: RequestFn,
     *,
     batch_docs: int = 5000,
+    on_progress: Callable[[str], None] | None = None,
 ) -> IngestSummary:
     summary = IngestSummary()
     batch: list[str] = []
@@ -396,10 +406,14 @@ def ingest_documents(
         batch.append(json.dumps({"create": {"_index": index_name}}))
         batch.append(json.dumps(doc))
         if len(batch) >= batch_docs * 2:
-            _flush_into_summary(batch, request, summary)
+            _flush_into_summary(batch, request, summary, on_progress=on_progress)
             batch = []
+            if on_progress is not None:
+                on_progress(f"ingested {summary.ok} docs so far (errors={summary.errors})")
     if batch:
-        _flush_into_summary(batch, request, summary)
+        _flush_into_summary(batch, request, summary, on_progress=on_progress)
+        if on_progress is not None:
+            on_progress(f"ingested {summary.ok} docs so far (errors={summary.errors})")
     return summary
 
 
@@ -497,11 +511,22 @@ def _metric_families(
     if orphan_dims and families_by_sig:
         carrier_sig = max(families_by_sig, key=lambda s: (len(families_by_sig[s]), sorted(s)))
 
+    # Numeric fields used by global range controls must be present on every
+    # metric-family document the control can filter. Keeping such a field in
+    # only its own query-derived family makes dashboard-wide filtering erase
+    # otherwise valid panel data even though both fields were seeded.
+    control_metrics = {
+        field_name
+        for field_name in (stream.get("control_fields") or [])
+        if field_name in metric_fields
+    }
+
     families: list[tuple[dict[str, dict[str, Any]], list[dict[str, str]], list[str]]] = []
     for sig, names in families_by_sig.items():
-        family_metrics = {name: metric_fields[name] for name in names}
+        family_names = set(names) | control_metrics
+        family_metrics = {name: metric_fields[name] for name in family_names}
         scope_dims = sig | orphan_dims if sig == carrier_sig else sig
-        scoped = _scoped_stream(stream, scope_dims, set(names))
+        scoped = _scoped_stream(stream, scope_dims, family_names)
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
     return families
@@ -585,7 +610,17 @@ def _document_timestamps(
     *,
     data_hours: float,
     interval_sec: int,
+    lookback_hours: float = 0.0,
 ) -> list[datetime.datetime]:
+    """Build seed timestamps covering the requested recent window.
+
+    When ``lookback_hours`` exceeds ``data_hours`` (from a contract
+    ``minimum_lookback`` for week-over-week panels), also emit sparse older
+    points so those historical windows are non-empty without exploding the
+    document count at the dense ``interval_sec``.
+    """
+    data_hours = max(0.0, float(data_hours or 0.0))
+    lookback_hours = max(data_hours, float(lookback_hours or 0.0))
     total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
     timestamps = {
         now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
@@ -598,7 +633,30 @@ def _document_timestamps(
             dense_start + datetime.timedelta(seconds=idx * 60)
             for idx in range(dense_points)
         )
+    if lookback_hours > data_hours:
+        # Sparse older span: hourly (or coarser when interval_sec is larger).
+        sparse_interval = max(int(interval_sec), 3600)
+        older_start = now - datetime.timedelta(hours=lookback_hours)
+        recent_start = now - datetime.timedelta(hours=data_hours)
+        cursor = older_start
+        while cursor < recent_start:
+            timestamps.add(cursor)
+            cursor += datetime.timedelta(seconds=sparse_interval)
     return sorted(timestamps)
+
+
+def _contract_lookback_hours(contract: dict[str, Any]) -> float:
+    """Return the maximum ``minimum_lookback`` across streams, in hours."""
+    max_seconds = 0
+    for stream in (contract.get("streams") or {}).values():
+        if not isinstance(stream, dict):
+            continue
+        max_seconds = max(
+            max_seconds,
+            int(stream.get("_lookback_seconds") or 0),
+            _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
+        )
+    return max_seconds / 3600.0 if max_seconds else 0.0
 
 
 def _ensure_dimension_value_coverage(
@@ -918,8 +976,19 @@ def _coherence_order(metric_fields: dict[str, dict[str, Any]]) -> list[str]:
     return ordered
 
 
+def _stable_salt(field_name: str) -> int:
+    """Deterministic per-name salt.
+
+    ``hash()`` is salted per interpreter, so using it here made every seeded
+    value depend on ``PYTHONHASHSEED`` — the same metric got a different band on
+    each run, and bugs in the derived formulas surfaced as a per-job lottery
+    rather than a reproducible failure.
+    """
+    return zlib.crc32(field_name.encode("utf-8"))
+
+
 def _counter_increment(field_name: str, interval_sec: int, hour: float, rng: random.Random) -> float:
-    base_rate = 0.5 + (abs(hash(field_name)) % 40) / 10
+    base_rate = 0.5 + (_stable_salt(field_name) % 40) / 10
     return max(0.1, base_rate * interval_sec * (0.5 + _diurnal(hour)) + rng.random())
 
 
@@ -956,6 +1025,12 @@ def _le_rank(value: str, le_order: list[str]) -> tuple[int, int]:
 
 _GIB = 1 << 30
 
+# How far before its own document timestamp an ``epoch_seconds`` gauge (boot
+# time, node time) may be placed, and the amplitude of the diurnal wobble that
+# has to fit inside that window alongside the per-combo stagger.
+_EPOCH_GAUGE_WINDOW_SEC = 90 * 86400
+_EPOCH_GAUGE_WOBBLE_SEC = 60.0
+
 
 @dataclasses.dataclass(frozen=True)
 class ValueProfile:
@@ -973,7 +1048,7 @@ def _value_profile(field_name: str) -> ValueProfile:
     seeded values for unrecognised metrics do not drift.
     """
     name = field_name.lower()
-    salt = abs(hash(field_name))
+    salt = _stable_salt(field_name)
     if name.endswith("_bytes") or name.endswith("_bytes_total"):
         # 8-64 GiB, stable per metric.
         return ValueProfile(base=float((8 + salt % 56) * _GIB), span=2.0 * _GIB, unit="bytes")
@@ -999,14 +1074,41 @@ def _gauge_value(
     *,
     ceiling: float | None = None,
     now_epoch: float | None = None,
+    seed_range: list[float] | None = None,
 ) -> float:
+    if seed_range and len(seed_range) >= 2:
+        low = float(min(seed_range[0], seed_range[1]))
+        high = float(max(seed_range[0], seed_range[1]))
+        span = max(high - low, 1.0)
+        anchors = (0.0, 1.0, 0.5, 0.25, 0.75)
+        value = low + span * anchors[combo_idx % len(anchors)]
+        value = min(high, max(low, value))
+        if ceiling is not None:
+            value = min(value, ceiling)
+        return round(value, 4)
     profile = _value_profile(field_name)
     if profile.unit == "epoch_seconds":
         # Anchor near the document timestamp so sibling differences (now - boot)
         # are small positive uptimes. Deterministic per (field, combo).
         anchor = now_epoch if now_epoch is not None else 0.0
-        offset = (abs(hash(field_name)) % (90 * 86400)) + combo_idx * 3600
-        value = anchor - offset + 60 * _diurnal(hour)
+        # Reserve the per-combo stagger and the *full* wobble amplitude out of
+        # the window so `anchor - window <= value <= anchor` holds by
+        # construction: an unreserved offset can land before the window or after
+        # its own timestamp (a negative uptime).
+        #
+        # The modulus deliberately uses the constant amplitude rather than this
+        # hour's wobble. The salt dwarfs the span, so folding an hour-dependent
+        # term into the modulus would re-roll the whole offset every hour and
+        # turn a stable boot time into ~90 days of noise; the wobble is additive
+        # only, keeping the series stable to within its own amplitude.
+        stagger = min(
+            float(combo_idx * 3600),
+            _EPOCH_GAUGE_WINDOW_SEC - _EPOCH_GAUGE_WOBBLE_SEC - 1.0,
+        )
+        span = max(_EPOCH_GAUGE_WINDOW_SEC - stagger - _EPOCH_GAUGE_WOBBLE_SEC, 1.0)
+        wobble = _EPOCH_GAUGE_WOBBLE_SEC * _diurnal(hour)
+        offset = (_stable_salt(field_name) % int(span)) + stagger + wobble
+        value = anchor - offset
         if ceiling is not None:
             value = min(value, ceiling)
         return value
@@ -1143,7 +1245,13 @@ class IngestSummary:
     error_samples: list[str] = dataclasses.field(default_factory=list)
 
 
-def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSummary) -> None:
+def _flush_into_summary(
+    lines: list[str],
+    request: RequestFn,
+    summary: IngestSummary,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
     result = request(
         "POST",
         "/_bulk",
@@ -1165,8 +1273,11 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
             # throttling (429); both clear when the batch is smaller. Split and
             # retry so the data still lands instead of being written off.
             mid = (attempted // 2) * 2  # split on a doc boundary (2 lines/doc)
-            _flush_into_summary(lines[:mid], request, summary)
-            _flush_into_summary(lines[mid:], request, summary)
+            first, second = mid // 2, attempted - mid // 2
+            if on_progress is not None:
+                on_progress(f"batch of {attempted} docs failed; retrying as {first} + {second} docs")
+            _flush_into_summary(lines[:mid], request, summary, on_progress=on_progress)
+            _flush_into_summary(lines[mid:], request, summary, on_progress=on_progress)
             return
         # A single document that still fails is a real, unrecoverable error.
         summary.errors += attempted
@@ -1185,6 +1296,9 @@ def _flush_into_summary(lines: list[str], request: RequestFn, summary: IngestSum
         operation = item.get("create") or item.get("index") or {}
         error = operation.get("error") if isinstance(operation, dict) else None
         if error:
+            if isinstance(error, dict) and error.get("type") == "version_conflict_engine_exception":
+                ok += 1
+                continue
             errors += 1
             if len(summary.error_samples) < 3:
                 if isinstance(error, dict):

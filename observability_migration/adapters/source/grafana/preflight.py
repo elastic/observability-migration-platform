@@ -533,6 +533,27 @@ def _collect_referenced_labels(results: list[Any]) -> set[str]:
 # Schema contract (existing)
 # ---------------------------------------------------------------------------
 
+def _recording_rule_metric_map_messages(
+    metric_names: set[str],
+    *,
+    metric_map_keys: set[str],
+) -> list[str]:
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
+    messages: list[str] = []
+    for metric_name in sorted(metric_names):
+        if not looks_like_recording_rule_metric(metric_name):
+            continue
+        if metric_name in metric_map_keys:
+            continue
+        messages.append(
+            "Recording-rule metric "
+            f"{metric_name!r} has no metric_map entry; add a mapping or "
+            "recreate the rule in the target"
+        )
+    return messages
+
+
 def build_target_schema_contract(
     results: list[Any],
     resolver: Any = None,
@@ -546,18 +567,38 @@ def build_target_schema_contract(
     unresolved_variables: Counter = Counter()
     feature_gaps: list[str] = []
     schema_profile = None
+    field_profile = None
+    planned_schema_profile = None
+    detected_schema_profile = None
+    profile_mismatch = None
     field_capabilities_index = ""
     field_capabilities_discovery = {"status": "not_attempted", "error": "", "field_count": 0}
     if resolver:
-        schema_profile_fn = getattr(resolver, "schema_profile", None)
-        if callable(schema_profile_fn):
-            schema_profile = schema_profile_fn()
+        summary_fn = getattr(resolver, "field_resolution_summary", None)
+        if callable(summary_fn):
+            summary = summary_fn()
+            field_profile = summary.get("field_profile")
+            planned_schema_profile = summary.get("planned_schema_profile")
+            detected_schema_profile = summary.get("detected_schema_profile")
+            profile_mismatch = summary.get("profile_mismatch")
+            if summary.get("schema_profile") is not None:
+                schema_profile = summary.get("schema_profile")
+        if schema_profile is None:
+            schema_profile_fn = getattr(resolver, "schema_profile", None)
+            if callable(schema_profile_fn):
+                schema_profile = schema_profile_fn()
         field_capabilities_index = str(getattr(resolver, "_index_pattern", "") or "")
         discovery_status_fn = getattr(resolver, "discovery_status", None)
         if callable(discovery_status_fn):
             field_capabilities_discovery = discovery_status_fn()
 
     seen_features: set[str] = set()
+    referenced_source_metrics: set[str] = set()
+    metric_map_keys: set[str] = set()
+    if resolver is not None:
+        rule_pack = getattr(resolver, "_rule_pack", None)
+        if rule_pack is not None:
+            metric_map_keys = set(getattr(rule_pack, "metric_map", {}) or {})
 
     for result in results:
         variables = getattr(result, "inventory", {}).get("variables", 0) or 0
@@ -581,6 +622,7 @@ def build_target_schema_contract(
                 required_indexes[target_index] += 1
 
             metric_fields = _metric_candidates(query_ir)
+            referenced_source_metrics.update(metric_fields)
             for metric_field in sorted(metric_fields):
                 target_metric = metric_field
                 if resolver and hasattr(resolver, "resolve_metric_field"):
@@ -657,6 +699,8 @@ def build_target_schema_contract(
                     unresolved_labels[str(warning)] += 1
 
     field_status: dict[str, dict[str, Any]] = {}
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
     for field_name, info in required_fields.items():
         status = "unknown"
         field_type = None
@@ -675,6 +719,23 @@ def build_target_schema_contract(
             "roles": sorted(info["roles"]),
             "panels": info["panels"],
         }
+        source_fields = field_status[field_name]["source_fields"]
+        if len(source_fields) == 1 and source_fields[0] != field_name:
+            field_status[field_name]["mapped_from"] = source_fields[0]
+        elif any(src != field_name for src in source_fields):
+            field_status[field_name]["mapped_from"] = [
+                src for src in source_fields if src != field_name
+            ]
+        recording_sources = [
+            src
+            for src in source_fields
+            if looks_like_recording_rule_metric(src) and src not in metric_map_keys
+        ]
+        if recording_sources:
+            # Unmapped colon-style sources are usually recording-rule derived.
+            field_status[field_name]["recording_rule_derived"] = True
+            if recording_sources != source_fields:
+                field_status[field_name]["recording_rule_sources"] = recording_sources
 
     counter_status: dict[str, dict[str, Any]] = {}
     for metric_name, count in sorted(
@@ -695,7 +756,11 @@ def build_target_schema_contract(
     missing = sum(1 for v in field_status.values() if v["status"] == "missing")
     unknown = sum(1 for v in field_status.values() if v["status"] == "unknown")
 
-    return {
+    contract = {
+        "field_profile": field_profile,
+        "planned_schema_profile": planned_schema_profile,
+        "detected_schema_profile": detected_schema_profile,
+        "profile_mismatch": profile_mismatch,
         "schema_profile": schema_profile,
         "field_capabilities_index": field_capabilities_index,
         "field_capabilities_discovery": field_capabilities_discovery,
@@ -713,6 +778,29 @@ def build_target_schema_contract(
             "counters_expected": len(counter_status),
         },
     }
+    if resolver is not None:
+        from observability_migration.core.metric_mapping.reporting import (
+            attach_metric_map_to_contract,
+            build_metric_map_summary,
+        )
+
+        attach_metric_map_to_contract(contract, resolver)
+        recording_rule_gaps = _recording_rule_metric_map_messages(
+            referenced_source_metrics,
+            metric_map_keys=metric_map_keys,
+        )
+        if recording_rule_gaps:
+            if "metric_map" not in contract:
+                contract["metric_map"] = build_metric_map_summary(
+                    applied={},
+                    gaps=[],
+                    warnings=[],
+                )
+            contract["metric_map"]["gaps"] = (
+                list(contract["metric_map"].get("gaps", [])) + recording_rule_gaps
+            )
+            contract["metric_map"]["totals"]["gaps"] = len(contract["metric_map"]["gaps"])
+    return contract
 
 
 def build_target_contract_summary(results: list[Any]) -> dict[str, Any]:
@@ -760,6 +848,18 @@ def build_preflight_report(
     datasource_audit = datasource_audit or {}
     complexity_scores = complexity_scores or []
     target_contract_summary = target_contract_summary or {}
+    control_warning_entries = [
+        {
+            "dashboard": str(getattr(result, "dashboard_title", "") or ""),
+            "warnings": list(getattr(result, "control_warnings", []) or []),
+        }
+        for result in results
+        if getattr(result, "control_warnings", None)
+    ]
+    control_warning_count = sum(
+        len(entry["warnings"])
+        for entry in control_warning_entries
+    )
 
     total_panels = sum(r.total_panels for r in results)
     green = sum(
@@ -916,6 +1016,41 @@ def build_preflight_report(
             f"{len(high_complexity)} dashboards scored high complexity "
             f"(>=50) and will need extra manual review: {names}"
         )
+    if control_warning_count:
+        warning_noun = (
+            "dashboard control warning"
+            if control_warning_count == 1
+            else "dashboard control warnings"
+        )
+        actions.append(
+            f"{control_warning_count} {warning_noun} require review before cutover"
+        )
+
+    recording_rule_fields = [
+        name
+        for name, info in schema_contract.get("required_fields", {}).items()
+        if info.get("recording_rule_derived")
+    ]
+    metric_map_gaps = list((schema_contract.get("metric_map") or {}).get("gaps") or [])
+    recording_rule_gap_msgs = [
+        gap for gap in metric_map_gaps if "Recording-rule metric" in str(gap)
+    ]
+    if recording_rule_fields or recording_rule_gap_msgs:
+        sample_fields = ", ".join(recording_rule_fields[:8])
+        suffix = (
+            f" (and {len(recording_rule_fields) - 8} more)"
+            if len(recording_rule_fields) > 8
+            else ""
+        )
+        detail = (
+            f": {sample_fields}{suffix}"
+            if sample_fields
+            else f" ({len(recording_rule_gap_msgs)} gap notes)"
+        )
+        actions.append(
+            "Unmapped recording-rule metrics need a metric_map entry or "
+            f"recreation in the target{detail}"
+        )
 
     if not target_url_configured:
         actions.append(
@@ -958,6 +1093,7 @@ def build_preflight_report(
             "target_validation": validation_summary.get("counts", {}),
             "schema_contract_totals": totals,
             "target_contract_totals": target_contract_summary.get("totals", {}),
+            "control_warnings": control_warning_count,
         },
         "source_metric_inventory": {
             "status": source_inventory.get("status", "not_configured"),
@@ -973,6 +1109,7 @@ def build_preflight_report(
         "complexity_scores": complexity_scores,
         "schema_contract": schema_contract,
         "target_contract_summary": target_contract_summary,
+        "control_warnings": control_warning_entries,
         "blockers": blockers,
         "actions": actions,
         "customer_action_summary": _build_action_summary(

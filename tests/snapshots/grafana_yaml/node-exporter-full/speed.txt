@@ -1,0 +1,7 @@
+title: Speed
+grafana_type: timeseries
+status: migrated
+chart_type: line
+dimension: time_bucket
+metrics: ['node_network_speed_bytes']
+axis_title: bytes

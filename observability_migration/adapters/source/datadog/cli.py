@@ -25,6 +25,7 @@ from typing import Any, cast
 import requests
 
 import observability_migration.targets.kibana.adapter  # noqa: F401
+from observability_migration import __version__
 from observability_migration.adapters.source.grafana.esql_validate import (
     _query_source_and_index,
     summarize_validation_records,
@@ -53,6 +54,12 @@ from observability_migration.core.verification.disposition import (
     validation_failure_self_heals,
 )
 from observability_migration.targets.kibana.compile import validate_compiled_layout
+from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
+from observability_migration.targets.kibana.native_artifacts import (
+    write_ir_artifact,
+    write_native_artifact,
+    write_native_artifact_index,
+)
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
 from .extract import (
@@ -62,7 +69,7 @@ from .extract import (
     selection_metadata_from_datadog_dashboard,
 )
 from .field_map import FieldMapProfile, load_profile
-from .generate import generate_dashboard_yaml
+from .generate import generate_dashboard_artifacts
 from .manifest import save_migration_manifest
 from .models import DashboardResult, NormalizedWidget, TranslationResult
 from .normalize import normalize_dashboard
@@ -126,7 +133,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.smoke and not args.upload:
             args.upload = True
             auto_enabled_upload = True
-        compile_requested = args.compile or args.upload
+        compile_requested = args.compile or (args.upload and args.legacy_import)
 
         if args.upload and not args.kibana_url:
             print("  ERROR: --kibana-url is required when --upload is set")
@@ -136,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(2)
     dd_creds = load_credentials_from_env(args.env_file)
 
-    print("\n  Datadog → Kibana Migration Tool v0.1.0")
+    print(f"\n  Datadog → Kibana Migration Tool v{__version__}")
     print(f"  Source: {args.source}")
     print(f"  Field profile: {args.field_profile}")
     print(f"  Output: {args.output_dir}\n")
@@ -149,27 +156,13 @@ def main(argv: list[str] | None = None) -> None:
         )
     if auto_enabled_upload:
         print("  Smoke requested: auto-enabling upload step\n")
-    if selection.dashboards and args.upload and not args.compile:
-        print("  Upload requested: auto-enabling compile step\n")
+    if selection.dashboards and args.upload and args.legacy_import and not args.compile:
+        print("  Legacy import requested: auto-enabling compile step\n")
     try:
-        field_map = load_profile(args.field_profile)
+        field_map = _load_configured_field_map(args)
     except ValueError as exc:
         print(f"  ERROR: {exc}")
         sys.exit(1)
-    if args.data_view:
-        field_map.metric_index = args.data_view
-    if args.logs_index:
-        field_map.logs_index = args.logs_index
-    if args.dataset_filter:
-        field_map.metrics_dataset_filter = args.dataset_filter
-    if args.logs_dataset_filter:
-        field_map.logs_dataset_filter = args.logs_dataset_filter
-    if not field_map.metrics_dataset_filter:
-        from .field_map import derive_dataset_from_index
-        field_map.metrics_dataset_filter = derive_dataset_from_index(field_map.metric_index)
-    if not field_map.logs_dataset_filter:
-        from .field_map import derive_dataset_from_index
-        field_map.logs_dataset_filter = derive_dataset_from_index(field_map.logs_index)
     _load_live_field_capabilities(field_map, args, verify=verify)
     base_dir = Path(args.output_dir)
     dashboards_dir = dashboard_output_dir(base_dir)
@@ -208,12 +201,27 @@ def main(argv: list[str] | None = None) -> None:
     )
 
 
-def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
+def _clear_dashboard_artifacts(
+    yaml_dir: Path,
+    compiled_dir: Path,
+    *,
+    native_dir: Path | None = None,
+    ir_dir: Path | None = None,
+) -> int:
     removed = 0
     if yaml_dir.exists():
         for yaml_file in yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+    for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
+        if artifact_dir is not None and artifact_dir.exists():
+            for artifact_file in artifact_dir.glob(pattern):
+                artifact_file.unlink()
+                removed += 1
+            index_file = artifact_dir / "index.json"
+            if index_file.exists():
+                index_file.unlink()
+                removed += 1
     if compiled_dir.exists():
         for child in compiled_dir.iterdir():
             if child.is_dir():
@@ -222,6 +230,35 @@ def _clear_dashboard_artifacts(yaml_dir: Path, compiled_dir: Path) -> int:
                 child.unlink()
             removed += 1
     return removed
+
+
+def _load_configured_field_map(args: argparse.Namespace) -> FieldMapProfile:
+    field_map = load_profile(args.field_profile)
+    if getattr(args, "metric_map_file", None):
+        from observability_migration.core.metric_mapping import (
+            load_metric_map_files,
+            load_tag_map_files,
+        )
+
+        field_map.merge_metric_map(load_metric_map_files(args.metric_map_file))
+        field_map.merge_tag_map(load_tag_map_files(args.metric_map_file))
+    if args.data_view:
+        field_map.metric_index = args.data_view
+    if args.logs_index:
+        field_map.logs_index = args.logs_index
+    if args.dataset_filter:
+        field_map.metrics_dataset_filter = args.dataset_filter
+    if args.logs_dataset_filter:
+        field_map.logs_dataset_filter = args.logs_dataset_filter
+    if not field_map.metrics_dataset_filter:
+        from .field_map import derive_dataset_from_index
+
+        field_map.metrics_dataset_filter = derive_dataset_from_index(field_map.metric_index)
+    if not field_map.logs_dataset_filter:
+        from .field_map import derive_dataset_from_index
+
+        field_map.logs_dataset_filter = derive_dataset_from_index(field_map.logs_index)
+    return field_map
 
 
 def _run_dashboard_pipeline(
@@ -263,8 +300,12 @@ def _run_dashboard_pipeline(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     yaml_dir = output_dir / "yaml"
+    native_dir = output_dir / "native"
+    ir_dir = output_dir / "ir"
     yaml_dir.mkdir(parents=True, exist_ok=True)
-    removed_stale_artifacts = _clear_dashboard_artifacts(yaml_dir, output_dir / "compiled")
+    removed_stale_artifacts = _clear_dashboard_artifacts(
+        yaml_dir, output_dir / "compiled", native_dir=native_dir, ir_dir=ir_dir,
+    )
     if removed_stale_artifacts:
         print(f"  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {output_dir}")
 
@@ -302,7 +343,7 @@ def _run_dashboard_pipeline(
                     panel_results.append(_translate_widget(child, field_map, args))
 
         dashboard_result.panel_results = panel_results
-        dashboard_yaml = generate_dashboard_yaml(
+        dashboard_yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             panel_results,
             data_view=field_map.metric_index,
@@ -311,6 +352,9 @@ def _run_dashboard_pipeline(
             logs_index=field_map.logs_index,
             field_map=field_map,
         )
+        dashboard_result.dashboard_ir = dashboard_ir
+        dashboard_result.native_dashboard = native_dashboard
+        dashboard_result.native_dashboard_stats = native_stats
 
         stem = _allocate_yaml_stem(
             title=dashboard.title,
@@ -338,6 +382,39 @@ def _run_dashboard_pipeline(
         )
     elif args.validate:
         print("  Validation: skipped (pass --es-url to enable)")
+
+    print("  Writing native Dashboard-as-Code review artifacts...")
+    native_index_entries: list[dict[str, Any]] = []
+    for dashboard_result, _dashboard in dashboard_outputs:
+        if (
+            not dashboard_result.yaml_path
+            or dashboard_result.dashboard_ir is None
+            or dashboard_result.native_dashboard is None
+        ):
+            continue
+        stem = Path(dashboard_result.yaml_path).stem
+        native_path = write_native_artifact(
+            dashboard_ir=dashboard_result.dashboard_ir,
+            native_dashboard=dashboard_result.native_dashboard,
+            native_stats=dashboard_result.native_dashboard_stats,
+            native_dir=native_dir,
+            stem=stem,
+        )
+        ir_path = write_ir_artifact(dashboard_ir=dashboard_result.dashboard_ir, ir_dir=ir_dir, stem=stem)
+        dashboard_result.native_artifact_path = str(native_path)
+        dashboard_result.ir_artifact_path = str(ir_path)
+        native_index_entries.append(
+            {
+                "stem": stem,
+                "title": dashboard_result.dashboard_title,
+                "dashboard_id": dashboard_result.native_dashboard.dashboard_id,
+                "native_path": str(native_path.relative_to(output_dir)),
+                "ir_path": str(ir_path.relative_to(output_dir)),
+            }
+        )
+    if native_index_entries:
+        write_native_artifact_index(native_dir, native_index_entries)
+    print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
 
     if compile_requested:
         _compile_all_dashboards(all_results, output_dir, target_adapter)
@@ -400,6 +477,9 @@ def _run_dashboard_pipeline(
         [dashboard for _, dashboard in dashboard_outputs],
         field_map,
     )
+    from observability_migration.core.metric_mapping.reporting import metric_map_summary_from_tracker
+
+    metric_map_summary = metric_map_summary_from_tracker(field_map)
     save_detailed_report(
         all_results,
         str(report_path),
@@ -407,6 +487,7 @@ def _run_dashboard_pipeline(
         validation_records=validation_records,
         smoke_payload=smoke_payload,
         verification_payload=verification_payload,
+        metric_map_summary=metric_map_summary,
     )
     save_migration_manifest(all_results, manifest_path)
     save_verification_packets(verification_payload, verification_path)
@@ -684,7 +765,19 @@ class _DatadogValidationResolver:
         mapped_log = self._field_map.map_log_field(label)
         if mapped_log and mapped_log not in candidates and mapped_log != label:
             candidates.append(mapped_log)
-        mapped_metric = self._field_map.metric_map.get(label, "")
+        # metric_map values may be plain strings or MetricMapEntry objects
+        # (after --metric-map-file / shared normalize_metric_map). Never append
+        # the raw entry — only its target field name.
+        raw_metric = self._field_map.metric_map.get(label)
+        mapped_metric = ""
+        if isinstance(raw_metric, str):
+            mapped_metric = raw_metric
+        elif raw_metric is not None:
+            target = getattr(raw_metric, "target", None)
+            if isinstance(target, str):
+                mapped_metric = target
+            elif isinstance(raw_metric, dict):
+                mapped_metric = str(raw_metric.get("target") or "")
         if mapped_metric and mapped_metric not in candidates and mapped_metric != label:
             candidates.append(mapped_metric)
         return candidates
@@ -840,7 +933,7 @@ def _rewrite_dashboard_yaml(
 ) -> None:
     if not result.yaml_path:
         return
-    yaml_str = generate_dashboard_yaml(
+    yaml_str, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         result.panel_results,
         data_view=field_map.metric_index,
@@ -850,6 +943,9 @@ def _rewrite_dashboard_yaml(
         field_map=field_map,
     )
     Path(result.yaml_path).write_text(yaml_str, encoding="utf-8")
+    result.dashboard_ir = dashboard_ir
+    result.native_dashboard = native_dashboard
+    result.native_dashboard_stats = native_stats
 
 
 def _validate_all_dashboards(
@@ -1062,6 +1158,8 @@ def _upload_all_dashboards(
     upload_space = args.space_id or ""
     upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
 
+    use_dashboards_api = not getattr(args, "legacy_import", False)
+
     print(f"\n  Uploading dashboards to {upload_kibana_url}")
     for dr in results:
         dr.upload_attempted = True
@@ -1072,7 +1170,7 @@ def _upload_all_dashboards(
             dr.upload_error = "Upload skipped because no YAML artifact was generated."
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
-        if not dr.compiled:
+        if not use_dashboards_api and not dr.compiled:
             dr.uploaded = False
             dr.upload_error = (
                 "Upload skipped because compile failed."
@@ -1081,7 +1179,13 @@ def _upload_all_dashboards(
             )
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
-        if dr.layout_error:
+        # Legacy ``kb-dashboard-cli`` layout validation inspects the compiled
+        # NDJSON layout, which only the legacy ``--legacy-import`` path
+        # produces/uses. The native Dashboards API upload maps straight from
+        # the YAML/NativeDashboard IR and never touches that compiled output,
+        # so a (possibly stale) legacy layout error must not block it --
+        # mirrors the Grafana CLI's own ``not use_dashboards_api`` gate.
+        if not use_dashboards_api and dr.layout_error:
             dr.uploaded = False
             dr.upload_error = f"Upload skipped because compiled layout validation failed: {dr.layout_error}"
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error[:200]}")
@@ -1089,22 +1193,34 @@ def _upload_all_dashboards(
 
         out_dir = compiled_dir / Path(dr.yaml_path).stem
         out_dir.mkdir(parents=True, exist_ok=True)
+        upload_kwargs: dict[str, Any] = {
+            "kibana_url": args.kibana_url,
+            "space_id": upload_space,
+            "kibana_api_key": args.kibana_api_key,
+            "verify": verify,
+            "use_dashboards_api": use_dashboards_api,
+        }
+        if use_dashboards_api and dr.native_dashboard is not None:
+            upload_kwargs["native_dashboard"] = dr.native_dashboard
+            upload_kwargs["native_dashboard_stats"] = dr.native_dashboard_stats
         upload_result = target_adapter.upload_dashboard(
             dr.yaml_path,
             out_dir,
-            kibana_url=args.kibana_url,
-            space_id=upload_space,
-            kibana_api_key=args.kibana_api_key,
-            verify=verify,
+            **upload_kwargs,
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
+        dr.upload_warnings = upload_warnings_from_reasons(
+            upload_result.get("unmapped_reasons", {})
+        )
         dr.uploaded_space = upload_space or target_space
         dr.uploaded_kibana_url = upload_result["kibana_url"]
         if upload_result["success"]:
             print(f"    Uploaded: {stem}")
         else:
             print(f"    UPLOAD FAILED: {stem}: {dr.upload_error[:200]}")
+        for warning in dr.upload_warnings:
+            print(f"    warning: {warning}", file=sys.stderr)
 
 
 def _build_smoke_dashboard_indexes(
@@ -1381,7 +1497,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--field-profile", default="otel",
-        help="Field mapping profile: otel, elastic_agent, prometheus, passthrough, or path to YAML",
+        help="Field mapping profile: otel, elastic_agent, prometheus, prometheus_native, passthrough, or path to YAML",
+    )
+    parser.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames tag/attribute "
+            "names to ES fields, e.g. host: host.name). May be repeated; later files "
+            "override earlier entries and the active field profile."
+        ),
     )
     parser.add_argument(
         "--data-view",
@@ -1414,14 +1541,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--compile",
         dest="compile",
         action="store_true",
-        default=True,
-        help="Compile YAML to NDJSON using kb-dashboard-cli (default)",
+        default=False,
+        help="Compile YAML to NDJSON using kb-dashboard-cli",
     )
     parser.add_argument(
         "--no-compile",
         dest="compile",
         action="store_false",
-        help="Skip dashboard YAML compilation unless upload is requested",
+        help="Skip dashboard YAML compilation (default; retained for compatibility)",
     )
     parser.add_argument(
         "--validate", action="store_true",
@@ -1451,6 +1578,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--upload", action="store_true",
         help="Upload dashboards to Kibana after a successful compile pass",
+    )
+    parser.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (POST /api/dashboards)."
+        ),
+    )
+    parser.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--smoke", action="store_true",

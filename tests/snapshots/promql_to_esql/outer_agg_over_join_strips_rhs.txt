@@ -1,5 +1,9 @@
 source: max(rate(node_network_receive_bytes_total[5m]) * on(instance) group_left(nodename) node_uname_info) by (instance)
-feasibility: not_feasible
-warning: Aggregating over a PromQL vector-matching join requires manual redesign; dropping the joined metric would change numeric values
+feasibility: feasible
+warning: Dropped group_left label-enrichment join on 'node_uname_info' (assumed a constant-1 label-only metric by naming convention) and aggregated the primary metric alone. Primary series with no matching join partner are kept — PromQL would drop them — so counts and totals may differ; verify the partner is truly a label-only metric.
 ---
-
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_network_receive_bytes_total IS NOT NULL
+| STATS node_network_receive_bytes_total = MAX(RATE(node_network_receive_bytes_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| SORT time_bucket ASC

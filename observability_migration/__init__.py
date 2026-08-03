@@ -8,4 +8,6 @@ annotations, links, and transforms from observability vendors
 (Grafana, Datadog, ...) into Kibana.
 """
 
-__version__ = "0.1.0"
+from observability_migration._version import read_project_version
+
+__version__ = read_project_version()

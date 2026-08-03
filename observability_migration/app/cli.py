@@ -14,6 +14,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -27,6 +28,7 @@ import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
+from observability_migration.core.progress import null_progress, stderr_progress
 from observability_migration.core.sample_data import (
     NetworkError,
     load_metric_kind_overrides,
@@ -56,12 +58,23 @@ from observability_migration.targets.kibana.alerting import (
     verify_emitted_rule_uploads,
 )
 
+_DOCS_URL = "https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md"
+
 _UPLOAD_SHAPE_HELP = (
     "Accepted input shapes: a directory of .yaml files, a dashboard artifact "
     "dir with a 'yaml/' child (for example "
     "'migration_output/dashboards' or 'migration_output/dashboards/yaml'), "
     "or that artifact dir's sibling 'compiled/' directory (for example "
     "'migration_output/dashboards/compiled')."
+)
+
+_UPLOAD_ARTIFACT_DIR_HELP = (
+    "Canonical upload input: the dashboard artifact directory written by "
+    "'obs-migrate migrate' (for example 'migration_output/dashboards'), or "
+    "directly its 'native/' or 'yaml/' child. Combine with --artifact-format "
+    "to pick a representation; the default 'auto' prefers reviewed native "
+    "Dashboard-as-Code artifacts ('native/*.native.json') when present, else "
+    f"falls back to YAML. {_UPLOAD_SHAPE_HELP}"
 )
 
 
@@ -102,11 +115,33 @@ def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obs-migrate",
-        description="Source-agnostic observability migration platform.",
+        description=(
+            "Migrate Grafana or Datadog observability assets into Kibana. "
+            "One CLI for install checks, samples, migrate, upload, verify, and cluster ops."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Quick start:\n"
+            "  obs-migrate doctor\n"
+            "  obs-migrate list-samples\n"
+            "  obs-migrate migrate --source grafana --input-mode files "
+            "--input-dir ./dashboards --output-dir ./out\n"
+            "  # Review ./out/dashboards/native/*.native.json, then:\n"
+            "  obs-migrate upload --artifact-dir ./out/dashboards "
+            "--kibana-url <url> --kibana-api-key <key>\n"
+            "\n"
+            "Prefer this `obs-migrate` entry point. The legacy "
+            "`grafana-migrate` / `datadog-migrate` scripts remain as "
+            "compatibility aliases.\n"
+            f"Full command reference: {_DOCS_URL}"
+        ),
     )
     sub = parser.add_subparsers(dest="command")
 
-    migrate = sub.add_parser("migrate", help="Run a migration")
+    migrate = sub.add_parser(
+        "migrate",
+        help="Migrate dashboards/alerts from Grafana or Datadog into Kibana",
+    )
     migrate.add_argument(
         "--source", choices=source_registry.names(), required=True,
         help="Source vendor (grafana, datadog, ...)",
@@ -179,29 +214,79 @@ def _build_parser() -> argparse.ArgumentParser:
         default="otel",
         help=(
             "Target field mapping profile. Defaults to 'otel' for all sources; "
-            "Grafana currently supports 'otel' only, while Datadog also supports "
-            "Datadog-specific built-ins and YAML profile files."
+            "Grafana supports 'otel', 'prometheus_remote_write' (Fleet "
+            "use_types), 'prometheus_metrics' (classic Metricbeat "
+            "prometheus.metrics.*), 'prometheus_native', 'passthrough', and "
+            "'auto' (requires --es-url); Datadog supports 'otel'/'default', "
+            "'elastic_agent', 'prometheus' (Metricbeat remote_write), "
+            "'prometheus_native' (ES /_prometheus), 'passthrough', and YAML "
+            "profile files (no auto)."
         ),
     )
     migrate.add_argument(
         "--compile", action="store_true",
         help=(
-            "Compile generated YAML to NDJSON. Grafana always compiles as part of "
-            "'obs-migrate migrate'; Datadog is now also compiled by default for "
-            "parity. The flag is kept for compatibility with the dedicated source CLIs."
+            "Compile generated YAML to legacy NDJSON. Optional local/debug artifact; "
+            "not required for the typed Dashboards API upload path. Implied by "
+            "--legacy-import when combined with --upload."
         ),
     )
-    migrate.add_argument("--validate", action="store_true")
+    migrate.add_argument(
+        "--validate", action="store_true",
+        help=(
+            "Validate emitted ES|QL queries against Elasticsearch after translation. "
+            "Requires --es-url. Auto-applies safe query fixes and manualizes broken "
+            "ones. Works for both Grafana and Datadog."
+        ),
+    )
     migrate.add_argument("--upload", action="store_true")
+    migrate.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Deploy dashboards via the legacy kb-dashboard-cli saved-objects "
+            "import instead of the default typed Kibana Dashboards API "
+            "(PUT /api/dashboards/{id}). The native API is used by default; this "
+            "flag forces the older compile+import path."
+        ),
+    )
+    migrate.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     migrate.add_argument("--es-url", default="")
     migrate.add_argument("--es-api-key", default="")
     migrate.add_argument("--kibana-url", default="")
     migrate.add_argument("--kibana-api-key", default="")
     migrate.add_argument("--space-id", default="")
     migrate.add_argument("--rules-file", action="append", default=[])
+    migrate.add_argument(
+        "--metric-map-file",
+        action="append",
+        default=[],
+        help=(
+            "Source-neutral YAML file with top-level metric_map and/or tag_map "
+            "entries (metric_map renames metric names; tag_map renames tags/labels "
+            "to ES fields). Works for Grafana and Datadog; may be repeated. Later "
+            "files override earlier entries and the active field profile / loaded "
+            "rule packs. On Grafana with --translation-mode auto, also selects "
+            "ES|QL so the map applies."
+        ),
+    )
     migrate.add_argument("--plugin", action="append", default=[])
     migrate.add_argument("--polish-metadata", action="store_true")
-    migrate.add_argument("--preflight", action="store_true")
+    migrate.add_argument(
+        "--preflight", action="store_true",
+        help=(
+            "Run readiness checks before migration: probe target field capabilities "
+            "and write a readiness contract (Grafana: required_target_contract.json; "
+            "Datadog: target_readiness_contract.json). Requires --es-url for live "
+            "field discovery."
+        ),
+    )
     migrate.add_argument("--source-execution", action="store_true",
                          help="Execute each panel's source query against the live source API "
                               "(Datadog) to build source/target comparison packets")
@@ -240,7 +325,10 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_tls_arguments(migrate)
     add_selection_arguments(migrate)
 
-    sub.add_parser("doctor", help="Report environment readiness (kb-dashboard tools, uv)")
+    sub.add_parser(
+        "doctor",
+        help="Check that obs-migrate is installed and ready (start here)",
+    )
 
     compile_cmd = sub.add_parser("compile", help="Compile YAML to NDJSON")
     compile_cmd.add_argument("--yaml-dir", required=True, help="Directory with dashboard YAML files")
@@ -248,16 +336,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     upload_cmd = sub.add_parser(
         "upload",
-        help="Compile dashboard YAML to NDJSON and upload to Kibana",
+        help="Deploy a dashboard artifact directory to Kibana via the typed Dashboards API",
         description=(
-            "Compile dashboard YAML (via kb-dashboard-cli) and upload the resulting "
-            f"NDJSON to Kibana. {_UPLOAD_SHAPE_HELP}"
+            "Deploy a dashboard artifact directory to Kibana via the typed Kibana "
+            "Dashboards API (PUT /api/dashboards/{id}) by default, with "
+            "per-dashboard fallback to the legacy kb-dashboard-cli saved-objects "
+            "import. Pass --legacy-import to force the legacy compile+import path. "
+            f"{_UPLOAD_SHAPE_HELP}"
         ),
     )
     upload_group = upload_cmd.add_mutually_exclusive_group(required=True)
     upload_group.add_argument(
+        "--artifact-dir",
+        help=_UPLOAD_ARTIFACT_DIR_HELP,
+    )
+    upload_group.add_argument(
         "--yaml-dir",
-        help="Path to a dashboard YAML directory input for compile+upload. "
+        help="[Compatibility alias for --artifact-dir --artifact-format yaml] "
+             "Path to a dashboard YAML directory input for compile+upload. "
              f"{_UPLOAD_SHAPE_HELP}",
     )
     upload_group.add_argument(
@@ -268,9 +364,39 @@ def _build_parser() -> argparse.ArgumentParser:
              "this upload step recompiles YAML from the matching 'yaml/' directory; "
              "it does not consume pre-compiled NDJSON.",
     )
+    upload_cmd.add_argument(
+        "--artifact-format",
+        choices=["auto", "native", "yaml"],
+        default="auto",
+        help=(
+            "Representation to upload from --artifact-dir. 'auto' (default) "
+            "prefers reviewed native Dashboard-as-Code artifacts when present, "
+            "else falls back to YAML; 'native' uploads the reviewed typed API "
+            "payload exactly, with no YAML re-mapping and no legacy fallback; "
+            "'yaml' forces the existing YAML-to-native mapping path. Ignored "
+            "(forced to 'yaml') when --yaml-dir/--compiled-dir or "
+            "--legacy-import is used."
+        ),
+    )
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
+    upload_cmd.add_argument(
+        "--legacy-import",
+        dest="legacy_import",
+        action="store_true",
+        help=(
+            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
+            "default typed Kibana Dashboards API (POST /api/dashboards). Requires "
+            "YAML artifacts (--artifact-format is forced to 'yaml')."
+        ),
+    )
+    upload_cmd.add_argument(
+        "--use-dashboards-api",
+        dest="use_dashboards_api",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
@@ -293,7 +419,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_cmd.add_argument(
         "--migration-out",
         required=True,
-        help="Per-dashboard mig-to-kbn output directory (contains migration_report.json, yaml/, compiled/).",
+        help="Per-dashboard obs-migrate output directory (contains migration_report.json, yaml/, compiled/).",
     )
     verify_cmd.add_argument("--kibana-url", default="", help="Kibana base URL (required for T4).")
     verify_cmd.add_argument("--es-url", default="", help="Elasticsearch base URL (required for T5).")
@@ -541,6 +667,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="Delete non-seeder streams overlapping the contract wildcards before seeding.")
     seed_cmd.add_argument("--rules-file", action="append", default=[], help="Rule-pack file with metric_kinds overrides. Repeat to layer.")
     seed_cmd.add_argument("--prometheus-url", default="", help="Optional Prometheus base URL for ground-truth metric types.")
+    seed_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(seed_cmd)
 
     remove_cmd = sub.add_parser(
@@ -588,7 +715,38 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--step-seconds", type=int, default=300, help="Oracle bucket step in seconds.")
     compare_cmd.add_argument("--window-minutes", type=int, default=60, help="Look-back window for the comparison.")
     compare_cmd.add_argument("--report-out", default="comparison_report.json", help="Path for the JSON report (a sibling .md is written too).")
+    compare_cmd.add_argument("--quiet", action="store_true", help="Suppress progress messages on stderr.")
     _add_tls_arguments(compare_cmd)
+
+    metric_map_cmd = sub.add_parser(
+        "metric-map",
+        help="Metric map utilities for migration artifacts.",
+        description=(
+            "Source-neutral helpers for authoring metric_map YAML from migration "
+            "artifact contracts."
+        ),
+    )
+    metric_map_sub = metric_map_cmd.add_subparsers(dest="metric_map_action", required=True)
+    scaffold_cmd = metric_map_sub.add_parser(
+        "scaffold",
+        help="Scaffold metric_map YAML from unmapped source metrics in artifacts.",
+        description=(
+            "Read required_target_contract.json, target_readiness_contract.json, "
+            "and/or migration_manifest.json under --artifact-dir and write a "
+            "source-neutral metric_map YAML skeleton for metrics that still need "
+            "operator-authored target names."
+        ),
+    )
+    scaffold_cmd.add_argument(
+        "--artifact-dir",
+        required=True,
+        help="Migration artifact directory (for example migration_output/dashboards).",
+    )
+    scaffold_cmd.add_argument(
+        "--output",
+        required=True,
+        help="Path for the scaffold YAML file to write.",
+    )
 
     verify_unified_cmd = sub.add_parser(
         "verify",
@@ -685,35 +843,190 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_remove_sample_data(args))
     elif args.command == "compare":
         sys.exit(_run_compare(args))
+    elif args.command == "metric-map":
+        if args.metric_map_action == "scaffold":
+            sys.exit(_run_metric_map_scaffold(args))
+        sys.exit(2)
     elif args.command == "verify":
         sys.exit(_run_verify(args))
     elif args.command == "doctor":
-        _run_doctor()
+        sys.exit(_run_doctor())
     else:
         parser.print_help()
         sys.exit(1)
 
 
-def _run_doctor() -> None:
-    """Report environment readiness for the Kibana compile/lint path."""
-    import shutil
+def _run_doctor() -> int:
+    """Report first-run readiness: Python, deps, extras, and Kibana tools.
 
+    Returns 0 when the install can compile/migrate (kb tools installed or
+    reachable via ``uvx``); returns 1 when a blocking gap remains.
+    """
+    import importlib.util
+    import platform
+
+    from observability_migration import __version__
+    from observability_migration._version import read_project_version
     from observability_migration.targets.kibana._kbtool import (
         KB_DASHBOARD_TOOL_VERSION,
         KbToolUnavailableError,
         tool_argv,
     )
 
+    issues: list[str] = []
+    notes: list[str] = []
+    py = sys.version_info
+    package_root = Path(__file__).resolve().parents[1]
+
     print("obs-migrate doctor")
+    print(f"  package version: {__version__}")
+    print(f"  package location: {package_root}")
+    print(f"  python: {platform.python_version()} ({sys.executable})")
+    print(f"  platform: {platform.system()} {platform.machine()} ({platform.platform()})")
+
+    if py < (3, 11):
+        issues.append(
+            f"Python {platform.python_version()} is below the supported floor "
+            "(need 3.11+)."
+        )
+    elif py >= (3, 14):
+        notes.append(
+            "Python 3.14+ is allowed by packaging metadata but is not in the "
+            "CI pytest matrix yet; prefer 3.11–3.13 for production migrations."
+        )
+
+    try:
+        project_version = read_project_version()
+        if project_version != __version__:
+            notes.append(
+                f"pyproject/metadata mismatch "
+                f"(read_project_version={project_version!r})"
+            )
+    except RuntimeError:
+        pass
+
+    # Core runtime imports (always required by the installed package).
+    required = (
+        ("yaml", "PyYAML"),
+        ("pydantic", "pydantic"),
+        ("requests", "requests"),
+        ("lark", "lark"),
+        ("grafana_client", "grafana-client"),
+        ("promql_parser", "promql-parser"),
+    )
+    print("  required dependencies:")
+    for mod, label in required:
+        if importlib.util.find_spec(mod) is None:
+            print(f"    {label}: MISSING")
+            issues.append(
+                f"Required dependency {label!r} is not importable. "
+                "Reinstall with: uvx --from 'elastic-observability-migration[all]' obs-migrate doctor"
+            )
+        else:
+            print(f"    {label}: ok")
+
+    # Optional extras — helpful for first-time operators choosing [all].
+    print("  optional extras:")
+    datadog_ok = importlib.util.find_spec("datadog_api_client") is not None
+    print(
+        f"    datadog (datadog-api-client): "
+        f"{'ok' if datadog_ok else 'not installed — Datadog API mode needs elastic-observability-migration[datadog] or [all]'}"
+    )
+    if not datadog_ok:
+        notes.append(
+            "Datadog API client not installed; file-mode Datadog migrate still "
+            "works. For --input-mode api install elastic-observability-migration[all] (or [datadog])."
+        )
+
+    uv_path = shutil.which("uv")
+    uvx_path = shutil.which("uvx")
+    print(f"  uv on PATH: {'yes (' + uv_path + ')' if uv_path else 'no'}")
+    print(f"  uvx on PATH: {'yes (' + uvx_path + ')' if uvx_path else 'no'}")
+    if not uvx_path and py < (3, 12):
+        issues.append(
+            "Python < 3.12 needs uv/uvx on PATH so compile/lint can use the "
+            "pinned kb-dashboard-* fallback. Install: https://docs.astral.sh/uv/"
+        )
+    elif not uvx_path:
+        notes.append(
+            "uv/uvx not on PATH. Fine if kb-dashboard-* is installed via "
+            "elastic-observability-migration[kibana]/[all] on Python 3.12+; otherwise install uv."
+        )
+
     print(f"  pinned kb-dashboard tool version: {KB_DASHBOARD_TOOL_VERSION}")
-    print(f"  uv on PATH: {'yes' if shutil.which('uvx') else 'no'}")
+    kb_ok = True
     for tool in ("kb-dashboard-cli", "kb-dashboard-lint"):
         try:
             argv = tool_argv(tool)
             mode = "installed" if argv[0] != "uvx" else "uvx fallback"
             print(f"  {tool}: available ({mode})")
         except KbToolUnavailableError as exc:
+            kb_ok = False
             print(f"  {tool}: UNAVAILABLE - {exc}")
+            issues.append(str(exc))
+    if not kb_ok and py >= (3, 12):
+        notes.append(
+            "On Python 3.12+, prefer elastic-observability-migration[all] (or [kibana]) so "
+            "kb-dashboard-cli/lint install in-venv without needing uvx."
+        )
+
+    if notes:
+        print()
+        print("Notes:")
+        for note in notes:
+            print(f"  - {note}")
+
+    if issues:
+        print()
+        print("Problems (fix these before migrating):")
+        for issue in issues:
+            print(f"  - {issue}")
+        print()
+        print("First-time install (macOS/Linux, needs uv):")
+        print(
+            "  uvx --from 'elastic-observability-migration[all]' obs-migrate doctor"
+        )
+        return 1
+
+    print()
+    print("Ready.")
+    print("Next steps (reuse the same launcher you used for doctor):")
+    cmd = _doctor_followup_cmd()
+    print(f"  {cmd} list-samples")
+    print(
+        f"  {cmd} migrate --source grafana --input-mode files "
+        "--input-dir <dir> --output-dir ./out"
+    )
+    print("  # Review ./out/dashboards/native/*.native.json, then upload:")
+    print(
+        f"  {cmd} upload --artifact-dir ./out/dashboards "
+        "--kibana-url <url> --kibana-api-key <key>"
+    )
+    print(f"Full reference: {_DOCS_URL}")
+    return 0
+
+
+def _doctor_followup_cmd() -> str:
+    """Return the launcher obs-migrate was invoked with, so Next steps are copy-pasteable."""
+    which = shutil.which("obs-migrate")
+    if which:
+        return "obs-migrate"
+
+    prog = Path(sys.argv[0]).expanduser()
+    try:
+        prog = prog.resolve()
+    except OSError:
+        pass
+    if prog.name in {"obs-migrate", "grafana-migrate", "datadog-migrate"}:
+        # Persistent venv layout: …/<env>/bin/obs-migrate next to pyvenv.cfg.
+        # Skip uvx/tool cache paths, which are not a stable operator launcher.
+        if (prog.parent.parent / "pyvenv.cfg").is_file():
+            try:
+                return str(prog.relative_to(Path.cwd()))
+            except ValueError:
+                return str(prog)
+
+    return "uvx --from 'elastic-observability-migration[all]' obs-migrate"
 
 
 def _run_verify_panels(args: Any) -> None:
@@ -835,8 +1148,12 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--logs-index", args.logs_index])
     if args.validate:
         legacy_argv.append("--validate")
+    if getattr(args, "compile", False):
+        legacy_argv.append("--compile")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "legacy_import", False):
+        legacy_argv.append("--legacy-import")
     if args.es_url:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
@@ -849,6 +1166,8 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--shadow-space", args.space_id])
     for rf in args.rules_file:
         legacy_argv.extend(["--rules-file", rf])
+    for mmf in getattr(args, "metric_map_file", []):
+        legacy_argv.extend(["--metric-map-file", mmf])
     for pl in args.plugin:
         legacy_argv.extend(["--plugin", pl])
     if args.polish_metadata:
@@ -920,6 +1239,8 @@ def _run_datadog_migration(args: Any) -> None:
     if args.data_view:
         legacy_argv.extend(["--data-view", args.data_view])
     legacy_argv.extend(["--field-profile", args.field_profile])
+    for mmf in getattr(args, "metric_map_file", []):
+        legacy_argv.extend(["--metric-map-file", mmf])
     requested_assets = getattr(args, "assets", None)
     if requested_assets is not None:
         selection = normalize_requested_assets(
@@ -934,11 +1255,14 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
         legacy_argv.extend(["--es-api-key", args.es_api_key])
-    legacy_argv.append("--compile")
+    if getattr(args, "compile", False):
+        legacy_argv.append("--compile")
     if args.validate:
         legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
+    if getattr(args, "legacy_import", False):
+        legacy_argv.append("--legacy-import")
     if args.preflight:
         legacy_argv.append("--preflight")
     if getattr(args, "source_execution", False):
@@ -1030,17 +1354,52 @@ def _run_compile(args: Any) -> None:
         sys.exit(1)
 
 
-def _run_upload(args: Any) -> None:
-    """Compile YAML dashboards and upload them to Kibana via kb-dashboard-cli."""
-    raw_path = getattr(args, "yaml_dir", None) or getattr(args, "compiled_dir", None) or ""
-    if getattr(args, "compiled_dir", None) and not getattr(args, "yaml_dir", None):
+def _resolve_upload_input(args: Any) -> tuple[Path, str]:
+    """Resolve the effective ``(artifact_dir, artifact_format)`` for upload.
+
+    ``--artifact-dir`` is the canonical input; ``--yaml-dir``/``--compiled-dir``
+    are compatibility aliases that pin the format to ``"yaml"`` so existing
+    scripts keep their exact prior behavior (see docs/command-contract.md).
+    """
+    artifact_dir_raw = getattr(args, "artifact_dir", None)
+    yaml_dir_raw = getattr(args, "yaml_dir", None)
+    compiled_dir_raw = getattr(args, "compiled_dir", None)
+    artifact_format = str(getattr(args, "artifact_format", "") or "auto")
+
+    if artifact_dir_raw:
+        return Path(artifact_dir_raw), artifact_format
+    if compiled_dir_raw and not yaml_dir_raw:
         print(
             "  NOTE: --compiled-dir is a deprecated alias for --yaml-dir. "
-            "Upload recompiles YAML internally; prefer --yaml-dir in new scripts.",
+            "Upload recompiles YAML internally; prefer --yaml-dir or "
+            "--artifact-dir in new scripts.",
             file=sys.stderr,
         )
-    input_dir = Path(raw_path)
-    if not input_dir.is_dir():
+        return Path(compiled_dir_raw), "yaml"
+    if yaml_dir_raw:
+        return Path(yaml_dir_raw), "yaml"
+    return Path(""), artifact_format
+
+
+def _run_upload(args: Any) -> None:
+    """Deploy a dashboard artifact directory to Kibana via the typed Dashboards API by default."""
+    input_dir, artifact_format = _resolve_upload_input(args)
+    legacy_import = bool(getattr(args, "legacy_import", False))
+    if legacy_import:
+        # The legacy importer compiles saved objects from YAML, so it has no
+        # native-payload equivalent; forcing yaml here keeps
+        # --artifact-format meaningless-but-harmless when combined with
+        # --legacy-import instead of silently ignoring an explicit 'native'.
+        if artifact_format == "native":
+            print(
+                "  ERROR: --legacy-import requires YAML artifacts (it compiles "
+                "through kb-dashboard-cli) but --artifact-format native was "
+                "requested. Pass --artifact-format yaml (or --yaml-dir) instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        artifact_format = "yaml"
+    if not input_dir or not input_dir.is_dir():
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
@@ -1052,12 +1411,38 @@ def _run_upload(args: Any) -> None:
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
         verify=verify,
+        use_dashboards_api=not legacy_import,
+        artifact_format=artifact_format,
     )
+    if upload_payload["summary"].get("error") == "no_native_artifacts_found":
+        print(
+            f"No native Dashboard-as-Code artifacts (native/*.native.json) found "
+            f"under {input_dir}. Pass --artifact-format auto or yaml to fall back "
+            "to YAML, or point --artifact-dir at a directory containing 'native/'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if upload_payload["summary"].get("error") == "mixed_native_yaml_artifacts":
+        missing = upload_payload["summary"].get("missing_native_artifacts") or []
+        extra = upload_payload["summary"].get("extra_native_artifacts") or []
+        detail = ""
+        if missing:
+            detail = f" Missing native artifacts for: {', '.join(str(item) for item in missing[:5])}."
+        elif extra:
+            detail = f" Native artifacts without YAML siblings: {', '.join(str(item) for item in extra[:5])}."
+        print(
+            "Native Dashboard-as-Code artifacts and YAML artifacts do not match under "
+            f"{input_dir}; refusing an auto upload that would skip dashboards.{detail} "
+            "Regenerate the migration output, pass --artifact-format yaml, or point "
+            "--artifact-dir directly at the native/ directory.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not upload_payload["records"]:
         print(
             f"No dashboard YAML files found under {input_dir}. "
-            "Point --yaml-dir at a directory of .yaml files, a dashboard "
-            "artifact dir containing 'yaml/' (e.g. "
+            "Point --yaml-dir (or --artifact-dir) at a directory of .yaml files, "
+            "a dashboard artifact dir containing 'yaml/' (e.g. "
             "'migration_output/dashboards' or "
             "'migration_output/dashboards/yaml'), or that dir's sibling "
             "'compiled/' directory (e.g. "
@@ -1068,9 +1453,23 @@ def _run_upload(args: Any) -> None:
 
     for item in upload_payload["records"]:
         status = "OK" if item["success"] else "FAIL"
-        print(f"  [{status}] {item['yaml_file']}")
+        suffix = ""
+        if item.get("fallback_used"):
+            suffix = " (via legacy _import fallback)"
+        elif item.get("status"):
+            suffix = f" ({item['status']} via dashboards API)"
+        print(f"  [{status}] {item['yaml_file']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
+        dropped_filters = item.get("unmapped_reasons", {}).get(
+            "dropped_unsupported_dashboard_filter", 0
+        )
+        if dropped_filters:
+            print(
+                f"         warning: dropped {dropped_filters} unsupported dashboard "
+                "filter(s); affected panels may query a broader dataset than the source",
+                file=sys.stderr,
+            )
     if upload_payload["summary"]["uploaded_ok"] < upload_payload["summary"]["total"]:
         sys.exit(1)
 
@@ -1285,8 +1684,13 @@ def _run_compare(args: Any) -> int:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
         return 2
 
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("compare")
+    total_panels = len(packets)
+    dashboard_count = len({pkt.get("dashboard", "") for pkt in packets})
+    progress(f"comparing {total_panels} panels across {dashboard_count} dashboards")
+
     rows: list[dict[str, Any]] = []
-    for pkt in packets:
+    for i, pkt in enumerate(packets, start=1):
         is_promql = (pkt.get("source_language") == "promql") and bool(pkt.get("source_query")) and bool(pkt.get("translated_query"))
         if oracle_ok and is_promql:
             index = args.index or _infer_index(pkt.get("translated_query", "")) or "metrics-*"
@@ -1382,6 +1786,9 @@ def _run_compare(args: Any) -> int:
                     "source_query": pkt.get("source_query", ""), "translated_query": pkt.get("translated_query", ""),
                 })
 
+        if i % 10 == 0 or i == total_panels:
+            progress(f"processed {i}/{total_panels} panels")
+
     summary = {"panels": len(rows)}
     for r in rows:
         summary[r["verdict"]] = summary.get(r["verdict"], 0) + 1
@@ -1389,6 +1796,7 @@ def _run_compare(args: Any) -> int:
     out = Path(args.report_out)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out.with_suffix(".md").write_text(_render_compare_md(report), encoding="utf-8")
+    progress(f"report written to {out}")
     print(json.dumps(summary, indent=2))
     return 1 if any(r["verdict"] in ("FAIL", "SOURCE_FAIL") for r in rows) else 0
 
@@ -1535,6 +1943,7 @@ def _run_seed_sample_data(args: Any) -> int:
     verify = _tls_verify(args)
     overrides = load_metric_kind_overrides(args.rules_file, args.prometheus_url, verify=verify)
     request = make_es_request(args.es_url, args.api_key, verify=verify)
+    progress = null_progress if getattr(args, "quiet", False) else stderr_progress("seed")
     try:
         summary = seed_sample_data(
             artifact_dirs, request,
@@ -1542,6 +1951,7 @@ def _run_seed_sample_data(args: Any) -> int:
             batch_docs=args.batch_docs, max_combinations=args.max_combinations,
             no_recreate=args.no_recreate, purge_foreign=args.purge_foreign_streams,
             metric_kind_overrides=overrides,
+            on_progress=progress,
         )
     except NetworkError as exc:
         print(json.dumps({"error": "es_unreachable", "detail": str(exc)}, indent=2))
@@ -1582,6 +1992,24 @@ def _run_remove_sample_data(args: Any) -> int:
         "errors": summary.errors,
     }, indent=2))
     return 0 if not summary.errors else 1
+
+
+def _run_metric_map_scaffold(args: Any) -> int:
+    """Write a metric_map scaffold YAML from migration artifact contracts."""
+    from observability_migration.core.metric_mapping.scaffold import build_scaffold_yaml
+
+    artifact_dir = Path(args.artifact_dir)
+    if not artifact_dir.is_dir():
+        print(
+            json.dumps({"error": "missing_artifact_dir", "path": str(artifact_dir)}),
+            file=sys.stderr,
+        )
+        return 2
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(build_scaffold_yaml(artifact_dir), encoding="utf-8")
+    print(f"Wrote metric_map scaffold: {output_path}")
+    return 0
 
 
 def _run_list_samples(args: Any) -> int:

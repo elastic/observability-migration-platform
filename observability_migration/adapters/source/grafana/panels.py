@@ -8,16 +8,23 @@ from __future__ import annotations
 import copy
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
 
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.operational import build_operational_ir
 from observability_migration.core.assets.query import QueryIR, build_query_ir, infer_output_shape
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.core.reporting.report import MigrationResult, PanelResult, _panel_query_index
+from observability_migration.core.reporting.report import (
+    MigrationResult,
+    PanelResult,
+    _panel_query_index,
+    recompute_result_counts,
+)
 from observability_migration.core.verification.field_capabilities import assess_field_usage
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
     enrich_yaml_panel_display,
@@ -58,6 +65,7 @@ from observability_migration.targets.kibana.emit.layout import (
 )
 
 from .extract import _normalize_text_panel_content
+from .links import build_links_panel, translate_dashboard_links
 from .manifest import (
     analyze_panel_targets,
     build_dashboard_inventory,
@@ -74,6 +82,7 @@ from .promql import (
     _build_formula_plan,
     _build_shared_measure_pipeline,
     _collapse_summary_ts_query,
+    _finalize_fused_stats_assignments,
     _format_scalar_value,
     _is_counter_fallback,
     _matcher_to_esql,
@@ -87,10 +96,13 @@ from .promql import (
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
+    ESQL_NAMED_PARAM_BINDING,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     binds_esql_named_params,
+    get_runtime_features,
     is_feature_supported,
+    set_runtime_feature,
 )
 from .schema import SchemaResolver
 from .series_labels import (
@@ -98,6 +110,7 @@ from .series_labels import (
     build_metric_series_labels,
     expr_has_explicit_grouping,
 )
+from .transforms import apply_transformations_to_esql
 from .translate import (
     TranslationContext,
     _build_metric_contract_artifacts,
@@ -123,6 +136,30 @@ PANEL_TYPE_MAP = {
     "piechart": "pie",
     "grafana-piechart-panel": "pie",  # community plugin alias for built-in piechart
     "barchart": "bar",
+    # Discrete-state visualizations. Kibana has no native state-timeline /
+    # status-history panel, but the underlying query is an ordinary metric time
+    # series, so the data is preserved by rendering it as a line chart. The
+    # visual approximation is disclosed via ``APPROXIMATED_VIS_TYPE_NOTES`` so the
+    # panel lands as ``migrated_with_warnings`` (degrade gracefully) rather than a
+    # bare "Migration Required" placeholder that discards the query.
+    "state-timeline": "line",
+    "status-history": "line",
+}
+
+# Source panel types whose Kibana mapping is a deliberate visual approximation.
+# The note is appended to the migrated panel's reasons and downgrades the status
+# to ``migrated_with_warnings`` so the fidelity loss is never silent.
+APPROXIMATED_VIS_TYPE_NOTES = {
+    "state-timeline": (
+        "Grafana state-timeline panel approximated as a Kibana line chart: the "
+        "underlying time series is preserved, but Kibana has no discrete "
+        "state-band visualization so state transitions render as line values"
+    ),
+    "status-history": (
+        "Grafana status-history panel approximated as a Kibana line chart: the "
+        "underlying time series is preserved, but Kibana has no periodic "
+        "discrete-state (status cell) visualization so values render as a line"
+    ),
 }
 
 SKIP_PANEL_TYPES = {"row", "news", "dashlist", "alertlist", "nodeGraph", "canvas"}
@@ -209,6 +246,11 @@ class VariableContext:
     control: dict | None = None
     handled: bool = False
     trace: list = field(default_factory=list)
+    # Deliberately separate from `trace` (which mixes internal/speculative
+    # notes, e.g. custom_variable_rule's note that is only accurate before
+    # `_ensure_param_controls` runs): entries here are user-facing
+    # dashboard-level warnings a caller can surface directly (issue #269).
+    control_warnings: list = field(default_factory=list)
 
 
 ESQLShape = _ESQLShapeCanonical
@@ -402,6 +444,7 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         and not preferred_group_labels
         and metric_series_labels
         and not expr_has_explicit_grouping(target.get("expr", ""))
+        and _allows_dashboard_label_inference(target.get("expr", ""))
     ):
         inferred = _inferred_labels_for_target(target, metric_series_labels)
         if inferred:
@@ -445,6 +488,200 @@ _PROMQL_AGG_FUNCS = frozenset({
     "sum", "avg", "min", "max", "count", "stddev", "stdvar",
     "topk", "bottomk", "quantile", "group",
 })
+_PROMQL_AGG_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    + "|".join(sorted(_PROMQL_AGG_FUNCS, key=len, reverse=True))
+    + r")\b(?:\s+(?:by|without)\s*\([^)]*\))?\s*\(",
+    re.IGNORECASE,
+)
+_PROMQL_LABEL_MATCHER_VAR_RE = re.compile(
+    r"^\s*(?P<label>[A-Za-z_][A-Za-z0-9_\.:-]*)\s*(?P<op>=~|!~|!=|=)\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)\s*$",
+    re.DOTALL,
+)
+# Leading unary sign (``-sum(...)``) or scalar operand + arithmetic operator
+# (``100 * sum(...)``, ``1 - avg(...)``). Peeling these exposes the inner
+# aggregation so the prefix guard still fires on collapsed expressions wrapped
+# in unary/scalar arithmetic. A PromQL metric name can never start with a digit,
+# so stripping a leading number is unambiguous.
+_PROMQL_LEADING_SCALAR_RE = re.compile(
+    r"^\s*(?:[-+]|(?:\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*[-+*/%])",
+)
+# Leading ``func(`` call. A PromQL vector-transform function (``clamp_max``,
+# ``abs``, ``round`` …) preserves the label set of its vector operand, which is
+# always its first argument. ``topk``/``bottomk`` preserve the labels of their
+# selected input series, whose vector operand is the second argument. Recursing
+# into those operands exposes wrapped aggregations to the prefix guard.
+_PROMQL_LEADING_FUNC_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_PROMQL_LABEL_PRESERVING_FUNCS = frozenset({
+    "abs", "ceil", "clamp", "clamp_max", "clamp_min", "exp", "floor",
+    "label_join", "label_replace", "ln", "log2", "log10", "round", "sgn",
+    "sort", "sort_desc", "sqrt", "timestamp",
+})
+_PROMQL_LABEL_PRESERVING_AGG_FUNCS = frozenset({"topk", "bottomk"})
+_PROMQL_UNLABELED_FUNCS = frozenset({
+    "absent", "absent_over_time", "pi", "scalar", "time", "vector",
+})
+
+
+def _strip_wrapping_parentheses(expr):
+    text = str(expr or "").strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        wraps_entire_expr = True
+        quote = ""
+        escaped = False
+        for idx, char in enumerate(text):
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and idx != len(text) - 1:
+                    wraps_entire_expr = False
+                    break
+                if depth < 0:
+                    wraps_entire_expr = False
+                    break
+        if not wraps_entire_expr or depth != 0:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def _peel_leading_parenthesized_arithmetic_operand(text):
+    """Return a leading parenthesized operand from scalar arithmetic.
+
+    ``(sum(...)) * 100`` preserves the label shape of the left vector operand,
+    just like ``100 * sum(...)``. Peeling that balanced left operand lets the
+    aggregation guard see collapsed aggregations hidden by the parentheses.
+    """
+    text = str(text or "").strip()
+    if not text.startswith("("):
+        return text
+    depth = 0
+    quote = ""
+    escaped = False
+    for idx, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                rest = text[idx + 1:].lstrip()
+                if rest.startswith(("+", "-", "*", "/", "%")):
+                    return text[1:idx].strip()
+                return text
+            if depth < 0:
+                return text
+    return text
+
+
+def _peel_leading_function_label_operand(text):
+    """Return the label-preserving vector operand of a leading function call.
+
+    PromQL vector-transform functions (``clamp_max``, ``abs``, ``round``,
+    ``label_replace`` …) preserve the label set of their vector operand — always
+    the first argument. ``topk``/``bottomk`` also preserve input labels, but their
+    vector operand is the second argument after the scalar limit. Returns ``text``
+    unchanged when it is not a label-preserving function call or when the
+    parentheses are unbalanced.
+    """
+    match = _PROMQL_LEADING_FUNC_RE.match(text)
+    if not match:
+        return text
+    function_name = match.group(1).lower()
+    if function_name in _PROMQL_LABEL_PRESERVING_FUNCS:
+        operand_index = 0
+    elif function_name in _PROMQL_LABEL_PRESERVING_AGG_FUNCS:
+        operand_index = 1
+    else:
+        return text
+    open_idx = match.end() - 1  # position of the '('
+    depth = 0
+    quote = ""
+    escaped = False
+    args = []
+    arg_start = open_idx + 1
+    for idx in range(open_idx, len(text)):
+        char = text[idx]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char in ("(", "[", "{"):
+            depth += 1
+        elif char in (")", "]", "}"):
+            depth -= 1
+            if depth == 0:
+                args.append(text[arg_start:idx].strip())
+                if len(args) > operand_index:
+                    return args[operand_index]
+                return text
+        elif char == "," and depth == 1:
+            args.append(text[arg_start:idx].strip())
+            arg_start = idx + 1
+    return text  # unbalanced — leave untouched
+
+
+def _allows_dashboard_label_inference(expr):
+    """Return True when dashboard-wide label inference can safely add grouping.
+
+    An ungrouped PromQL aggregation collapses its input to a single (scalar)
+    series, so re-widening it with inferred labels changes the intended series
+    shape. The guard therefore blocks inference for such expressions — including
+    ones wrapped in unary/scalar arithmetic (``-sum(...)``, ``100 * sum(...)``,
+    ``1 - avg(...)``) or label-preserving function calls
+    (``clamp_max(sum(...), 100)``, ``abs(sum(...))``), which all keep the
+    collapsed shape — by peeling leading signs/scalar operands and non-aggregation
+    function wrappers before checking for an aggregation prefix.
+    """
+    text = _strip_wrapping_parentheses(expr)
+    while True:
+        match = _PROMQL_LEADING_FUNC_RE.match(text)
+        if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
+            return False
+        peeled = _strip_wrapping_parentheses(
+            _PROMQL_LEADING_SCALAR_RE.sub("", text, count=1)
+        )
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_parenthesized_arithmetic_operand(peeled)
+        )
+        match = _PROMQL_LEADING_FUNC_RE.match(peeled)
+        if match and match.group(1).lower() in _PROMQL_UNLABELED_FUNCS:
+            return False
+        peeled = _strip_wrapping_parentheses(
+            _peel_leading_function_label_operand(peeled)
+        )
+        if peeled == text:
+            break
+        text = peeled
+    return not _PROMQL_AGG_PREFIX_RE.search(text)
 
 
 def _coalesce_panel_title(panel, panel_analysis=None):
@@ -695,6 +932,153 @@ _GRAFANA_VAR_BRACKET_RE = re.compile(r"\[\[[A-Za-z_][A-Za-z0-9_]*(?::[^\]]+)?\]\
 _GRAFANA_INTERVAL_VAR_RE = re.compile(rf"\[\s*{_GRAFANA_VAR_TOKEN_PATTERN}\s*\]")
 _DEFAULT_NATIVE_PROMQL_STEP = "1m"
 
+# Adaptive range resolution for dashboard panels (#272). A range plot must size
+# its bucketing to the dashboard time range at view time (like Grafana's
+# ``$__interval``) instead of freezing a fixed ``step=``. A *bare* stepless
+# ``PROMQL index=...`` command is NOT valid, however: Elasticsearch rejects it at
+# plan time with "unable to create a bucket; provide either [step] or all of
+# [start], [end], and [buckets]" (verified against ES 9.5 serverless). So the
+# adaptive form binds the window to the dashboard time picker via the
+# ``?_tstart`` / ``?_tend`` params Kibana materializes at render time, with a
+# fixed bucket count matching the ES|QL ``BUCKET(@timestamp, 50, ?_tstart,
+# ?_tend)`` path. This stays adaptive (no baked-in ``step=``) while remaining an
+# executable query.
+_NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
+_NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
+    f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
+)
+# Adaptive ES|QL TS calendar buckets (issue #316) — count form needs the range
+# args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
+# (FROM path still uses 50 via ``from_bucket``).
+_NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
+
+
+def _grafana_panel_fixed_interval(panel) -> str | None:
+    """Return a concrete Grafana panel ``interval`` suitable for PROMQL ``step=``.
+
+    Skips empty values and Grafana macros (``$__interval`` / ``$__rate_interval``
+    / …) — those stay on the adaptive path. Accepts PromQL-style durations
+    (``1h``, ``5m``, ``30s``).
+    """
+    if not isinstance(panel, dict):
+        return None
+    raw = panel.get("interval")
+    if raw is None or raw == "":
+        return None
+    text = str(raw).strip()
+    if not text or text.startswith("$") or "${" in text:
+        return None
+    # Reject obviously non-duration tokens.
+    if not re.fullmatch(r"\d+(?:\.\d+)?(ms|s|m|h|d|w)", text.replace(" ", "")):
+        return None
+    return text.replace(" ", "")
+
+
+def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
+    """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
+
+    Dashboard panels use adaptive ``TBUCKET(100, ?_tstart, ?_tend)`` by default
+    so zooming changes resolution. An explicit Grafana panel ``interval`` becomes
+    a fixed ``TBUCKET(<duration>)``. Direct ``translate_promql_to_esql`` callers
+    keep ``rule_pack.ts_bucket`` unchanged.
+    """
+    interval = _grafana_panel_fixed_interval(panel)
+    new_bucket = None
+    if interval:
+        from observability_migration.adapters.source.grafana.esql_validate import (
+            _promql_window_to_esql_interval,
+        )
+
+        esql_dur = _promql_window_to_esql_interval(interval)
+        if esql_dur:
+            new_bucket = f"time_bucket = TBUCKET({esql_dur})"
+    elif rule_pack.ts_bucket == "time_bucket = TBUCKET(5 minute)":
+        # Adaptive auto resolution for dashboard panels (issue #316).
+        new_bucket = _NATIVE_ESQL_ADAPTIVE_TBUCKET
+    if new_bucket is None or new_bucket == rule_pack.ts_bucket:
+        return rule_pack
+    updated = replace(rule_pack, ts_bucket=new_bucket)
+    # ``replace`` only copies dataclass fields; preserve dynamic attributes the
+    # CLI / tests hang on the pack (regex defaults, validators, runtime notes).
+    for attr in (
+        "_regex_default_param_names",
+        "_late_bound_group_var_choices",
+        "runtime_features",
+        "native_promql_validator",
+        "_runtime_feature_notes",
+    ):
+        if hasattr(rule_pack, attr):
+            setattr(updated, attr, getattr(rule_pack, attr))
+    return updated
+
+# Grafana's adaptive step macros ($__rate_interval / $__interval / $interval /
+# $__auto_interval_*). Grafana sizes these from the panel width and selected time
+# range at view time, i.e. they encode "size the lookback to the view", not a
+# fixed duration. Each spelling is accepted both unbraced (``$__rate_interval``)
+# and braced (``${__rate_interval}``) — Grafana treats the two as identical, so
+# the braced form carries the same adaptive intent (issue #273 review).
+_GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME = (
+    r"(?:__rate_interval|__interval|interval|__auto_interval_\w+)"
+)
+# The unbraced ``(?![\w])`` keeps ``$__interval`` from matching the prefix of a
+# longer custom variable like ``$__interval_ms``; the braced form is delimited by
+# ``}`` so the same over-match is impossible there.
+_GRAFANA_ADAPTIVE_INTERVAL_MACRO = (
+    r"(?:\$"
+    + _GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME
+    + r"(?![\w])|\$\{\s*"
+    + _GRAFANA_ADAPTIVE_INTERVAL_MACRO_NAME
+    + r"\s*\})"
+)
+# A ``rate(...)`` / ``increase(...)`` whose range-selector window is one of those
+# adaptive macros: ``rate(metric{labels}[$__rate_interval])``. The vector
+# selector (group 1) is preserved and the ``[<macro>]`` window is dropped so the
+# native PROMQL command emits a *windowless* rate/increase, letting Elastic size
+# the lookback to the step at view time (issue #273). Only ``rate``/``increase``
+# are matched: Elastic's windowless form is confirmed for those two; other range
+# functions (``irate``, ``*_over_time``, ``delta`` …) keep a fixed window because
+# a windowless form for them is not confirmed and could emit an invalid query.
+# The selector body forbids ``(``/``)`` so a range-on-nonselector shape (already
+# rejected upstream) is never rewritten here.
+#
+# The vector selector accepts every shape ``can_use_native_promql`` does: a
+# metric name (``metric``), a metric name with a label set (``metric{job="api"}``),
+# or a selector-only vector with no leading metric name (``{__name__="m"}`` /
+# ``{job="api"}``). Without the selector-only branch #273 would silently freeze
+# those brace-only vectors to ``[5m]`` (issue #273 review).
+#
+# ``\s*`` before the ``{`` tolerates upstream dashboards that space out the
+# selector (``metric {job="api"}``); the fixed-window fallback below collapses
+# that space, and this rewrite runs first, so without it #273 would silently
+# miss the spaced form and freeze it to ``[5m]``.
+#
+# The label set is matched by ``_PROMQL_LABEL_SELECTOR`` (defined just below),
+# which is quote-aware so a value containing braces stays adaptive (#273 review).
+#
+# The trailing negative lookahead leaves a range vector that carries an
+# ``offset`` / ``@`` modifier alone: ``rate(foo[$__rate_interval] offset 5m)``
+# must not become ``rate(foo offset 5m)`` (a windowless-with-modifier form that
+# is not confirmed and drops the range before the modifier). Skipping the match
+# lets it fall through to the fixed-window path -> ``rate(foo[5m] offset 5m)``,
+# the same valid query the pre-#273 code emitted.
+#
+# A PromQL label set ``{...}`` whose quoted values may contain ``{``/``}`` (e.g.
+# ``{route="/api/{id}"}``). A naive ``[^{}]*`` stops at the first brace inside
+# such a value, so scan the body as double-/single-quoted string literals (with
+# escapes) or any char that is not a brace or quote. The alternatives are
+# mutually exclusive on their first char, so the outer ``*`` cannot backtrack
+# catastrophically.
+_PROMQL_LABEL_SELECTOR = (
+    r"\{(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^{}\"'])*\}"
+)
+_RATE_INCREASE_ADAPTIVE_WINDOW_RE = re.compile(
+    r"(\b(?:rate|increase)\s*\(\s*"
+    r"(?:[A-Za-z_:][A-Za-z0-9_:]*(?:\s*" + _PROMQL_LABEL_SELECTOR + r")?"
+    r"|" + _PROMQL_LABEL_SELECTOR + r"))"
+    r"\s*\[\s*" + _GRAFANA_ADAPTIVE_INTERVAL_MACRO + r"\s*\]"
+    r"(?!\s*(?:offset\b|@))"
+)
+
 
 def _strip_promql_string_literals(expr):
     text = str(expr or "")
@@ -901,12 +1285,28 @@ def _promql_has_known_server_bug(expr):
 
 
 def _clean_promql_for_native_with_state(
-    expr, runtime_features=None, regex_default_params=None
+    expr, runtime_features=None, regex_default_params=None, adaptive_window=False
 ):
     """Strip Grafana template variables from a PromQL expression so it can be
-    sent to the ES PROMQL engine which does not know about ``$var`` syntax."""
+    sent to the ES PROMQL engine which does not know about ``$var`` syntax.
+
+    When *adaptive_window* is set, a ``rate``/``increase`` whose window is a
+    Grafana adaptive macro (``$__rate_interval`` etc.) is emitted *windowless*
+    so Elastic sizes the lookback to the view at query time, preserving
+    Grafana's adaptive behavior instead of freezing a fixed window (issue #273).
+    Explicit numeric windows (``[5m]``) are always kept verbatim. This form does
+    not parse under ``promql-parser`` (windowless rate is a type error there), so
+    callers that still need to parse the expression must clean without this flag.
+    """
     had_bare_variable = False
     expr = substitute_grafana_range_macros(expr)
+    # #273: a Grafana adaptive-window macro on rate()/increase() means "size the
+    # lookback to the view", so drop the window and let the native PROMQL command
+    # pick it from the step. Runs before the fixed-window substitution below so
+    # the macro never collapses to a frozen ``[5m]`` first. Explicit windows and
+    # other range functions fall through to the fixed-window handling.
+    if adaptive_window:
+        expr = _RATE_INCREASE_ADAPTIVE_WINDOW_RE.sub(r"\1", expr)
     # Replace $__rate_interval / $__interval with the window from the
     # expression itself, falling back to 5m.
     window_match = re.search(r"\[(\d+[smhd])\]", expr)
@@ -933,6 +1333,11 @@ def _clean_promql_for_native_with_state(
     # Some upstream dashboards contain whitespace between a metric name and its
     # selector/range, e.g. ``node_filesystem_avail_bytes {..}``, which ES rejects.
     expr = re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*)\s+([\[{])", r"\1\2", expr)
+    # Same gap after a label-selector close brace, e.g. ``foo{job="api"} [5m]``.
+    # This shows up on the fixed-window path (explicit windows, or an adaptive
+    # macro kept fixed because of a trailing offset/@ modifier, issue #273), so
+    # normalize it too rather than emit a malformed ``} [`` range.
+    expr = re.sub(r"\}\s+([\[{])", r"}\1", expr)
 
     # Remove any remaining bare $variable tokens (e.g. in arithmetic).
     # Multiplicative identity preserves magnitude better than 0.
@@ -957,13 +1362,298 @@ def _clean_promql_for_native_with_state(
     return expr, had_bare_variable
 
 
-def _clean_promql_for_native(expr, runtime_features=None, regex_default_params=None):
+def _clean_promql_for_native(
+    expr, runtime_features=None, regex_default_params=None, adaptive_window=False
+):
     cleaned, _ = _clean_promql_for_native_with_state(
         expr,
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
+        adaptive_window=adaptive_window,
     )
     return cleaned
+
+
+# A PromQL string literal (label value); its contents must never be rewritten.
+_PROMQL_STRING_LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+# A candidate PromQL identifier: a metric name, function name, keyword, or label
+# key. Anchored so it never matches inside a larger identifier or an already
+# dot-qualified name (`attributes.job` — the `job` is skipped).
+_PROMQL_IDENT_RE = re.compile(r"(?<![\w.])([A-Za-z_:][A-Za-z0-9_:]*)")
+# Vector-matching / aggregation modifiers that introduce a parenthesised list of
+# *label* names (`by (a, b)`, `on(x) group_left(y)`), never metric selectors.
+_PROMQL_GROUPING_MODIFIERS = frozenset(
+    {"by", "without", "on", "ignoring", "group_left", "group_right"}
+)
+# Aggregation operators. In the usual `sum(...)` form they are caught by the
+# function-call guard (identifier followed by `(`), but in the modifier-before-
+# args form (`sum by (job) (metric)`) the operator is followed by `by`/`without`
+# instead, so it must be reserved explicitly.
+_PROMQL_AGG_OPERATORS = frozenset(
+    {
+        "sum", "min", "max", "avg", "group", "count", "count_values",
+        "stddev", "stdvar", "topk", "bottomk", "quantile", "limitk", "limit_ratio",
+    }
+)
+# PromQL words that read as identifiers but are never metric selectors, so they
+# must not be prefixed even if a colliding `metrics.<word>` field exists. The
+# grouping modifiers are included for the case where they appear without a
+# following `(` (`a * group_left b`).
+_PROMQL_RESERVED_WORDS = _PROMQL_GROUPING_MODIFIERS | _PROMQL_AGG_OPERATORS | frozenset(
+    {"offset", "bool", "and", "or", "unless", "atan2", "start", "end", "inf", "nan"}
+)
+
+
+def _promql_label_names(expr):
+    """Return label names used by matchers or grouping modifiers."""
+    labels = set()
+    for selector in re.findall(r"\{([^{}]*)\}", str(expr or "")):
+        labels.update(
+            re.findall(
+                r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)",
+                selector,
+            )
+        )
+    sanitized = _strip_promql_string_literals(str(expr or ""))
+    for group in re.findall(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^)]*)\)",
+        sanitized,
+        re.IGNORECASE,
+    ):
+        labels.update(name.strip() for name in group.split(",") if name.strip())
+    # __name__ is a metric selector, not a stored label field.
+    labels.discard("__name__")
+    return labels
+
+
+def _promql_uses_rule_pack_label_overrides(expr, rule_pack):
+    """Whether native PROMQL would bypass an explicit label rule."""
+    labels = _promql_label_names(expr)
+    overridden = set(getattr(rule_pack, "label_rewrites", {}))
+    overridden.update(getattr(rule_pack, "ignored_labels", []))
+    return bool(labels & overridden)
+
+
+def _record_passthrough_native_labels(expr, resolver):
+    """Validate raw native-PROMQL labels without remapping the expression."""
+    if not getattr(resolver, "_passthrough", False):
+        return
+    resolve = getattr(resolver, "resolve_label", None)
+    if not callable(resolve):
+        return
+    for label in sorted(_promql_label_names(expr)):
+        resolve(label)
+
+
+def _native_metric_map_binding(resolver, metric_name: str):
+    """Return a native-PromQL-compatible metric_map binding, if any."""
+    resolve = getattr(resolver, "resolve_metric_map_result", None)
+    if not callable(resolve):
+        return None
+    try:
+        result = resolve(metric_name)
+    except Exception:
+        return None
+    if result is None:
+        return None
+    from observability_migration.core.metric_mapping import binding_from_result
+
+    binding = binding_from_result(result)
+    return binding if binding.native_promql_compatible else None
+
+
+def _recording_rule_metric_map_notes(metric_names, rule_pack) -> list[str]:
+    from observability_migration.core.metric_mapping import looks_like_recording_rule_metric
+
+    metric_map = getattr(rule_pack, "metric_map", None) or {}
+    notes: list[str] = []
+    for metric_name in sorted(set(metric_names)):
+        if not looks_like_recording_rule_metric(metric_name):
+            continue
+        if metric_name in metric_map:
+            continue
+        notes.append(
+            "Recording-rule metric "
+            f"{metric_name!r} has no metric_map entry; add a mapping or "
+            "recreate the rule in the target"
+        )
+    return notes
+
+
+def _prefix_native_metric_fields(expr, resolver):
+    """Rewrite bare metric selectors in a native PROMQL expression to their
+    resolved ``metrics.<name>`` field (issue #270).
+
+    OTel Collector (``prometheusreceiver``) indices store each metric under a
+    ``metrics.<name>`` prefix, so a native ``value=(<bare>)`` command finds no
+    field and the panel renders empty. Only a token in *metric-selector*
+    position is rewritten; the scan tracks PromQL structure so that identifiers
+    which merely look like metric names are protected regardless of the target's
+    field caps:
+
+    - label-matcher keys and values inside ``{...}``;
+    - grouping labels inside a modifier's parens (``by (x)``, ``on(y)``,
+      ``group_left(z)``);
+    - reserved words (``offset``/``bool``/``and``/``or``/``unless``/…);
+    - function names (any identifier directly followed by ``(``);
+    - string literals (label values).
+
+    The one label position that *is* rewritten is the ``__name__`` metric-name
+    matcher: ``{__name__="foo"}`` is equivalent to selecting ``foo``, so its
+    *exact*-match value takes the same field-cache-gated prefix. Regex
+    (``=~``) and negative (``!=``/``!~``) ``__name__`` matchers are left bare —
+    prefixing a regex is fragile and negation would change the selection.
+
+    Both guards matter and neither is sufficient alone. A ``metrics.<token>``
+    field can legitimately exist for a *label* name that collides with a metric
+    name in the target, so ``resolve_metric_field`` / ``field_exists`` cannot
+    distinguish a selector from a label key — only the structural position can.
+    Conversely, ``resolve_metric_field`` returns ``metrics.<name>``
+    unconditionally under the ``prometheus_native`` profile (for the preflight
+    contract), so the resolved prefix is still confirmed against the field cache
+    (``field_exists``) before it is applied.
+
+    Deliberately runs on the *emitted* expression string, after AST analysis
+    (counter/gauge detection, group-column shape) has already read the bare
+    names — the resolver is keyed on the bare metric name, and the PromQL parser
+    would choke on a dotted metric selector.
+    """
+    if resolver is None or not expr:
+        return expr
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if not callable(resolve):
+        return expr
+    field_exists = getattr(resolver, "field_exists", None)
+
+    def _prefixed_field_is_indexed(name):
+        # Confirm ``metrics.<name>`` is a real field and the bare token is not,
+        # so we never invent a prefix for an index that stores the metric bare.
+        # When the resolver can't answer (no ``field_exists`` / empty cache),
+        # fall back to the resolver's decision.
+        if not callable(field_exists):
+            return True
+        prefixed = field_exists(f"metrics.{name}")
+        if prefixed is None:
+            return True
+        return bool(prefixed) and not field_exists(name)
+
+    def _resolve_selector(name, tail):
+        # A trailing `(` marks a function call, never a metric selector.
+        if tail.lstrip()[:1] == "(":
+            return None
+        if name in _PROMQL_RESERVED_WORDS:
+            return None
+        binding = _native_metric_map_binding(resolver, name)
+        if binding is not None:
+            return binding.target_field
+        try:
+            resolved = resolve(name)
+        except Exception:
+            return None
+        if resolved != f"metrics.{name}":
+            return None
+        return resolved if _prefixed_field_is_indexed(name) else None
+
+    def _rewrite_name_matcher_value(literal_text):
+        # `{__name__="foo"}` is the metric-name matcher — equivalent to selecting
+        # ``foo`` — so its *exact*-match value takes the same field-cache-gated
+        # ``metrics.`` prefix a bare selector would. Only plain (non-regex)
+        # values reach here; the gate still confirms the prefixed field exists
+        # and the bare name does not, so this is a no-op on bare-metric targets.
+        quote = literal_text[:1]
+        if quote not in "\"'" or len(literal_text) < 2:
+            return literal_text
+        value = literal_text[1:-1]
+        resolved = _resolve_selector(value, "")
+        return f"{quote}{resolved}{quote}" if resolved is not None else literal_text
+
+    out = []
+    i = 0
+    n = len(expr)
+    brace_depth = 0
+    # `__name__` exact-match matcher tracking: `name_key_pending` after the
+    # ``__name__`` key, `name_value_exact` once an exact ``=`` (not ``=~``/
+    # ``!=``/``!~``) confirms the next string literal is the metric name.
+    name_key_pending = False
+    name_value_exact = False
+    # One flag per open paren: True when the paren is a grouping-label list, so
+    # its contents are labels, not metrics. `expect_grouping` arms the next `(`
+    # after a grouping modifier keyword.
+    paren_is_grouping = []
+    expect_grouping = False
+    while i < n:
+        ch = expr[i]
+        if ch in "\"'":
+            literal = _PROMQL_STRING_LITERAL_RE.match(expr, i)
+            if literal:
+                text = literal.group(0)
+                out.append(
+                    _rewrite_name_matcher_value(text) if name_value_exact else text
+                )
+                name_value_exact = False
+                i = literal.end()
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            brace_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            brace_depth = max(0, brace_depth - 1)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            paren_is_grouping.append(expect_grouping)
+            expect_grouping = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            if paren_is_grouping:
+                paren_is_grouping.pop()
+            out.append(ch)
+            i += 1
+            continue
+        ident = _PROMQL_IDENT_RE.match(expr, i)
+        if ident:
+            name = ident.group(1)
+            protected = brace_depth > 0 or (
+                bool(paren_is_grouping) and paren_is_grouping[-1]
+            )
+            resolved = None if protected else _resolve_selector(name, expr[ident.end():])
+            out.append(resolved if resolved is not None else name)
+            # Arm grouping only when a bare modifier keyword is immediately
+            # followed by its paren list; any other identifier clears it.
+            expect_grouping = name in _PROMQL_GROUPING_MODIFIERS
+            # A `__name__` key inside `{...}` arms an exact-value rewrite; any
+            # other identifier ends a pending matcher.
+            name_key_pending = brace_depth > 0 and name == "__name__"
+            name_value_exact = False
+            i = ident.end()
+            continue
+        # Any other character (operators, brackets, whitespace).
+        if name_key_pending and ch == "=":
+            # Exact `=`, unless it is the `=~` regex matcher (never rewritten).
+            name_value_exact = expr[i + 1:i + 2] != "~"
+            name_key_pending = False
+        elif name_key_pending and ch == "!":
+            # `!=` / `!~`: negative matcher — prefixing would change meaning.
+            name_key_pending = False
+        elif not ch.isspace():
+            # Any other non-space token ends a pending `__name__` matcher.
+            name_key_pending = False
+            name_value_exact = False
+        # Only whitespace may sit between a grouping modifier and its `(`;
+        # anything else cancels a pending grouping expectation.
+        if not ch.isspace():
+            expect_grouping = False
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _extract_legend_labels(legend_format):
@@ -1007,7 +1697,8 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
-                              instant=False, regex_default_params=None, step=None):
+                              instant=False, regex_default_params=None, step=None,
+                              resolver=None, adaptive_step=False):
     """Build a PROMQL ES|QL source command that wraps the original PromQL expression.
 
     Uses the explicit value column name syntax ``value=(query)`` so that the
@@ -1031,11 +1722,18 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     """
     if not can_use_native_promql(promql_expr, runtime_features=runtime_features):
         raise ValueError("PromQL expression is not supported by the native PROMQL path")
+    # A windowless rate()/increase() only makes sense on a range query, whose
+    # step Elastic auto-sizes; an instant tile has no step, so keep its window
+    # fixed. So the adaptive window (#273) rides on the adaptive step (#272) and
+    # applies only to range dashboard panels (``adaptive_step`` and not instant).
+    adaptive_window = adaptive_step and not instant
     cleaned = _clean_promql_for_native(
         promql_expr,
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
+        adaptive_window=adaptive_window,
     )
+    cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
@@ -1045,16 +1743,35 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     # (issues #127, #102); everything else is a range plot. ``time=?_tend`` is
     # opt-in: callers that post-process the ``step`` column (e.g. the alert
     # ``LAST(value, step)`` reduction) leave ``instant`` False to keep ``step=``.
-    # Range callers may pass an explicit ``step`` (e.g. a migrated Grafana alert
-    # honoring the source query interval, issue #209); when omitted the
-    # documented default keeps the historical resolution.
-    step_value = str(step).strip() if step else _DEFAULT_NATIVE_PROMQL_STEP
-    selector = "time=?_tend" if instant else f"step={step_value}"
+    #
+    # Range resolution follows this precedence:
+    #   1. instant           -> ``time=?_tend`` (no step column)
+    #   2. explicit ``step`` -> ``step=<value>`` (e.g. a migrated Grafana alert
+    #      honoring the source query interval, issue #209)
+    #   3. ``adaptive_step`` -> bind the window to the dashboard time picker via
+    #      ``start=?_tstart end=?_tend buckets=50`` so Elastic sizes the
+    #      resolution to the view (like Grafana's ``$__interval``) without a
+    #      frozen step (issue #272). A *bare* stepless command is rejected by ES
+    #      ("provide either [step] or all of [start], [end], and [buckets]"), so
+    #      the timing args must be present; Kibana materializes the params at
+    #      render time. The command still emits the ``step`` time column.
+    #   4. otherwise         -> the documented ``step=1m`` default, preserving
+    #      historical behavior for direct callers that opt into neither.
+    if instant:
+        selector = "time=?_tend"
+    elif step:
+        selector = f"step={str(step).strip()}"
+    elif adaptive_step:
+        selector = _NATIVE_PROMQL_ADAPTIVE_SELECTOR
+    else:
+        selector = f"step={_DEFAULT_NATIVE_PROMQL_STEP}"
+
+    header = f"PROMQL index={index}" + (f" {selector}" if selector else "")
 
     if kibana_type in ("metric", "gauge"):
-        return f'PROMQL index={index} {selector} value=({cleaned})'
+        return f'{header} value=({cleaned})'
 
-    base = f'PROMQL index={index} {selector} value=({cleaned})'
+    base = f'{header} value=({cleaned})'
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
@@ -1099,6 +1816,37 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     return base
 
 
+def _promql_fragment_has_nested_agg(frag) -> bool:
+    """True when *frag* (or a binary operand) is a PromQL nested aggregation.
+
+    Nested aggregations such as ``count(count(...) by (cpu))`` are valid PromQL
+    and the ES|QL translator handles them, but Elasticsearch's native PROMQL
+    command often rejects them at runtime. Detect via the AST family rather than
+    a brittle regex so ``max(avg_over_time(...))`` (range_agg) stays native.
+    """
+    if frag is None:
+        return False
+    family = str(getattr(frag, "family", "") or "")
+    if family == "nested_agg":
+        return True
+    if family == "binary_expr":
+        extra = getattr(frag, "extra", {}) or {}
+        return _promql_fragment_has_nested_agg(extra.get("left_frag")) or _promql_fragment_has_nested_agg(
+            extra.get("right_frag")
+        )
+    return False
+
+
+def _promql_has_nested_aggregation(promql_expr) -> bool:
+    if not promql_expr or not str(promql_expr).strip():
+        return False
+    try:
+        cleaned = _clean_promql_for_native(promql_expr)
+        return _promql_fragment_has_nested_agg(_parse_fragment(cleaned or promql_expr))
+    except Exception:
+        return False
+
+
 def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
@@ -1122,6 +1870,8 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     if _promql_has_known_server_bug(promql_expr):
         return False
     if _promql_has_range_on_nonselector(promql_expr):
+        return False
+    if _promql_has_nested_aggregation(promql_expr):
         return False
     return True
 
@@ -1273,6 +2023,38 @@ def _native_promql_query_survives_validation(rule_pack, query) -> bool:
     return False
 
 
+def _metric_map_bypass_note(metric_names, rule_pack):
+    """Warn when native PROMQL cannot apply a class-2 ``metric_map`` entry.
+
+    Class-1 exact mappings are rewritten in native PromQL via
+    ``_prefix_native_metric_fields``. Class-2 mappings need ES|QL so
+    transform/filter/scale semantics are honored.
+    """
+    metric_map = getattr(rule_pack, "metric_map", None) or {}
+    if not metric_map:
+        return None
+    from observability_migration.core.metric_mapping import binding_from_result, resolve_metric_map
+
+    class2_mapped: list[str] = []
+    for name in metric_names:
+        if name not in metric_map:
+            continue
+        result = resolve_metric_map(name, metric_map)
+        if result is None:
+            continue
+        binding = binding_from_result(result)
+        if not binding.native_promql_compatible:
+            class2_mapped.append(name)
+    if not class2_mapped:
+        return None
+    mapped = sorted(set(class2_mapped))
+    return (
+        f"metric_map class-2 entries not applied for {', '.join(mapped)}: "
+        "native PROMQL cannot honor transform/filter/scale; use ES|QL translation "
+        "(--metric-map-file auto-selects it, or pass --translation-mode esql)"
+    )
+
+
 def _translate_panel_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
@@ -1297,6 +2079,16 @@ def _translate_panel_native_promql(
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
     runtime_features = getattr(rule_pack, "runtime_features", {})
+    _record_passthrough_native_labels(expr, resolver)
+    if (
+        getattr(resolver, "_passthrough", False)
+        and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+    ):
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+        )
+        return None
     if not can_use_native_promql(expr, runtime_features=runtime_features):
         if (
             _promql_label_matcher_has_template_variable(expr)
@@ -1308,15 +2100,11 @@ def _translate_panel_native_promql(
             )
         return None
     # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
-    # would be emitted as a named param *inside* the opaque PROMQL command
-    # string (``{instance=~?instance}``). Kibana dashboard controls only bind
-    # ``?param`` references they can see in native ES|QL, so a param trapped in
-    # the PROMQL command stays unbound and the panel fails at render with
-    # "Parameter [?instance] value not found". Fall through to ES|QL
-    # translation, which surfaces the binding as a visible ``WHERE … RLIKE
-    # ?var`` clause the control can bind (issue #230).
-    if _promql_label_matcher_has_template_variable(expr):
-        return None
+    # used to force an ES|QL fallthrough (#230) because Kibana could not bind
+    # ``?param`` inside an opaque PROMQL command. When the target advertises
+    # ``promql_label_matcher_params`` (issue #319 / ES+Kibana 9.5+), keep native
+    # PROMQL and let ``_clean_promql_for_native`` rewrite ``$var`` → ``?var``.
+    # The unsupported case is already rejected by ``can_use_native_promql`` above.
     # Pre-flight type check: if the source PromQL applies a counter-style
     # range function (``rate``/``irate``/``increase``) to a metric that
     # the target index has typed as gauge, the native PROMQL command will
@@ -1330,6 +2118,23 @@ def _translate_panel_native_promql(
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
+    # Native PROMQL returns before PANEL_TRANSLATORS. Multi-series bargauge
+    # panels need ``bargauge_panel_rule`` (bar + category breakdown); keeping
+    # them native collapses every series into one gauge tile. Defer when the
+    # expression preserves per-series labels (``_timeseries``), has legend
+    # placeholders, or has multiple targets. A true scalar stays native.
+    if panel_type == "bargauge":
+        _, shape_groups = _native_promql_result_shape(expr)
+        if legend_labels or len(targets_with_expr) > 1 or shape_groups == ["_timeseries"]:
+            return None
+    # Instant tables without an explicit ``by (...)`` (or legend placeholders)
+    # would emit only a ``value`` column and drop Prometheus label columns
+    # (ALERTS → alertname/severity/…). Prefer the ES|QL table path.
+    if panel_type in ("table", "table-old") and _target_summary_mode(panel_type, target):
+        _, shape_groups = _native_promql_result_shape(expr)
+        real_groups = [col for col in shape_groups if col != "_timeseries"]
+        if not real_groups and not legend_labels:
+            return None
 
     index = datasource_index or "metrics-prometheus-*"
     regex_default_params = getattr(rule_pack, "_regex_default_param_names", frozenset())
@@ -1399,28 +2204,55 @@ def _translate_panel_native_promql(
             and not _is_bare_counter_reference(expr, resolver, rule_pack)
         ):
             return None
-    # Emit an instant (``time=?_tend``) query when the source target is one:
-    # single-value tiles, or a ``instant: true`` table-format target (issue
-    # #102). ``_target_summary_mode`` already encodes that policy for the ES|QL
-    # path, so reuse it for parity; ``kibana_type in (metric, gauge)`` keeps the
-    # existing single-value behavior even when the panel type doesn't map there.
+    # Dashboard metric/gauge tiles collapse a *range* query via
+    # ``LAST(value, step)`` (below) instead of PROMQL instant-at-``?_tend``.
+    # Instant-at-now returns empty when the latest sample lags the dashboard
+    # end (seeded/lab data, scrape stalls); ES|QL gauges already reduce over
+    # the view window — match that. True instant (``time=?_tend``) stays for
+    # ``instant: true`` table targets (#102). Alert instant (#200) calls
+    # ``build_native_promql_query`` directly and is unchanged.
     #
-    # But never let an instant query reach an XY (line/bar/area) spec: those bind
+    # Never let an instant query reach an XY (line/bar/area) spec: those bind
     # the x-axis to the ``step`` time column, which an instant query does NOT emit
     # (phantom axis / 400 — the #127 failure mode). ``_target_summary_mode``
     # returns True unconditionally for ``bargauge`` (→ ``bar``), so without this
     # guard a Prometheus ``bargauge`` panel would regress to a broken bar chart.
-    instant = kibana_type in ("metric", "gauge") or (
+    range_collapsed_tile = kibana_type in ("metric", "gauge")
+    instant = (not range_collapsed_tile) and (
         _target_summary_mode(panel_type, target)
         and kibana_type not in ("line", "bar", "area")
     )
+    # Dashboard panels opt into adaptive resolution: a range plot emits no
+    # ``step=`` so Kibana/Elastic re-buckets it to the dashboard time range like
+    # Grafana (#272), and a rate()/increase() over ``$__rate_interval`` is
+    # emitted windowless so its lookback tracks the view too (#273). Instant
+    # tiles ignore both (they carry no step). Alerts never take this path — they
+    # call ``build_native_promql_query`` directly with an explicit/default step.
+    #
+    # Explicit Grafana panel ``interval`` wins over adaptive bucketing and is
+    # emitted as ``step=`` (issue #318). Bare stepless PROMQL is rejected by ES,
+    # so auto panels keep ``start/end/buckets``. Keep ``adaptive_step=True`` even
+    # with an explicit step so ``$__rate_interval`` still becomes windowless
+    # (#273) — ``step=`` only overrides the timing selector precedence.
+    panel_step = _grafana_panel_fixed_interval(panel)
     promql_query = build_native_promql_query(expr, index=index,
                                              legend_labels=legend_labels,
                                              kibana_type=kibana_type,
                                              legend_format=legend_format,
                                              runtime_features=runtime_features,
                                              instant=instant,
-                                             regex_default_params=regex_default_params)
+                                             regex_default_params=regex_default_params,
+                                             resolver=resolver,
+                                             step=panel_step,
+                                             adaptive_step=True)
+    if range_collapsed_tile:
+        # Keep one row per series at the latest step in the view. Scalars have
+        # no ``_timeseries``; multi-series tiles group on it so Kibana still
+        # sees one current value per series (same fan-out instant used to emit).
+        if "_timeseries" in group_cols:
+            promql_query = f"{promql_query}\n| STATS value = LAST(value, step) BY _timeseries"
+        else:
+            promql_query = f"{promql_query}\n| STATS value = LAST(value, step)"
     # Live native-PROMQL parse gate: if a validator is attached (``--es-url``)
     # and the target rejects this query at parse time, degrade to ES|QL (return
     # None so the caller falls through to the ES|QL translator). A data/field gap
@@ -1434,13 +2266,21 @@ def _translate_panel_native_promql(
     if had_bare_variable:
         _append_unique(panel_notes, "Grafana template variables in arithmetic were replaced with literal 1")
 
-    static_legend_label = (legend_format or "").strip() and not legend_labels
+    raw_legend = (legend_format or "").strip()
+    # ``__auto`` is Grafana's "derive series identity from labels" sentinel —
+    # not a literal series name. Treating it as a static label made Lens break
+    # down on a missing ``label`` column (issue #317).
+    static_legend_label = bool(raw_legend) and raw_legend != "__auto" and not legend_labels
     if "_timeseries" in group_cols:
         if legend_labels:
             effective_group_cols = legend_labels
         elif static_legend_label:
             # Single static label per series.
             effective_group_cols = ["label"]
+        elif raw_legend == "__auto":
+            # Native PROMQL keeps the ``_timeseries`` label blob; break down on
+            # it so each series gets a legend entry (issue #317).
+            effective_group_cols = ["_timeseries"]
         else:
             # No legend dimension; the query keeps just step+value.
             effective_group_cols = []
@@ -1461,8 +2301,19 @@ def _translate_panel_native_promql(
     yaml_panel["esql"] = native_panel
     enrich_yaml_panel_display(yaml_panel, panel)
     _label_native_promql_value_metric(yaml_panel, title=title, legend_format=legend_format)
+    _apply_series_override_axes(yaml_panel, panel, [])
 
     notes = list(panel_notes) + ["Native PROMQL: original PromQL reused via ES|QL PROMQL command"]
+    metric_map_note = _metric_map_bypass_note(
+        _collect_source_metrics(native_fragment), rule_pack
+    )
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
+    for recording_rule_note in _recording_rule_metric_map_notes(
+        _collect_source_metrics(native_fragment),
+        rule_pack,
+    ):
+        _append_unique(notes, recording_rule_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -1489,12 +2340,12 @@ def _translate_panel_native_promql(
     query_ir.target_index = index
     query_ir.target_query = promql_query
 
-    confidence = 0.90
+    confidence = 0.90 if not metric_map_note else 0.7
     panel_result = PanelResult(
         title,
         panel_type,
         kibana_type,
-        "migrated",
+        "migrated_with_warnings" if metric_map_note else "migrated",
         confidence,
         promql_expr=expr,
         # Record the *emitted* panel query, not the bare ``PROMQL …`` command.
@@ -1506,6 +2357,7 @@ def _translate_panel_native_promql(
         # accessors (issue #109). ``query_ir.target_query`` stays bare for the
         # parity oracle.
         esql_query=native_panel.get("query", promql_query),
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
@@ -1523,7 +2375,7 @@ def _translate_panel_native_promql(
 def _translate_multi_target_native_promql(
     panel, yaml_panel, title, panel_type, kibana_type,
     datasource, datasource_index, rule_pack, panel_notes,
-    panel_inventory, targets_with_expr,
+    panel_inventory, targets_with_expr, resolver=None,
 ):
     """Combine multiple PromQL targets into a single native PROMQL panel.
 
@@ -1542,6 +2394,16 @@ def _translate_multi_target_native_promql(
     for target, _ in targets_with_expr:
         expr = target.get("expr", "")
         runtime_features = getattr(rule_pack, "runtime_features", {})
+        _record_passthrough_native_labels(expr, resolver)
+        if (
+            getattr(resolver, "_passthrough", False)
+            and _promql_uses_rule_pack_label_overrides(expr, rule_pack)
+        ):
+            _append_unique(
+                panel_notes,
+                "Native PROMQL skipped: explicit label rules require ES|QL field resolution",
+            )
+            return None
         if not can_use_native_promql(expr, runtime_features=runtime_features):
             if (
                 _promql_label_matcher_has_template_variable(expr)
@@ -1552,20 +2414,32 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        # Control-bound label-matcher variables can't bind inside the opaque
-        # PROMQL command string; fall through to ES|QL so the control binds via
-        # a visible ``WHERE … RLIKE ?var`` clause (issue #230).
-        if _promql_label_matcher_has_template_variable(expr):
-            return None
+        # Label-matcher template vars keep native PROMQL when
+        # ``promql_label_matcher_params`` is supported (#319); otherwise
+        # ``can_use_native_promql`` already returned above (#230).
+        regex_default = getattr(
+            rule_pack, "_regex_default_param_names", frozenset()
+        )
+        # Parse the fixed-window form (windowless rate is a type error under
+        # promql-parser), but emit the adaptive/windowless form: these panels are
+        # always range XY charts, so their rate()/increase() over
+        # ``$__rate_interval`` tracks the view like Grafana (#273).
         cleaned, bare = _clean_promql_for_native_with_state(
             expr,
             runtime_features=runtime_features,
-            regex_default_params=getattr(
-                rule_pack, "_regex_default_param_names", frozenset()
-            ),
+            regex_default_params=regex_default,
+        )
+        emit_cleaned, _ = _clean_promql_for_native_with_state(
+            expr,
+            runtime_features=runtime_features,
+            regex_default_params=regex_default,
+            adaptive_window=True,
         )
         had_bare_variable = had_bare_variable or bare
+        # Parse the bare form for AST analysis, then rewrite metric selectors to
+        # their `metrics.<name>` field for the emitted command (issue #270).
         target_fragments.append(_parse_fragment(cleaned or expr))
+        emit_cleaned = _prefix_native_metric_fields(emit_cleaned, resolver)
 
         legend = (target.get("legendFormat") or "").strip()
         if not legend or legend == "{{}}":
@@ -1573,12 +2447,21 @@ def _translate_multi_target_native_promql(
         legend = legend.replace('"', '\\"')
 
         parts.append(
-            f'label_replace({cleaned}, "__series", "{legend}", "", "")'
+            f'label_replace({emit_cleaned}, "__series", "{legend}", "", "")'
         )
 
     combined_expr = " or ".join(parts)
-    step = _DEFAULT_NATIVE_PROMQL_STEP
-    promql_query = f"PROMQL index={index} step={step} value=({combined_expr})"
+    # #272 / #318: bind the overlay to the dashboard time range at view time, or
+    # honor an explicit Grafana panel ``interval`` as ``step=``.
+    panel_step = _grafana_panel_fixed_interval(panel)
+    if panel_step:
+        promql_query = (
+            f"PROMQL index={index} step={panel_step} value=({combined_expr})"
+        )
+    else:
+        promql_query = (
+            f"PROMQL index={index} {_NATIVE_PROMQL_ADAPTIVE_SELECTOR} value=({combined_expr})"
+        )
 
     # Live native-PROMQL parse gate (multi-target). A parse rejection degrades to
     # ES|QL translation; a data/field gap keeps native (issue #158).
@@ -1606,6 +2489,14 @@ def _translate_multi_target_native_promql(
     notes = list(panel_notes) + [
         "Native PROMQL: multi-target combined via label_replace + or",
     ]
+    all_source_metrics = []
+    for frag in target_fragments:
+        all_source_metrics.extend(_collect_source_metrics(frag))
+    metric_map_note = _metric_map_bypass_note(all_source_metrics, rule_pack)
+    if metric_map_note:
+        _append_unique(notes, metric_map_note)
+    for recording_rule_note in _recording_rule_metric_map_notes(all_source_metrics, rule_pack):
+        _append_unique(notes, recording_rule_note)
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
@@ -1670,8 +2561,14 @@ def _translate_multi_target_native_promql(
     query_ir.target_query = promql_query
 
     panel_result = PanelResult(
-        title, panel_type, kibana_type, "migrated", 0.80,
-        promql_expr=combined_expr, esql_query=promql_query,
+        title,
+        panel_type,
+        kibana_type,
+        "migrated_with_warnings" if metric_map_note else "migrated",
+        0.70 if metric_map_note else 0.80,
+        promql_expr=combined_expr,
+        esql_query=promql_query,
+        reasons=[metric_map_note] if metric_map_note else [],
     )
     return yaml_panel, _enrich_panel_result(
         panel_result,
@@ -1773,6 +2670,11 @@ def _enrich_panel_result(
                 "status": "not_required",
                 "actions": [],
             }
+    approximation_note = APPROXIMATED_VIS_TYPE_NOTES.get(panel_result.grafana_type)
+    if approximation_note and panel_result.status in ("migrated", "migrated_with_warnings"):
+        _append_unique(panel_result.reasons, approximation_note)
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.8)
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
@@ -1801,6 +2703,7 @@ def metric_panel_rule(context):
     context.yaml_panel["esql"] = _build_esql_metric_panel(
         context.translation.esql_query,
         metric_col=context.translation.output_metric_field or None,
+        panel=context.panel,
     )
     context.handled = True
     return "mapped to metric panel"
@@ -1873,6 +2776,31 @@ def bargauge_panel_rule(context):
     return "approximated bargauge panel"
 
 
+def _xy_layer_from_cross_index_spec(layer_spec, chart_type, mode=None, warnings=None):
+    """Build one YAML XY chart dict for a cross-index layer partition."""
+    metric_fields = list(layer_spec.get("metric_fields") or [])
+    group_fields = list(layer_spec.get("group_fields") or [])
+    query = layer_spec.get("query") or ""
+    if len(metric_fields) > 1:
+        return _build_esql_multi_series_xy(
+            query,
+            chart_type,
+            metric_fields=metric_fields,
+            by_cols=group_fields,
+            mode=mode,
+            warnings=warnings,
+        )
+    metric_col = metric_fields[0] if metric_fields else None
+    return _build_esql_xy_panel(
+        query,
+        chart_type,
+        metric_col=metric_col,
+        by_cols=group_fields,
+        mode=mode,
+        warnings=warnings,
+    )
+
+
 @PANEL_TRANSLATORS.register("xy_panel", priority=20)
 def xy_panel_rule(context):
     if context.kibana_type not in ("line", "bar", "area") or context.panel_type == "bargauge":
@@ -1883,6 +2811,28 @@ def xy_panel_rule(context):
     legend_template = primary.metadata.get("legend_format_template") or None
     legend_labels = _extract_legend_labels(legend_template) if legend_template else []
     composite_template = legend_template if len(legend_labels) >= 2 else None
+    cross_layers = primary.metadata.get("cross_index_layers") or []
+    if isinstance(cross_layers, list) and len(cross_layers) >= 2:
+        built = []
+        for layer_spec in cross_layers:
+            if not isinstance(layer_spec, dict) or not layer_spec.get("query"):
+                continue
+            layer_panel = _xy_layer_from_cross_index_spec(
+                layer_spec,
+                context.kibana_type,
+                mode=mode,
+                warnings=primary.warnings,
+            )
+            if isinstance(layer_panel, dict) and layer_panel.get("query"):
+                built.append(layer_panel)
+        if len(built) >= 2:
+            panel = dict(built[0])
+            # Additional full chart layers keep their own ES|QL query so mixed
+            # target_index panels do not collapse onto the first data stream.
+            panel["layers"] = built[1:]
+            context.yaml_panel["esql"] = panel
+            context.handled = True
+            return f"mapped to {context.kibana_type} panel (cross-index layers)"
     if series_fields:
         context.yaml_panel["esql"] = _build_esql_multi_series_xy(
             primary.esql_query,
@@ -2051,10 +3001,28 @@ def fallback_line_panel_rule(context):
     return f"fell back to {emitted_type} panel"
 
 
+def metrics_query_index(datasource_index=None, esql_index=None) -> str:
+    """Return the index/stream every *metrics query* must read.
+
+    Schema discovery already probes ``esql_index or data_view``. Native
+    ``PROMQL index=…`` and ES|QL ``TS``/``FROM`` must use that same target so
+    ``--esql-index`` cannot silently diverge from ``--data-view`` in ``auto``
+    mode. ``datasource_index`` / ``--data-view`` remains the Kibana UI / control
+    bind when callers pass it separately.
+    """
+    for candidate in (esql_index, datasource_index):
+        token = str(candidate or "").strip()
+        if token:
+            return token
+    return "metrics-*"
+
+
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                     llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
-    rule_pack = rule_pack or RulePackConfig()
+    rule_pack = _rule_pack_for_panel(rule_pack or RulePackConfig(), panel)
+    # Single metrics read target for native PROMQL and ES|QL (see metrics_query_index).
+    query_index = metrics_query_index(datasource_index, esql_index)
     panel_type = panel.get("type", "unknown")
     panel_analysis = analyze_panel_targets(panel)
     title = _coalesce_panel_title(panel, panel_analysis)
@@ -2082,6 +3050,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     raw_h = grid.get("h", 10)
     raw_x = grid.get("x", 0)
     raw_y = grid.get("y", 0)
+    source_panel_id = str(panel.get("id") or panel.get("panelId") or "").strip()
     yaml_panel = {
         "title": title,
         "size": {"w": KIBANA_GRID_COLS, "h": KIBANA_DEFAULT_HEIGHT},
@@ -2091,11 +3060,16 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         "_grafana_w": raw_w,
         "_grafana_h": raw_h,
     }
+    if source_panel_id:
+        # Survives on the in-memory YAML dict through layout/validation sync so
+        # post-validation pairing does not depend on leaf order. DashboardIR
+        # export strips underscore keys; title matching covers that path.
+        yaml_panel["_source_panel_id"] = source_panel_id
 
     kibana_type = _resolved_panel_type_map(rule_pack).get(panel_type)
     if panel_type == "graph" and kibana_type == "line":
         kibana_type = _infer_graph_chart_style(panel)
-    elif panel_type == "timeseries" and kibana_type == "line":
+    elif panel_type in ("timeseries", "state-timeline", "status-history") and kibana_type == "line":
         kibana_type = _infer_timeseries_chart_style(panel)
     if not kibana_type:
         reasons = [f"Unknown Grafana panel type: {panel_type}"]
@@ -2221,7 +3195,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if rule_pack.native_promql and query_language == "promql":
         native_result = _translate_panel_native_promql(
             panel, yaml_panel, title, panel_type, kibana_type,
-            datasource, datasource_index, rule_pack, panel_notes, panel_inventory,
+            datasource, query_index, rule_pack, panel_notes, panel_inventory,
             query_language, visible_targets, resolver=resolver,
         )
         if native_result is not None:
@@ -2262,8 +3236,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         try:
             t = translate_promql_to_esql(
                 expr,
-                datasource_index=datasource_index,
-                esql_index=esql_index,
+                datasource_index=query_index,
+                esql_index=query_index,
                 panel_type=panel_type,
                 rule_pack=rule_pack,
                 resolver=target_resolver,
@@ -2279,8 +3253,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         except Exception as exc:
             t = TranslationContext(
                 promql_expr=expr,
-                data_view=datasource_index,
-                index=esql_index or datasource_index,
+                data_view=query_index,
+                index=query_index,
                 rule_pack=rule_pack or RulePackConfig(),
                 resolver=target_resolver,
                 panel_type=panel_type,
@@ -2318,27 +3292,103 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     fused_extra = []
     fused_series = [primary] if feasible_translations else []
     if len(feasible_translations) > 1:
-        if panel_type in {"table", "table-old", "bargauge"}:
+        if panel_type in {"table", "table-old", "bargauge", "stat", "singlestat", "gauge"}:
             fused_series = _best_compatible_translation_group(feasible_translations)
         elif kibana_type in ("line", "bar", "area"):
             fused_series = [primary]
             for et in feasible_translations[1:]:
                 if _translations_compatible(*(fused_series + [et])):
                     fused_series.append(et)
+            # Same-index-incompatible targets may still share the panel via
+            # separate Lens layers when their ES|QL indexes differ.
+            if len(fused_series) < len(feasible_translations):
+                leftover = [t for t in feasible_translations if t not in fused_series]
+                for et in leftover:
+                    if _translation_query_index(et) and (
+                        _translation_query_index(et) != _translation_query_index(primary)
+                    ):
+                        fused_series.append(et)
         primary = fused_series[0]
         fused_extra = fused_series[1:]
         if len(fused_series) > 1:
-            merged_query = _build_multi_target_series_query(fused_series)
-            if merged_query:
-                primary.esql_query = merged_query["query"]
-                primary.source_type = merged_query["source_type"]
-                primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
-                primary.metadata["multi_series_metric_labels"] = merged_query.get("metric_label_hints", {})
-                primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
-                primary.output_metric_field = merged_query["metric_fields"][0]
-                primary.output_group_fields = merged_query["group_fields"]
-                for warning in merged_query["warnings"]:
-                    _append_unique(primary.warnings, warning)
+            index_groups = _partition_translations_by_index(fused_series)
+            distinct_indexes = [idx for idx, _ in index_groups if idx]
+            if len(distinct_indexes) > 1:
+                cross_layers = []
+                for _index, group in index_groups:
+                    layer = _fuse_same_index_series(group)
+                    if layer is None:
+                        continue
+                    cross_layers.append(layer)
+                if len(cross_layers) >= 2:
+                    primary.esql_query = cross_layers[0]["query"]
+                    primary.source_type = cross_layers[0]["source_type"]
+                    primary.metadata["cross_index_layers"] = cross_layers
+                    primary.metadata["multi_series_metric_fields"] = list(
+                        cross_layers[0].get("metric_fields") or []
+                    )
+                    primary.metadata["multi_series_metric_labels"] = dict(
+                        cross_layers[0].get("metric_label_hints") or {}
+                    )
+                    primary.output_metric_field = (
+                        (cross_layers[0].get("metric_fields") or [None])[0]
+                        or primary.output_metric_field
+                    )
+                    primary.output_group_fields = list(
+                        cross_layers[0].get("group_fields") or primary.output_group_fields or []
+                    )
+                    collapsed = []
+                    for layer in cross_layers:
+                        collapsed.extend(layer.get("targets") or [])
+                        for warning in layer.get("warnings") or []:
+                            _append_unique(primary.warnings, warning)
+                    primary.metadata["collapsed_targets"] = collapsed
+                    # Extra single-query overlays would fight per-index layers.
+                    fused_extra = []
+                    streams = ", ".join(
+                        layer.get("index") or "(default)" for layer in cross_layers
+                    )
+                    _append_unique(
+                        primary.warnings,
+                        "Split multi-target panel across distinct data streams "
+                        f"({streams}); each stream is a separate chart layer",
+                    )
+                else:
+                    # Fall through to single-query merge with whatever fused.
+                    merged_query = _build_multi_target_series_query(fused_series)
+                    if merged_query is None:
+                        merged_query = _merge_pretranslated_xy_queries(fused_series)
+                    if merged_query:
+                        primary.esql_query = merged_query["query"]
+                        primary.source_type = merged_query["source_type"]
+                        primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
+                        primary.metadata["multi_series_metric_labels"] = merged_query.get(
+                            "metric_label_hints", {}
+                        )
+                        primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
+                        primary.output_metric_field = merged_query["metric_fields"][0]
+                        primary.output_group_fields = merged_query["group_fields"]
+                        for warning in merged_query["warnings"]:
+                            _append_unique(primary.warnings, warning)
+            else:
+                merged_query = _build_multi_target_series_query(fused_series)
+                if merged_query is None:
+                    # Formula-plan fusion can fail on complex OR-chain targets that
+                    # each translate alone (MySQL Network Traffic). Fall back to
+                    # splicing the already-translated ES|QL bodies.
+                    merged_query = _merge_pretranslated_xy_queries(fused_series)
+                if merged_query:
+                    primary.esql_query = merged_query["query"]
+                    primary.source_type = merged_query["source_type"]
+                    primary.metadata["multi_series_metric_fields"] = merged_query["metric_fields"]
+                    primary.metadata["multi_series_metric_labels"] = merged_query.get(
+                        "metric_label_hints", {}
+                    )
+                    primary.metadata["collapsed_targets"] = merged_query.get("targets", [])
+                    primary.output_metric_field = merged_query["metric_fields"][0]
+                    primary.output_group_fields = merged_query["group_fields"]
+                    for warning in merged_query["warnings"]:
+                        _append_unique(primary.warnings, warning)
     if (
         len(targets_with_expr) > 1
         and len(fused_series) == 1
@@ -2372,6 +3422,28 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         primary.metadata["collapsed_targets"] = unfused_provenance
     primary.query_ir = build_query_ir(primary)
 
+    # Apply Grafana panel transformations to the fused wide ES|QL query
+    # *before* PANEL_TRANSLATORS (bargauge unpivot / XY binding) so
+    # calculateField/organize see the multi-series columns they name.
+    applied_transform_indices: list[int] = []
+    if primary.esql_query and panel.get("transformations"):
+        _seed_transform_metric_labels(panel, primary)
+        rewritten_query, tx_result = apply_transformations_to_esql(
+            panel,
+            primary,
+            esql_query=primary.esql_query,
+        )
+        primary.esql_query = rewritten_query
+        applied_transform_indices = list(tx_result.applied_indices)
+        for warning in tx_result.warnings:
+            _append_unique(primary.warnings, warning)
+        if tx_result.updated_metric_fields:
+            primary.metadata["multi_series_metric_fields"] = list(tx_result.updated_metric_fields)
+            primary.output_metric_field = tx_result.updated_metric_fields[0]
+        if tx_result.updated_metric_label_hints:
+            primary.metadata["multi_series_metric_labels"] = dict(tx_result.updated_metric_label_hints)
+        primary.query_ir = build_query_ir(primary)
+
     migrated_refs = {
         t.metadata.get("target_ref_id")
         for t in fused_series
@@ -2382,20 +3454,32 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     dropped_count = len(targets_with_expr) - migrated_target_count
     if dropped_count > 0:
         dropped_exprs = [
-            t.promql_expr
+            t.metadata.get("target_source_expr") or t.promql_expr
             for t in translations
-            if t.promql_expr and t.metadata.get("target_ref_id") not in migrated_refs
+            if t.metadata.get("target_ref_id") not in migrated_refs
+            and (t.metadata.get("target_source_expr") or t.promql_expr)
         ]
-        has_windows = any("windows_" in e for e in dropped_exprs)
+        windows_dropped_count = sum(1 for e in dropped_exprs if "windows_" in e)
+        # Only claim "dropped targets are Windows-specific" when every dropped
+        # target actually is one — a dashboard commonly carries one PromQL
+        # target per OS (Linux node_exporter vs. windows_exporter) alongside
+        # other, unrelated targets. If just some of the drops are
+        # Windows-specific, saying so unqualified implies the rest of the
+        # loss is also OS-irrelevant and hides a real gap (e.g. a Linux
+        # node_exporter target dropped for a genuine grouping mismatch).
+        if dropped_exprs and windows_dropped_count == len(dropped_exprs):
+            windows_suffix = " (dropped targets are Windows-specific)"
+        elif windows_dropped_count > 0:
+            windows_suffix = f" ({windows_dropped_count} of the dropped targets are Windows-specific)"
+        else:
+            windows_suffix = ""
         if migrated_target_count > 1:
             msg = f"Dropped {dropped_count} incompatible target(s); showing {migrated_target_count} mergeable targets"
-            if has_windows:
-                msg += " (dropped targets are Windows-specific)"
+            msg += windows_suffix
             _append_unique(primary.warnings, msg)
         elif migrated_target_count == 1:
             msg = f"Panel has {len(targets_with_expr)} PromQL targets but only 1 could be migrated"
-            if has_windows:
-                msg += " (dropped targets are Windows-specific)"
+            msg += windows_suffix
             _append_unique(primary.warnings, msg)
 
     if primary.feasibility == "not_feasible" or not primary.esql_query:
@@ -2406,8 +3490,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         ):
             multi_result = _translate_multi_target_native_promql(
                 panel, yaml_panel, title, panel_type, kibana_type,
-                datasource, datasource_index, rule_pack, panel_notes,
-                panel_inventory, targets_with_expr,
+                datasource, query_index, rule_pack, panel_notes,
+                panel_inventory, targets_with_expr, resolver=resolver,
             )
             if multi_result is not None:
                 return multi_result
@@ -2468,6 +3552,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 yaml_panel["esql"]["query"] = primary.esql_query
             _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
 
+    # Translators may have snapshotted the pre-transform query into yaml_panel;
+    # keep the applied-transform body authoritative when present.
+    if applied_transform_indices and primary.esql_query and isinstance(yaml_panel.get("esql"), dict):
+        yaml_panel["esql"]["query"] = primary.esql_query
     yaml_panel = _normalize_esql_panel_query(yaml_panel, primary.rule_pack)
     metric_labels = dict(primary.metadata.get("multi_series_metric_labels") or {})
     static_legend_label = primary.metadata.get("static_legend_label")
@@ -2482,6 +3570,31 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     if yaml_panel.get("esql", {}).get("query"):
         primary.esql_query = yaml_panel["esql"]["query"]
         primary.query_ir = build_query_ir(primary)
+    # Surface unmapped Prometheus recording-rule metrics on the ES|QL path
+    # (native PROMQL already does this) so operators see the same gap notes.
+    source_metrics_for_notes: list[str] = []
+    for series in list(fused_series or []) or [primary]:
+        frag = getattr(series, "fragment", None)
+        if frag is not None:
+            source_metrics_for_notes.extend(_collect_source_metrics(frag))
+        metric_name = str(getattr(series, "metric_name", "") or "").strip()
+        if metric_name:
+            source_metrics_for_notes.append(metric_name)
+    if not source_metrics_for_notes:
+        from observability_migration.core.metric_mapping.scaffold import (
+            _PROMQL_METRIC_TOKEN_RE,
+        )
+
+        for expr in promql_exprs or []:
+            source_metrics_for_notes.extend(
+                match.group(1)
+                for match in _PROMQL_METRIC_TOKEN_RE.finditer(str(expr or ""))
+            )
+    for recording_rule_note in _recording_rule_metric_map_notes(
+        source_metrics_for_notes,
+        rule_pack,
+    ):
+        _append_unique(primary.warnings, recording_rule_note)
     panel_confidence = 0.85 if not primary.warnings else 0.6
     status = "migrated" if not primary.warnings else "migrated_with_warnings"
 
@@ -2497,6 +3610,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         esql_query=primary.esql_query,
         trace=primary.trace + panel_context.trace,
     )
+    panel_result.applied_transform_indices = list(applied_transform_indices)
     return yaml_panel, _enrich_panel_result(
         panel_result,
         panel=panel,
@@ -2712,6 +3826,261 @@ def _try_collapse_same_metric_targets(translations):
     return collapsed
 
 
+_ESQL_ALIAS_TOKEN_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|'
+    r"'(?:\\.|[^'\\])*'|"
+    r"`(?:\\.|``|[^`])*`|"
+    r"[A-Za-z_][A-Za-z0-9_.]*"
+)
+
+
+def _canonical_esql_alias(identifier):
+    """Return the column name represented by a possibly quoted identifier."""
+    text = str(identifier or "").strip()
+    if len(text) >= 2 and text.startswith("`") and text.endswith("`"):
+        return text[1:-1].replace("``", "`").replace("\\`", "`")
+    return text
+
+
+def _rewrite_esql_alias_references(expression, alias_map):
+    """Rewrite identifier tokens without touching ES|QL string literals."""
+
+    def _replace(match):
+        token = match.group(0)
+        if token.startswith(("'", '"')):
+            return token
+        return alias_map.get(_canonical_esql_alias(token), token)
+
+    return _ESQL_ALIAS_TOKEN_RE.sub(_replace, expression)
+
+
+def _merge_pretranslated_xy_queries(translations):
+    """Fuse already-translated XY ES|QL queries when formula-plan fusion fails.
+
+    Complex ``or``-chain targets (MySQL Network Traffic) each translate cleanly
+    alone but produce duplicate measure aliases / incompatible formula plans
+    when rebuilt together. When every target already has a time-bucketed ES|QL
+    body with a single metric column, splice those STATS measures into one
+    shared pipeline and EVAL one series column per target.
+    """
+    if not translations or len(translations) < 2:
+        return None
+    if any(not (t.esql_query or "").strip() for t in translations):
+        return None
+    if any(t.feasibility == "not_feasible" for t in translations):
+        return None
+
+    parsed = []
+    for translation in translations:
+        query = translation.esql_query or ""
+        stages = [stage.strip() for stage in _split_esql_pipeline(query) if stage.strip()]
+        if not stages:
+            return None
+        source = stages[0]
+        if not source.upper().startswith(("TS ", "FROM ")):
+            return None
+        source_type = "TS" if source.upper().startswith("TS ") else "FROM"
+        stats_idx = next(
+            (
+                idx
+                for idx, stage in enumerate(stages)
+                if stage.upper().startswith("STATS ")
+            ),
+            None,
+        )
+        if stats_idx is None:
+            return None
+        stats_stage = stages[stats_idx]
+        by_split = re.split(r"\bBY\b", stats_stage, maxsplit=1, flags=re.IGNORECASE)
+        if len(by_split) != 2:
+            return None
+        assignments_text = by_split[0][len("STATS ") :].strip()
+        by_text = by_split[1].strip()
+        if "time_bucket" not in by_text:
+            return None
+        assignments = [
+            part.strip()
+            for part in _split_top_level_csv(assignments_text)
+            if part.strip() and "=" in part
+        ]
+        if not assignments:
+            return None
+        metric_field = str(translation.output_metric_field or "").strip()
+        if not metric_field:
+            shape = _extract_esql_shape(query)
+            if shape.metric_fields:
+                metric_field = shape.metric_fields[0]
+        if not metric_field:
+            return None
+        # Capture EVAL lines that derive the final metric from STATS aliases
+        # (COALESCE / arithmetic) so we can rename the result per target.
+        post_stats = stages[stats_idx + 1 :]
+        eval_stages = [
+            stage
+            for stage in post_stats
+            if stage.upper().startswith("EVAL ")
+        ]
+        parsed.append(
+            {
+                "translation": translation,
+                "source": source,
+                "source_type": source_type,
+                "pre_stats": stages[1:stats_idx],
+                "assignments": assignments,
+                "by_text": by_text,
+                "eval_stages": eval_stages,
+                "metric_field": metric_field,
+            }
+        )
+
+    source_types = {item["source_type"] for item in parsed}
+    if len(source_types) != 1:
+        return None
+    by_texts = {item["by_text"] for item in parsed}
+    if len(by_texts) != 1:
+        return None
+
+    # Merge WHERE / filter stages: keep unique lines in order.
+    merged_pre: list[str] = []
+    seen_pre: set[str] = set()
+    for item in parsed:
+        for stage in item["pre_stats"]:
+            key = stage.strip()
+            if key and key not in seen_pre:
+                seen_pre.add(key)
+                merged_pre.append(stage)
+
+    used_aliases: set[str] = set()
+    renamed_assignments: list[str] = []
+    metric_fields: list[str] = []
+    metric_label_hints: dict[str, str] = {}
+    target_provenance: list[dict[str, object]] = []
+    eval_parts: list[str] = []
+    warnings: list[str] = [
+        "Fused multi-target panel from independently translated ES|QL queries"
+    ]
+
+    for idx, item in enumerate(parsed, start=1):
+        translation = item["translation"]
+        alias_hint = translation.metadata.get("target_ref_id") or f"series_{idx}"
+        raw_alias = (
+            translation.metadata.get("series_alias")
+            or translation.output_metric_field
+            or translation.metric_name
+            or f"series_{idx}"
+        )
+        result_alias = _unique_safe_alias(
+            raw_alias,
+            used_aliases,
+            fallback_suffix=alias_hint,
+        )
+        # Prefix STATS aliases so receive/transmit OR-chains don't collide.
+        alias_map: dict[str, str] = {}
+        for assignment in item["assignments"]:
+            left, right = assignment.split("=", 1)
+            old_alias = _canonical_esql_alias(left)
+            new_alias = _unique_safe_alias(
+                f"{old_alias}_{alias_hint}",
+                used_aliases,
+                fallback_suffix=str(idx),
+            )
+            alias_map[old_alias] = new_alias
+            renamed_assignments.append(f"{_esql_identifier(new_alias)} = {right.strip()}")
+
+        # Rewrite EVAL expressions to use renamed STATS aliases, then bind the
+        # final series column to ``result_alias``.
+        # When there are no EVAL stages the STATS output name *is* the metric —
+        # remap it through alias_map so legend EVAL does not reference the
+        # pre-rename column (Node Exporter "CPU Frequency Scaling" smoke miss /
+        # fused multi-target STATS aliases such as node_network_up -> ..._A).
+        metric_field = _canonical_esql_alias(item["metric_field"])
+        rewritten_metric_expr = metric_field
+        if rewritten_metric_expr in alias_map:
+            rewritten_metric_expr = alias_map[rewritten_metric_expr]
+        for eval_stage in item["eval_stages"]:
+            body = eval_stage[len("EVAL ") :].strip()
+            if "=" not in body:
+                continue
+            left, right = body.split("=", 1)
+            expr = _rewrite_esql_alias_references(right.strip(), alias_map)
+            out_name = _canonical_esql_alias(left)
+            if out_name == metric_field:
+                rewritten_metric_expr = expr
+            else:
+                mapped = alias_map.get(out_name) or _unique_safe_alias(
+                    f"{out_name}_{alias_hint}",
+                    used_aliases,
+                    fallback_suffix=str(idx),
+                )
+                alias_map[out_name] = mapped
+                eval_parts.append(f"| EVAL {_esql_identifier(mapped)} = {expr}")
+
+        if translation.metadata.get("negate_result"):
+            rewritten_metric_expr = f"(-1 * {rewritten_metric_expr})"
+        eval_parts.append(
+            f"| EVAL {_esql_identifier(result_alias)} = {rewritten_metric_expr}"
+        )
+        metric_fields.append(result_alias)
+        metric_label_hints[result_alias] = str(raw_alias)
+        provenance_entry: dict[str, object] = {
+            "ref_id": alias_hint,
+            "source_expr": str(translation.metadata.get("target_source_expr") or ""),
+            "value_column": result_alias,
+            "whole_translated": True,
+        }
+        if translation.metadata.get("negate_result"):
+            provenance_entry["negated"] = True
+        target_provenance.append(provenance_entry)
+        for warning in translation.warnings or []:
+            if warning not in warnings:
+                warnings.append(warning)
+
+    by_text = next(iter(by_texts))
+    group_fields = [
+        part.strip().split("=", 1)[0].strip()
+        for part in _split_top_level_csv(by_text)
+        if part.strip()
+    ]
+
+    renamed_assignments = _finalize_fused_stats_assignments(
+        renamed_assignments,
+        group_fields=group_fields,
+        source_type=next(iter(source_types)),
+    )
+
+    def _pipe_stage(stage: str) -> str:
+        text = stage.strip()
+        if not text:
+            return text
+        return text if text.startswith("|") else f"| {text}"
+
+    parts = [parsed[0]["source"], *(_pipe_stage(stage) for stage in merged_pre)]
+    parts.append(
+        "| STATS "
+        + ", ".join(renamed_assignments)
+        + f" BY {by_text}"
+    )
+    parts.extend(_pipe_stage(stage) for stage in eval_parts)
+    parts.append(
+        "| KEEP "
+        + ", ".join(
+            _esql_identifier(f)
+            for f in dict.fromkeys(group_fields + metric_fields)
+        )
+    )
+    if "time_bucket" in group_fields:
+        parts.append("| SORT time_bucket ASC")
+    return {
+        "query": "\n".join(parts),
+        "metric_fields": metric_fields,
+        "metric_label_hints": metric_label_hints,
+        "group_fields": group_fields,
+        "source_type": next(iter(source_types)),
+        "warnings": warnings,
+        "targets": target_provenance,
+    }
+
+
 def _build_multi_target_series_query(translations):
     if not translations:
         return None
@@ -2773,6 +4142,10 @@ def _build_multi_target_series_query(translations):
         return None
 
     parts, output_group_fields, _ = shared
+    if len({tuple(spec.group_fields or []) for spec in all_specs}) > 1:
+        warnings.append(
+            "Unioned BY fields across multi-target series with mismatched grouping"
+        )
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
     target_provenance: list[dict[str, str]] = []
@@ -2839,7 +4212,87 @@ def _build_multi_target_series_query(translations):
 
 def _translations_compatible(*translations):
     """Check if translations can be fused into a single XY panel safely."""
-    return _build_multi_target_series_query(list(translations)) is not None
+    items = list(translations)
+    if not items:
+        return False
+    indexes = {_translation_query_index(t) for t in items}
+    indexes.discard("")
+    # Distinct non-empty indexes cannot share one ES|QL pipeline.
+    if len(indexes) > 1:
+        return False
+    if _build_multi_target_series_query(items) is not None:
+        return True
+    return _merge_pretranslated_xy_queries(items) is not None
+
+
+def _translation_query_index(translation) -> str:
+    """Return the ES|QL index pattern for a translated target."""
+    query = getattr(translation, "esql_query", None) or ""
+    if query:
+        from observability_migration.adapters.source.grafana.esql_validate import (
+            _query_source_and_index,
+        )
+
+        _, index = _query_source_and_index(query)
+        if index:
+            return str(index).strip()
+    return str(getattr(translation, "index", "") or "").strip()
+
+
+def _partition_translations_by_index(translations):
+    """Group translations by ES|QL index; empty index buckets last."""
+    groups: dict[str, list] = {}
+    for translation in translations:
+        index = _translation_query_index(translation) or ""
+        groups.setdefault(index, []).append(translation)
+    ordered = []
+    for index in sorted(k for k in groups if k):
+        ordered.append((index, groups[index]))
+    if "" in groups:
+        ordered.append(("", groups[""]))
+    return ordered
+
+
+def _fuse_same_index_series(group):
+    """Merge one same-index translation group into a layer dict, or None."""
+    if not group:
+        return None
+    if len(group) == 1:
+        t = group[0]
+        metric_fields = list(t.metadata.get("multi_series_metric_fields") or [])
+        if not metric_fields and t.output_metric_field:
+            metric_fields = [t.output_metric_field]
+        return {
+            "query": t.esql_query,
+            "source_type": t.source_type,
+            "metric_fields": metric_fields,
+            "metric_label_hints": dict(t.metadata.get("multi_series_metric_labels") or {}),
+            "group_fields": list(t.output_group_fields or []),
+            "warnings": list(t.warnings or []),
+            "targets": [
+                {
+                    "ref_id": t.metadata.get("target_ref_id") or "",
+                    "source_expr": str(t.metadata.get("target_source_expr") or ""),
+                    "whole_translated": True,
+                }
+            ],
+            "index": _translation_query_index(t),
+        }
+    merged = _build_multi_target_series_query(group)
+    if merged is None:
+        merged = _merge_pretranslated_xy_queries(group)
+    if not merged:
+        return None
+    return {
+        "query": merged["query"],
+        "source_type": merged["source_type"],
+        "metric_fields": list(merged.get("metric_fields") or []),
+        "metric_label_hints": dict(merged.get("metric_label_hints") or {}),
+        "group_fields": list(merged.get("group_fields") or []),
+        "warnings": list(merged.get("warnings") or []),
+        "targets": list(merged.get("targets") or []),
+        "index": _translation_query_index(group[0]),
+    }
 
 
 def _best_compatible_translation_group(translations):
@@ -3007,6 +4460,60 @@ def _build_gauge_color_mapping(panel, minimum=None, maximum=None):
     return color
 
 
+def _build_metric_color_mapping(panel, minimum=None, maximum=None):
+    """Like ``_build_gauge_color_mapping`` but for metric/stat panels, which
+    (unlike gauges) have no inherent axis domain: a top threshold step with no
+    configured ``max`` still needs a color band, just an open-ended one.
+
+    ``ColorThreshold.up_to`` requires a real number for every band (the YAML
+    schema has no "open-ended" marker), so the unbounded top band gets a
+    placeholder. It doesn't distort the rendered colors: the target mapper
+    (``dashboards_api._api_color``) only uses a threshold's ``up_to`` to
+    derive the *next* band's lower edge — the last band's own ``up_to`` is
+    never turned into an upper bound, so any number at or above its own
+    ``current_value`` is a safe stand-in.
+    """
+    steps = sorted(
+        _gauge_threshold_steps(panel),
+        key=lambda step: float("-inf") if step.get("value") is None else step.get("value"),
+    )
+    if not steps:
+        return None
+    thresholds = []
+    for index, step in enumerate(steps):
+        color = step.get("color")
+        if not color:
+            continue
+        current_value = step.get("value")
+        if maximum is not None and current_value is not None and current_value >= maximum:
+            continue
+        next_value = steps[index + 1].get("value") if index + 1 < len(steps) else maximum
+        is_placeholder = next_value is None
+        if is_placeholder:
+            next_value = current_value if current_value is not None else (minimum or 0.0)
+        if maximum is not None and next_value > maximum:
+            next_value = maximum
+        if minimum is not None and next_value < minimum:
+            next_value = minimum
+        if thresholds and next_value <= thresholds[-1]["up_to"]:
+            if not is_placeholder:
+                continue
+            # Placeholder band (open-ended top, no configured max): its
+            # ``up_to`` is discarded downstream anyway, so nudge it strictly
+            # above the previous cutoff instead of dropping the band outright.
+            prev = thresholds[-1]["up_to"]
+            next_value = prev + (abs(prev) * 1e-6 or 1e-6)
+        thresholds.append({"up_to": next_value, "color": color})
+    if not thresholds:
+        return None
+    color = {"thresholds": thresholds}
+    if minimum is not None:
+        color["range_min"] = minimum
+    if maximum is not None:
+        color["range_max"] = maximum
+    return color
+
+
 def _ensure_bucket_sort(esql):
     if not esql or esql.lstrip().startswith("PROMQL "):
         return esql
@@ -3120,21 +4627,68 @@ def _strip_dashboard_timestamp_range_filter(esql, time_filters=None):
     return "\n".join(lines)
 
 
+def _seed_transform_metric_labels(panel, translation) -> None:
+    """Ensure transform field resolution can map Grafana legends → ES|QL columns.
+
+    Fusion populates ``multi_series_metric_labels``; single-target / partial-drop
+    paths often leave it empty, so calculateField ``include: ["Real Linux"]``
+    cannot resolve even when the primary metric *is* that series. Seed from the
+    primary target's static legend (or series alias) when bookkeeping is absent.
+    """
+    metadata = getattr(translation, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    metric_field = str(getattr(translation, "output_metric_field", "") or "").strip()
+    if not metric_field:
+        return
+    labels = dict(metadata.get("multi_series_metric_labels") or {})
+    fields = list(metadata.get("multi_series_metric_fields") or [])
+    if metric_field not in fields:
+        fields = [metric_field] + [f for f in fields if f != metric_field]
+        metadata["multi_series_metric_fields"] = fields
+    if metric_field in labels and str(labels[metric_field]).strip():
+        return
+    legend = str(metadata.get("static_legend_label") or "").strip()
+    if not legend:
+        ref = str(metadata.get("target_ref_id") or "").strip()
+        for target in panel.get("targets") or []:
+            if not isinstance(target, dict):
+                continue
+            if ref and str(target.get("refId") or "").strip() != ref:
+                continue
+            legend = str(target.get("legendFormat") or "").strip()
+            if legend:
+                break
+        if not legend:
+            for target in panel.get("targets") or []:
+                if not isinstance(target, dict) or target.get("hide"):
+                    continue
+                legend = str(target.get("legendFormat") or "").strip()
+                if legend:
+                    break
+    if legend:
+        labels[metric_field] = legend
+        metadata["multi_series_metric_labels"] = labels
+
+
 def _strip_dotted_group_keep(query):
-    """Drop a KEEP/DROP projection that follows ``STATS BY <dotted field> | EVAL``.
+    """Drop KEEP/DROP lines that re-project a dotted ``STATS BY`` grouping field.
 
     ES|QL's optimizer re-attributes a dotted grouping field (e.g. ``service.name``)
     from field -> reference across such a projection, raising a
     verification_exception "Output has changed from [..service.name{f}..] to
-    [..service.name{r}..]" that breaks the panel in Kibana. The query is valid
-    without the projection — the extra intermediate columns are ignored by the
-    Lens chart config. Bisected live against Elastic 9.5.0; see
-    tests/test_grafana_dotted_group_keep.py.
+    [..service.name{r}..]" that breaks the panel in Kibana. Bisected live against
+    Elastic 9.5.0; see tests/test_grafana_dotted_group_keep.py.
+
+    Only projections that *include* a dotted grouping field are stripped.
+    Transform-authored KEEP lines that project ``time_bucket`` + metrics (and
+    omit the dotted group key) are preserved so calculateField/organize cleanup
+    survives normalization.
     """
     if not query or "STATS" not in query:
         return query
     lines = query.splitlines()
-    has_dotted_group = False
+    dotted_groups: set[str] = set()
     has_eval = False
     for line in lines:
         stripped = line.strip()
@@ -3142,14 +4696,30 @@ def _strip_dotted_group_keep(query):
             for token in stripped.split(" BY ", 1)[1].split(","):
                 name = (token.split("=", 1)[-1] if "=" in token else token).strip().strip("`")
                 if "." in name and "(" not in name:
-                    has_dotted_group = True
+                    dotted_groups.add(name)
         elif stripped.startswith("| EVAL"):
             has_eval = True
-    if not (has_dotted_group and has_eval):
+    if not (dotted_groups and has_eval):
         return query
-    return "\n".join(
-        line for line in lines if not line.strip().startswith(("| KEEP ", "| DROP "))
-    )
+
+    def _projects_dotted_group(line: str) -> bool:
+        stripped = line.strip()
+        if stripped.startswith("| KEEP "):
+            body = stripped[len("| KEEP ") :]
+        elif stripped.startswith("| DROP "):
+            body = stripped[len("| DROP ") :]
+        else:
+            return False
+        # DROP of non-group helpers/metrics is safe; only strip when a dotted
+        # group key itself appears in the projection list.
+        tokens = {
+            part.strip().strip("`")
+            for part in body.split(",")
+            if part.strip()
+        }
+        return bool(tokens & dotted_groups)
+
+    return "\n".join(line for line in lines if not _projects_dotted_group(line))
 
 
 def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
@@ -3170,14 +4740,51 @@ def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
     return yaml_panel
 
 
-def _build_esql_metric_panel(esql, metric_col=None):
+def _metric_threshold_color(panel):
+    """Map a Grafana stat/single-value panel's threshold steps to a Kibana
+    metric ``primary.color`` (``MetricChartColor``: ``apply_to`` +
+    ``thresholds``/``range_min``/``range_max``).
+
+    Grafana stat panels color the value (or its background) by ``thresholds``;
+    Kibana metric panels express the same via ``MetricChartColor``, the same
+    ascending-``up_to`` threshold-band shape gauges use (``_build_gauge_color_
+    mapping``), plus an ``apply_to`` mode. ``colorMode: none`` means Grafana
+    explicitly disables value coloring, so we emit nothing in that case.
+    """
+    if not panel:
+        return None
+    options = panel.get("options") if isinstance(panel.get("options"), dict) else {}
+    color_mode = str(options.get("colorMode") or "").strip().lower()
+    if color_mode == "none":
+        return None
+    # A lone base step (``value: None``) is Grafana's default color, not a
+    # threshold rule; without a real numeric boundary there is nothing to color
+    # by, so emitting a bound-less single-band color would only force a constant
+    # (often un-mapped) hue that misrepresents the panel.
+    if not any(step.get("value") is not None for step in _gauge_threshold_steps(panel)):
+        return None
+    defaults = _panel_field_defaults(panel)
+    minimum = _coerce_number(defaults.get("min"))
+    maximum = _coerce_number(defaults.get("max"))
+    color = _build_metric_color_mapping(panel, minimum=minimum, maximum=maximum)
+    if not color:
+        return None
+    color["apply_to"] = "background" if color_mode.startswith("background") else "value"
+    return color
+
+
+def _build_esql_metric_panel(esql, metric_col=None, panel=None):
     esql = _ensure_bucket_sort(esql)
     if not metric_col:
         metric_col, _ = _extract_esql_columns(esql)
+    primary = {"field": metric_col}
+    color = _metric_threshold_color(panel)
+    if color:
+        primary["color"] = color
     return {
         "type": "metric",
         "query": esql,
-        "primary": {"field": metric_col},
+        "primary": primary,
     }
 
 
@@ -3543,6 +5150,81 @@ def _warn_extra_breakdown_dimensions(
         )
 
 
+def _apply_composite_group_breakdown_to_xy_panel(panel, *, group_cols, warnings=None):
+    """Composite multiple non-time ``BY`` columns into one XY breakdown field.
+
+    Lens XY supports a single ``breakdown.field``. When the query groups by two
+    or more categorical dimensions (and no multi-placeholder legend template
+    already produced ``legend``), synthesize ``series_group = CONCAT(...)`` so
+    each distinct label tuple remains a separate series instead of silently
+    merging on the first dimension alone.
+    """
+    if not isinstance(panel, dict):
+        return panel
+    if (panel.get("breakdown") or {}).get("field") == "legend":
+        return panel
+    dims = [str(col) for col in (group_cols or []) if col]
+    if len(dims) < 2:
+        return panel
+    query = str(panel.get("query") or "")
+    if not query.strip():
+        return panel
+
+    concat_args = []
+    for index, dim in enumerate(dims):
+        if index:
+            concat_args.append('" / "')
+        concat_args.append(f'COALESCE(TO_STRING({_esql_identifier(dim)}), "")')
+    eval_line = f"| EVAL series_group = CONCAT({', '.join(concat_args)})"
+    # Reuse the legend splice helper, then rename the KEEP column it appends
+    # (``legend``) to ``series_group`` so the breakdown field matches.
+    spliced = _splice_composite_legend_into_query(
+        query,
+        eval_line=eval_line,
+        label_columns=set(dims),
+    )
+    # The helper may append ``legend`` to a KEEP list even though EVAL already
+    # names the column ``series_group``. Rewrite that KEEP token only.
+    stages = _split_esql_pipeline(spliced)
+    for idx in range(len(stages) - 1, -1, -1):
+        stage = stages[idx].strip()
+        if stage.lower().startswith("keep "):
+            keep_body = stage[5:].strip()
+            parts = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+            rewritten = [("series_group" if part == "legend" else part) for part in parts]
+            if "series_group" not in rewritten:
+                rewritten.append("series_group")
+            stages[idx] = f"KEEP {', '.join(rewritten)}"
+            break
+    if "\n" in spliced:
+        # Rebuild from multiline form: replace KEEP line content carefully.
+        lines = spliced.splitlines()
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if stripped.startswith("|") and stripped[1:].strip().lower().startswith("keep "):
+                keep_body = stripped[1:].strip()[5:].strip()
+                parts = [part.strip() for part in _split_top_level_csv(keep_body) if part.strip()]
+                rewritten = [("series_group" if part == "legend" else part) for part in parts]
+                if "series_group" not in rewritten:
+                    rewritten.append("series_group")
+                lines[idx] = f"| KEEP {', '.join(rewritten)}"
+                panel["query"] = "\n".join(lines)
+                break
+        else:
+            panel["query"] = spliced
+    else:
+        head = stages[0]
+        tail = " | ".join(stages[1:]) if len(stages) > 1 else ""
+        panel["query"] = f"{head} | {tail}" if tail else head
+    panel["breakdown"] = {"field": "series_group"}
+    _append_unique(
+        warnings if warnings is not None else [],
+        "Composited multi-label grouping "
+        f"({', '.join(dims)}) into a single XY breakdown column",
+    )
+    return panel
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
                          time_fields=None, mode=None,
                          legend_format_template=None, legend_labels=None,
@@ -3589,11 +5271,27 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
-    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    non_time_groups = [
+        col
+        for col in (by_cols or [])
+        if col and col != dimension_field and not _is_time_like_output_field(col)
+    ]
+    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+        _apply_composite_group_breakdown_to_xy_panel(
+            panel,
+            group_cols=non_time_groups,
+            warnings=warnings,
+        )
+    represented = []
+    breakdown_name = (panel.get("breakdown") or {}).get("field")
+    if breakdown_name == "legend":
+        represented = list(legend_labels or [])
+    elif breakdown_name == "series_group":
+        represented = list(non_time_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
-        (panel.get("breakdown") or {}).get("field"),
+        breakdown_name,
         warnings,
         represented_breakdown_fields=represented,
     )
@@ -3641,11 +5339,27 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
             legend_format_template=legend_format_template,
             legend_labels=legend_labels,
         )
-    represented = legend_labels if (panel.get("breakdown") or {}).get("field") == "legend" else []
+    non_time_groups = [
+        col
+        for col in (by_cols or [])
+        if col and col != dimension_field and not _is_time_like_output_field(col)
+    ]
+    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+        _apply_composite_group_breakdown_to_xy_panel(
+            panel,
+            group_cols=non_time_groups,
+            warnings=warnings,
+        )
+    represented = []
+    breakdown_name = (panel.get("breakdown") or {}).get("field")
+    if breakdown_name == "legend":
+        represented = list(legend_labels or [])
+    elif breakdown_name == "series_group":
+        represented = list(non_time_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
-        (panel.get("breakdown") or {}).get("field"),
+        breakdown_name,
         warnings,
         represented_breakdown_fields=represented,
     )
@@ -3665,9 +5379,13 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
 
     right_format = _grafana_yaxis_metric_format(grafana_panel, "right")
     for override in overrides:
-        if not isinstance(override, dict) or _grafana_override_axis(override.get("yaxis")) != "right":
+        if not isinstance(override, dict):
             continue
         alias = str(override.get("alias") or "").strip()
+        axis = _grafana_override_axis(override.get("yaxis"))
+        stack_override = override.get("stack")
+        if axis != "right" and stack_override is not False:
+            continue
         matched = False
         for metric in metrics:
             if not isinstance(metric, dict):
@@ -3676,11 +5394,15 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
                 str(metric.get("field") or ""),
                 str(metric.get("label") or ""),
             }
-            if _series_override_alias_matches(alias, candidates):
+            if not _series_override_alias_matches(alias, candidates):
+                continue
+            matched = True
+            if axis == "right":
                 metric["axis"] = "right"
                 if right_format:
                     metric["format"] = dict(right_format)
-                matched = True
+            if stack_override is False:
+                metric["stack"] = False
         if alias and not matched:
             _append_unique(
                 warnings,
@@ -3785,6 +5507,22 @@ def _build_esql_datatable_panel(esql, metric_col=None, metric_fields=None, by_co
     }
     if by_cols:
         panel["breakdowns"] = [{"field": c} for c in by_cols]
+    else:
+        # A dimensionless summary-collapsed table (e.g. an instant/alerts query
+        # reduced to a single row) still keeps its time column in the query
+        # output (``| KEEP time_bucket, <metric>``) but drops it from
+        # group_fields. Without a breakdown the datatable shows only the metric
+        # and hides *when* the value is from, so surface the leftover time
+        # column as a date row. Grouped tables keep their real breakdowns above
+        # and intentionally omit the collapsed time to avoid a redundant column.
+        metric_names = {m for m in metric_fields if m}
+        shape = _extract_esql_shape(esql)
+        time_cols = [
+            c for c in shape.projected_fields
+            if _is_time_like_output_field(c) and c not in metric_names
+        ]
+        if time_cols:
+            panel["breakdowns"] = [{"field": time_cols[0], "data_type": "date"}]
     return panel
 
 
@@ -3850,6 +5588,133 @@ def _extract_variable_source_metric(query_text):
         return ""
     metric_match = re.match(r"\s*([a-zA-Z_:][a-zA-Z0-9_:]*)", parts[0])
     return metric_match.group(1) if metric_match else ""
+
+
+def _extract_variable_scope_template_refs(query_text):
+    """Other template variables that scope a ``label_values()`` control (#269).
+
+    Grafana supports *chained* query variables, e.g.
+    ``label_values(container_memory_cache{instance="$instance"}, id)``: the
+    ``$id`` control's option list is meant to be scoped to whichever
+    ``$instance`` is currently selected, not every ``id`` in the index.
+
+    Kibana's ES|QL ``VALUES_FROM_QUERY`` control has no mechanism for one
+    control's populate-query to depend on another control's live selection
+    (there is no cross-control binding today), so this scope cannot be
+    reproduced exactly. Callers use this to detect the shape and attach an
+    explicit degradation warning instead of silently listing every value —
+    the control still works, it is just broader than the Grafana source.
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return []
+    refs: list[str] = []
+    for ref_match in _VARIABLE_REFERENCE_RE.finditer(selector_match.group("selector")):
+        name = ref_match.group(1) or ref_match.group(2)
+        if name and name not in refs:
+            refs.append(name)
+    return refs
+
+
+def _extract_variable_scope_filters(
+    query_text,
+    resolver=None,
+    rule_pack=None,
+    *,
+    control_warnings=None,
+    variable_name="",
+):
+    """Literal label matchers that scope a ``label_values()`` control (#312).
+
+    Grafana's ``label_values(metric{device!="nbd1"}, device)`` restricts the
+    listed values to series where ``device != "nbd1"``. Kibana's ES|QL
+    ``VALUES_FROM_QUERY`` control can express that restriction directly as an
+    extra ``WHERE`` predicate, so the migrated dropdown does not offer values
+    (``nbd1``) the Grafana source excluded.
+
+    Only *literal* matchers are returned as ``(field, esql_predicate)`` pairs:
+
+    * ``label="v"`` / ``label!="v"`` become ``field == "v"`` / ``field != "v"``.
+    * ``label=~"re"`` / ``label!~"re"`` become ``field RLIKE "re"`` /
+      ``NOT field RLIKE "re"``.
+
+    Matchers whose value references another template variable
+    (``instance="$instance"``) are skipped here: they are chained scopes handled
+    by :func:`_extract_variable_scope_template_refs` (Kibana controls cannot
+    express that inter-control dependency, so those emit a degradation warning
+    instead of a wrong literal predicate).
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return []
+    filters: list[str] = []
+    for matcher_text in _split_top_level_csv(selector_match.group("selector")):
+        matcher = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+        if not matcher:
+            continue
+        value = matcher.group("value")
+        if _VARIABLE_REFERENCE_RE.search(value):
+            # Chained scope on another variable -- handled separately (#269).
+            continue
+        raw_label = matcher.group("label")
+        if raw_label == "__name__":
+            if control_warnings is not None:
+                _append_unique(
+                    control_warnings,
+                    f"variable '{variable_name}' has a label_values() selector filter on "
+                    "__name__ (Prometheus metric-name matcher); Kibana ES|QL controls "
+                    "cannot express metric-name scoped option lists, so that filter "
+                    "was not applied to the control query",
+                )
+            continue
+        if resolver is not None:
+            field = resolver.resolve_control_field(raw_label) or raw_label
+            field_exists = getattr(resolver, "field_exists", None)
+            if field_exists is not None and field_exists(field) is False:
+                if control_warnings is not None:
+                    _append_unique(
+                        control_warnings,
+                        f"variable '{variable_name}' has a label_values() selector filter "
+                        f"on '{raw_label}', but resolved field '{field}' is not present "
+                        "on the target; that filter was not applied to the control query",
+                    )
+                continue
+        elif rule_pack is not None:
+            field = rule_pack.control_field_overrides.get(raw_label, raw_label)
+        else:
+            field = raw_label
+        column = _esql_identifier(field)
+        literal = _esql_string_literal(value)
+        op = matcher.group("op")
+        if op == "=":
+            filters.append(f"{column} == {literal}")
+        elif op == "!=":
+            filters.append(f"{column} != {literal}")
+        elif op == "=~":
+            filters.append(f"{column} RLIKE {literal}")
+        elif op == "!~":
+            filters.append(f"NOT {column} RLIKE {literal}")
+    return filters
+
+
+def _esql_string_literal(value):
+    """Quote a string value as an ES|QL double-quoted literal."""
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _resolve_control_scope_metric(metric_name, resolver, rule_pack):
@@ -3955,7 +5820,9 @@ def _field_has_ts_metadata_conflict(field_name, resolver):
     return has_dimension and has_metric
 
 
-def _esql_values_control_query(field_name, data_view, metric_field=None):
+def _esql_values_control_query(
+    field_name, data_view, metric_field=None, *, include_match_all=False, extra_filters=None
+):
     """Build an ES|QL query that enumerates a control's selectable values.
 
     Mirrors Grafana's ``label_values()`` query variable: return the field's
@@ -3967,14 +5834,35 @@ def _esql_values_control_query(field_name, data_view, metric_field=None):
     presence field) is added as ``WHERE <metric_field> IS NOT NULL`` to list only
     values coming from that metric instead of every value of the field in the
     index (issue #152).
+
+    ``extra_filters`` carries literal label-matcher predicates from the source
+    selector (``label_values(metric{device!="nbd1"}, device)`` -> ``device !=
+    "nbd1"``) so the migrated dropdown excludes the values Grafana excluded
+    instead of listing every value (issue #312).
+
+    When ``include_match_all`` is true (includeAll / All default), prepend the
+    regex match-all token ``.*`` via ``MV_APPEND`` so Kibana's selected default
+    is a valid options-list value instead of an incompatible selection.
     """
     field = _esql_identifier(field_name)
     index = data_view or "metrics-*"
+    clauses = []
     if metric_field:
-        metric = _esql_identifier(metric_field)
-        where = f"WHERE {metric} IS NOT NULL AND {field} IS NOT NULL"
-    else:
-        where = f"WHERE {field} IS NOT NULL"
+        clauses.append(f"{_esql_identifier(metric_field)} IS NOT NULL")
+    clauses.append(f"{field} IS NOT NULL")
+    clauses.extend(extra_filters or [])
+    where = "WHERE " + " AND ".join(clauses)
+    if include_match_all:
+        return (
+            f"FROM {index} | {where}"
+            f" | STATS count = COUNT(*) BY {field}"
+            f' | EVAL options = MV_APPEND(".*", {field})'
+            f" | MV_EXPAND options"
+            f" | STATS count = COUNT(*) BY options"
+            f" | KEEP options"
+            f" | RENAME options AS {field}"
+            f" | SORT {field} ASC | LIMIT 1000"
+        )
     return (
         f"FROM {index} | {where}"
         f" | STATS count = COUNT(*) BY {field}"
@@ -4018,26 +5906,39 @@ def _variable_default_selection(variable):
 
 
 def _collect_regex_default_param_names(variables):
-    """Names of template variables whose binding control defaults to the regex
-    match-all (".*").
+    """Names of template variables that need regex PromQL/ES|QL matchers.
 
-    ``_matcher_to_esql`` emits equality matchers (``field == ?var``) on these
-    params as regex matches instead, so the control's ".*" default actually
-    selects every series on first load rather than comparing the field against
-    the literal string ".*" (PR #133 review). Keyed by Grafana variable name,
-    which is exactly the ES|QL parameter name the matcher references.
+    Includes:
+    * variables whose binding control defaults to the regex match-all (".*")
+      so ``label="$var"`` does not compare against the literal string ".*"
+      (PR #133 review / issue #131)
+    * multi-select variables — Grafana rewrites ``label="$var"`` to a regex
+      matcher for multi/All, and native PROMQL must emit ``label=~?var``
+      (issues #64 / #319)
     """
     names = set()
     for var in variables:
         if not isinstance(var, dict):
             continue
         name = var.get("name")
-        if name and _variable_default_selection(var) == _MATCH_ALL_SELECTION:
+        if not name:
+            continue
+        if _variable_default_selection(var) == _MATCH_ALL_SELECTION or bool(var.get("multi")):
             names.add(name)
     return names
 
 
-def _build_esql_param_control(variable_name, label, field_name, data_view, default=None, metric_field=None):
+def _build_esql_param_control(
+    variable_name,
+    label,
+    field_name,
+    data_view,
+    default=None,
+    metric_field=None,
+    source_field="",
+    include_internal_metadata=False,
+    extra_filters=None,
+):
     """Build an ES|QL parameter-binding control (issue #107).
 
     When the target supports the ``promql_label_matcher_params`` capability the
@@ -4057,15 +5958,211 @@ def _build_esql_param_control(variable_name, label, field_name, data_view, defau
     A ``default`` selection is emitted so the parameter is bound on first load
     instead of leaving the control empty (issue #131).
     """
+    include_match_all = default == _MATCH_ALL_SELECTION
     control = {
         "type": "esql",
         "label": label,
         "variable_name": variable_name,
         "variable_type": "values",
-        "query": _esql_values_control_query(field_name, data_view, metric_field=metric_field),
+        "query": _esql_values_control_query(
+            field_name,
+            data_view,
+            metric_field=metric_field,
+            include_match_all=include_match_all,
+            extra_filters=extra_filters,
+        ),
         "multiple": False,
     }
+    if include_internal_metadata:
+        control[_CONTROL_RESOLVED_FIELD_NAME] = field_name
+        if source_field:
+            control[_CONTROL_SOURCE_FIELD_NAME] = source_field
     if default not in (None, ""):
+        control["default"] = default
+    return control
+
+
+def _build_static_esql_param_control(variable):
+    """Bind a Grafana custom variable from its literal option list.
+
+    Custom variables are values, not target fields.  Querying a field inferred
+    from the variable name (for example ``diskdevices``) is wrong when the
+    variable is used as a regex for another label (for example ``device``).
+    A static ES|QL values control preserves the source literals and guarantees
+    that the selected default is one of the options Kibana can bind.
+    """
+    name = str(variable.get("name") or "")
+    default = _variable_default_selection(variable)
+    choices = _grouping_candidate_label_names(variable)
+    if default and default not in choices:
+        choices.insert(0, default)
+    return {
+        "type": "esql",
+        "label": variable.get("label") or name,
+        "variable_name": name,
+        "variable_type": "values",
+        "choices": choices,
+        "multiple": False,
+        "default": default,
+    }
+
+
+def _grouping_candidate_label_names(variable):
+    """Collect the label names a grouping template variable can select.
+
+    Grafana ``by ($grouping)`` selectors are ``custom`` variables (a fixed
+    comma-separated list of dimension names) or ``query`` variables whose
+    fetched ``options`` are dimension names. The current selection is always
+    included so the migrated control has a concrete default. Nested template
+    references and the "All" sentinel are skipped (issue #282).
+    """
+    names: list[str] = []
+
+    def _add(value):
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                _add(item)
+            return
+        text = str(value or "").strip()
+        if not text or text == "$__all" or text.lower() == "all":
+            return
+        if re.search(r"\$|\[\[", text):
+            return
+        if text not in names:
+            names.append(text)
+
+    for option in variable.get("options") or []:
+        if isinstance(option, dict):
+            _add(option.get("value"))
+    if variable.get("type") == "custom":
+        for part in _split_top_level_csv(_variable_query_text(variable)):
+            _add(part.strip())
+    current = variable.get("current")
+    if isinstance(current, dict):
+        _add(current.get("value"))
+    return names
+
+
+def _resolve_group_choice_field(
+    raw_name, resolver, rule_pack, metric_field=None, *, allow_missing=False
+):
+    """Resolve one grouping-variable option to an aggregatable target field.
+
+    When live schema discovery remaps a bare Grafana option (``exporter``) to a
+    profile path that is not present yet (``labels.exporter``), treating that as
+    "unresolvable" empties the late-bound choice set and wrongly marks
+    ``by ($grouping)`` ``not_feasible``. Custom option lists are intentional
+    field names — absence is data readiness. Pass ``allow_missing=True`` for
+    those so the control still emits; the render audit / seeder can populate
+    the dimensions later.
+    """
+    name = str(raw_name or "").strip()
+    if not name:
+        return None
+    if resolver:
+        field_name = resolver.resolve_control_field(name, metric_field=metric_field or None)
+        if not field_name:
+            field_name = name
+        exists = resolver.field_exists(field_name)
+        if exists is False:
+            raw_exists = resolver.field_exists(name) if field_name != name else False
+            if raw_exists is True:
+                field_name = name
+                exists = True
+            elif allow_missing:
+                # Prefer the Grafana option text: control choices and seeder
+                # contracts key off the dashboard's declared names.
+                field_name = name
+                exists = None
+            else:
+                return None
+        if exists is True and not resolver.is_aggregatable_field(field_name):
+            return None
+        return field_name
+    return (rule_pack or RulePackConfig()).control_field_overrides.get(name, name)
+
+
+def _build_late_bound_group_var_choices(variables, resolver, rule_pack):
+    """Map grouping template variables to ES|QL field-control specs (issue #282).
+
+    Only built when the target binds ES|QL parameters; the translation guardrail
+    consults this map to decide whether a ``by ($var)`` grouping can be deferred
+    to a Kibana ES|QL identifier control (``STATS ... BY ??var``) instead of
+    failing. A variable with no resolvable field options is omitted so the
+    grouping degrades gracefully to not_feasible.
+    """
+    if not binds_esql_named_params(rule_pack):
+        return {}
+    choices_map: dict[str, dict] = {}
+    for variable in variables or []:
+        if not isinstance(variable, dict) or variable.get("type") not in ("query", "custom"):
+            continue
+        name = variable.get("name")
+        if not name:
+            continue
+        raw_names = _grouping_candidate_label_names(variable)
+        if not raw_names:
+            continue
+        query_text = _variable_query_text(variable)
+        metric_field = _resolve_control_scope_metric(
+            _extract_variable_source_metric(query_text), resolver, rule_pack
+        )
+        # Custom variables declare an explicit option list of field names.
+        # Missing target fields are data readiness, not an empty choice set.
+        allow_missing = variable.get("type") == "custom"
+        choices: list[str] = []
+        for raw in raw_names:
+            field_name = _resolve_group_choice_field(
+                raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
+            if field_name and field_name not in choices:
+                choices.append(field_name)
+        if not choices:
+            continue
+        current = variable.get("current")
+        default_raw = current.get("value") if isinstance(current, dict) else None
+        if isinstance(default_raw, (list, tuple)):
+            default_raw = default_raw[0] if len(default_raw) == 1 else None
+        default = None
+        if default_raw not in (None, "", "$__all"):
+            default = _resolve_group_choice_field(
+                default_raw,
+                resolver,
+                rule_pack,
+                metric_field,
+                allow_missing=allow_missing,
+            )
+        if default not in choices:
+            default = choices[0]
+        choices_map[name] = {
+            "choices": choices,
+            "default": default,
+            "label": variable.get("label") or name,
+        }
+    return choices_map
+
+
+def _build_esql_field_control(variable_name, spec):
+    """Build a Kibana ES|QL identifier/field control (``??var``) (issue #282).
+
+    The Grafana grouping variable becomes a ``variable_type: fields`` ES|QL
+    control whose ``choices`` are the resolved candidate dimensions; ``??var``
+    in ``STATS ... BY ??var`` binds to the field the viewer picks, reproducing
+    the source dashboard's late-bound grouping dropdown.
+    """
+    control = {
+        "type": "esql",
+        "label": spec.get("label") or variable_name,
+        "variable_name": variable_name,
+        "variable_type": "fields",
+        "choices": list(spec.get("choices") or []),
+    }
+    default = spec.get("default")
+    if default:
         control["default"] = default
     return control
 
@@ -4147,6 +6244,8 @@ def _resolver_for_index(resolver, rule_pack, index_pattern):
             es_url=es_url,
             index_pattern=index_pattern,
             es_api_key=getattr(resolver, "_es_api_key", None),
+            verify=getattr(resolver, "_verify", True),
+            field_profile=getattr(resolver, "_field_profile", "otel"),
         )
     return cache[index_pattern]
 
@@ -4164,6 +6263,10 @@ def query_variable_rule(context):
     query_text = context.query_text or _variable_query_text(context.variable)
     context.query_text = query_text
     if "query_result(" in query_text.lower():
+        context.control_warnings.append(
+            f"variable '{name}' uses Grafana query_result(), which has no "
+            "equivalent Kibana control population query; no Kibana control was emitted"
+        )
         return f"skipped query_result helper variable {name}"
     source_field = _extract_variable_source_field(query_text) or name
     context.source_field = source_field
@@ -4179,14 +6282,55 @@ def query_variable_rule(context):
         rule_pack = context.rule_pack or RulePackConfig()
         field_name = rule_pack.control_field_overrides.get(source_field, source_field)
     if field_name is None:
+        context.control_warnings.append(
+            f"variable '{name}' could not resolve source field '{source_field}' "
+            "to a supported target field; no Kibana control was emitted"
+        )
         return f"skipped unsupported control {name}"
     if resolver and resolver.field_exists(field_name) is False:
-        return f"skipped unavailable control field {field_name}"
+        # Issue #269 Defect 1: keep the source control even when live schema
+        # discovery cannot find its field yet. Dropping it makes offline/live
+        # output structurally inconsistent, and `_ensure_param_controls`
+        # otherwise has to synthesize it again when a panel binds `?name`,
+        # contradicting a "dropped" warning. The kept control starts empty and
+        # self-heals once telemetry containing the field is ingested.
+        context.control_warnings.append(
+            f"variable '{name}' kept, but resolved field '{field_name}' is not "
+            "present on the target (data not yet ingested, or genuinely "
+            "absent); the control may have no options until the field is ingested"
+        )
     if resolver and resolver.field_exists(field_name) is True:
         if resolver.has_conflicting_types(field_name) and _field_has_ts_metadata_conflict(field_name, resolver):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to '{field_name}', but that field "
+                "has incompatible target types; no Kibana control was emitted"
+            )
             return f"skipped conflicting control field {field_name}"
         if not resolver.is_aggregatable_field(field_name):
+            context.control_warnings.append(
+                f"variable '{name}' resolved to non-aggregatable target field "
+                f"'{field_name}'; no Kibana control was emitted"
+            )
             return f"skipped non-aggregatable control field {field_name}"
+    scope_refs = [
+        ref for ref in _extract_variable_scope_template_refs(query_text) if ref != name
+    ]
+    if scope_refs:
+        # Issue #269 Defect 2: Grafana chains this variable's option list to
+        # whichever value(s) are currently selected on `scope_refs` (e.g.
+        # `label_values(metric{instance="$instance"}, id)`). Kibana's ES|QL
+        # VALUES_FROM_QUERY control has no cross-control dependency mechanism
+        # today, so the migrated control's populate-query cannot re-apply
+        # that scope -- it lists every value instead of just the ones under
+        # the selected scope. The control is still present and functional
+        # (not a silent drop), just broader than the Grafana source.
+        context.control_warnings.append(
+            f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in scope_refs)} in "
+            "Grafana (label_values() selector); Kibana ES|QL controls cannot "
+            "express that inter-control dependency, so the migrated control "
+            f"lists every '{field_name}' value instead of only those under the "
+            "selected scope"
+        )
     if binds_esql_named_params(context.rule_pack):
         # The target binds Grafana template variables as native ES|QL
         # parameters (``?<name>``), so the control must DEFINE that ES|QL
@@ -4195,6 +6339,13 @@ def query_variable_rule(context):
         # This must mirror the ES|QL matcher gate in ``_matcher_to_esql`` so a
         # cluster-wide ES|QL fallback run that preserves ``?var`` also emits the
         # binding control rather than a duplicate generic one (issue #132).
+        scope_filters = _extract_variable_scope_filters(
+            query_text,
+            resolver,
+            context.rule_pack,
+            control_warnings=context.control_warnings,
+            variable_name=name,
+        )
         context.control = _build_esql_param_control(
             variable_name=name,
             label=label or name,
@@ -4202,11 +6353,19 @@ def query_variable_rule(context):
             data_view=context.data_view,
             default=_variable_default_selection(context.variable),
             metric_field=metric_field,
+            source_field=source_field,
+            include_internal_metadata=True,
+            extra_filters=scope_filters,
         )
         if bool(context.variable.get("multi")) and name not in context.repeat_variable_names:
-            context.trace.append(
+            # Kibana binds this control's value into a scalar ES|QL parameter
+            # position (``== ?var`` / ``RLIKE ?var``), which cannot accept a
+            # multi-value selection. Report the gap (issue #312 criterion 3)
+            # rather than silently dropping multi-select.
+            context.control_warnings.append(
                 f"variable '{name}' was multi-select in Grafana but binds a scalar "
-                "ES|QL parameter; emitted a single-select control"
+                "ES|QL parameter in Kibana; emitted a single-select control "
+                "(select one value at a time)"
             )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"
@@ -4241,6 +6400,10 @@ def textbox_variable_rule(context):
         return None
     name = context.variable.get("name", "")
     context.handled = True
+    context.control_warnings.append(
+        f"textbox variable '{name}' has no direct Kibana control equivalent; "
+        "use the Kibana query bar or a KQL filter instead"
+    )
     context.trace.append(
         f"textbox variable '{name}' has no direct Kibana control equivalent; "
         "use the Kibana query bar or KQL filter instead"
@@ -4250,14 +6413,38 @@ def textbox_variable_rule(context):
 
 @VARIABLE_TRANSLATORS.register("interval_variable", priority=25)
 def interval_variable_rule(context):
-    """Grafana interval and custom-interval variables are handled by Kibana's
-    time picker and auto-bucketing; no explicit control is needed."""
-    var_type = context.variable.get("type", "")
-    if var_type not in ("interval", "custom"):
+    """Grafana interval variables are handled by Kibana's time picker and
+    auto-bucketing; no explicit control is needed."""
+    if context.variable.get("type") != "interval":
         return None
     name = context.variable.get("name", "")
     context.handled = True
-    return f"skipped {var_type} variable {name} (handled by Kibana time picker)"
+    return f"skipped interval variable {name} (handled by Kibana time picker)"
+
+
+@VARIABLE_TRANSLATORS.register("custom_variable", priority=26)
+def custom_variable_rule(context):
+    """Grafana ``custom`` variables (static comma-separated value lists) have
+    no query semantics of their own, so no dropdown control is generated
+    here. If the variable is referenced as ``$var``/``?var`` in a panel
+    query, ``_ensure_param_controls`` (issue #131) synthesizes a binding
+    control after translation; a custom variable that is never referenced in
+    a query has nothing to bind and is genuinely dropped.
+
+    This must NOT claim the value is "handled by Kibana's time picker" (that
+    is only true for ``interval`` variables, not arbitrary custom lists such
+    as ArgoCD's health_status/sync_status) — see interval_variable_rule.
+    """
+    if context.variable.get("type") != "custom":
+        return None
+    name = context.variable.get("name", "")
+    context.handled = True
+    context.trace.append(
+        f"custom variable '{name}' has no direct Kibana control by itself; "
+        "it becomes an ES|QL parameter-binding control if referenced as "
+        f"${name} in a panel query, otherwise it is dropped"
+    )
+    return f"noted custom variable {name} (control depends on query usage)"
 
 
 def translate_variables(
@@ -4266,7 +6453,17 @@ def translate_variables(
     rule_pack=None,
     resolver=None,
     repeat_variable_names=None,
+    include_variable_names=False,
+    collect_warnings=None,
 ):
+    """Translate Grafana template variables into Kibana controls.
+
+    ``collect_warnings``, if given a list, is extended with any dashboard-
+    level control-translation warnings: broader chained controls, controls
+    retained against an absent target field, and unsupported variable shapes
+    that cannot emit a Kibana control. Optional and additive so existing
+    callers that only want ``controls`` are unaffected.
+    """
     rule_pack = rule_pack or RulePackConfig()
     controls = []
     for var in template_list:
@@ -4279,15 +6476,52 @@ def translate_variables(
             repeat_variable_names=set(repeat_variable_names or ()),
         )
         VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
+        if collect_warnings is not None:
+            collect_warnings.extend(context.control_warnings)
         if context.control:
-            controls.append(context.control)
+            control = dict(context.control)
+            if include_variable_names and var.get("name"):
+                control[_CONTROL_SOURCE_VARIABLE_NAME] = var.get("name")
+                if context.source_field:
+                    control[_CONTROL_SOURCE_FIELD_NAME] = context.source_field
+            elif not include_variable_names:
+                control.pop(_CONTROL_RESOLVED_FIELD_NAME, None)
+                control.pop(_CONTROL_SOURCE_FIELD_NAME, None)
+            controls.append(control)
+    return controls
+
+
+def _covered_control_variable_refs(controls):
+    refs: set[tuple[str, str]] = set()
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        variable_name = control.get("variable_name") or control.get(_CONTROL_SOURCE_VARIABLE_NAME)
+        if not variable_name:
+            continue
+        for field_name in (
+            control.get("field"),
+            control.get(_CONTROL_RESOLVED_FIELD_NAME),
+            control.get(_CONTROL_SOURCE_FIELD_NAME),
+        ):
+            if field_name:
+                refs.add((str(variable_name), str(field_name)))
+    return refs
+
+
+def _strip_internal_control_metadata(controls):
+    for control in controls or []:
+        if isinstance(control, dict):
+            control.pop(_CONTROL_SOURCE_VARIABLE_NAME, None)
+            control.pop(_CONTROL_RESOLVED_FIELD_NAME, None)
+            control.pop(_CONTROL_SOURCE_FIELD_NAME, None)
     return controls
 
 
 # An ES|QL named parameter token (``?var``), excluding engine-internal params
 # such as ``?_tstart`` / ``?_tend`` / ``?_job`` which are materialized at
 # query time and never bound by a dashboard control.
-_ESQL_PARAM_RE = re.compile(r"\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 # Quoted string literals, stripped before scanning so a ``?`` inside a value
 # (e.g. a ``RLIKE "ab?c"`` pattern) is not mistaken for a named parameter.
 _ESQL_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
@@ -4299,6 +6533,54 @@ def _query_param_names(query):
         return set()
     unquoted = _ESQL_QUOTED_RE.sub('""', query)
     return {match.group("name") for match in _ESQL_PARAM_RE.finditer(unquoted)}
+
+
+_ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+
+
+def _collect_emitted_field_control_vars(panels):
+    """Return every ES|QL identifier/field control (``??var``) used by panels.
+
+    Late-bound grouping (issue #282) emits ``STATS ... BY ??var``; each one
+    needs a ``variable_type: fields`` binding control or the panel fails to
+    load. Mirrors :func:`_collect_emitted_param_names` for the ``??`` form.
+    """
+    names: set[str] = set()
+    for panel in panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_cfg = panel.get("esql")
+        query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
+        if not isinstance(query, str):
+            continue
+        unquoted = _ESQL_QUOTED_RE.sub('""', query)
+        names |= {match.group("name") for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)}
+    return names
+
+
+def _apply_late_bound_group_controls(controls, field_vars, rule_pack):
+    """Emit a field control for each ``??var`` grouping identifier (issue #282).
+
+    Runs before :func:`_ensure_param_controls` so the ``fields`` control binds
+    the identifier instead of the generic ``values`` control that the ``?var``
+    completeness pass would otherwise synthesise. Any pre-existing control bound
+    to the same variable is replaced so the identifier binds a fields control.
+    """
+    if not field_vars:
+        return controls
+    choices_map = getattr(rule_pack, "_late_bound_group_var_choices", None) or {}
+    result = list(controls)
+    for name in sorted(field_vars):
+        spec = choices_map.get(name)
+        if not isinstance(spec, dict) or not spec.get("choices"):
+            continue
+        result = [
+            control
+            for control in result
+            if not (isinstance(control, dict) and control.get("variable_name") == name)
+        ]
+        result.append(_build_esql_field_control(name, spec))
+    return result
 
 
 def _collect_emitted_param_names(panels):
@@ -4319,6 +6601,107 @@ def _collect_emitted_param_names(panels):
     return names
 
 
+def _degrade_conflicting_late_bound_group_panels(panels, panel_results):
+    """Replace ``??var`` panels when another dashboard panel emits ``?var``.
+
+    Kibana controls bind a variable as either a value or an identifier, not
+    both. The per-query validator catches dual use inside one query; this
+    dashboard-level pass catches the same conflict across separate panels.
+    Preserve the established values-control behavior and degrade only the new
+    late-bound grouping panel instead of shipping a field control that leaves
+    the value panel unbound.
+    """
+    value_vars = _collect_emitted_param_names(panels)
+    field_vars = _collect_emitted_field_control_vars(panels)
+    conflicts = value_vars & field_vars
+    if not conflicts:
+        return
+
+    for panel, panel_result in zip(panels, panel_results):
+        if not isinstance(panel, dict):
+            continue
+        esql_config = panel.get("esql")
+        query = esql_config.get("query") if isinstance(esql_config, dict) else None
+        if not isinstance(query, str):
+            continue
+        unquoted = _ESQL_QUOTED_RE.sub('""', query)
+        panel_conflicts = sorted(
+            {
+                match.group("name")
+                for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)
+            }
+            & conflicts
+        )
+        if not panel_conflicts:
+            continue
+
+        names = ", ".join(panel_conflicts)
+        reason = (
+            f"ES|QL parameter {names} is used as both value and field control "
+            "across dashboard panels; one dashboard control cannot preserve both semantics"
+        )
+        panel.pop("esql", None)
+        content = ["**Migration Required**", "", f"Reasons: {reason}"]
+        if panel_result.promql_expr:
+            content.extend(["", "Original PromQL:", "```", panel_result.promql_expr, "```"])
+        panel["markdown"] = {"content": "\n".join(content)}
+
+        panel_result.status = "not_feasible"
+        panel_result.kibana_type = "markdown"
+        panel_result.confidence = 0.0
+        panel_result.esql_query = ""
+        _append_unique(panel_result.reasons, reason)
+        query_ir_metadata = (
+            panel_result.query_ir.get("metadata")
+            if isinstance(panel_result.query_ir, dict)
+            and isinstance(panel_result.query_ir.get("metadata"), dict)
+            else {}
+        )
+        for metadata_key in (
+            "esql_identifier_param_defaults",
+            "late_bound_group_vars",
+            "late_bound_group_controls",
+        ):
+            query_ir_metadata.pop(metadata_key, None)
+        _sync_visual_ir(panel_result, panel)
+
+
+def _maybe_enable_dashboard_named_param_binding(rule_pack, variables):
+    """Enable ES|QL ``?var`` emission when dashboard templating can bind controls.
+
+    Grafana ``$var`` label matchers become ``field == ?var`` only when the rule
+    pack advertises named-parameter binding. Offline / library callers that skip
+    the CLI probe historically left the feature unset and dropped those matchers
+    even when the dashboard had templating that ``_ensure_param_controls`` can
+    bind. Enable the feature for this translate pass when templating defines at
+    least one named variable.
+
+    Never overrides an existing runtime feature state — a live ``--es-url`` probe
+    that marked binding unsupported must continue dropping matchers (no unbound
+    ``?var`` uploads).
+    """
+    if rule_pack is None:
+        return
+    if ESQL_NAMED_PARAM_BINDING in get_runtime_features(rule_pack):
+        return
+    has_named = any(
+        isinstance(var, dict) and str(var.get("name") or "").strip()
+        for var in (variables or [])
+    )
+    if not has_named:
+        return
+    set_runtime_feature(
+        rule_pack,
+        ESQL_NAMED_PARAM_BINDING,
+        supported=True,
+        source="dashboard_templating",
+        confidence="assumed",
+        reason=(
+            "dashboard templating present; emit ?var matchers with binding controls"
+        ),
+    )
+
+
 def _ensure_param_controls(
     controls,
     emitted_params,
@@ -4326,6 +6709,7 @@ def _ensure_param_controls(
     data_view,
     resolver=None,
     rule_pack=None,
+    control_warnings=None,
 ):
     """Guarantee a binding control exists for every emitted ``?var`` (issue #131).
 
@@ -4359,6 +6743,9 @@ def _ensure_param_controls(
     }
     for name in missing:
         variable = variables_by_name.get(name, {})
+        if variable.get("type") == "custom":
+            controls.append(_build_static_esql_param_control(variable))
+            continue
         label = variable.get("label") or name
         query_text = _variable_query_text(variable)
         source_field = _extract_variable_source_field(query_text) or name
@@ -4369,6 +6756,13 @@ def _ensure_param_controls(
             resolved = resolver.resolve_control_field(source_field, metric_field=metric_field or None)
             if resolved:
                 field_name = resolved
+        scope_filters = _extract_variable_scope_filters(
+            query_text,
+            resolver,
+            rule_pack,
+            control_warnings=control_warnings,
+            variable_name=name,
+        )
         controls.append(
             _build_esql_param_control(
                 variable_name=name,
@@ -4377,6 +6771,9 @@ def _ensure_param_controls(
                 data_view=data_view,
                 default=_variable_default_selection(variable),
                 metric_field=metric_field,
+                source_field=source_field,
+                include_internal_metadata=True,
+                extra_filters=scope_filters,
             )
         )
     return controls
@@ -4875,15 +7272,9 @@ def _collect_repeat_variable_names(dashboard):
 _DROPPED_VARS_WARNING = "Dropped variable-driven label filters during migration"
 _DROPPED_LOGQL_LABEL_WARNING = "Dropped variable-driven LogQL label filters during migration"
 _DROPPED_LOGQL_TEXT_WARNING = "Dropped variable-driven LogQL text filter during migration"
-_CONTROLS_VARS_WARNING = (
-    "Variable-driven label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_LABEL_WARNING = (
-    "Variable-driven LogQL label filters applied via Kibana dashboard controls"
-)
-_CONTROLS_LOGQL_TEXT_WARNING = (
-    "Variable-driven LogQL text filter applied via Kibana dashboard controls"
-)
+_CONTROL_SOURCE_VARIABLE_NAME = "_source_variable_name"
+_CONTROL_SOURCE_FIELD_NAME = "_source_field_name"
+_CONTROL_RESOLVED_FIELD_NAME = "_resolved_field_name"
 
 
 def _pre_scan_control_variables(template_list):
@@ -4901,25 +7292,151 @@ def _pre_scan_control_variables(template_list):
     return names
 
 
-_WARNING_REWRITE_MAP = {
-    _DROPPED_VARS_WARNING: _CONTROLS_VARS_WARNING,
-    _DROPPED_LOGQL_LABEL_WARNING: _CONTROLS_LOGQL_LABEL_WARNING,
-    _DROPPED_LOGQL_TEXT_WARNING: _CONTROLS_LOGQL_TEXT_WARNING,
+_CONTROL_COVERED_VARIABLE_WARNINGS = {
+    _DROPPED_VARS_WARNING,
+    _DROPPED_LOGQL_LABEL_WARNING,
 }
 
 
-def _rewrite_variable_warnings(panel_results, control_variable_names):
-    """Replace 'Dropped variable-driven …' with a controls-aware message.
+def _template_var_name_from_matcher_value(value):
+    text = str(value or "").strip()
+    name = grafana_template_var_name(text)
+    if name:
+        return name
+    unanchored = text
+    if unanchored.startswith("^"):
+        unanchored = unanchored[1:]
+    if unanchored.endswith("$") and not unanchored.endswith("\\$"):
+        unanchored = unanchored[:-1]
+    return grafana_template_var_name(unanchored)
+
+
+def _selector_metric_name_before_brace(text, brace_idx):
+    prefix = str(text or "")[:brace_idx].rstrip()
+    match = re.search(r"([A-Za-z_:][A-Za-z0-9_:]*)$", prefix)
+    return match.group(1) if match else ""
+
+
+def _resolve_metric_field_for_warning_coverage(metric_name, resolver):
+    if not metric_name or not resolver:
+        return None
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    if resolve_metric is None:
+        return metric_name
+    try:
+        return resolve_metric(metric_name) or metric_name
+    except Exception:
+        return metric_name
+
+
+def _resolve_label_field_for_warning_coverage(label, metric_name, resolver):
+    if not label:
+        return ""
+    if not resolver:
+        return label
+    metric_field = _resolve_metric_field_for_warning_coverage(metric_name, resolver)
+    try:
+        resolved = resolver.resolve_label(label, metric_field=metric_field)
+    except Exception:
+        resolved = label
+    return resolved or ""
+
+
+def _source_label_matcher_variable_coverage(expr, resolver=None):
+    matcher_ref_alternatives: list[set[tuple[str, str]]] = []
+    has_uncoverable_matcher = False
+    text = str(expr or "")
+    idx = 0
+    while idx < len(text):
+        if text[idx] != "{":
+            idx += 1
+            continue
+        end = idx + 1
+        quote = ""
+        escaped = False
+        while end < len(text):
+            char = text[end]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "}":
+                break
+            end += 1
+        if end >= len(text) or text[end] != "}":
+            break
+        selector = text[idx + 1:end]
+        metric_name = _selector_metric_name_before_brace(text, idx)
+        for matcher_text in _split_top_level_csv(selector):
+            match = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+            if not match:
+                continue
+            name = _template_var_name_from_matcher_value(match.group("value"))
+            if name and not name.startswith("__"):
+                if match.group("op") in {"!=", "!~"}:
+                    has_uncoverable_matcher = True
+                else:
+                    raw_label = match.group("label")
+                    field_name = _resolve_label_field_for_warning_coverage(
+                        raw_label,
+                        metric_name,
+                        resolver,
+                    )
+                    alternatives = {(name, raw_label)}
+                    if field_name:
+                        alternatives.add((name, field_name))
+                    matcher_ref_alternatives.append(alternatives)
+        idx = end + 1
+    return matcher_ref_alternatives, has_uncoverable_matcher
+
+
+def _panel_result_variable_warning_is_covered(panel_result, covered_control_refs, resolver=None):
+    source_ref_alternatives, has_uncoverable_matcher = _source_label_matcher_variable_coverage(
+        panel_result.promql_expr,
+        resolver=resolver,
+    )
+    if has_uncoverable_matcher:
+        return False
+    return bool(source_ref_alternatives) and all(
+        bool(alternatives & covered_control_refs)
+        for alternatives in source_ref_alternatives
+    )
+
+
+def _rewrite_variable_warnings(panel_results, covered_control_refs, resolver=None):
+    """Clear variable-drop warnings once dashboard controls cover them.
 
     ``PanelResult.reasons`` carries the translation warnings.
     """
-    if not control_variable_names:
-        return
+    rewritten_panel_results = []
+    if not covered_control_refs:
+        return rewritten_panel_results
     for pr in panel_results:
-        for i, w in enumerate(pr.reasons):
-            replacement = _WARNING_REWRITE_MAP.get(w)
-            if replacement:
-                pr.reasons[i] = replacement
+        original_count = len(pr.reasons)
+        pr.reasons = [
+            w
+            for w in pr.reasons
+            if (
+                w not in _CONTROL_COVERED_VARIABLE_WARNINGS
+                or not _panel_result_variable_warning_is_covered(
+                    pr,
+                    covered_control_refs,
+                    resolver=resolver,
+                )
+            )
+        ]
+        if len(pr.reasons) == original_count:
+            continue
+        if pr.status == "migrated_with_warnings" and not pr.reasons:
+            pr.status = "migrated"
+            pr.confidence = max(pr.confidence, 0.85)
+        rewritten_panel_results.append(pr)
+    return rewritten_panel_results
 
 
 def _normalized_text_panel_content(panel):
@@ -5584,7 +8101,7 @@ def _translate_panel_group(
 
 
 def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                        llm_endpoint="", llm_model="", llm_api_key=""):
+                        llm_endpoint="", llm_model="", llm_api_key="", output_stem=None):
     rule_pack = rule_pack or RulePackConfig()
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
@@ -5621,7 +8138,10 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     metric_series_labels = build_metric_series_labels(dashboard)
 
     variables = dashboard.get("templating", {}).get("list", [])
-    control_variable_names = _pre_scan_control_variables(variables)
+    # Gap A: when templating can bind controls, emit ``?var`` label matchers
+    # instead of dropping them. Must run before late-bound grouping choices
+    # (those also require ``binds_esql_named_params``).
+    _maybe_enable_dashboard_named_param_binding(rule_pack, variables)
     # Record which ``?var`` params default to the regex match-all so both the
     # ES|QL and native PROMQL matcher emitters loosen equality matchers on
     # All/multi variables into regex matches and render data on first load
@@ -5629,6 +8149,15 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # the resolver (``resolver._rule_pack``) on the ES|QL path and threaded
     # explicitly into the native path. Set before any panel translation runs.
     setattr(rule_pack, "_regex_default_param_names", _collect_regex_default_param_names(variables))
+    # Issue #282: map grouping template variables (``by ($var)``) to ES|QL
+    # field-control specs up front so the translation guardrail can defer the
+    # dimension to a ``??var`` identifier control instead of failing. Gated on
+    # the target binding ES|QL parameters inside the builder.
+    setattr(
+        rule_pack,
+        "_late_bound_group_var_choices",
+        _build_late_bound_group_var_choices(variables, resolver, rule_pack),
+    )
 
     section_groups = _build_section_groups(dashboard)
     repeat_variable_names = _collect_repeat_variable_names(dashboard)
@@ -5736,10 +8265,12 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # Parameters (``?var``) actually emitted by panel queries drive control
     # completeness: every one needs a binding control, and any variable that
     # became a control should no longer be reported as a dropped filter.
-    emitted_params = _collect_emitted_param_names(flat_panels)
-    _rewrite_variable_warnings(
-        result.panel_results, control_variable_names | emitted_params
+    _degrade_conflicting_late_bound_group_panels(
+        flat_panels,
+        result.yaml_panel_results,
     )
+    emitted_params = _collect_emitted_param_names(flat_panels)
+    emitted_field_vars = _collect_emitted_field_control_vars(flat_panels)
 
     controls_data_view = _infer_controls_data_view(flat_panels, datasource_index, rule_pack)
     controls_resolver = _resolver_for_index(resolver, rule_pack, controls_data_view)
@@ -5749,7 +8280,13 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         rule_pack=rule_pack,
         resolver=controls_resolver,
         repeat_variable_names=repeat_variable_names,
+        include_variable_names=True,
+        collect_warnings=result.control_warnings,
     )
+    # Issue #282: bind each emitted ``??var`` grouping identifier to a fields
+    # control before the ``?var`` completeness pass so it is not shadowed by a
+    # generic values control.
+    controls = _apply_late_bound_group_controls(controls, emitted_field_vars, rule_pack)
     controls = _ensure_param_controls(
         controls,
         emitted_params,
@@ -5757,7 +8294,75 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
         controls_data_view,
         resolver=controls_resolver,
         rule_pack=rule_pack,
+        control_warnings=result.control_warnings,
     )
+    rewritten_panel_results = _rewrite_variable_warnings(
+        result.panel_results,
+        _covered_control_variable_refs(controls),
+        resolver=controls_resolver,
+    )
+    for panel_result in rewritten_panel_results:
+        panel_result.operational_ir = build_operational_ir(
+            panel_result,
+            dashboard_title=result.dashboard_title,
+            dashboard_uid=result.dashboard_uid,
+            source_file=result.source_file,
+            folder_title=result.folder_title,
+        )
+    # Grafana dashboard-level ``links[]`` of type "link" (a concrete external
+    # URL) have a resolvable destination and become a real Kibana ``links``
+    # panel; tag-driven "dashboards" links stay manual (see
+    # ``build_links_panel``). Appended last, at the next free row, so it
+    # never overlaps a panel/section already placed by the loop above. A
+    # matching ``PanelResult`` is added so the YAML leaf-panel count and the
+    # migration-report panel-result count stay 1:1 (see
+    # tests/test_grafana_yaml_generation.py's snapshot pairing invariant).
+    grafana_dashboard_links = translate_dashboard_links(dashboard)
+    links_panel = build_links_panel(grafana_dashboard_links)
+    if links_panel is not None:
+        links_panel["position"] = {"x": 0, "y": dashboard_y_cursor}
+        top_level_panels.append(links_panel)
+        n_url_links = sum(
+            1 for link in grafana_dashboard_links if link.get("kibana_action") == "url_drilldown"
+        )
+        link_warnings: list[str] = []
+        if any(
+            link.get("kibana_action") == "url_drilldown" and link.get("include_vars")
+            for link in grafana_dashboard_links
+        ):
+            link_warnings.append(
+                "Grafana link template variables are dropped because Kibana links panels "
+                "cannot forward dashboard variables automatically"
+            )
+        if any(
+            link.get("kibana_action") == "url_drilldown" and link.get("keep_time")
+            for link in grafana_dashboard_links
+        ):
+            link_warnings.append(
+                "Grafana link time range forwarding is dropped because Kibana external "
+                "links cannot inherit the dashboard time range automatically"
+            )
+        links_panel_result = PanelResult(
+            str(links_panel.get("title") or "Dashboard Links"),
+            "dashboard_links",
+            "links",
+            "migrated_with_warnings" if link_warnings else "migrated",
+            0.8 if link_warnings else 1.0,
+            reasons=[
+                f"synthesized from {n_url_links} Grafana dashboard-level link(s)",
+                *link_warnings,
+            ],
+        )
+        _sync_visual_ir(links_panel_result, links_panel)
+        result.panel_results.append(links_panel_result)
+        result.yaml_panel_results.append(links_panel_result)
+        # ``total_panels`` is also the denominator for target migration
+        # dispositions. Include this synthesized renderable panel so
+        # migrated/warning counts cannot exceed their denominator.
+        result.total_panels += 1
+
+    recompute_result_counts(result)
+    controls = _strip_internal_control_metadata(controls)
 
     yaml_doc = {
         "dashboards": [
@@ -5789,13 +8394,36 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     # per-type minimums (which sometimes widen panels) from being
     # punished by the downstream ``kb-dashboard-cli`` compile step,
     # which rejects any overlap.
+    #
+    # This 2D-grid layout math (row-filling, overlap resolution) still runs
+    # on the kb-dashboard-core dict shape: it is grid arithmetic tied to that
+    # shape, not dashboard semantics, so porting it to the IR buys nothing.
+    # Everything downstream of this point -- the native Dashboards API
+    # payload and the on-disk YAML -- is derived from the semantic
+    # `DashboardIR` built right after, not from this dict directly (see
+    # docs/architecture/asset-model.md).
     for dashboard in yaml_doc.get("dashboards") or []:
         _resolve_section_overlaps_recursively(dashboard.get("panels") or [])
 
-    safe_name = _dashboard_output_stem(title)
+    # IR-first: `DashboardIR` is the primary working artifact from here on.
+    # The native Dashboards API payload (`native_dashboard_from_ir`) and the
+    # on-disk YAML (`DashboardIR.to_yaml_dict`) are both *derived* from it, so
+    # they can never drift from each other -- see
+    # tests/test_grafana_native_dashboard_emission.py for the parity guarantee.
+    dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
+    dashboard_ir.uid = uid
+    result.dashboard_ir = dashboard_ir
+
+    safe_name = output_stem or _dashboard_output_stem(title)
     output_path = Path(output_dir) / f"{safe_name}.yaml"
+    exported_yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
     with open(output_path, "w") as f:
-        yaml.dump(yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+        yaml.dump(exported_yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+
+    native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
+    result.native_dashboard = native_dashboard
+    native_counts_dict, native_reasons = native_counts.as_dicts()
+    result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
 
     return result, output_path
 
@@ -5806,6 +8434,7 @@ __all__ = [
     "PanelContext",
     "VariableContext",
     "_dashboard_output_stem",
+    "metrics_query_index",
     "query_variable_rule",
     "translate_dashboard",
     "translate_panel",

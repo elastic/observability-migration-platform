@@ -155,6 +155,212 @@ class TestVisualIR(unittest.TestCase):
         self.assertEqual(panel["size"]["w"], 12)
 
 
+class TestPanelIRYamlRoundTrip(unittest.TestCase):
+    def test_leaf_panel_round_trips_esql_config_verbatim(self):
+        entry = {
+            "title": "CPU Usage",
+            "size": {"w": 24, "h": 8},
+            "position": {"x": 0, "y": 0},
+            "esql": {
+                "type": "xy",
+                "query": "FROM metrics-* | STATS avg(value) BY time_bucket",
+                "primary": {"field": "avg(value)"},
+                "dimension": {"field": "time_bucket", "data_type": "date"},
+            },
+        }
+        panel = PanelIR.from_yaml_panel_entry(entry)
+        self.assertEqual(panel.kind, "panel")
+        self.assertEqual(panel.title, "CPU Usage")
+        self.assertIsNotNone(panel.visual)
+        self.assertEqual(panel.visual.presentation.kind, "esql")
+        self.assertEqual(panel.to_yaml_panel_entry(), entry)
+
+    def test_leaf_panel_round_trips_hide_title(self):
+        entry = {
+            "title": "Uptime",
+            "size": {"w": 12, "h": 6},
+            "position": {"x": 0, "y": 0},
+            "esql": {"type": "metric", "query": "FROM metrics-*"},
+            "hide_title": True,
+        }
+        panel = PanelIR.from_yaml_panel_entry(entry)
+        self.assertTrue(panel.hide_title)
+        self.assertEqual(panel.to_yaml_panel_entry(), entry)
+
+    def test_markdown_panel_round_trips(self):
+        entry = {
+            "title": "Notes",
+            "size": {"w": 24, "h": 4},
+            "position": {"x": 0, "y": 0},
+            "markdown": {"content": "*(migrated text panel)*"},
+        }
+        panel = PanelIR.from_yaml_panel_entry(entry)
+        self.assertEqual(panel.visual.presentation.kind, "markdown")
+        self.assertEqual(panel.to_yaml_panel_entry(), entry)
+
+    def test_lens_panel_round_trips(self):
+        # Datadog still emits a small number of Lens-backed panels; the IR
+        # round-trip must preserve the ``lens`` block verbatim so Phase 2
+        # Datadog emit is not lossier than the YAML path.
+        entry = {
+            "title": "Lens Metric",
+            "size": {"w": 12, "h": 6},
+            "position": {"x": 0, "y": 0},
+            "lens": {
+                "type": "metric",
+                "data_view": "metrics-*",
+                "primary": {"aggregation": "average", "field": "value"},
+            },
+        }
+        panel = PanelIR.from_yaml_panel_entry(entry)
+        self.assertEqual(panel.visual.presentation.kind, "lens")
+        self.assertEqual(panel.to_yaml_panel_entry(), entry)
+
+    def test_section_round_trips_nested_leaf_panels(self):
+        entry = {
+            "title": "Overview",
+            "section": {
+                "collapsed": True,
+                "panels": [
+                    {
+                        "title": "Panel A",
+                        "size": {"w": 12, "h": 8},
+                        "position": {"x": 0, "y": 0},
+                        "esql": {"type": "metric", "query": "FROM metrics-*"},
+                    },
+                    {
+                        "title": "Panel B",
+                        "size": {"w": 12, "h": 8},
+                        "position": {"x": 12, "y": 0},
+                        "esql": {"type": "gauge", "query": "FROM metrics-*"},
+                    },
+                ],
+            },
+        }
+        panel = PanelIR.from_yaml_panel_entry(entry)
+        self.assertEqual(panel.kind, "section")
+        self.assertTrue(panel.collapsed)
+        self.assertEqual(len(panel.children), 2)
+        self.assertEqual(panel.to_yaml_panel_entry(), entry)
+
+
+class TestControlIRYamlRoundTrip(unittest.TestCase):
+    def test_esql_control_preserves_unmodeled_keys_via_source_extension(self):
+        raw = {
+            "type": "esql",
+            "label": "Region",
+            "variable_name": "region",
+            "variable_type": "values",
+            "query": "FROM metrics-* | STATS BY region",
+            "defaults": ["us-east"],
+            "multiple": False,
+        }
+        control = ControlIR.from_yaml_control(raw)
+        self.assertEqual(control.variable_name, "region")
+        self.assertEqual(control.selected_options, ["us-east"])
+        self.assertFalse(control.multiple)
+        self.assertEqual(control.to_yaml_control(), raw)
+
+    def test_control_label_override_after_polish_flows_through(self):
+        raw = {"type": "esql", "label": "region", "variable_name": "region", "query": "FROM metrics-*"}
+        control = ControlIR.from_yaml_control(raw)
+        control.label = "Region"
+        rendered = control.to_yaml_control()
+        self.assertEqual(rendered["label"], "Region")
+        self.assertEqual(rendered["variable_name"], "region")
+
+    def test_options_list_control_round_trips(self):
+        raw = {
+            "type": "options_list_control",
+            "label": "Host",
+            "data_view_id": "metrics-*",
+            "field_name": "host.name",
+            "defaults": ["host-a", "host-b"],
+        }
+        control = ControlIR.from_yaml_control(raw)
+        self.assertEqual(control.data_view, "metrics-*")
+        self.assertEqual(control.field_name, "host.name")
+        self.assertEqual(control.to_yaml_control(), raw)
+
+    def test_synthesized_control_without_source_extension_builds_from_typed_fields(self):
+        control = ControlIR(
+            kind="esql",
+            label="job",
+            variable_name="job",
+            query="FROM metrics-* | STATS BY job",
+            selected_options=[".*"],
+            multiple=False,
+        )
+        rendered = control.to_yaml_control()
+        self.assertEqual(rendered["type"], "esql")
+        self.assertEqual(rendered["variable_name"], "job")
+        self.assertEqual(rendered["defaults"], [".*"])
+        self.assertEqual(rendered["multiple"], False)
+        self.assertEqual(rendered["label"], "job")
+
+
+class TestDashboardIRYamlRoundTrip(unittest.TestCase):
+    def _sample_dashboard_dict(self):
+        return {
+            "name": "Sample Dashboard",
+            "description": "Migrated from Grafana",
+            "minimum_kibana_version": "8.15.0",
+            "settings": {"sync": {"cursor": True}},
+            "panels": [
+                {
+                    "title": "Panel A",
+                    "size": {"w": 24, "h": 8},
+                    "position": {"x": 0, "y": 0},
+                    "esql": {"type": "metric", "query": "FROM metrics-*"},
+                },
+                {
+                    "title": "Section 1",
+                    "section": {
+                        "collapsed": False,
+                        "panels": [
+                            {
+                                "title": "Panel B",
+                                "size": {"w": 24, "h": 8},
+                                "position": {"x": 0, "y": 0},
+                                "esql": {"type": "datatable", "query": "FROM metrics-*"},
+                            },
+                        ],
+                    },
+                },
+            ],
+            "filters": [{"exists": "host.name"}],
+            "controls": [
+                {
+                    "type": "esql",
+                    "label": "Region",
+                    "variable_name": "region",
+                    "query": "FROM metrics-* | STATS BY region",
+                    "defaults": ["us-east"],
+                },
+            ],
+        }
+
+    def test_round_trip_is_lossless(self):
+        raw = self._sample_dashboard_dict()
+        dashboard_ir = DashboardIR.from_yaml_dict(raw, source_adapter="grafana")
+        self.assertEqual(dashboard_ir.source_adapter, "grafana")
+        self.assertEqual(len(dashboard_ir.panels), 2)
+        self.assertEqual(dashboard_ir.panels[1].kind, "section")
+        self.assertEqual(len(dashboard_ir.controls), 1)
+        self.assertEqual(dashboard_ir.to_yaml_dict(), raw)
+
+    def test_from_yaml_dict_defaults_on_missing_dashboard(self):
+        dashboard_ir = DashboardIR.from_yaml_dict({})
+        self.assertEqual(dashboard_ir.title, "")
+        self.assertEqual(dashboard_ir.panels, [])
+        self.assertEqual(dashboard_ir.controls, [])
+
+    def test_to_yaml_dict_omits_empty_optional_sections(self):
+        dashboard_ir = DashboardIR(title="Minimal")
+        rendered = dashboard_ir.to_yaml_dict()
+        self.assertEqual(rendered, {"name": "Minimal", "panels": []})
+
+
 class TestOperationalIR(unittest.TestCase):
     def test_build_operational_ir(self):
 

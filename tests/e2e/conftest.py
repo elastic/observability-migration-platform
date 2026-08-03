@@ -3,7 +3,7 @@
 
 """Shared e2e fixtures.
 
-The Grafana corpus migration is expensive (~12s, ~223 panels) and several
+The Grafana corpus migration is expensive (~12s, ~270 panels) and several
 offline gates (fidelity ratchet, Kibana-schema validation) need its output. This
 migrates the *committed* corpus once per session with the current code and shares
 the resulting ``dashboards/`` directory.

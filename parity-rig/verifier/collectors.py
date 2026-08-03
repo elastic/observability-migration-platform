@@ -309,7 +309,9 @@ def run_cluster_query(
         return r.status_code, r.text[:2000]
 
 
-_NAMED_PARAM_PATTERN = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
+_NAMED_PARAM_PATTERN = re.compile(
+    r"(?<!\?)\?(?!\?)([a-zA-Z_][a-zA-Z0-9_]*)"
+)
 
 # Lens injects the chart time range under any of these alias spellings; each
 # must bind to a concrete date, not a string/number wildcard. Exposed so other

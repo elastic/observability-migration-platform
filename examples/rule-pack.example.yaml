@@ -28,6 +28,12 @@ query:
   ignored_labels:
     - origin_prometheus
 
+  # Optional source-metric → target-field map (shared with Datadog profiles).
+  # Author for your environment; class-2 transform/attribute_filter/unit_scale
+  # entries are recorded as gaps in v1 (never silent bare renames).
+  # metric_map:
+  #   container_memory_working_set_bytes: container.memory.working_set
+
 panel:
   type_map:
     table-old: datatable

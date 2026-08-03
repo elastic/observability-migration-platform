@@ -63,9 +63,16 @@ class TestKibanaTlsThreading(unittest.TestCase):
             es_url="https://es.test",
             output_path="",
             verify="/tmp/ca.pem",
+            identifier_params_by_dashboard={
+                "dash-1": {"grouping": "transport"},
+            },
         )
 
         self.assertEqual(session.verify, "/tmp/ca.pem")
+        self.assertEqual(
+            mock_inspect_dashboard.call_args.kwargs["identifier_params"],
+            {"grouping": "transport"},
+        )
 
     @patch("observability_migration.targets.kibana.smoke.requests.Session")
     @patch("observability_migration.targets.kibana.smoke.grafana_smoke.load_dashboards")

@@ -1,0 +1,9 @@
+title: Query elapsed time
+grafana_type: graph
+status: migrated_with_warnings
+chart_type: area
+dimension: time_bucket
+metrics: ['prometheus_engine_query_duration_seconds']
+breakdown: series_group
+mode: stacked
+warning: Composited multi-label grouping (instance, slice) into a single XY breakdown column

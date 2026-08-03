@@ -1,0 +1,9 @@
+title: 4xx or 5xx by request
+grafana_type: timeseries
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+breakdown: status
+warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value
+warning: Rewrote PromQL set-or between same metric as a unified WHERE OR clause

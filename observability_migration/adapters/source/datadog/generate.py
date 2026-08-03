@@ -19,7 +19,11 @@ from typing import Any
 
 import yaml
 
+from observability_migration.core.assets.dashboard import DashboardIR
+from observability_migration.core.assets.native_dashboard import NativeDashboard
+from observability_migration.core.assets.visual import VisualIR
 from observability_migration.core.reporting.report import _panel_query_index
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
@@ -74,7 +78,7 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
 )
 
 
-def generate_dashboard_yaml(
+def _build_dashboard_yaml_doc(
     dashboard: NormalizedDashboard,
     results: list[TranslationResult],
     data_view: str = "metrics-*",
@@ -83,10 +87,16 @@ def generate_dashboard_yaml(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
-) -> str:
-    """Generate a complete kb-dashboard YAML string for a dashboard."""
+) -> dict[str, Any]:
+    """Build the kb-dashboard-core YAML document dict for one dashboard.
+
+    Shared by :func:`generate_dashboard_yaml` (the YAML string bridge) and
+    :func:`generate_dashboard_artifacts` (which also derives a
+    :class:`NativeDashboard` from this exact doc), so the two never drift.
+    """
     panels = []
     result_map = {r.widget_id: r for r in results}
+    _warn_mixed_template_variable_usage(dashboard, result_map)
 
     for widget in dashboard.widgets:
         result = result_map.get(widget.id)
@@ -139,14 +149,108 @@ def generate_dashboard_yaml(
         doc["dashboards"][0]["filters"] = filters
 
     controls = _build_controls_from_template_vars(
-        dashboard.template_variables, data_view, field_map,
+        dashboard.template_variables,
+        data_view,
+        field_map,
+        logs_data_view=logs_index,
+        widgets=dashboard.widgets,
     )
     if controls:
         doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(doc)
+    return doc
 
-    return yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+def generate_dashboard_yaml(
+    dashboard: NormalizedDashboard,
+    results: list[TranslationResult],
+    data_view: str = "metrics-*",
+    *,
+    metrics_dataset_filter: str = "",
+    logs_dataset_filter: str = "",
+    logs_index: str = "logs-*",
+    field_map: FieldMapProfile | None = None,
+) -> str:
+    """Generate a complete kb-dashboard YAML string for a dashboard.
+
+    IR-first Phase 2: the string is a *derived export* of the semantic
+    :class:`DashboardIR` (see :func:`generate_dashboard_artifacts`), not an
+    independent rendering of the source widgets.
+    """
+    _yaml_string, _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+        dashboard,
+        results,
+        data_view,
+        metrics_dataset_filter=metrics_dataset_filter,
+        logs_dataset_filter=logs_dataset_filter,
+        logs_index=logs_index,
+        field_map=field_map,
+    )
+    return _yaml_string
+
+
+def generate_dashboard_artifacts(
+    dashboard: NormalizedDashboard,
+    results: list[TranslationResult],
+    data_view: str = "metrics-*",
+    *,
+    metrics_dataset_filter: str = "",
+    logs_dataset_filter: str = "",
+    logs_index: str = "logs-*",
+    field_map: FieldMapProfile | None = None,
+) -> tuple[str, NativeDashboard, dict[str, Any], DashboardIR]:
+    """Generate YAML, NativeDashboard, and the semantic DashboardIR.
+
+    IR-first Phase 2 (mirrors Grafana's ``translate_dashboard``): the
+    per-widget translators still assemble a kb-dashboard-core dict (the
+    expensive, well-tested part of the pipeline), then that dict is
+    converted to a :class:`DashboardIR` *before* the native mapping and
+    the YAML dump. From that point on the dict is no longer the source of
+    truth -- both the typed Dashboards API payload
+    (``native_dashboard_from_ir``) and the on-disk YAML
+    (``DashboardIR.to_yaml_dict``) are derived from the same IR, so they
+    cannot drift from each other.
+
+    Returns ``(yaml_string, native_dashboard, native_stats, dashboard_ir)``
+    where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
+    ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
+    """
+    doc = _build_dashboard_yaml_doc(
+        dashboard,
+        results,
+        data_view,
+        metrics_dataset_filter=metrics_dataset_filter,
+        logs_dataset_filter=logs_dataset_filter,
+        logs_index=logs_index,
+        field_map=field_map,
+    )
+    # IR-first: `DashboardIR` is the primary working artifact from here on.
+    dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
+    dashboard_ir.uid = str(dashboard.id or "")
+    dashboard_ir.title = dashboard.title or dashboard_ir.title
+    template_vars_by_name = {
+        variable.name: variable
+        for variable in dashboard.template_variables
+        if variable.name
+    }
+    for control_ir in dashboard_ir.controls:
+        template_var = template_vars_by_name.get(control_ir.label)
+        if template_var is None:
+            continue
+        control_ir.variable_name = template_var.name
+        control_ir.variable_type = "datadog_template"
+        control_ir.available_options = [
+            str(value)
+            for value in template_var.available_values
+            if str(value)
+        ]
+    exported_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+    yaml_string = yaml.dump(exported_doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    native_dashboard, counts = native_dashboard_from_ir(dashboard_ir)
+    counts_dict, reasons = counts.as_dicts()
+    stats: dict[str, Any] = {**counts_dict, "reasons": reasons}
+    return yaml_string, native_dashboard, stats, dashboard_ir
 
 
 def _iter_leaf_panels(panels: list[dict[str, Any]]):
@@ -214,10 +318,30 @@ def _strip_datadog_private_keys(panels: list[dict[str, Any]]) -> None:
             panel.pop(key, None)
 
 
+def _options_list_field_name(es_field: str) -> str:
+    """Normalize a mapped tag to a field name options-list controls can resolve.
+
+    Kibana options-list looks fields up on the data view. Multi-fields such as
+    ``k8s.node.name.keyword`` often appear in ``_field_caps`` (and may be what
+    ``map_tag`` prefers for aggregations when the base field looked unsafe at
+    migrate time), but they are registered as ``subType.multi`` children.
+    Options-list then fails with ``Could not locate field: ….keyword`` even
+    when the parent keyword / TSDS dimension works. Prefer the parent name for
+    dashboard controls so filters load.
+    """
+    field = str(es_field or "").strip()
+    if field.endswith(".keyword"):
+        return field[: -len(".keyword")]
+    return field
+
+
 def _build_controls_from_template_vars(
     template_vars: list[TemplateVariable],
     data_view: str,
     field_map: FieldMapProfile | None,
+    *,
+    logs_data_view: str = "logs-*",
+    widgets: list[NormalizedWidget] | None = None,
 ) -> list[dict[str, Any]]:
     """Build Kibana dashboard controls from Datadog template variables.
 
@@ -242,16 +366,115 @@ def _build_controls_from_template_vars(
         # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
         # is a real field name in the log-query path.)
         tag = tag.lstrip("@")
-        es_field = field_map.map_tag(tag, context="metric") if field_map else tag
+        context = _template_variable_query_context(tv.name, widgets or [])
+        control_data_view = logs_data_view if context == "log" else data_view
+        es_field = field_map.map_tag(tag, context=context) if field_map else tag
+        control_field = _options_list_field_name(es_field)
         control: dict[str, Any] = {
             "type": "options",
             "label": tv.name,
-            "data_view": data_view,
-            "field": es_field,
+            "data_view": control_data_view,
+            "field": control_field,
             "multiple": len(tv.defaults) > 1 or tv.default == "*",
         }
+        preselected = _template_var_preselected(tv)
+        # Datadog template defaults are source vocabulary. When the tag was
+        # remapped onto a different target field (env → deployment.environment),
+        # those defaults often do not exist as field values (e.g. "prod" vs
+        # OTel "production"). Options-list applies them as filters and empties
+        # every panel with "selection returns no results". Skip preselect in
+        # that remapped case; operators pick live field values instead.
+        if preselected and _tag_was_remapped(tag, control_field):
+            preselected = []
+        if preselected:
+            control["preselected"] = preselected
         controls.append(control)
     return controls
+
+
+def _tag_was_remapped(source_tag: str, control_field: str) -> bool:
+    """True when the options-list field is not the source tag (or its .keyword)."""
+    source = str(source_tag or "").strip()
+    field = str(control_field or "").strip()
+    if not source or not field:
+        return False
+    return field not in {source, f"{source}.keyword"}
+
+
+def _template_variable_query_context(
+    variable_name: str,
+    widgets: list[NormalizedWidget],
+) -> str:
+    """Return ``log`` only when a variable is referenced exclusively by logs."""
+    log_widget_ids, metric_widget_ids = _template_variable_usage(
+        variable_name,
+        widgets,
+    )
+    return "log" if log_widget_ids and not metric_widget_ids else "metric"
+
+
+def _template_variable_usage(
+    variable_name: str,
+    widgets: list[NormalizedWidget],
+) -> tuple[set[str], set[str]]:
+    escaped_name = re.escape(variable_name)
+    reference_re = re.compile(
+        rf"\$(?:\{{{escaped_name}(?::[^}}]+)?\}}|{escaped_name}\b)"
+    )
+    log_widget_ids: set[str] = set()
+    metric_widget_ids: set[str] = set()
+
+    pending = list(widgets)
+    while pending:
+        widget = pending.pop()
+        pending.extend(widget.children)
+        for query in widget.queries:
+            if not reference_re.search(query.raw_query or ""):
+                continue
+            if query.log_query is not None or query.data_source == "logs":
+                log_widget_ids.add(widget.id)
+            if query.metric_query is not None or query.data_source == "metrics":
+                metric_widget_ids.add(widget.id)
+
+    return log_widget_ids, metric_widget_ids
+
+
+def _warn_mixed_template_variable_usage(
+    dashboard: NormalizedDashboard,
+    result_map: dict[str, TranslationResult],
+) -> None:
+    for variable in dashboard.template_variables:
+        log_widget_ids, metric_widget_ids = _template_variable_usage(
+            variable.name,
+            dashboard.widgets,
+        )
+        if not log_widget_ids or not metric_widget_ids:
+            continue
+        detail = (
+            f"Template variable '${variable.name}' is used by both metric and "
+            "log widgets; the migrated options-list control targets the metrics "
+            "data view because one Kibana control cannot target both data views. "
+            "Recreate a separate logs control or filter in Kibana"
+        )
+        for widget_id in log_widget_ids | metric_widget_ids:
+            result = result_map.get(widget_id)
+            if result is None:
+                continue
+            if detail not in result.warnings:
+                result.warnings.append(detail)
+            if detail not in result.semantic_losses:
+                result.semantic_losses.append(detail)
+            if result.status == "ok":
+                result.status = "warning"
+
+
+def _template_var_preselected(tv: TemplateVariable) -> list[str]:
+    values = [str(value) for value in tv.defaults if str(value) and str(value) != "*"]
+    if values:
+        return values
+    if tv.default and tv.default != "*":
+        return [str(tv.default)]
+    return []
 
 
 def _panel_data_index(panel: dict[str, Any]) -> str:
@@ -344,7 +567,9 @@ def _build_yaml_panel(
     dd_y = int(layout.get("y") or 0)
     dd_w = int(layout.get("width") or 0)
 
-    if result.backend == "markdown" or result.status in ("not_feasible", "requires_manual"):
+    if result.backend == "image":
+        panel = _build_image_panel(widget, result, 0, 0, 12, 6)
+    elif result.backend == "markdown" or result.status in ("not_feasible", "requires_manual"):
         panel = _build_markdown_panel(widget, result, 0, 0, 8, 6)
     elif result.backend == "lens" and result.yaml_panel and result.yaml_panel.get("type") == "lens":
         panel = _build_lens_panel(widget, result, data_view, 0, 0, 8, 8)
@@ -356,13 +581,33 @@ def _build_yaml_panel(
     if panel and "esql" in panel:
         enrich_panel_display(panel, widget, result)
     result.yaml_panel = panel or {}
-    panel["_dd_y"] = dd_y
-    panel["_dd_x"] = dd_x
-    panel["_dd_w"] = dd_w
-    panel["_dd_h"] = int(layout.get("height", 2) or 2)
-    panel["_dd_type"] = widget.widget_type
-    panel["_dd_display_type"] = widget.display_type
-    panel["_dd_widget_id"] = widget.id
+    # Stamp source id before visual IR so report/lint pairing can key on it.
+    # Underscore keys are stripped by DashboardIR export; visual_ir keeps the
+    # typed presentation for Grafana-parity reporting.
+    if panel is not None:
+        panel["_dd_y"] = dd_y
+        panel["_dd_x"] = dd_x
+        panel["_dd_w"] = dd_w
+        panel["_dd_h"] = int(layout.get("height", 2) or 2)
+        panel["_dd_type"] = widget.widget_type
+        panel["_dd_display_type"] = widget.display_type
+        panel["_dd_widget_id"] = widget.id
+        if widget.id and not panel.get("_source_panel_id"):
+            panel["_source_panel_id"] = str(widget.id)
+    result.source_panel_id = result.source_panel_id or str(widget.id or "")
+    query_ir = result.query_ir if isinstance(result.query_ir, dict) else {}
+    result.visual_ir = VisualIR.from_yaml_panel(
+        panel,
+        source_panel_id=result.source_panel_id,
+        grafana_type=str(widget.widget_type or result.dd_widget_type or ""),
+        kibana_type=str(result.kibana_type or ""),
+        warnings=[str(item) for item in (result.warnings or []) + (result.reasons or [])],
+        metadata={
+            "query_language": str(result.query_language or ""),
+            "output_shape": str(query_ir.get("output_shape", "") or ""),
+            "source_adapter": "datadog",
+        },
+    )
     return panel
 
 
@@ -405,9 +650,25 @@ def _build_esql_panel(
             if time_dim:
                 esql_block["dimension"] = _dimension_config(time_dim, data_type="date")
             other_dims = [d for d in dims if d != time_dim]
-            if other_dims:
+            if len(other_dims) >= 2:
+                # Mirror heatmap multi-tag compositing: Lens XY has one
+                # breakdown field, so CONCAT the categorical dims instead of
+                # silently dropping all but the first.
+                new_query, breakdown_field = _composite_y_column(
+                    esql_block["query"], other_dims, name="series_group"
+                )
+                esql_block["query"] = new_query
+                result.esql_query = new_query
+                esql_block["breakdown"] = _dimension_config(breakdown_field)
+                warning = (
+                    "XY chart grouped by multiple tags "
+                    f"({', '.join(other_dims)}); composited into a single "
+                    "breakdown column"
+                )
+                if warning not in result.warnings:
+                    result.warnings.append(warning)
+            elif other_dims:
                 esql_block["breakdown"] = _dimension_config(other_dims[0])
-                _warn_dropped_xy_breakdowns(other_dims, result)
         if metrics:
             esql_block["metrics"] = [
                 _metric_config(widget, result, m)
@@ -431,11 +692,19 @@ def _build_esql_panel(
                 for field in keep_fields
             ]
         else:
+            if widget.widget_type == "change" and "value" not in metrics:
+                # A change widget ranks by the computed delta `value` (the SORT
+                # key), which STATS-based inference misses because it is an EVAL
+                # alias. Surface it as the leading metric so the ranked delta —
+                # the whole point of the widget — is actually displayed.
+                metrics = ["value", *metrics]
             if metrics:
                 esql_block["metrics"] = [
                     _metric_config(widget, result, m)
                     for m in metrics
                 ]
+                if widget.widget_type == "change" and esql_block["metrics"][0]["field"] == "value":
+                    esql_block["metrics"][0]["label"] = "Change"
             non_time_dims = [d for d in dims if "time" not in d.lower() and "bucket" not in d.lower()]
             if non_time_dims:
                 esql_block["breakdowns"] = [_dimension_config(b) for b in non_time_dims]
@@ -475,7 +744,27 @@ def _build_esql_panel(
             esql_block["x_axis"] = _dimension_config(dims[0])
         else:
             esql_block["x_axis"] = _dimension_config("@timestamp", data_type="date")
-        if other_dims:
+        if len(other_dims) >= 2:
+            # The heatmap Y axis is a single field, but the query groups by two
+            # (or more) explicit categorical tags the user chose (e.g. service +
+            # host). Using only the first merges distinct buckets, so composite
+            # the grouping tags into one synthetic Y column instead of dropping
+            # the rest.
+            new_query, y_field = _composite_y_column(esql_block["query"], other_dims)
+            esql_block["query"] = new_query
+            result.esql_query = new_query
+            y_cfg: dict[str, Any] = {"field": y_field}
+            label = " / ".join(lbl for lbl in (_pretty_field_label(d) for d in other_dims) if lbl)
+            if label:
+                y_cfg["label"] = label
+            esql_block["y_axis"] = y_cfg
+            warning = (
+                "Heatmap grouped by multiple tags "
+                f"({', '.join(other_dims)}); composited into a single Y axis column"
+            )
+            if warning not in result.warnings:
+                result.warnings.append(warning)
+        elif other_dims:
             esql_block["y_axis"] = _dimension_config(other_dims[0])
         esql_block.setdefault("appearance", {})["legend"] = {
             "visible": "show",
@@ -609,6 +898,52 @@ def _build_markdown_panel(
     return panel
 
 
+_DATADOG_IMAGE_FIT_MAP = {
+    "fill": "fill",
+    "contain": "contain",
+    "cover": "cover",
+    "none": "none",
+    # Datadog's deprecated aliases retain their closest CSS object-fit
+    # semantics on the Kibana image panel.
+    "fit": "contain",
+    "zoom": "cover",
+    "center": "none",
+    # Kibana has no scale-down enum; contain is the non-cropping fallback.
+    "scale-down": "contain",
+}
+
+
+def _build_image_panel(
+    widget: NormalizedWidget,
+    result: TranslationResult,
+    x: int, y: int, w: int, h: int,
+) -> dict[str, Any]:
+    """Build a native ``image`` YAML panel (kb-dashboard-core ``ImagePanel``).
+
+    Only reached when ``image_widget_rule`` confirmed an absolute http(s) URL
+    (see planner.py); the relative/static-asset fallback still goes through
+    ``_build_markdown_panel``.
+    """
+    url = str(widget.raw_definition.get("url") or "").strip()
+    image_config: dict[str, Any] = {"from_url": url}
+    source_sizing = str(widget.raw_definition.get("sizing") or "").strip().lower()
+    fit = _DATADOG_IMAGE_FIT_MAP.get(source_sizing)
+    if fit:
+        image_config["fit"] = fit
+    if source_sizing == "scale-down":
+        result.warnings.append("image sizing scale-down approximated as contain")
+        if result.status == "ok":
+            result.status = "warning"
+
+    panel = {
+        "title": result.title or widget.title or "",
+        "size": {"w": w, "h": h},
+        "position": {"x": x, "y": y},
+        "image": image_config,
+    }
+    return panel
+
+
 def _build_group_panel(
     widget: NormalizedWidget,
     result_map: dict[str, TranslationResult],
@@ -684,7 +1019,7 @@ _DD_TYPE_KIBANA_MAP: dict[str, str] = {
     "free_text": "markdown",
     "image": "markdown",
     "iframe": "markdown",
-    "hostmap": "markdown",
+    "hostmap": "datatable",
 }
 
 
@@ -1010,7 +1345,7 @@ _DD_TYPE_FAMILY: dict[str, str] = {
     "free_text": "markdown",
     "image": "markdown",
     "iframe": "markdown",
-    "hostmap": "markdown",
+    "hostmap": "table",
 }
 
 
@@ -1253,6 +1588,41 @@ def _infer_keep_fields(query: str) -> list[str]:
         for part in _split_by_clause(keep_clause)
         if part.strip()
     ]
+
+
+def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> tuple[str, str]:
+    """Splice a composite Y column into a heatmap query.
+
+    Builds ``| EVAL <name> = CONCAT(COALESCE(TO_STRING(d1), ""), " / ", …)`` from
+    the grouping dimensions and inserts it just before the trailing ``KEEP`` (so
+    the composite is a real output column), adding ``<name>`` to that ``KEEP``.
+    When the query has no ``KEEP`` stage the ``EVAL`` is appended after the last
+    ``STATS`` stage. Returns ``(new_query, column_name)``.
+    """
+    concat_args: list[str] = []
+    for index, dim in enumerate(dims):
+        if index:
+            concat_args.append('" / "')
+        concat_args.append(f'COALESCE(TO_STRING({dim}), "")')
+    eval_stage = f"| EVAL {name} = CONCAT({', '.join(concat_args)})"
+
+    stages = [line.strip() for line in query.splitlines() if line.strip()]
+    keep_idx = None
+    for index, stage in enumerate(stages):
+        if stage.upper().startswith("| KEEP "):
+            keep_idx = index
+    if keep_idx is not None:
+        keep_body = stages[keep_idx][len("| KEEP "):].strip()
+        stages[keep_idx] = f"| KEEP {keep_body}, {name}"
+        stages.insert(keep_idx, eval_stage)
+    else:
+        stats_indices = [
+            index for index, stage in enumerate(stages)
+            if stage.upper().startswith("| STATS ") or stage.upper().startswith("STATS ")
+        ]
+        insert_at = (stats_indices[-1] + 1) if stats_indices else len(stages)
+        stages.insert(insert_at, eval_stage)
+    return "\n".join(stages), name
 
 
 def _dimension_config(field: str, data_type: str | None = None) -> dict[str, Any]:

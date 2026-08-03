@@ -1,0 +1,8 @@
+title: Native ESQL Errors
+grafana_type: barchart
+status: migrated
+chart_type: bar
+dimension: time_bucket
+metrics: ['errors']
+breakdown: service.name
+mode: unstacked

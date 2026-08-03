@@ -16,6 +16,7 @@ from observability_migration.core.assets.alerting import (
 )
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.mapping import AUTOMATED_TIER, map_alerts_batch
+from observability_migration.core.reporting.report import print_field_discovery_warning
 from observability_migration.core.selection import (
     apply_cli_selection,
     criteria_from_args,
@@ -353,11 +354,42 @@ def create_rules_if_requested(
             )
 
 
+def _build_alert_schema_resolver(args):
+    """Build a target ``SchemaResolver`` for the alert pipeline, mirroring the
+    dashboard path so migrated native-PROMQL alert queries get the same
+    ``metrics.<name>`` prefixing on OTel Collector indices (#270).
+
+    Degrades to ``None`` (bare-name passthrough) on any failure or when no ES
+    target is configured, so offline / dashboard-less runs are unaffected.
+    """
+    try:
+        from .cli import (
+            _apply_native_promql_to_rule_pack,
+            _load_configured_rule_pack,
+            _resolve_tls_from_args,
+        )
+        from .schema import SchemaResolver
+
+        rule_pack = _load_configured_rule_pack(args)
+        _apply_native_promql_to_rule_pack(rule_pack, args)
+        return SchemaResolver(
+            rule_pack,
+            es_url=getattr(args, "es_url", "") or None,
+            index_pattern=getattr(args, "esql_index", "") or getattr(args, "data_view", "") or None,
+            es_api_key=getattr(args, "es_api_key", "") or None,
+            verify=_resolve_tls_from_args(args),
+            field_profile=getattr(args, "field_profile", "otel"),
+        )
+    except Exception:
+        return None
+
+
 def run_alert_pipeline(
     args,
     *,
     output_dir: Path,
     raw_dashboards: list[dict[str, Any]] | None = None,
+    resolver: Any = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dashboards = list(raw_dashboards or [])
@@ -398,9 +430,31 @@ def run_alert_pipeline(
     unified_alert_irs = build_unified_alert_irs(unified_resources)
     all_alert_irs = legacy_alert_irs + unified_alert_irs
 
+    # Reuse the caller's resolver (dashboard flow already built one); only build
+    # our own on the alerts-only path so field discovery / the PROMQL probe run
+    # once per migrate.
+    owns_resolver = resolver is None
+    if owns_resolver:
+        resolver = _build_alert_schema_resolver(args)
+    if resolver is not None and getattr(args, "es_url", ""):
+        # Passthrough resolution deliberately does not trigger discovery while
+        # emitting raw names. Prime capabilities here so alert translation can
+        # still validate every emitted metric/label against the live target.
+        resolver.discovery_status()
+    metrics_target_guidance = None
+    if owns_resolver:
+        # Alerts-only runs translate PromQL against the same
+        # `esql_index or data_view` target as dashboards, so they hit the same
+        # index footguns (#284). The dashboard flow prints this itself.
+        from .cli import assess_metrics_target_from_args
+        from .metrics_target_guidance import print_metrics_target_guidance
+
+        metrics_target_guidance = assess_metrics_target_from_args(args, resolver)
+        print_metrics_target_guidance(metrics_target_guidance)
     mapping_batch = map_alerts_batch(
         all_alert_irs,
         data_view=getattr(args, "data_view", "metrics-*"),
+        resolver=resolver,
     )
     payload_validation_by_alert_id, payload_preflight = build_payload_validation_lookup(
         args,
@@ -441,12 +495,20 @@ def run_alert_pipeline(
     print(f"    By tier: {by_tier}")
     if by_kind:
         print(f"    By kind: {by_kind}")
-    return {
+    summary = {
         "total": len(all_alert_irs),
         "artifacts_dir": str(output_dir),
         "by_automation_tier": by_tier,
         "by_kind": by_kind,
     }
+    if metrics_target_guidance is not None:
+        summary["metrics_target"] = metrics_target_guidance.as_summary()
+    if resolver is not None:
+        field_discovery = resolver.field_resolution_summary()
+        summary["field_discovery"] = field_discovery
+        if owns_resolver:
+            print_field_discovery_warning(field_discovery)
+    return summary
 
 
 __all__ = [

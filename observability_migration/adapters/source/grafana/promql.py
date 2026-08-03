@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from observability_migration.core.metric_mapping import plan_rate_transform
+from observability_migration.core.verification.field_capabilities import NUMERIC_FIELD_TYPES
+
 from .rules import RulePackConfig
 from .runtime_features import binds_esql_named_params
 
@@ -26,6 +29,21 @@ def _is_counter_fallback(metric_name, rule_pack):
     if kind == "gauge":
         return False
     suffixes = getattr(rule_pack, "counter_suffixes", ["_total"])
+    return any(metric_name.endswith(s) for s in suffixes)
+
+
+def _is_label_enrichment_metric(metric_name, rule_pack):
+    """Return True when ``metric_name`` matches the info-metric naming convention.
+
+    A Prometheus ``*_info`` metric (``node_uname_info``, ``rabbitmq_identity_info``,
+    ``kube_pod_info``, ...) is a gauge whose value is always ``1``, published
+    solely so its labels can be joined onto a real metric. A ``group_left`` join
+    against one is pure label enrichment (issue #197): dropping it and
+    aggregating the primary metric alone does not change the numeric value.
+    """
+    if not metric_name:
+        return False
+    suffixes = getattr(rule_pack, "info_metric_suffixes", ["_info"])
     return any(metric_name.endswith(s) for s in suffixes)
 
 
@@ -59,6 +77,19 @@ _ESQL_RESERVED_IDENTIFIERS = frozenset(
 )
 
 
+# Kibana ES|QL control-variable references. A single ``?`` prefixes a *value*
+# control (``WHERE field == ?var``); a double ``??`` prefixes an *identifier*
+# / field control (``STATS ... BY ??var``). Both are bound to a dashboard
+# control at view time and must be emitted verbatim — never backtick-quoted,
+# label-resolved, or dropped as if they were a concrete field name.
+_ESQL_CONTROL_TOKEN_RE = re.compile(r"^\?\??[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_esql_control_token(name) -> bool:
+    """True when *name* is an ES|QL control-variable reference (``?v`` / ``??v``)."""
+    return isinstance(name, str) and bool(_ESQL_CONTROL_TOKEN_RE.match(name))
+
+
 def _esql_field(name: str) -> str:
     """Backtick-quote an ES|QL field reference that contains special characters.
 
@@ -85,6 +116,11 @@ def _esql_identifier(name: str) -> str:
     """
     if not name:
         return name
+    # A Kibana ES|QL control-variable reference (``?var`` value control or
+    # ``??var`` identifier/field control) is late-bound at view time; emit it
+    # verbatim so backticks never break the ``??var`` substitution.
+    if _is_esql_control_token(name):
+        return name
     if re.search(r"[^a-zA-Z0-9_.]", name):
         escaped = name.replace("`", "\\`")
         return f"`{escaped}`"
@@ -93,7 +129,7 @@ def _esql_identifier(name: str) -> str:
     return name
 
 
-def _resolve_metric_field(resolver, metric_name, *, prefer=None):
+def _resolve_metric_field(resolver, metric_name, *, prefer=None, source_labels=None):
     """Resolve a PromQL metric name to its physical target field, ES|QL-escaped.
 
     Passes through to ``resolver.resolve_metric_field`` when a resolver is
@@ -101,13 +137,232 @@ def _resolve_metric_field(resolver, metric_name, *, prefer=None):
     a resolver (offline / fallback paths) still emit the source-faithful
     field reference.  The returned field path is always safe to embed directly
     inside ES|QL STATS / WHERE expressions.
+
+    ``source_labels`` selects among metric_map ``variants`` when present.
     """
     if resolver is None or not metric_name:
         return metric_name
     resolve = getattr(resolver, "resolve_metric_field", None)
     if resolve is None:
         return _esql_field(metric_name)
-    return _esql_field(resolve(metric_name, prefer=prefer))
+    try:
+        return _esql_field(resolve(metric_name, prefer=prefer, source_labels=source_labels))
+    except TypeError:
+        # Older resolvers without source_labels.
+        return _esql_field(resolve(metric_name, prefer=prefer))
+
+
+def _frag_source_labels(frag) -> dict[str, str]:
+    """Equality matchers from a PromQL fragment, for metric_map variant selection."""
+    labels: dict[str, str] = {}
+    for matcher in getattr(frag, "matchers", None) or []:
+        if not isinstance(matcher, dict):
+            continue
+        if matcher.get("op") != "=":
+            continue
+        label = str(matcher.get("label") or "").strip()
+        value = str(matcher.get("value") or "")
+        if not label or label == "__name__":
+            continue
+        if _grafana_param_name(value) or re.search(r"\$\w", value):
+            continue
+        labels[label] = value
+    return labels
+
+
+def _resolve_frag_metric_field(frag, resolver, *, prefer=None):
+    """Resolve ``frag.metric`` with fragment equality labels for variant maps."""
+    return _resolve_metric_field(
+        resolver,
+        getattr(frag, "metric", None),
+        prefer=prefer,
+        source_labels=_frag_source_labels(frag),
+    )
+
+
+def _resolve_metric_map_result(resolver, metric_name, source_labels=None):
+    if resolver is None or not metric_name:
+        return None
+    resolve = getattr(resolver, "resolve_metric_map_result", None)
+    if resolve is None:
+        return None
+    try:
+        return resolve(metric_name, source_labels=source_labels)
+    except TypeError:
+        return resolve(metric_name)
+
+
+def _metric_map_attribute_filters(frag, resolver) -> list[str]:
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return []
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return []
+    filters: list[str] = []
+    for key, value in result.entry.attribute_filter.items():
+        field = _esql_field(key)
+        filters.append(f"{field} == {_quote_esql_string(value)}")
+    return filters
+
+
+def _metric_map_source_filter(frag, resolver) -> dict[str, str]:
+    """Source matchers consumed by the selected metric_map variant."""
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return {}
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return {}
+    return dict(result.entry.source_filter)
+
+
+def _matcher_consumed_by_metric_map(matcher, consumed: dict[str, str]) -> bool:
+    if not consumed or not isinstance(matcher, dict):
+        return False
+    if matcher.get("op") != "=":
+        return False
+    label = str(matcher.get("label") or "").strip()
+    value = str(matcher.get("value") or "")
+    return bool(label) and consumed.get(label) == value
+
+
+def _apply_unit_scale(expr, scale):
+    if scale is None or scale == 1.0:
+        return expr
+    return f"({expr}) * {scale}"
+
+
+def _metric_map_unit_scale(resolver, metric_name, source_labels=None):
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or not result.applied:
+        return None
+    return result.unit_scale
+
+
+def _metric_map_target_index(resolver, metric_name, source_labels=None) -> str:
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or not result.applied or result.entry is None:
+        return ""
+    return str(result.entry.target_index or "").strip()
+
+
+def _metric_map_unapplied_notes(resolver, metric_name, source_labels=None) -> list[str]:
+    """Panel notes when a map entry exists but was not applied (variant/scaffold gaps)."""
+    result = _resolve_metric_map_result(resolver, metric_name, source_labels=source_labels)
+    if result is None or result.applied:
+        return []
+    note = str(result.gap_reason or "").strip()
+    if not note:
+        note = f"metric_map[{metric_name!r}] was not applied"
+    return [note]
+
+
+def _metric_map_target_is_counter(resolver, result) -> bool | None:
+    """Counter/gauge kind for the *mapped target* field (not the source name)."""
+    if resolver is None or result is None:
+        return None
+    target_field = str(result.target or "").strip()
+    if not target_field:
+        return None
+    if resolver.is_counter(target_field):
+        return True
+    if resolver.refutes_counter(target_field):
+        return False
+    return None
+
+
+def _plan_metric_map_rate_transform(frag, resolver, esql_inner, is_counter):
+    """Adjust rate emission per metric_map ``transform``."""
+    warnings: list[str] = []
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return esql_inner, is_counter, warnings
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return esql_inner, is_counter, warnings
+    transform = result.entry.transform
+    source_has_rate = getattr(frag, "range_func", None) in {"rate", "irate", "increase"}
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
+    # Rename-only maps onto a known gauge still must drop RATE(...); otherwise
+    # ``sum(rate(prom_counter))`` becomes ``SUM(RATE(otel.gauge))`` and ES 400s.
+    if transform == "none":
+        if source_has_rate and target_is_counter is False:
+            warnings.append(
+                f"metric_map[{metric_name!r}] targets a gauge field; "
+                "dropped source rate()/irate()/increase() to avoid RATE(gauge)"
+            )
+            return "", False, warnings
+        return esql_inner, is_counter, warnings
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=source_has_rate,
+        transform=transform,
+        target_is_counter=target_is_counter,
+    )
+    if gap_reason:
+        warnings.append(gap_reason)
+    if action == "drop_rate" and source_has_rate:
+        # Target is a gauge (or pre-rated equivalent): emit the bare field under
+        # the outer aggregate instead of LAST_OVER_TIME, which forces multi-target
+        # normalize to wrap sibling gauges as SUM(SUM_OVER_TIME(...)).
+        esql_inner = ""
+        is_counter = False
+    elif action == "to_rate" and not source_has_rate:
+        if (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS:
+            esql_inner = "RATE"
+            is_counter = True
+    return esql_inner, is_counter, warnings
+
+
+def _apply_metric_map_to_rate_on_simple(
+    frag,
+    resolver,
+    rule_pack,
+    *,
+    source: str,
+    time_filter: str,
+    bucket_expr: str,
+    metric_field: str,
+    stats_expr: str,
+    warnings: list[str],
+):
+    """Honor ``transform: to_rate`` on non-range PromQL (simple_metric / simple_agg)."""
+    metric_name = getattr(frag, "metric", None)
+    if not metric_name:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    result = _resolve_metric_map_result(
+        resolver, metric_name, source_labels=_frag_source_labels(frag)
+    )
+    if result is None or not result.applied or result.entry is None:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if result.entry.transform != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    if getattr(frag, "range_func", None) in {"rate", "irate", "increase"}:
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    target_is_counter = _metric_map_target_is_counter(resolver, result)
+    action, gap_reason = plan_rate_transform(
+        source_has_rate=False,
+        transform="to_rate",
+        target_is_counter=target_is_counter,
+    )
+    if gap_reason:
+        warnings.append(gap_reason)
+    if action != "to_rate":
+        return source, time_filter, bucket_expr, metric_field, stats_expr
+    window = str(getattr(rule_pack, "default_rate_window", None) or "5m").strip() or "5m"
+    metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
+    source = "TS"
+    time_filter = rule_pack.ts_time_filter
+    bucket_expr = rule_pack.ts_bucket
+    outer = OUTER_AGG_MAP.get(getattr(frag, "outer_agg", None) or "", "") or "SUM"
+    stats_expr = f"{outer}(RATE({metric_field}, {window}))"
+    return source, time_filter, bucket_expr, metric_field, stats_expr
 
 
 def _frag_metric_field_raw(frag, resolver):
@@ -125,8 +380,12 @@ def _frag_metric_field_raw(frag, resolver):
     resolve = getattr(resolver, "resolve_metric_field", None)
     if resolve is None:
         return metric_name
+    labels = _frag_source_labels(frag)
     try:
-        return resolve(metric_name) or metric_name
+        try:
+            return resolve(metric_name, source_labels=labels) or metric_name
+        except TypeError:
+            return resolve(metric_name) or metric_name
     except Exception:
         return metric_name
 
@@ -260,7 +519,7 @@ _COUNTER_STYLE_SOURCE_FUNCS = frozenset({"rate", "irate", "increase"})
 
 
 def _counter_safe_metric_arg(
-    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False
+    esql_func, metric_expr, is_counter, source_range_func=None, *, counter_refuted=False, force_cast=False
 ):
     """Cast a counter metric to double for ES|QL functions that reject counters.
 
@@ -271,9 +530,16 @@ def _counter_safe_metric_arg(
     directly, so they are never cast; an authoritative gauge (``counter_refuted``)
     is left unchanged to avoid needless cast / snapshot churn.
 
+    ``force_cast`` (issue #245) casts regardless of counter status — pass
+    ``True`` when the target maps this field with conflicting types across
+    indices, which can make ES|QL reject the bare form regardless of which
+    aggregation is applied. Callers should compute it with
+    :func:`_counter_unsafe_cast_needed`. It has no effect on
+    RATE/IRATE/INCREASE, which cannot be cast without changing their meaning.
+
     This is the shared counter-safe helper used by both the direct/topk family
-    rules (via the translate.py import) and the composed binary measure-spec /
-    join-ratio paths below, so degraded-range casting stays consistent.
+    rules and the composed binary measure-spec / join-ratio paths below, so
+    degraded-range casting stays consistent.
     """
     if (esql_func or "").upper() in _COUNTER_INPUT_ESQL_FUNCS:
         return metric_expr
@@ -281,7 +547,7 @@ def _counter_safe_metric_arg(
         (source_range_func or "").lower() in _COUNTER_STYLE_SOURCE_FUNCS
         and not counter_refuted
     )
-    if is_counter or counter_source:
+    if is_counter or counter_source or force_cast:
         return f"TO_DOUBLE({metric_expr})"
     return metric_expr
 
@@ -295,6 +561,109 @@ def _counter_refuted(resolver, metric):
         return False
     refutes = getattr(resolver, "refutes_counter", None)
     return bool(refutes(metric)) if callable(refutes) else False
+
+
+def _resolve_conflicting_type_candidate(resolver, metric):
+    """Find the physical field -- ``metric`` itself, or a profile-resolved
+    counter/gauge variant -- that the live target maps with conflicting
+    *numeric* exact types across indices, if any (issue #245).
+
+    Checks every candidate rather than trusting the caller to have already
+    resolved the right one: ``metric`` may be the raw PromQL name (e.g. the
+    shared RATE/IRATE/INCREASE degrade decision runs before the counter-vs-
+    gauge choice, and thus before any physical field is resolved) or it may
+    already be a caller-resolved physical field. Fleet ``prometheus.<metric>.
+    value``/``.counter`` and native ``metrics.<metric>`` layouts can carry
+    the conflict even when the bare logical name is absent from the live
+    cache entirely, so a raw-name-only check would silently miss them. If
+    ``metric`` is already a resolved physical field, re-resolving it through
+    ``resolve_metric_field`` just yields extra candidates that fail to match
+    and are harmlessly skipped.
+
+    Returns ``(field_name, conflicting_types)`` for the first candidate with
+    a same-family numeric conflict, or ``(None, [])`` when there is none.
+    Excludes a conflict against a non-numeric type (e.g. ``keyword``
+    alongside ``double``) -- that is a field-name collision between two
+    unrelated series, not the same metric stored inconsistently, and casting
+    to double would not resolve it. Existing behavior (keep the plain
+    aggregation; other checks such as ``is_numeric_field`` decide
+    feasibility) is left untouched for that case. Returns ``(None, [])``
+    when offline or the resolver lacks the capability."""
+    if resolver is None or not metric:
+        return None, []
+    has_conflicts = getattr(resolver, "has_conflicting_types", None)
+    field_capability = getattr(resolver, "field_capability", None)
+    if not callable(has_conflicts) or not callable(field_capability):
+        return None, []
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    candidates = [metric]
+    if callable(resolve):
+        for prefer in ("counter", "gauge"):
+            candidate = resolve(metric, prefer=prefer)
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    for candidate in candidates:
+        if not has_conflicts(candidate):
+            continue
+        capability = field_capability(candidate)
+        conflicting_types = list(getattr(capability, "conflicting_types", None) or [])
+        if conflicting_types and all(t in NUMERIC_FIELD_TYPES for t in conflicting_types):
+            return candidate, conflicting_types
+    return None, []
+
+
+def _metric_has_conflicting_types(resolver, metric):
+    """True when ``metric`` (or a profile-resolved physical variant of it)
+    is mapped with different exact numeric types across indices (e.g.
+    ``long`` in one dual-shipped index and ``double`` in another). ES|QL
+    rejects a bare reference to such a field ("ambiguities in index
+    mappings"); TO_DOUBLE is the documented fix for a same-family numeric
+    mismatch. See :func:`_resolve_conflicting_type_candidate` for exactly
+    which candidates are checked and why."""
+    candidate, _ = _resolve_conflicting_type_candidate(resolver, metric)
+    return candidate is not None
+
+
+def _conflicting_type_cast_warning(metric, resolver):
+    """Warning for defensively casting a metric whose target field (or a
+    profile-resolved variant of it) is mapped with conflicting types across
+    indices (#245) -- e.g. ``long`` in one dual-shipped index and ``double``
+    in another. A bare reference to such a field is rejected by ES|QL
+    ("ambiguities in index mappings"); the emitted query casts to double
+    instead so it can still run."""
+    candidate, conflicting_types = _resolve_conflicting_type_candidate(resolver, metric)
+    field_name = candidate or metric
+    types_desc = f" ({', '.join(conflicting_types)})" if conflicting_types else ""
+    return (
+        f"Target field '{field_name}' is mapped with conflicting types{types_desc} "
+        "across indices; cast to double so the query can still run. Align the "
+        "ingest mapping for this field to remove the ambiguity."
+    )
+
+
+def _counter_unsafe_cast_needed(metric, resolver):
+    """True when a counter-unsafe aggregation over ``metric`` needs a
+    defensive cast/wrap rather than a bare reference: the target maps the
+    field with conflicting types across indices (issue #245), which can make
+    ES|QL reject the bare form ("ambiguities in index mappings") regardless
+    of which aggregation is applied.
+
+    Deliberately narrower than the general "counter status unproven" case
+    (issue #148, see :func:`_counter_type_uncertainty_warning`): that bucket
+    is the offline/no-live-caps default for the vast majority of migrations
+    and panels, and already has its own keep-the-query-and-warn behavior that
+    a large, deliberately-asserted test corpus depends on. Conflicting live
+    field-caps, by contrast, are a rare, concrete, target-verified signal —
+    safe to act on unconditionally."""
+    return _metric_has_conflicting_types(resolver, metric)
+
+
+def _counter_unsafe_cast_warning(metric, resolver):
+    """The warning to surface alongside the defensive cast/wrap triggered by
+    :func:`_counter_unsafe_cast_needed`."""
+    if _metric_has_conflicting_types(resolver, metric):
+        return _conflicting_type_cast_warning(metric, resolver)
+    return None
 
 
 # Outer aggregations ES|QL rejects directly on counter_long/counter_double
@@ -355,9 +724,15 @@ def _should_degrade_counter_range_func(range_func, metric, is_counter, resolver)
     if range_func not in {"rate", "irate", "increase"}:
         return False
     if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
-        # Trust the source unless the user's rule pack explicitly pins gauge.
+        # Trust the source unless the user's rule pack explicitly pins gauge,
+        # or the field's own mapping is too ambiguous for RATE/IRATE to run at
+        # all (issue #245): a field with conflicting exact types across
+        # indices can't be guaranteed counter_* in every index, and staying
+        # source-faithful there just trades a "not counter" 400 for an
+        # "ambiguities in index mappings" one. Degrade to the gauge analogue,
+        # which the conflicting-types cast below can still make runnable.
         declared_gauge = getattr(resolver, "declared_gauge", None) if resolver else None
-        return bool(declared_gauge and declared_gauge(metric))
+        return bool(declared_gauge and declared_gauge(metric)) or _metric_has_conflicting_types(resolver, metric)
     return True
 
 
@@ -392,9 +767,14 @@ def resolve_counter_range_translation(range_func, metric, is_counter, resolver, 
         fallback_func, template = _gauge_fallback_for_counter_range_func(range_func)
         # The degraded form is also counter-unsafe, so when the target cannot
         # prove the field is a gauge (offline / field absent from caps) flag the
-        # counter_long risk instead of asserting it "is typed as gauge".
-        uncertainty = _counter_type_uncertainty_warning(metric, resolver)
-        warning = uncertainty if uncertainty else template.format(metric=metric)
+        # counter_long risk instead of asserting it "is typed as gauge". A
+        # cross-index type conflict (#245) gets its own, more accurate warning
+        # naming the actual problem (mapping ambiguity, not counter/gauge).
+        if _metric_has_conflicting_types(resolver, metric):
+            warning = _conflicting_type_cast_warning(metric, resolver)
+        else:
+            uncertainty = _counter_type_uncertainty_warning(metric, resolver)
+            warning = uncertainty if uncertainty else template.format(metric=metric)
         return fallback_func, warning, is_counter
     warning = None
     if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
@@ -537,6 +917,7 @@ class MeasureSpec:
     metric_name: str = ""
     metric_field: str = ""
     warnings: list = field(default_factory=list)
+    target_index: str = ""
 
 
 @dataclass
@@ -553,6 +934,12 @@ class FormulaPlan:
     # gaps). The translator uses this to emit the correct set-union note instead
     # of the same-bucket arithmetic caveat.
     set_or_fill: bool = False
+    # Set when ``expr`` is a same-metric PromQL ``or`` rewritten as a single
+    # fetch with a unified WHERE OR clause (see
+    # ``_try_rewrite_set_or_same_metric``). This is an exact rewrite, not an
+    # approximation, so the translator must skip the same-bucket arithmetic
+    # caveat for it too.
+    set_or_where: bool = False
 
 
 _GRAFANA_RANGE_MACRO_REPLACEMENTS = (
@@ -1566,6 +1953,12 @@ def _copy_fragment_summary(target, source):
         "inner_group",
         "join_labels",
         "offset",
+        # A stripped ``X or vector(N)`` fallback tags its surviving operand so
+        # the translator can warn about the dropped zero-fill. That survivor is
+        # frequently wrapped in an aggregation (``sum(X or vector(0))``), which
+        # rebuilds the fragment via this copy; carry the flag through so the
+        # warning is not lost on the wrapped shape (issue #252 review).
+        "or_vector_fallback",
         "post_filter",
         "quantile_phi",
         "start_matchers",
@@ -1594,6 +1987,27 @@ def _iter_fragment_children(frag):
     if isinstance(frag.binary_rhs, PromQLFragment):
         children.append(frag.binary_rhs)
     return children
+
+
+def _iter_pending_join_rhs_fragments(frag, _seen=None):
+    """Recursively yield every fragment carrying a ``pending_join_rhs_metric`` marker.
+
+    The safe-subset aggregated group_left join rewrite (issue #197) can end up
+    nested inside a larger expression — e.g. a ratio of two aggregated joins
+    parses as a top-level ``binary_expr`` whose operands are the reclassified
+    join fragments. A classifier that only inspects the top-level fragment
+    would miss the marker entirely, so walk the whole fragment tree.
+    """
+    if frag is None:
+        return
+    seen = _seen if _seen is not None else set()
+    if id(frag) in seen:
+        return
+    seen.add(id(frag))
+    if frag.extra.get("pending_join_rhs_metric") is not None:
+        yield frag
+    for child in _iter_fragment_children(frag):
+        yield from _iter_pending_join_rhs_fragments(child, seen)
 
 
 def _find_summary_fragment(frag):
@@ -1812,10 +2226,16 @@ def _ast_call_fragment(node, expr):
     if func_name == "label_replace" and len(child_frags) == 5:
         value_frag = child_frags[0]
         string_args = [f.extra.get("string_value") for f in child_frags[1:]]
-        if (
-            all(s is not None for s in string_args)
-            and not value_frag.extra.get("not_feasible_reasons")
-        ):
+        # A bare ``vector(N)`` value is itself "not feasible" standalone, but
+        # that is exactly the shape of the ``or`` zero-fill idiom Grafana
+        # dashboards use to label a fallback value (e.g.
+        # ``X or on() label_replace(vector(0), "status", "0", "", "")``).
+        # Let it through here so ``_is_vector_fallback_operand`` can still
+        # recognize and strip it in ``_strip_or_vector_fallback`` below.
+        value_ok = not value_frag.extra.get(
+            "not_feasible_reasons"
+        ) or _is_vector_fallback_operand(value_frag)
+        if all(s is not None for s in string_args) and value_ok:
             dst, replacement, src, regex = string_args
             result = _copy_fragment_summary(
                 _new_fragment(expr, family="label_replace"), value_frag
@@ -1890,6 +2310,56 @@ def _contains_join_frag(frag, _depth=0):
     return False
 
 
+def _histogram_summary_base(metric: str) -> str | None:
+    """Return the base name for a Prometheus histogram ``_sum`` / ``_count`` metric."""
+    name = str(metric or "").strip()
+    if name.endswith("_sum"):
+        return name[: -len("_sum")]
+    if name.endswith("_count"):
+        return name[: -len("_count")]
+    return None
+
+
+def _is_histogram_summary_ratio_pair(left_frag, right_frag) -> bool:
+    """True for ``increase|rate|irate(m_sum) / increase|rate|irate(m_count)``.
+
+    That shape is the Prometheus histogram *mean* idiom (average of per-series
+    ``sum/count``). ``sum(A/B)`` is not equal to ``sum(A)/sum(B)``, but the
+    ratio-of-aggregates form is the ES|QL-expressible approximation used for
+    panels like Prometheus Compaction duration.
+    """
+    if left_frag is None or right_frag is None:
+        return False
+    if left_frag.extra.get("not_feasible_reasons") or right_frag.extra.get("not_feasible_reasons"):
+        return False
+    left_metric = str(left_frag.metric or "")
+    right_metric = str(right_frag.metric or "")
+    if not left_metric.endswith("_sum") or not right_metric.endswith("_count"):
+        return False
+    left_base = _histogram_summary_base(left_metric)
+    right_base = _histogram_summary_base(right_metric)
+    if not left_base or left_base != right_base:
+        return False
+    left_range = str(left_frag.range_func or "").lower()
+    right_range = str(right_frag.range_func or "").lower()
+    if left_range not in {"increase", "rate", "irate"}:
+        return False
+    if left_range != right_range:
+        return False
+    # Both operands should already be range wrappers without their own outer agg
+    # (the outer sum is what we're about to push down).
+    if left_frag.outer_agg or right_frag.outer_agg:
+        return False
+    return True
+
+
+_APPROX_AGG_OVER_SUMMARY_RATIO_WARNING = (
+    "Approximated sum(increase|rate(m_sum)/increase|rate(m_count)) as a ratio of "
+    "aggregates (sum(m_sum)/sum(m_count)); per-series means are not weighted the "
+    "same as Prometheus"
+)
+
+
 def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
     """Push an outer aggregation down to a leaf fragment.
 
@@ -1945,6 +2415,99 @@ def _push_outer_agg(frag, outer_agg, group_labels, group_mode):
         group_labels=list(group_labels),
         group_mode=group_mode,
         extra=dict(frag.extra),
+    )
+
+
+def _join_not_eligible_reason(cardinality, binary_op):
+    """Explain why an aggregated vector-matching join can't use the safe-subset rewrite.
+
+    Only a ``group_left(...)`` (``ManyToOne``) multiplication join is eligible
+    (issue #197) — ``group_right`` and non-``*`` operators keep the pre-existing
+    conservative behavior, but with a message naming which condition failed
+    instead of one generic reason.
+    """
+    if binary_op != "*":
+        detail = f"a '{binary_op}' vector-matching join"
+    elif cardinality == "OneToMany":
+        detail = "a group_right(...) vector-matching join"
+    else:
+        detail = "an unrecognized vector-matching join"
+    return (
+        "Aggregating over a PromQL vector-matching join requires manual redesign; "
+        "only a group_left(...) label-enrichment multiplication join can be safely "
+        f"approximated today, and this is {detail}"
+    )
+
+
+def _join_by_clause_enrichment_reason(overlap_labels, enrichment_labels, rhs_metric, primary_metric):
+    """Explain why an outer by()/without() can't be satisfied after stripping the join RHS.
+
+    The overlapping label(s) only exist on the join's RHS (the ``group_left(...)``
+    include list) — dropping the RHS to keep the primary metric's value would
+    leave nothing to group by for them.
+    """
+    labels_text = ", ".join(overlap_labels)
+    return (
+        f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+        f"manual redesign: '{labels_text}' only exists via "
+        f"`group_left({', '.join(enrichment_labels)}) {rhs_metric}`, not on the primary "
+        f"metric '{primary_metric}'; rebuild this panel with a manual ES|QL lookup/enrich, "
+        "or drop that grouping dimension"
+    )
+
+
+def _render_label_matchers(matchers):
+    """Render label matchers as ``label op 'value'`` text for a warning message."""
+    return ", ".join(f"{m['label']}{m['op']}'{m['value']}'" for m in matchers or [])
+
+
+def _join_unverifiable_group_reason(labels, primary_metric):
+    """Explain why a by()/without() label can't be verified after stripping the RHS.
+
+    The ``group_left(...)`` include list couldn't be recovered (a bare
+    ``group_left()`` or an ambiguous nested modifier leaves the enrichment label
+    set empty), so a grouping label that isn't an ``on(...)`` match key can't be
+    proven to exist on the primary metric. Fail closed rather than emit a
+    ``STATS ... BY`` over a possibly-absent column (issue #197 review finding 3).
+    """
+    labels_text = ", ".join(labels)
+    return (
+        f"Aggregating by '{labels_text}' over a PromQL vector-matching join requires "
+        f"manual redesign: '{labels_text}' is not an on(...) match key and the "
+        "group_left(...) enrichment labels could not be determined, so it can't be "
+        f"proven to exist on the primary metric '{primary_metric}' once the join is "
+        "dropped; rebuild this panel with a manual ES|QL lookup/enrich, or drop that "
+        "grouping dimension"
+    )
+
+
+def _join_rhs_not_plain_selector_reason(right_frag):
+    """Explain why a non-selector join partner can't use the safe-subset rewrite.
+
+    The ``_info`` label-enrichment idiom always joins against a *plain vector
+    selector* (``... group_left(x) foo_info{...}``). A range/aggregate/function
+    wrapper — ``rate(foo_info[5m])``, ``sum(foo_info) by(...)``,
+    ``count(foo_info)`` — is not a constant-``1`` multiplier (its value can be a
+    rate, a sum, a count, or ``0``), so it must not be dropped even though its
+    summary metric name ends in ``_info`` (issue #197 review). We only look at
+    ``right_frag.metric`` (the summary), which alone can't distinguish these
+    shapes, so gate on the fragment family here.
+    """
+    shape = "a compound expression"
+    if right_frag is not None:
+        if right_frag.range_func:
+            shape = f"a {right_frag.range_func}(...) range expression"
+        elif right_frag.outer_agg:
+            shape = f"a {right_frag.outer_agg}(...) aggregate"
+        elif right_frag.extra.get("call_name"):
+            shape = f"a {right_frag.extra['call_name']}(...) call"
+        elif right_frag.family == "binary_expr":
+            shape = "a binary expression"
+    return (
+        "Aggregating over a PromQL vector-matching join requires manual redesign: the "
+        f"group_left(...) partner is {shape}, not a plain `<metric>_info{{...}}` vector "
+        "selector, so it is not a constant-1 label-only metric and dropping it would "
+        "change the numeric value"
     )
 
 
@@ -2031,11 +2594,103 @@ def _ast_aggregate_fragment(node, expr):
         return frag
 
     if child.family == "join":
-        _append_not_feasible_reason(
-            frag,
-            "Aggregating over a PromQL vector-matching join requires manual redesign; "
-            "dropping the joined metric would change numeric values",
-        )
+        matching = child.extra.get("vector_matching") or {}
+        cardinality = matching.get("cardinality")
+        left_frag = child.extra.get("left_frag")
+        right_frag = child.extra.get("right_frag")
+
+        # Only a group_left(...) (ManyToOne) multiplication join is eligible for
+        # the safe-subset rewrite; group_right and other operators keep the
+        # conservative not_feasible behavior (issue #197 scope decision).
+        if cardinality != "ManyToOne" or child.binary_op != "*" or left_frag is None:
+            _append_not_feasible_reason(frag, _join_not_eligible_reason(cardinality, child.binary_op))
+            return frag
+
+        # The label-enrichment idiom joins against a *plain vector selector* for
+        # the _info metric. A range/aggregate/function wrapper over an _info
+        # metric (rate(foo_info[5m]), sum(foo_info) by(...), count(foo_info)) is
+        # not a constant-1 multiplier, so it must not be stripped even though its
+        # summary metric ends in _info — the later suffix check only inspects the
+        # RHS metric name and can't tell these shapes apart (issue #197 review).
+        if right_frag is None or right_frag.family != "simple_metric" or not right_frag.metric:
+            _append_not_feasible_reason(frag, _join_rhs_not_plain_selector_reason(right_frag))
+            return frag
+
+        # An explicit by()/without() can only be honoured after dropping the RHS
+        # when every grouping label still exists on the primary metric.
+        enrichment_labels = list(child.extra.get("enrichment_labels", []) or [])
+        on_keys = set(matching.get("labels") or []) if matching.get("type") == "Include" else set()
+
+        # (a) A label carried only by the group_left(...) include list has nothing
+        # to group by once the RHS is dropped.
+        overlap = [label for label in frag.group_labels if label in enrichment_labels]
+        if overlap:
+            rhs_metric = right_frag.metric if right_frag else ""
+            _append_not_feasible_reason(
+                frag,
+                _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
+            )
+            return frag
+
+        # (b) When the include list couldn't be recovered (a bare ``group_left()``
+        # or an ambiguous nested modifier leaves ``enrichment_labels`` empty), any
+        # grouping label that isn't an on(...) match key can't be proven to exist
+        # on the primary metric. Fail closed rather than emit a STATS BY over a
+        # possibly-absent column (issue #197 review finding 3).
+        if not enrichment_labels:
+            unverifiable = [label for label in frag.group_labels if label not in on_keys]
+            if unverifiable:
+                _append_not_feasible_reason(
+                    frag, _join_unverifiable_group_reason(unverifiable, left_frag.metric)
+                )
+                return frag
+
+        # Structurally safe to strip the RHS and aggregate the primary metric
+        # alone — re-home the aggregation onto the join's left (primary)
+        # operand. ``frag.metric``/``matchers``/``range_func`` already carry
+        # left_frag's values (copied transitively via ``_copy_fragment_summary``
+        # at the top of this function), so only the family needs updating.
+        # Whether the RHS is actually a provable info-metric (not just any
+        # group_left partner) can't be checked here — rule_pack isn't available
+        # during parsing — so defer that to join_label_enrichment_check_rule at
+        # translation time, and stash the RHS metric name for it to check.
+        if left_frag.family == "range_agg" and left_frag.metric and not left_frag.outer_agg:
+            frag.family = "range_agg"
+        elif left_frag.family == "simple_metric" and left_frag.metric:
+            frag.family = "simple_agg"
+        else:
+            # The join's primary operand is itself a nested expression (a
+            # chained/multi-hop join, or another aggregate) — not safely
+            # approximated today.
+            _append_not_feasible_reason(
+                frag,
+                "Aggregating over a PromQL vector-matching join requires manual redesign; "
+                "the join's primary operand is itself a nested expression (chained/multi-hop "
+                "join), which isn't safely approximated today",
+            )
+            return frag
+        frag.extra["pending_join_rhs_metric"] = right_frag.metric if right_frag else ""
+        # Label matchers on the join partner (e.g. ``info{cluster="prod"}``) are
+        # dropped with the RHS. Where the label doesn't also exist on the primary
+        # metric that can broaden the aggregation to series the filter excluded —
+        # a numeric change in multi-value deployments. Per the design's accepted
+        # approximation we keep the panel feasible but stash the dropped filter
+        # text so join_label_enrichment_check_rule surfaces it in the warning
+        # rather than dropping it silently (issue #197 review finding 1).
+        if right_frag is not None and right_frag.matchers:
+            frag.extra["pending_join_rhs_filters"] = _render_label_matchers(right_frag.matchers)
+        # A by()/without() label that is neither an on(...) match key nor a
+        # group_left(...) enrichment label is assumed to exist on the primary
+        # metric. That assumption can't be checked at parse time (no rule pack /
+        # resolver), so record the labels for join_label_enrichment_check_rule to
+        # verify against a live schema when one is available (issue #197 review).
+        assumed_group_labels = [
+            label
+            for label in frag.group_labels
+            if label not in on_keys and label not in enrichment_labels
+        ]
+        if assumed_group_labels:
+            frag.extra["pending_join_verify_labels"] = assumed_group_labels
         return frag
 
     # Handle aggregation over a binary expression between two time-series.
@@ -2098,6 +2753,22 @@ def _ast_aggregate_fragment(node, expr):
                         "dropping the joined metric would change numeric values",
                     )
                     return frag
+            # Histogram summary pair: sum(increase(m_sum)/increase(m_count)).
+            # Exact per-element mean cannot be preserved; rewrite as the ratio of
+            # aggregates so Compaction-duration style panels still migrate.
+            if (
+                child.binary_op == "/"
+                and frag.outer_agg == "sum"
+                and _is_histogram_summary_ratio_pair(inner_left, inner_right)
+            ):
+                new_left = _push_outer_agg(inner_left, "sum", frag.group_labels, frag.group_mode)
+                new_right = _push_outer_agg(inner_right, "sum", frag.group_labels, frag.group_mode)
+                if new_left is not None and new_right is not None:
+                    new_binary = _make_binary_fragment(expr, new_left, "/", new_right)
+                    new_binary.group_labels = list(frag.group_labels)
+                    new_binary.group_mode = frag.group_mode
+                    new_binary.extra["approximated_agg_over_summary_ratio"] = True
+                    return new_binary
             # Two true time-series operands — multiplication/division is not
             # linearisable: agg(A op B) ≠ agg(A) op agg(B).
             _append_not_feasible_reason(
@@ -2205,7 +2876,7 @@ def _ast_binary_fragment(node, expr):
     # Set operators (``or``/``and``/``unless``) are not joins; they have
     # set-union/intersection/difference semantics that preserve operands'
     # label sets. Even though the parser models them with a ManyToMany
-    # cardinality modifier, mig-to-kbn's join translation path is wrong
+    # cardinality modifier, obs-migrate's join translation path is wrong
     # for them. Route them to the binary_expr family so the formula plan
     # builder can either apply the safe same-metric ``or`` rewrite or
     # refuse the translation honestly.
@@ -2367,15 +3038,22 @@ def _restore_sanitized_labels(frag, label_map):
 
 
 def _is_vector_fallback_operand(frag):
-    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback.
+    """Return True for a bare ``vector(N)`` call used as an ``or`` fallback,
+    including one wrapped in ``label_replace(vector(N), ...)``.
 
     ``vector(N)`` has no series labels; in ``X or vector(N)`` it only fills the
     gaps where ``X`` has no data with the constant ``N``. It is not a metric in
     its own right, so when it is the fallback side of an ``or`` we can drop it
-    (issue #66 Pattern A).
+    (issue #66 Pattern A). Dashboards commonly wrap the fallback in
+    ``label_replace(...)`` to stamp a label onto the synthetic zero row (e.g.
+    ``X or on() label_replace(vector(0), "status", "0", "", "")``); that label
+    only matters for the vector's own (dropped) series, so unwrap through it
+    the same way (issue #252).
     """
     if frag is None:
         return False
+    if frag.family == "label_replace":
+        return _is_vector_fallback_operand(frag.extra.get("lr_inner_frag"))
     if frag.extra.get("call_name") != "vector":
         return False
     reasons = frag.extra.get("not_feasible_reasons") or []
@@ -2503,18 +3181,24 @@ def _build_stats_call(
     *, is_counter=False, resolver=None,
 ):
     esql_outer = OUTER_AGG_MAP.get(outer_agg, outer_agg.upper())
-    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper())
+    esql_inner = AGG_FUNCTION_MAP.get(inner_func, inner_func.upper()) if inner_func else ""
     # Keep the counter-safe cast on composed (join-ratio) operands: a degraded
     # increase()/rate() over an unknown-caps counter must still wrap the metric
     # in TO_DOUBLE, exactly like the standalone/measure-spec paths (PR #234).
+    # Issue #245: also cast when the target maps this field with conflicting
+    # types across indices, independent of counter status.
     metric_arg = _counter_safe_metric_arg(
         esql_inner,
         metric_name,
         is_counter,
         frag.range_func if frag else None,
         counter_refuted=_counter_refuted(resolver, frag.metric) if frag else False,
+        force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
-    inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    if esql_inner:
+        inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+    else:
+        inner_expr = metric_arg
     return _apply_outer_agg(esql_outer, inner_expr, frag)
 
 
@@ -2574,14 +3258,18 @@ def _frag_filters(frag, resolver):
     """
     _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
+    consumed = _metric_map_source_filter(frag, resolver)
     filters = []
     had_vars = False
     for matcher in frag.matchers:
+        if _matcher_consumed_by_metric_map(matcher, consumed):
+            continue
         filter_expr = _matcher_to_esql(matcher, resolver, metric_field=metric_field)
         if filter_expr:
             filters.append(filter_expr)
         elif _matcher_has_dropped_variable(matcher):
             had_vars = True
+    filters.extend(_metric_map_attribute_filters(frag, resolver))
     return filters, had_vars
 
 
@@ -2591,6 +3279,7 @@ def _frag_has_incompatible_target_fields(frag, resolver):
     # clause emits and produces a false "dropped incompatible field" warning.
     _prime_frag_label_cooccurrence(frag, resolver)
     metric_field = _frag_metric_field_raw(frag, resolver)
+    consumed = _metric_map_source_filter(frag, resolver)
     return any(
         _matcher_has_incompatible_target_field(
             m,
@@ -2598,6 +3287,7 @@ def _frag_has_incompatible_target_fields(frag, resolver):
             resolver,
         )
         for m in frag.matchers
+        if not _matcher_consumed_by_metric_map(m, consumed)
     )
 
 
@@ -2683,7 +3373,83 @@ def _frag_group_labels(frag, resolver, preferred_labels=None, preferred_origin=N
     )
     explicit = _filter_usable_group_fields(explicit, resolver)
     preferred = _filter_usable_group_fields(preferred, resolver, drop_missing=preferred_origin == "legend")
-    return _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+    merged = _merge_group_fields(explicit, preferred, preferred_origin=preferred_origin)
+    return _append_late_bound_group_identifiers(merged, frag)
+
+
+def _late_bound_group_alias(identifier: str) -> str:
+    """Stable output-column alias for a late-bound identifier control.
+
+    ``??grouping`` -> ``grouping``. The alias is the column the query emits and
+    the Lens breakdown accessor binds to; it must stay constant regardless of
+    which field the viewer selects (see ``_append_late_bound_group_identifiers``).
+    """
+    return identifier.lstrip("?")
+
+
+def _append_late_bound_group_identifiers(group_fields, frag):
+    """Append late-bound ES|QL identifier controls (``??var``) to a group list.
+
+    A Grafana ``by ($var)`` grouping names a dimension that is only chosen at
+    view time. The guardrail records the variable on the fragment as an
+    identifier control (``??var``); it must ride alongside the concrete group
+    fields into ``STATS ... BY`` (and any downstream ``KEEP``/collapse),
+    bypassing schema resolution and field filtering because it is not a physical
+    field but a control reference (issue #282).
+
+    The group list carries the *stable alias* (``grouping``) rather than the raw
+    control token (``??grouping``). ``STATS ... BY grouping = ??grouping`` names
+    the aggregated dimension deterministically, so the Lens breakdown accessor
+    resolves the same column whichever field the control selects. Emitting the
+    bare token instead would name the output column after the substituted field
+    (``exporter``/``transport``/...), which the fixed accessor can never match —
+    the panel then fails to render ("invalid column"). The alias -> token map is
+    recorded on the fragment so the primary ``BY`` clause can expand it while
+    downstream clauses keep referencing the bare alias.
+    """
+    identifiers = (frag.extra.get("late_bound_group_identifiers") or []) if frag else []
+    if not identifiers:
+        return group_fields
+    out = list(group_fields)
+    by_map = frag.extra.setdefault("late_bound_group_by_map", {})
+    for identifier in identifiers:
+        alias = _late_bound_group_alias(identifier)
+        # A concrete grouping label already occupies this column name (the
+        # variable is named after a real label, e.g. ``by (job, $job)``).
+        # Aliasing ``job = ??job`` would rebind the concrete ``job`` grouping to
+        # the control and silently drop the source dimension, so leave the token
+        # out: ``late_bound_group_control_rule`` then sees the ``??var`` missing
+        # from the query and degrades to not_feasible (issue #282 review).
+        if alias in out and by_map.get(alias) != identifier:
+            continue
+        by_map[alias] = identifier
+        if alias not in out:
+            out.append(alias)
+    return out
+
+
+def _expand_late_bound_group_by_terms(by_terms, frag):
+    """Render primary ``STATS ... BY`` terms, aliasing late-bound identifiers.
+
+    A late-bound grouping alias (recorded by
+    :func:`_append_late_bound_group_identifiers`) is emitted as
+    ``<alias> = ??var`` so the ES|QL identifier control binds at view time while
+    the aggregated column keeps a stable name. Every other term passes through
+    verbatim. Use this only at the *primary* ``BY`` clause that introduces the
+    grouping column; downstream ``KEEP``/``SORT``/collapse clauses reference the
+    bare alias (the column already exists by then).
+    """
+    by_map = (frag.extra.get("late_bound_group_by_map") or {}) if frag else {}
+    if not by_map:
+        return list(by_terms)
+    out = []
+    for term in by_terms:
+        token = by_map.get(term)
+        if token:
+            out.append(f"{_esql_identifier(term)} = {token}")
+        else:
+            out.append(term)
+    return out
 
 
 def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
@@ -2705,13 +3471,20 @@ def _frag_has_incompatible_group_fields(frag, resolver, preferred_labels=None):
     )
 
 
-def _grouping_parts(bucket_expr, group_fields):
+def _grouping_parts(bucket_expr, group_fields, frag=None):
+    """Split group fields into ``BY``-clause parts and output column names.
+
+    ``by_parts`` feed the primary ``STATS ... BY`` (late-bound grouping aliases
+    expand to ``<alias> = ??var``); ``output_group_fields`` are the resulting
+    column names (bare aliases) used for breakdowns, KEEP and collapse. Pass
+    ``frag`` so late-bound identifier controls are aliased (issue #282).
+    """
     by_parts = []
     output_group_fields = []
     if bucket_expr:
         by_parts.append(bucket_expr)
         output_group_fields.append("time_bucket")
-    by_parts.extend(group_fields)
+    by_parts.extend(_expand_late_bound_group_by_terms(group_fields, frag))
     output_group_fields.extend(group_fields)
     return by_parts, output_group_fields
 
@@ -2874,6 +3647,26 @@ def _matcher_alias_suffix(frag):
     return "_".join(part for part in parts if part)
 
 
+def _capability_for_gauge_ts_decision(metric_name, resolver):
+    """Field capability used for gauge ``TS`` vs ``FROM`` decisions.
+
+    Prefer the *physical* target after metric_map / profile resolve. When a
+    source name (e.g. a Prometheus recording rule) still exists in the index as
+    a counter while ``metric_map`` remaps it to an OTel gauge, consulting the
+    source capability first wrongly "disproves" TSDS-gauge and demotes the
+    whole multi-target panel to ``FROM`` (inflating SUM by sample multiplicity).
+    If the resolved target differs from the source name, only the target's
+    capability counts — an unknown target stays unknown rather than inheriting
+    the source kind.
+    """
+    if not metric_name or not resolver:
+        return None
+    resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
+    if resolved and resolved != metric_name:
+        return resolver.field_capability(resolved)
+    return resolver.field_capability(metric_name)
+
+
 def _field_is_proven_tsds_gauge(metric_name, resolver):
     """Return True iff resolver proves the metric field is a TSDS gauge.
 
@@ -2884,13 +3677,7 @@ def _field_is_proven_tsds_gauge(metric_name, resolver):
     instead of ``FROM`` (which sums every per-sample doc) for the field — see
     issue #8.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -2911,13 +3698,7 @@ def _field_disproven_tsds_gauge(metric_name, resolver):
     not a disproof. This lets ``assume_tsds_gauges`` apply only when we lack evidence and
     never override evidence we do have.
     """
-    if not metric_name or not resolver:
-        return False
-    capability = resolver.field_capability(metric_name)
-    if capability is None:
-        resolved = _resolve_metric_field(resolver, metric_name, prefer="gauge")
-        if resolved and resolved != metric_name:
-            capability = resolver.field_capability(resolved)
+    capability = _capability_for_gauge_ts_decision(metric_name, resolver)
     if not capability:
         return False
     if capability.conflicting_types:
@@ -2969,16 +3750,18 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
         # them be. Gauges must actually be able to use TS for TSID grouping.
         return (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
     if frag.family == "range_agg":
-        # Only ``*_over_time`` instant aggregations: they run on the TS source and
-        # produce one value per TSID per bucket with BY TBUCKET alone, so the
-        # spurious outer AVG is avoidable. Counter rates keep their AVG downsample.
-        #
-        # The TSID-split premise only holds when the field is an actual TSDS series
-        # (dimensions present). Gate on ``_gauge_can_use_ts`` exactly like the
-        # ``simple_metric`` branch: ``range_agg_family_rule`` forces ``source=TS``
-        # for any ``*_over_time`` regardless of field typing, so without this guard a
-        # non-TSDS field would have its only series-splitting label dropped and
-        # collapse every series into one line.
+        # ``rate`` / ``irate`` / ``increase`` always emit ``TS`` (counter-typed RATE
+        # path). BY TBUCKET alone already yields one row per TSID per bucket, so
+        # legendFormat-derived labels are redundant — and harmful when authors use
+        # placeholders like ``{{input}}`` / ``{{output}}`` that are not real series
+        # labels (they force AVG(RATE(...)) and break multi-target fusion).
+        if frag.range_func in {"rate", "irate", "increase"}:
+            return True
+        # ``*_over_time`` instant aggregations also run on TS and produce one value
+        # per TSID per bucket with BY TBUCKET alone. Gate on ``_gauge_can_use_ts``:
+        # ``range_agg_family_rule`` forces ``source=TS`` for any ``*_over_time``
+        # regardless of field typing, so without this guard a non-TSDS field would
+        # have its only series-splitting label dropped and collapse every series.
         return frag.range_func in _OVER_TIME_RANGE_FUNCS and _gauge_can_use_ts(
             frag.metric, resolver, rule_pack
         )
@@ -3041,12 +3824,13 @@ def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pac
 def gauge_default_agg_warning(group_fields, metric, default_agg):
     """Honest warning for the default-aggregation gauge path.
 
-    With grouping labels present, the aggregator is a faithful per-series intra-bucket
-    downsample. Without any labels, multiple series collapse into a single line — say so,
-    and include the token ``drop`` so ``build_query_ir`` records it as a semantic loss.
+    With grouping labels present, the aggregator is a faithful per-series
+    intra-bucket downsample, not a migration warning. Without any labels,
+    multiple series collapse into a single line — say so, and include the token
+    ``drop`` so ``build_query_ir`` records it as a semantic loss.
     """
     if group_fields:
-        return f"No explicit aggregation; using {default_agg} per series (faithful gauge downsample)"
+        return ""
     return (
         f"Collapsed all series of `{metric}` into a single {default_agg} line; the source "
         "selector has no series labels (no legend, by(), or dashboard reference), so per-series "
@@ -3132,7 +3916,7 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
             # Bare counter reference: use LAST_OVER_TIME to return the raw cumulative
             # value per TBUCKET window, matching PromQL instant-vector semantics.
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
@@ -3141,27 +3925,39 @@ def _build_measure_spec(
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter
             bucket_expr = rule_pack.ts_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = f"{default_agg}({metric_field})"
-            warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
+            agg_arg = metric_field
+            if _counter_unsafe_cast_needed(metric_field, resolver):
+                agg_arg = f"TO_DOUBLE({metric_field})"
+                warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
+            stats_expr = f"{default_agg}({agg_arg})"
+            warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+            if warning:
+                warnings.append(warning)
         else:
             source = "FROM"
             time_filter = rule_pack.from_time_filter
             bucket_expr = rule_pack.from_bucket
             default_agg = rule_pack.default_gauge_agg.upper()
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
-            stats_expr = f"{default_agg}({metric_field})"
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
+            agg_arg = metric_field
+            if _counter_unsafe_cast_needed(metric_field, resolver):
+                agg_arg = f"TO_DOUBLE({metric_field})"
+                warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
+            stats_expr = f"{default_agg}({agg_arg})"
             if frag.extra.get("wrapped_scalar"):
                 warnings.append("Approximated scalar() as a direct metric value")
             else:
-                warnings.append(gauge_default_agg_warning(group_fields, frag.metric, default_agg))
+                warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
+                if warning:
+                    warnings.append(warning)
     elif frag.family == "simple_agg":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         if frag.outer_agg == "count" and is_counter:
@@ -3177,14 +3973,29 @@ def _build_measure_spec(
         source = "TS" if (is_counter or gauge_uses_ts) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
+        gauge_metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
         if is_counter and frag.outer_agg != "count":
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="counter")
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="counter")
             # Bare counter aggregation: use LAST_OVER_TIME as inner function so the
             # outer aggregation operates on raw cumulative values, not rates.
             inner_expr = f"LAST_OVER_TIME({metric_field})"
             warnings.append("Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value")
+        elif (
+            frag.outer_agg in _COUNTER_UNSAFE_OUTER_AGGS
+            and _counter_unsafe_cast_needed(gauge_metric_field, resolver)
+        ):
+            # Issue #245: the target maps this field with conflicting types
+            # across indices, so SUM/MAX/MIN/AVG/STDDEV/QUANTILE may reject
+            # the bare field at runtime ("ambiguities in index mappings").
+            # TO_DOUBLE is valid under either FROM or TS (unlike
+            # LAST_OVER_TIME, a TS-only function), so it defends the
+            # aggregation without disturbing the source/bucket already chosen
+            # above, instead of gambling on a bare aggregation.
+            metric_field = gauge_metric_field
+            inner_expr = f"TO_DOUBLE({metric_field})"
+            warnings.append(_counter_unsafe_cast_warning(gauge_metric_field, resolver))
         else:
-            metric_field = _resolve_metric_field(resolver, frag.metric, prefer="gauge")
+            metric_field = gauge_metric_field
             inner_expr = metric_field
             # Issue #148: a bare SUM/MAX/MIN/AVG against a field that is actually
             # counter_long in ES fails with verification_exception. When the
@@ -3211,27 +4022,38 @@ def _build_measure_spec(
         )
         if counter_warning:
             warnings.append(counter_warning)
+        esql_inner, is_counter, map_rate_warnings = _plan_metric_map_rate_transform(
+            frag, resolver, esql_inner, is_counter
+        )
+        warnings.extend(map_rate_warnings)
         needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
         source = "TS" if needs_ts else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
-        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        metric_field = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
         inner_arg = _counter_safe_metric_arg(
             esql_inner,
             metric_field,
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=_counter_unsafe_cast_needed(metric_field, resolver),
         )
-        inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        if (
+            not is_counter
+            and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and _counter_unsafe_cast_needed(metric_field, resolver)
+        ):
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
+        if esql_inner:
+            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            # drop_rate → gauge: outer agg operates on the bare field.
+            inner_expr = inner_arg
         outer = OUTER_AGG_MAP.get(frag.outer_agg, "") if frag.outer_agg else ""
         if not outer and source == "TS" and group_fields:
             stats_expr = f"AVG({inner_expr})"
-            warnings.append(
-                f"Added outer AVG() around {frag.range_func} because ES|QL requires an outer aggregation "
-                "when grouping TS functions by label fields"
-            )
         else:
             stats_expr = _apply_outer_agg(outer, inner_expr, frag) if outer else inner_expr
     elif frag.family == "scaled_agg":
@@ -3247,29 +4069,147 @@ def _build_measure_spec(
         )
         if counter_warning:
             warnings.append(counter_warning)
+        esql_inner, is_counter, map_rate_warnings = _plan_metric_map_rate_transform(
+            frag, resolver, esql_inner, is_counter
+        )
+        warnings.extend(map_rate_warnings)
         esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "AVG")
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
-        metric_field = _resolve_metric_field(resolver, frag.metric, prefer=prefer)
+        metric_field = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
         inner_arg = _counter_safe_metric_arg(
             esql_inner,
             metric_field,
             is_counter,
             frag.range_func,
             counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=_counter_unsafe_cast_needed(metric_field, resolver),
         )
-        stats_expr = _apply_outer_agg(
-            esql_outer, f"{esql_inner}({inner_arg}, {frag.range_window})", frag
-        )
+        if (
+            not is_counter
+            and (esql_inner or "").upper() not in _COUNTER_INPUT_ESQL_FUNCS
+            and _counter_unsafe_cast_needed(metric_field, resolver)
+        ):
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
+        if esql_inner:
+            inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        else:
+            inner_windowed = inner_arg
+        stats_expr = _apply_outer_agg(esql_outer, inner_windowed, frag)
     elif frag.family == "nested_agg":
-        inner_groups = resolver.resolve_labels(frag.extra.get("inner_group", [])) if resolver else list(frag.extra.get("inner_group", []))
+        raw_inner_groups = list(frag.extra.get("inner_group", []) or [])
+        inner_groups = (
+            resolver.resolve_labels(raw_inner_groups) if resolver else list(raw_inner_groups)
+        )
         if frag.outer_agg == "count" and frag.extra.get("inner_agg") == "count" and inner_groups:
-            source = "FROM"
-            time_filter = rule_pack.from_time_filter
-            bucket_expr = rule_pack.from_bucket
-            stats_expr = f"COUNT_DISTINCT({inner_groups[0]})"
-            warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({inner_groups[0]})")
+            # A plain COUNT_DISTINCT(label) has no time-series-specific
+            # semantics, so it is safe on either source. Prefer TS whenever
+            # the metric would use TS elsewhere (proven/assumed counter or
+            # TSDS gauge) — otherwise this spec is forced onto FROM and can
+            # never merge with a sibling RATE()/IRATE() operand on the same
+            # metric (the extremely common node_exporter "busy % = per-mode
+            # rate / core count" idiom), which needs TS and has no FROM
+            # equivalent. COUNT_DISTINCT mixed into a TS STATS alongside a
+            # windowed time-series aggregate is valid ES|QL.
+            #
+            # Gate the whole preference behind ``allow_tsds_gauge_promotion``
+            # (not just the gauge half) so the existing binary-expr
+            # reconciliation retry — which rebuilds both operands with
+            # promotion disabled when their sources diverge — can pull this
+            # spec back onto FROM to match a sibling that is unconditionally
+            # pinned there (e.g. a ``scalar()``-wrapped gauge). Without this,
+            # a same-metric ratio against a scalar-wrapped gauge sibling would
+            # regress from feasible (both FROM) to not_feasible (FROM vs TS).
+            #
+            # Prefer the *exclusive* inner label (in the inner ``by(...)`` but
+            # not the outer) for COUNT_DISTINCT — e.g. ``count by(job, instance)
+            # (count by(job, instance, cpu)(...))`` must count distinct ``cpu``,
+            # not ``job``. Falling back to ``inner_groups[0]`` would pick a
+            # grouping key and under-count cores (Docker/node Load panels).
+            outer_raw = {
+                lbl for lbl in (frag.group_labels or []) if not str(lbl).startswith("label_")
+            }
+            exclusive_raw = [lbl for lbl in raw_inner_groups if lbl not in outer_raw]
+            if len(exclusive_raw) > 1:
+                # The outer count() counts distinct *tuples* of every inner
+                # label that is not already an outer grouping key — e.g.
+                # ``count by(job)(count by(job, instance, cpu)(node_cpu))``
+                # counts distinct ``(instance, cpu)`` pairs per job. ES|QL
+                # COUNT_DISTINCT takes a single field, so collapsing to one
+                # exclusive label (``exclusive_raw[0]``) would under-count
+                # whenever another exclusive label varies within a group (an
+                # instance with multiple CPUs). There is no faithful
+                # single-field expression, so fail closed as not_feasible
+                # rather than emit wrong math.
+                return None
+            if exclusive_raw:
+                count_field = (
+                    resolver.resolve_label(exclusive_raw[0]) if resolver else exclusive_raw[0]
+                )
+            else:
+                count_field = inner_groups[0]
+            # The COUNT_DISTINCT is over a label, but this spec still emits a
+            # ``<metric> IS NOT NULL`` presence guard in the fused-measure
+            # pipeline. Resolve the metric to its physical field so a
+            # metric_map / profile rename is honored there too — otherwise the
+            # guard references the raw source name and empties the panel.
+            metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
+            is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
+            gauge_uses_ts = (not is_counter) and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
+            if allow_tsds_gauge_promotion and (is_counter or gauge_uses_ts):
+                source = "TS"
+                time_filter = rule_pack.ts_time_filter
+                bucket_expr = rule_pack.ts_bucket
+            else:
+                source = "FROM"
+                time_filter = rule_pack.from_time_filter
+                bucket_expr = rule_pack.from_bucket
+            stats_expr = f"COUNT_DISTINCT({count_field})"
+            warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})")
         else:
             return None
+    elif frag.family == "histogram_quantile":
+        phi = frag.extra.get("quantile_phi")
+        if phi is None or not 0.0 <= phi <= 1.0:
+            return None
+        bucket_agg = frag.extra.get("bucket_agg") or ""
+        if bucket_agg and bucket_agg != "sum":
+            return None
+        bucket_metric = frag.extra.get("bucket_metric") or ""
+        if bucket_metric.endswith("_bucket"):
+            has_le_matcher = any(
+                isinstance(m, dict) and m.get("label") == "le" for m in (frag.matchers or [])
+            )
+            if has_le_matcher or not frag.extra.get("had_le_grouping"):
+                return None
+
+        # Match the direct histogram_quantile translator: only emit PERCENTILE()
+        # when target schema proves the base field is a native histogram. Unknown
+        # or scalar fields fail closed so formula wrapping never hides that gap.
+        physical_metric = _resolve_frag_metric_field(frag, resolver, prefer=None)
+        field_type = (
+            (resolver.field_type(physical_metric) if resolver else "") or ""
+        ).strip().lower()
+        if field_type == "exponential_histogram":
+            value_expr = physical_metric
+        elif field_type == "histogram":
+            value_expr = f"TO_TDIGEST({physical_metric})"
+        else:
+            return None
+
+        source = "TS"
+        time_filter = rule_pack.ts_time_filter
+        bucket_expr = rule_pack.ts_bucket
+        metric_field = physical_metric
+        percentile_value = _format_scalar_value(round(phi * 100, 10))
+        stats_expr = f"PERCENTILE({value_expr}, {percentile_value})"
+        warnings.append(
+            "histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is "
+            "approximate — PERCENTILE uses t-digest, which treats histogram buckets as point "
+            "masses rather than interpolating within them as Prometheus does, so results can "
+            "diverge noticeably when traffic concentrates in a few wide buckets (the common "
+            "latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for "
+            "exact results."
+        )
     elif frag.family == "uptime":
         start_metric = frag.metric
         start_matchers = frag.matchers
@@ -3296,13 +4236,37 @@ def _build_measure_spec(
         time_filter = rule_pack.from_time_filter
         bucket_expr = rule_pack.from_bucket if summary_mode else ""
         metric_field = _resolve_metric_field(resolver, start_metric, prefer="gauge")
-        stats_expr = f"MAX({metric_field} * 1000)"
+        uptime_arg = metric_field
+        if _counter_unsafe_cast_needed(metric_field, resolver):
+            uptime_arg = f"TO_DOUBLE({metric_field})"
+            warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
+        stats_expr = f"MAX({uptime_arg} * 1000)"
         eval_expr = f'DATE_DIFF("seconds", TO_DATETIME({alias}), NOW())'
     else:
         return None
 
     if final_alias is None:
         final_alias, eval_expr = _frag_eval_expr(alias, frag)
+    labels = _frag_source_labels(frag)
+    if frag.family in {"simple_metric", "simple_agg"}:
+        source, time_filter, bucket_expr, metric_field, stats_expr = (
+            _apply_metric_map_to_rate_on_simple(
+                frag,
+                resolver,
+                rule_pack,
+                source=source,
+                time_filter=time_filter,
+                bucket_expr=bucket_expr,
+                metric_field=metric_field,
+                stats_expr=stats_expr,
+                warnings=warnings,
+            )
+        )
+    unit_scale = _metric_map_unit_scale(resolver, frag.metric, source_labels=labels)
+    stats_expr = _apply_unit_scale(stats_expr, unit_scale)
+    for note in _metric_map_unapplied_notes(resolver, frag.metric, source_labels=labels):
+        if note not in warnings:
+            warnings.append(note)
     return MeasureSpec(
         source_type=source,
         time_filter=time_filter,
@@ -3316,7 +4280,29 @@ def _build_measure_spec(
         metric_name=frag.metric,
         metric_field=metric_field,
         warnings=warnings,
+        target_index=_metric_map_target_index(resolver, frag.metric, source_labels=labels),
     )
+
+
+def _union_group_fields(specs):
+    """Preserve first-seen order while collecting the union of group fields."""
+    ordered: list[str] = []
+    for spec in specs:
+        for group_field in spec.group_fields or []:
+            if group_field not in ordered:
+                ordered.append(group_field)
+    return ordered
+
+
+def _group_fields_nested_subsets(specs):
+    """True when every spec's groups are a subset of some single max set.
+
+    Enables broadcasting an ungrouped series into a grouped peer (e.g. QoS
+    ``by (qos_class)`` + total ``sum(...)``) without joining unrelated
+    dimensions (``qos_class`` vs ``instance``).
+    """
+    sets = [frozenset(spec.group_fields or []) for spec in specs]
+    return any(all(s <= candidate for s in sets) for candidate in sets)
 
 
 def _measure_specs_mergeable(specs):
@@ -3324,12 +4310,12 @@ def _measure_specs_mergeable(specs):
         return False
     base = specs[0]
     base_filters = sorted(base.filters)
+    if not _group_fields_nested_subsets(specs):
+        return False
     for spec in specs[1:]:
         if spec.source_type != base.source_type:
             return False
         if spec.time_filter != base.time_filter or spec.bucket_expr != base.bucket_expr:
-            return False
-        if spec.group_fields != base.group_fields:
             return False
         if sorted(spec.filters) != base_filters:
             # Divergent per-target filters must be CASE-wrapped into the
@@ -3385,7 +4371,11 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
     ) and ts_match:
         field = ts_match.group("field").strip()
         window = ts_match.group("window").strip()
-        return f"{agg}(CASE({condition}, {field}, NULL), {window})"
+        # CASE must wrap the time-series call, not the metric field inside it.
+        # ``IRATE(CASE(cond, field, NULL), window)`` ClassCasts
+        # (ReferenceAttribute → Bucket) on current ES; ``CASE(cond, IRATE(field,
+        # window), NULL)`` is legal.
+        return f"CASE({condition}, {agg}({field}, {window}), NULL)"
     nested_ts = re.fullmatch(
         r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
         inner,
@@ -3394,14 +4384,55 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
         func = nested_ts.group("func")
         field = nested_ts.group("field").strip()
         window = nested_ts.group("window").strip()
+        if func in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
+            # Filtering the counter argument itself makes Elasticsearch 9.5
+            # crash for RATE/IRATE with a grouping Bucket cast. Apply the
+            # per-series filter to the range-function result instead; the
+            # enclosing aggregate still ignores non-matching rows via NULL.
+            return f"{agg}(CASE({condition}, {func}({field}, {window}), NULL))"
         return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
-    if re.fullmatch(r"LAST_OVER_TIME\(.+\)", inner):
-        return None
+    # Window-less ``LAST_OVER_TIME(field)`` (and siblings) are common on the
+    # counter-without-rate summary path. CASE-wrap the field the same way as the
+    # windowed form so multi-target panels with divergent label filters (Express
+    # "Count by class") can fuse via the shared measure pipeline instead of
+    # AND-merging incompatible WHERE clauses.
+    nested_bare = re.fullmatch(
+        r"(?P<func>AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>[^,]+)\)",
+        inner,
+    )
+    if nested_bare:
+        func = nested_bare.group("func")
+        field = nested_bare.group("field").strip()
+        window = str(timeseries_window or "").strip()
+        if window:
+            return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
+        return f"{agg}({func}(CASE({condition}, {field}, NULL)))"
     if inner == "*":
         if agg == "COUNT":
             return f"SUM(CASE({condition}, 1, 0))"
         return None
     return f"{agg}(CASE({condition}, {inner}, NULL))"
+
+
+def _measure_pipeline_index(index, specs) -> str:
+    """Prefer a unanimous metric_map ``target_index`` when present."""
+    overrides = [
+        str(getattr(spec, "target_index", "") or "").strip()
+        for spec in specs or []
+        if str(getattr(spec, "target_index", "") or "").strip()
+    ]
+    unique = sorted(set(overrides))
+    if overrides and len(unique) == 1:
+        return overrides[0]
+    if len(unique) > 1:
+        note = (
+            "metric_map target_index values differ across metrics in one query "
+            f"({', '.join(unique)}); using default index {index!r}"
+        )
+        for spec in specs or []:
+            if note not in getattr(spec, "warnings", []):
+                spec.warnings.append(note)
+    return index
 
 
 def _build_shared_measure_pipeline(index, specs):
@@ -3433,8 +4464,9 @@ def _build_shared_measure_pipeline(index, specs):
 
     base = specs[0]
     common_filters = _common_filters(specs)
-    group_fields = (["time_bucket"] if base.bucket_expr else []) + base.group_fields
-    by_parts = ([base.bucket_expr] if base.bucket_expr else []) + base.group_fields
+    union_groups = _union_group_fields(specs)
+    group_fields = (["time_bucket"] if base.bucket_expr else []) + union_groups
+    by_parts = ([base.bucket_expr] if base.bucket_expr else []) + union_groups
     stats_terms = []
     timeseries_window = _timeseries_stats_window(specs)
     for spec in specs:
@@ -3447,8 +4479,14 @@ def _build_shared_measure_pipeline(index, specs):
         if not scoped_expr:
             return None
         stats_terms.append(f"{_esql_identifier(spec.alias)} = {scoped_expr}")
+    # Same CASE-shape / mixed-TS invariants as ``_merge_pretranslated_xy_queries``.
+    stats_terms = _finalize_fused_stats_assignments(
+        stats_terms,
+        group_fields=base.group_fields,
+        source_type=base.source_type,
+    )
     parts = [
-        f"{base.source_type} {index}",
+        f"{base.source_type} {_measure_pipeline_index(index, specs)}",
         f"| WHERE {base.time_filter}",
         *_build_where_lines(common_filters),
     ]
@@ -3482,6 +4520,173 @@ def _timeseries_stats_window(specs):
     return "5m"
 
 
+_ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)"
+
+
+_BARE_TS_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+)
+
+
+# CASE(cond, field, NULL) nested as the *value* arg of a TS range/window func.
+# ``cond`` is typically ``true`` or a parenthesized comparison like
+# ``(mode == "user")``. Only RATE/IRATE/INCREASE/DELTA/DERIV are rewritten to
+# outer CASE — OVER_TIME keeps the inner-CASE shape used by the translator.
+_TS_INNER_CASE_VALUE_ARG = re.compile(
+    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV)"
+    rf"\(\s*CASE\((?P<cond>\([^)]*\)|true|false|[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*"
+    rf"(?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*NULL\)\s*,\s*(?P<window>[^)]+)\)",
+    re.IGNORECASE,
+)
+
+_OUTER_CASE_TS_FUNC = re.compile(
+    r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
+)
+
+
+def _rewrite_ts_inner_case_to_outer_case(assignments: list[str]) -> list[str]:
+    """Rewrite ``FUNC(CASE(cond, field, NULL), window)`` → ``CASE(cond, FUNC(...), NULL)``.
+
+    Inner-CASE value args ClassCast on current Elasticsearch (``ReferenceAttribute``
+    → ``Bucket``) for RATE/IRATE/INCREASE. Outer CASE around the time-series call
+    is legal and preserves the filter semantics used for join-ratio / per-operand
+    label filters.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"CASE({match.group('cond')}, "
+            f"{match.group('func')}({match.group('field')}, {match.group('window')}), "
+            f"NULL)"
+        )
+
+    return [_TS_INNER_CASE_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+
+
+def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[str]:
+    """Normalize fused STATS so CASE-inlined and bare TS value args don't mix.
+
+    1. Rewrite illegal ``IRATE(CASE(cond, field, NULL), w)`` shapes to
+       ``CASE(cond, IRATE(field, w), NULL)``.
+    2. Elasticsearch can ClassCast (``ReferenceAttribute`` → ``Bucket``) when one
+       ``TS ... | STATS`` measure uses a CASE-shaped time-series aggregate and
+       another uses a bare ``IRATE(other_metric, …)``.
+
+    Two CASE shapes appear in the translator:
+
+    * Inner (``IRATE(CASE(cond, metric, NULL), …)`` / OVER_TIME): wrap bare
+      siblings as ``IRATE(CASE(true, other_metric, NULL), …)``.
+    * Outer (``CASE(cond, IRATE(metric, …), NULL)`` — required so ES 9.5 does
+      not Bucket-cast when filtering the counter argument of RATE/IRATE): wrap
+      bare siblings as ``CASE(true, IRATE(other_metric, …), NULL)`` and leave
+      already-outer-CASE measures alone so we do not nest ``CASE(true, …)``
+      inside an outer filter CASE.
+
+    Shared by formula-plan fusion (``_build_shared_measure_pipeline``) and the
+    pretranslated-query merge path (``_merge_pretranslated_xy_queries``).
+    """
+    assignments = _rewrite_ts_inner_case_to_outer_case(assignments)
+    if not any("CASE(" in assignment for assignment in assignments):
+        return assignments
+
+    if any(_OUTER_CASE_TS_FUNC.search(assignment) for assignment in assignments):
+        def _wrap_outer(assignment: str) -> str:
+            if "CASE(" in assignment:
+                return assignment
+
+            def _repl(match: re.Match[str]) -> str:
+                return (
+                    f"CASE(true, {match.group('func')}({match.group('field')}, "
+                    f"{match.group('window')}), NULL)"
+                )
+
+            return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
+
+        return [_wrap_outer(assignment) for assignment in assignments]
+
+    def _repl(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
+            f"{match.group('window')})"
+        )
+
+    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+
+
+def _infer_stats_metric_field(expr: str) -> str:
+    """Best-effort metric field from a STATS RHS for mixed-TS normalization."""
+    text = (expr or "").strip()
+    wrapped = re.fullmatch(
+        rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*(?:{_TS_AGG_FUNC_PATTERN})\(\s*"
+        rf"({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)\s*\)",
+        text,
+    )
+    if wrapped:
+        return wrapped.group(1)
+    bare_ts = re.fullmatch(
+        rf"(?:{_TS_AGG_FUNC_PATTERN})\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*[^)]+\)",
+        text,
+    )
+    if bare_ts:
+        return bare_ts.group(1)
+    bare_regular = re.fullmatch(
+        rf"(?:AVG|SUM|MIN|MAX|COUNT)\(\s*({_ESQL_FIELD_REFERENCE_PATTERN})\s*\)",
+        text,
+    )
+    if bare_regular:
+        return bare_regular.group(1)
+    return ""
+
+
+def _finalize_fused_stats_assignments(
+    assignments: list[str],
+    *,
+    group_fields: list[str] | None = None,
+    source_type: str = "TS",
+) -> list[str]:
+    """Apply mixed-TS normalize then CASE-shape wrap to fused STATS assignments.
+
+    Used by pretranslated multi-target merge and single-query join-ratio emission
+    so both stay aligned with ``_build_shared_measure_pipeline``.
+    """
+    if not assignments:
+        return assignments
+    if source_type == "TS":
+        dims = [g for g in (group_fields or []) if g and g != "time_bucket"]
+        specs = []
+        alias_order: list[str] = []
+        for assignment in assignments:
+            if "=" not in assignment:
+                continue
+            left, right = assignment.split("=", 1)
+            alias = left.strip()
+            expr = right.strip()
+            alias_order.append(alias)
+            bare_alias = alias.strip("`")
+            specs.append(
+                MeasureSpec(
+                    source_type="TS",
+                    time_filter="",
+                    bucket_expr="time_bucket = TBUCKET(5 minute)",
+                    group_fields=list(dims),
+                    filters=[],
+                    alias=bare_alias,
+                    stats_expr=expr,
+                    final_alias=bare_alias,
+                    metric_field=_infer_stats_metric_field(expr),
+                )
+            )
+        if specs:
+            specs = _normalize_mixed_ts_stats_exprs(specs)
+            assignments = [
+                f"{alias} = {spec.stats_expr}"
+                for alias, spec in zip(alias_order, specs)
+            ]
+    return _wrap_bare_ts_value_args_when_case_siblings(assignments)
+
+
 _OUTER_TO_TS_AGG = {
     "AVG": "AVG_OVER_TIME",
     "SUM": "SUM_OVER_TIME",
@@ -3489,7 +4694,21 @@ _OUTER_TO_TS_AGG = {
     "MAX": "MAX_OVER_TIME",
     "COUNT": "COUNT_OVER_TIME",
 }
+# When wrapping a bare cross-series aggregate into a time-series form so it can
+# share a STATS with OVER_TIME siblings, SUM must NOT become SUM_OVER_TIME —
+# that sums every sample in the window and inflates gauges (requests/limits).
+# LAST_OVER_TIME keeps one value per series per bucket, matching PromQL's
+# instant-vector sum across series.
+_OUTER_TO_SAFE_TS_INNER = {
+    "AVG": "AVG_OVER_TIME",
+    "SUM": "LAST_OVER_TIME",
+    "MIN": "MIN_OVER_TIME",
+    "MAX": "MAX_OVER_TIME",
+    "COUNT": "COUNT_OVER_TIME",
+}
 _TS_TO_OUTER_AGG = {ts: outer for outer, ts in _OUTER_TO_TS_AGG.items()}
+# LAST_OVER_TIME is used as the safe SUM wrap; map it back to SUM for wrapping.
+_TS_TO_OUTER_AGG.setdefault("LAST_OVER_TIME", "SUM")
 _TS_AGG_FUNC_PATTERN = r"(?:RATE|IRATE|INCREASE|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
 
 
@@ -3572,7 +4791,7 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 )
             elif bare_regular:
                 outer = bare_regular.group(1)
-                ts_func = _OUTER_TO_TS_AGG[outer]
+                ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
                 new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
                 warning = (
                     f"Converted {outer}({metric_field}) to "
@@ -3589,10 +4808,11 @@ def _normalize_mixed_ts_stats_exprs(specs):
             if not bare_regular:
                 normalized.append(spec)
                 continue
-            ts_func = _OUTER_TO_TS_AGG[bare_regular.group(1)]
+            outer = bare_regular.group(1)
+            ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
             new_expr = f"{ts_func}({metric_field}, {window})"
             warning = (
-                f"Converted {bare_regular.group(1)}({metric_field}) to "
+                f"Converted {outer}({metric_field}) to "
                 f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
             )
 
@@ -3641,6 +4861,20 @@ def _try_rewrite_set_or_same_metric(
     left_frag = frag.extra.get("left_frag")
     right_frag = frag.extra.get("right_frag")
     if not left_frag or not right_frag:
+        return None
+
+    # A bare ``or`` matches on the full label set, so two operands with
+    # disjoint matchers never collide and their union is exactly the OR of
+    # their filters. A modifier that *narrows* the match key — ``on(...)`` /
+    # ``ignoring(...)`` with labels, or a label-less ``on()`` (matches on the
+    # empty set) — makes PromQL suppress a right-hand series wherever the left
+    # shares the matched labels, even when a differing label (e.g. ``status``)
+    # makes them logically distinct. A flat WHERE-OR keeps both and
+    # over-includes the suppressed rows, so it is no longer exact (issue #252
+    # review). Reuse the shared predicate so a non-narrowing modifier such as a
+    # label-less ``ignoring()`` (equivalent to the full-label-set match) still
+    # takes the exact rewrite; it also walks the whole ``or`` chain.
+    if _or_chain_has_vector_matching(frag):
         return None
 
     # Recurse first into a left-leaning ``or`` chain so ``A or A or A``
@@ -3793,6 +5027,7 @@ def _try_rewrite_set_or_same_metric(
         specs=[new_spec],
         expr=new_spec.final_alias,
         warnings=list(new_spec.warnings),
+        set_or_where=True,
     )
 
 
@@ -3831,6 +5066,335 @@ def _flatten_or_operands(frag):
             return None
         return left_ops + right_ops
     return [frag]
+
+
+def _matcher_identity(frag) -> frozenset[tuple[str, str, str]]:
+    """Stable matcher identity for comparing OR operands."""
+    out: set[tuple[str, str, str]] = set()
+    for matcher in frag.matchers or []:
+        label = str(matcher.get("label") or "")
+        if not label:
+            continue
+        out.add((label, str(matcher.get("op") or "="), str(matcher.get("value") or "")))
+    return frozenset(out)
+
+
+def _scalar_identity(frag) -> str | None:
+    if frag is None or frag.family != "scalar":
+        return None
+    if frag.binary_rhs is not None:
+        return str(frag.binary_rhs)
+    return str(frag.extra.get("scalar_value") or frag.metric or "")
+
+
+def _range_fallback_identity(frag) -> tuple | None:
+    """Structural identity that ignores ``range_func`` / ``range_window``.
+
+    Used to detect the Grafana ``rate(M[$interval]) or irate(M[5m])`` (and
+    ``max_over_time(M[$interval]) or max_over_time(M[5m])``) idiom: same
+    metric + matchers + wrapper shape, differing only in the range window
+    or the rate-vs-irate choice. Returns ``None`` when the fragment is too
+    complex to treat as a range-fallback operand.
+    """
+    if frag is None:
+        return None
+    if frag.family == "binary_expr":
+        op = (frag.binary_op or "").lower()
+        if op in _SET_OPERATORS:
+            return None
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        left_scalar = _scalar_identity(left)
+        right_scalar = _scalar_identity(right)
+        if right_scalar is not None and left is not None:
+            inner = _range_fallback_identity(left)
+            if inner is None:
+                return None
+            return ("binop", op, inner, ("scalar", right_scalar))
+        if left_scalar is not None and right is not None:
+            inner = _range_fallback_identity(right)
+            if inner is None:
+                return None
+            return ("binop", op, ("scalar", left_scalar), inner)
+        return None
+    if frag.family == "topk":
+        if not frag.metric:
+            return None
+        post = frag.extra.get("post_filter") or {}
+        post_key = (
+            str(post.get("op") or ""),
+            str(post.get("value") if post.get("value") is not None else ""),
+        )
+        return (
+            "topk",
+            int(frag.extra.get("topk_limit") or 0),
+            post_key,
+            str(frag.metric),
+            _matcher_identity(frag),
+            str(frag.outer_agg or ""),
+        )
+    if frag.family in {"range_agg", "simple_agg", "simple_metric"}:
+        if not frag.metric:
+            return None
+        return (
+            frag.family,
+            str(frag.metric),
+            _matcher_identity(frag),
+            str(frag.outer_agg or ""),
+        )
+    return None
+
+
+def _operands_are_same_metric_range_fallback(operands: list) -> bool:
+    """True when OR operands are the Grafana same-metric range-window fallback idiom."""
+    if len(operands) < 2:
+        return False
+    identities = [_range_fallback_identity(op) for op in operands]
+    if any(identity is None for identity in identities):
+        return False
+    if len({identity for identity in identities}) != 1:
+        return False
+    # Require that at least one operand actually carries a range function /
+    # window so we don't steal the plain same-metric WHERE-OR case
+    # (``A{f1} or A{f2}``) — those differ in matchers and already fail the
+    # identity check above, but also refuse when every operand is a bare
+    # metric with no range shape (cross-metric COALESCE should own that).
+    if not any(getattr(op, "range_func", None) or getattr(op, "range_window", None) for op in operands):
+        # topk / scaled wrappers store range on the fragment itself for
+        # range_agg children; walk one level.
+        def _has_range(op) -> bool:
+            if getattr(op, "range_func", None) or getattr(op, "range_window", None):
+                return True
+            for key in ("left_frag", "right_frag", "inner_frag"):
+                child = (op.extra or {}).get(key)
+                if child is not None and _has_range(child):
+                    return True
+            return False
+
+        if not any(_has_range(op) for op in operands):
+            return False
+    # Prefer this rewrite only when the operands are *not* identical — if
+    # they are byte-identical after macro expansion there is nothing to
+    # fall back from, but translating the left is still correct. Always OK.
+    return True
+
+
+def _left_operand_of_same_metric_range_fallback(frag):
+    """Return the preferred left operand of a same-metric range-fallback ``or``.
+
+    Detects the Grafana ``rate(M[$interval]) or irate(M[5m])`` (and
+    ``topk(rate) or topk(irate)``, ``rate*N or irate*N``) idiom. Returns
+    ``None`` when the fragment is not that pattern. Callers that can
+    translate the left via ``_build_formula_plan`` or a dedicated family
+    rule (e.g. ``topk``) should prefer that operand and warn that the
+    short-window fallback was dropped.
+    """
+    if frag is None or frag.family != "binary_expr":
+        return None
+    if (frag.binary_op or "").lower() != "or":
+        return None
+    if _or_chain_has_vector_matching(frag):
+        return None
+    operands = _flatten_or_operands(frag)
+    if not operands or not _operands_are_same_metric_range_fallback(operands):
+        return None
+    return operands[0]
+
+
+def _same_metric_range_fallback_warning(frag) -> str:
+    """Warning text for preferring the left operand of a range-fallback ``or``."""
+    operands = _flatten_or_operands(frag) if frag is not None else []
+    left = operands[0] if operands else None
+    left_range = (left.range_func if left is not None else None) or ""
+    right_ranges = sorted(
+        {
+            str(getattr(op, "range_func", None) or "")
+            for op in operands[1:]
+            if getattr(op, "range_func", None)
+        }
+    )
+    if left_range and right_ranges and any(r != left_range for r in right_ranges):
+        return (
+            f"PromQL same-metric 'or': preferred left '{left_range}(...)' and "
+            f"dropped short-window fallback {', '.join(repr(r + '(...)') for r in right_ranges)}; "
+            "Grafana uses the right side only when the left lacks samples"
+        )
+    return (
+        "PromQL same-metric 'or': preferred left range-window operand and "
+        "dropped the alternate-window fallback; Grafana uses the right "
+        "side only when the left lacks samples"
+    )
+
+
+def _is_zero_scaled_operand(frag) -> bool:
+    """True for ``0 * X`` / ``X * 0`` (including ``scaled_agg`` with scalar 0)."""
+    if frag is None:
+        return False
+    if frag.family == "scaled_agg":
+        rhs = frag.binary_rhs
+        return bool(rhs is not None and rhs.is_scalar and rhs.scalar_value == 0.0)
+    if frag.family == "binary_expr" and (frag.binary_op or "") == "*":
+        left = frag.extra.get("left_frag")
+        right = frag.extra.get("right_frag")
+        for side in (left, right):
+            if side is not None and side.is_scalar and side.scalar_value == 0.0:
+                return True
+    return False
+
+
+def _mixed_os_or_operands(frag):
+    """Return ``(windows_side, zero_side)`` for a mixed-OS ``or`` zero-fill.
+
+    Accepts both shapes used by Kubernetes Views Global:
+
+    * bare ``windows_join or 0*linux`` / ``windows_join or metric*0``
+    * ``sum(windows_join or metric*0) by (namespace)`` — the community
+      dashboard nests the ``OR`` *inside* the outer aggregation, so the
+      right operand of ``+`` is an ``unknown``/agg fragment whose
+      ``inner_frag`` is the ``or``.
+    """
+    if frag is None:
+        return None
+    or_frag = frag
+    if frag.family != "binary_expr" or (frag.binary_op or "").lower() != "or":
+        # Nested: sum(... OR ...) by (...) lands as unknown/agg with inner_frag.
+        inner = (frag.extra or {}).get("inner_frag")
+        if (
+            inner is not None
+            and inner.family == "binary_expr"
+            and (inner.binary_op or "").lower() == "or"
+            and (frag.outer_agg or frag.family in {"unknown", "nested_agg", "simple_agg"})
+        ):
+            or_frag = inner
+        else:
+            return None
+    win_side = or_frag.extra.get("left_frag")
+    zero_side = or_frag.extra.get("right_frag")
+    if win_side is None or zero_side is None:
+        return None
+    if not _is_zero_scaled_operand(zero_side):
+        if _is_zero_scaled_operand(win_side):
+            win_side, zero_side = zero_side, win_side
+        else:
+            return None
+    win_blocked = bool(
+        (win_side.extra or {}).get("not_feasible_reasons")
+        or _contains_join_frag(win_side)
+        or win_side.family in {"join", "unknown"}
+    )
+    if not win_blocked:
+        return None
+    return win_side, zero_side
+
+
+def _try_rewrite_mixed_os_zero_fill_plus(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    preferred_group_labels_origin=None,
+    allow_direct_ts_gauge=False,
+    allow_tsds_gauge_promotion=False,
+):
+    """Prefer the Linux left of ``linux + on(ns) (windows_join or zero_fill)``.
+
+    Kubernetes Views Global (and similar mixed-OS dashboards) add a Windows
+    contribution that is itself a vector-matching join, then ``or`` a
+    zero-fill (``0 * linux`` or ``kube_namespace_created * 0``) so namespaces
+    without Windows still appear. The community form nests that ``OR`` inside
+    ``sum(...) by (namespace)``. The join cannot be expressed in ES|QL; keeping
+    only the Linux left is correct for Linux-only clusters and an honest
+    degradation (with warning) for mixed clusters — better than marking the
+    whole panel not_feasible.
+    """
+    op = (frag.binary_op or "").lower()
+    if op not in {"+", "-"}:
+        return None
+    left = frag.extra.get("left_frag")
+    right = frag.extra.get("right_frag")
+    if left is None or right is None:
+        return None
+    if _mixed_os_or_operands(right) is None:
+        return None
+
+    plan = _build_formula_plan(
+        left,
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+    )
+    if plan is None:
+        return None
+    detail = (
+        "PromQL mixed-OS '+ on(...) (windows_join or zero_fill)' : "
+        "preferred left (Linux) operand and dropped the Windows join contribution; "
+        "Windows namespaces will under-report until the join is redesigned"
+    )
+    if detail not in plan.warnings:
+        plan.warnings.append(detail)
+    return plan
+
+
+def _try_rewrite_set_or_same_metric_range_fallback(
+    frag,
+    resolver,
+    rule_pack,
+    alias_hint="",
+    summary_mode=False,
+    preferred_group_labels=None,
+    preferred_group_labels_origin=None,
+    allow_direct_ts_gauge=False,
+    allow_tsds_gauge_promotion=False,
+):
+    """Prefer the left operand of ``rate(M[$i]) or irate(M[5m])``-style ORs.
+
+    Grafana community dashboards (MySQL/Percona, node vmstat panels, …)
+    commonly write ``rate(M[$interval]) or irate(M[5m])`` so a short
+    ``irate`` fills in when the dashboard interval is too long for
+    ``rate`` to have two samples. Both sides share the metric and
+    matchers; only the range function / window differs. The same-metric
+    WHERE-OR rewrite refuses range functions, and the cross-metric
+    COALESCE rewrite requires distinct metric names — so without this
+    bridge the panel was marked ``not_feasible`` even though the left
+    operand alone is an honest, high-fidelity translation.
+
+    Prefer the left operand (dashboard-interval ``rate`` / ``max_over_time``)
+    and warn that the short-window fallback was dropped.
+
+    Returns a ``FormulaPlan`` when the left operand is formula-planable.
+    Families handled outside ``_build_formula_plan`` (notably ``topk``)
+    are re-dispatched by ``binary_expr_family_rule`` via
+    ``_left_operand_of_same_metric_range_fallback``.
+    """
+    left = _left_operand_of_same_metric_range_fallback(frag)
+    if left is None:
+        return None
+
+    plan = _build_formula_plan(
+        left,
+        resolver,
+        rule_pack,
+        alias_hint=alias_hint,
+        summary_mode=summary_mode,
+        preferred_group_labels=preferred_group_labels,
+        allow_direct_ts_gauge=allow_direct_ts_gauge,
+        preferred_group_labels_origin=preferred_group_labels_origin,
+        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+    )
+    if plan is None:
+        return None
+
+    detail = _same_metric_range_fallback_warning(frag)
+    if detail not in plan.warnings:
+        plan.warnings.append(detail)
+    return plan
 
 
 def _vector_matching_restricts_or(matching):
@@ -4108,6 +5672,25 @@ def _build_formula_plan(
             if rewritten is not None:
                 return rewritten
             if op_lower == "or":
+                # Same-metric OR that only differs by range func / window
+                # (``rate(M[$interval]) or irate(M[5m])``,
+                # ``max_over_time(M[$i]) or max_over_time(M[5m])``) — prefer
+                # the left operand. Neither WHERE-OR (refuses range funcs)
+                # nor cross-metric COALESCE (requires distinct metrics) can
+                # own this Grafana idiom.
+                range_fallback = _try_rewrite_set_or_same_metric_range_fallback(
+                    frag,
+                    resolver,
+                    rule_pack,
+                    alias_hint=alias_hint,
+                    summary_mode=summary_mode,
+                    preferred_group_labels=preferred_group_labels,
+                    preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                )
+                if range_fallback is not None:
+                    return range_fallback
                 # Cross-metric ``A or B``: keep both metrics as a COALESCE union
                 # (left precedence, right fills the gaps) instead of dropping the
                 # right operand (issue #167). Returns ``None`` when the operands
@@ -4126,6 +5709,23 @@ def _build_formula_plan(
             return None
 
         if op_lower in ("+", "-"):
+            # Kubernetes mixed-OS: ``linux + on(ns) (windows_join or 0*linux)``.
+            # Prefer the Linux left when the Windows side is an untranslatable
+            # vector-matching join (Views Global CPU/Memory/Network panels).
+            mixed_os = _try_rewrite_mixed_os_zero_fill_plus(
+                frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+                allow_direct_ts_gauge=allow_direct_ts_gauge,
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            )
+            if mixed_os is not None:
+                return mixed_os
+
             left_frag_peek = frag.extra.get("left_frag")
             right_frag_peek = frag.extra.get("right_frag")
             phantom_side = None
@@ -4208,11 +5808,20 @@ def _build_formula_plan(
                         )
                     return plan
 
+        # A caller-supplied ``alias_hint`` (e.g. a multi-target ``target_ref_id``
+        # like "A") is passed as-is to a single measure spec's alias. Passing the
+        # *same* hint to both operands here collapses their aliases whenever left
+        # and right reference the same metric (e.g. the node_exporter "busy % =
+        # per-mode rate / core count" idiom: numerator and denominator both read
+        # ``node_cpu_seconds_total``). ``_build_shared_measure_pipeline`` then
+        # sees two same-alias specs with different stats_exprs and rejects the
+        # whole multi-target fusion as an unresolvable duplicate. Suffix each
+        # side so left/right always get distinct aliases.
         left_plan = _build_formula_plan(
             frag.extra.get("left_frag"),
             resolver,
             rule_pack,
-            alias_hint,
+            f"{alias_hint}_lhs" if alias_hint else alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
@@ -4224,7 +5833,7 @@ def _build_formula_plan(
             frag.extra.get("right_frag"),
             resolver,
             rule_pack,
-            alias_hint,
+            f"{alias_hint}_rhs" if alias_hint else alias_hint,
             summary_mode=summary_mode,
             preferred_group_labels=preferred_group_labels,
             allow_direct_ts_gauge=False,
@@ -4234,6 +5843,59 @@ def _build_formula_plan(
         )
         if not left_plan or not right_plan:
             return None
+
+        # Align groupings when one operand is ungrouped and the other carries
+        # an explicit ``by(...)`` (Docker/node Load: ``load / count by(job,
+        # instance)(count by(..., cpu)(...))``). PromQL matches on the shared
+        # label set; ES|QL needs both measures in the same STATS BY. Rebuild
+        # the ungrouped side with the sibling's group fields as preferred
+        # labels so the merge succeeds without inventing new dimensions.
+        #
+        # Skip this when the binary op carries an explicit ``on(...)``/
+        # ``ignoring(...)`` key that narrows the match away from full-label
+        # equality. That modifier is PromQL's own signal that the operands do
+        # NOT share the same label set, so forcing the ungrouped side into
+        # ``BY <donor labels>`` can silently aggregate together multiple
+        # distinct series (e.g. across an ``instance`` dimension the modifier
+        # deliberately ignores) behind whatever aggregate function this
+        # fragment happens to use — a real correctness risk, not just an
+        # approximation. Fall through to the unmergeable path below instead
+        # so a divergent-grouping ratio like ``sum(rate(a)) by (application)
+        # / on(application) b`` is marked ``not_feasible`` rather than
+        # silently coalesced.
+        vector_matching_narrows = _vector_matching_restricts_or(frag.extra.get("vector_matching"))
+        left_groups = {tuple(spec.group_fields) for spec in left_plan.specs}
+        right_groups = {tuple(spec.group_fields) for spec in right_plan.specs}
+        if len(left_groups | right_groups) > 1 and not vector_matching_narrows:
+            left_empty = left_groups == {()}
+            right_empty = right_groups == {()}
+            if left_empty ^ right_empty:
+                donor = right_plan if left_empty else left_plan
+                needy_frag = (
+                    frag.extra.get("left_frag") if left_empty else frag.extra.get("right_frag")
+                )
+                donor_labels = list(donor.specs[0].group_fields) if donor.specs else []
+                if needy_frag is not None and donor_labels:
+                    rebuilt = _build_formula_plan(
+                        needy_frag,
+                        resolver,
+                        rule_pack,
+                        f"{alias_hint}_lhs" if left_empty and alias_hint else (
+                            f"{alias_hint}_rhs" if alias_hint else alias_hint
+                        ),
+                        summary_mode=summary_mode,
+                        preferred_group_labels=donor_labels,
+                        allow_direct_ts_gauge=False,
+                        preferred_group_labels_origin="sibling_binary",
+                        allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                        drop_legend_labels=False,
+                    )
+                    if rebuilt is not None:
+                        if left_empty:
+                            left_plan = rebuilt
+                        else:
+                            right_plan = rebuilt
+
         # If one operand was promoted to TS (proven TSDS gauge) but the other
         # stayed on FROM (unknown / non-TSDS), rebuild both with promotion
         # disabled so they share a source command. FROM is the safe common
@@ -4350,7 +6012,9 @@ __all__ = [
     "_collapse_summary_ts_query",
     "_common_matchers",
     "_detect_outer_agg",
+    "_expand_late_bound_group_by_terms",
     "_extract_group_labels",
+    "_finalize_fused_stats_assignments",
     "_format_scalar_value",
     "_frag_eval_line",
     "_frag_filters",
@@ -4359,6 +6023,7 @@ __all__ = [
     "_frag_has_incompatible_target_fields",
     "_grouping_parts",
     "_inline_filters_into_stats_expr",
+    "_is_esql_control_token",
     "_matcher_alias_suffix",
     "_parse_fragment",
     "_parse_logql_search",
@@ -4371,6 +6036,7 @@ __all__ = [
     "_strip_grafana_substitutions",
     "_summary_mode_from_metadata",
     "_unique_safe_alias",
+    "_wrap_bare_ts_value_args_when_case_siblings",
     "classify_promql_complexity",
     "grafana_template_var_name",
     "preprocess_grafana_macros",

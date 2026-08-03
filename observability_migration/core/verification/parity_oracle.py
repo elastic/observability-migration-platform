@@ -991,7 +991,10 @@ def _run_query(request, query: str, params: list | None = None) -> dict:
     return request("POST", "/_query?format=json", body, "application/json")
 
 
-_NAMED_PARAM_RE = re.compile(r"\?([a-zA-Z_][a-zA-Z0-9_]*)")
+_NAMED_PARAM_RE = re.compile(
+    r"(?<!\?)\?(?!\?)([a-zA-Z_][a-zA-Z0-9_]*)"
+)
+_IDENTIFIER_PARAM_RE = re.compile(r"\?\?([a-zA-Z_][a-zA-Z0-9_]*)")
 _RLIKE_PARAM_RE = re.compile(r"\bRLIKE\s+\?([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
 _PROMQL_REGEX_PARAM_RE = re.compile(r"(?<![!<>=])=~\s*\?([a-zA-Z_][a-zA-Z0-9_]*)")
 _TIME_PARAM_NAMES = frozenset({"_tstart", "_tend", "_t_start", "_t_end", "tstart", "tend"})
@@ -999,6 +1002,10 @@ _TIME_PARAM_NAMES = frozenset({"_tstart", "_tend", "_t_start", "_t_end", "tstart
 
 def _control_param_names(esql: str) -> set[str]:
     return {name for name in _NAMED_PARAM_RE.findall(esql or "") if name not in _TIME_PARAM_NAMES}
+
+
+def _identifier_control_param_names(esql: str) -> set[str]:
+    return set(_IDENTIFIER_PARAM_RE.findall(esql or ""))
 
 
 def _control_param_occurrences(esql: str) -> list[tuple[str, tuple[int, int]]]:
@@ -1116,6 +1123,14 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
         return cmp_
     if any(tok in source_query for tok in NATIVE_UNSUPPORTED):
         cmp_.skipped_reason = "native PROMQL oracle does not support this construct"
+        return cmp_
+    identifier_control_params = _identifier_control_param_names(cmp_.esql)
+    if identifier_control_params:
+        names = ", ".join(f"??{name}" for name in sorted(identifier_control_params))
+        cmp_.skipped_reason = (
+            "translated query uses identifier dashboard control param(s) "
+            f"{names}; numeric parity requires concrete control defaults"
+        )
         return cmp_
     exact_control_params = _exact_control_param_names(cmp_.esql)
     if exact_control_params:
