@@ -542,20 +542,52 @@ def rule_creation_capability_gap(args: Any) -> dict[str, Any] | None:
     return None
 
 
-def exit_if_rule_creation_skipped(alert_summary: Any) -> None:
-    """Fail the run when rules were requested but none were created.
+def exit_if_rule_creation_incomplete(alert_summary: Any) -> None:
+    """Fail the run when requested rule creation did not fully succeed.
 
-    Called after the run summary is written so the operator keeps the translated
-    alert artifacts and the ``rule_creation`` record; only the exit code and a
-    stderr line are added on top.
+    Two distinct incomplete outcomes, both of which used to exit 0:
+
+    * **skipped** -- creation never ran (no api key, unreachable preflight).
+    * **attempted with failures** -- creation ran and some rules were rejected.
+      Those printed ``FAILED:`` lines and still exited 0, so CI went green on a
+      partially-created alert set. Loud-but-green is better than silent, but it
+      is still a requested operation that did not happen.
+
+    Keyed on ``failed`` rather than on ``created``: a translation set that is
+    entirely ``manual_required`` legitimately creates zero rules and must stay
+    green, so a zero count is not evidence of failure.
+
+    Called after the run summary is written, so the operator keeps the
+    translated alert artifacts and the ``rule_creation`` record either way; only
+    the exit code and a stderr line are added on top.
     """
     if not isinstance(alert_summary, dict):
         return
     status = alert_summary.get("rule_creation")
-    if not isinstance(status, dict) or status.get("status") != RULE_CREATION_SKIPPED:
+    if not isinstance(status, dict):
         return
-    print(f"\nERROR: {status.get('message', '')}", file=sys.stderr)
+    if status.get("status") == RULE_CREATION_SKIPPED:
+        print(f"\nERROR: {status.get('message', '')}", file=sys.stderr)
+        sys.exit(1)
+    if status.get("status") != RULE_CREATION_ATTEMPTED:
+        return
+    summary = status.get("summary")
+    failed = int((summary or {}).get("failed", 0) or 0) if isinstance(summary, dict) else 0
+    if failed <= 0:
+        return
+    created = int((summary or {}).get("created", 0) or 0)
+    print(
+        f"\nERROR: {failed} Kibana alerting rule(s) failed to be created "
+        f"({created} succeeded). The alert set in Kibana is incomplete; see the "
+        "rule-upload results artifact for the per-rule reason.",
+        file=sys.stderr,
+    )
     sys.exit(1)
+
+
+# Kept as an alias: the old name described only the skip case, which is now one
+# of two incomplete outcomes this guard covers.
+exit_if_rule_creation_skipped = exit_if_rule_creation_incomplete
 
 
 def _preflight_unreachable(preflight: dict[str, Any] | None) -> bool:
@@ -1248,6 +1280,7 @@ __all__ = [
     "delete_rule",
     "disable_rule",
     "enable_rule",
+    "exit_if_rule_creation_incomplete",
     "exit_if_rule_creation_skipped",
     "get_alerting_health",
     "list_connector_types",

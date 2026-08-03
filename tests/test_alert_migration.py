@@ -5985,3 +5985,68 @@ class TestEndToEndAlertMapping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuleCreationFailureExitTests(unittest.TestCase):
+    """A requested rule creation that partially failed must not exit 0.
+
+    Individual creation failures printed ``FAILED:`` lines and returned success:
+    loud, but green, so CI passed on an incomplete alert set in Kibana. Keyed on
+    the failed count rather than the created count, because an all
+    ``manual_required`` translation legitimately creates zero rules.
+    """
+
+    @staticmethod
+    def _alerting():
+        from observability_migration.targets.kibana import alerting
+
+        return alerting
+
+    def _attempted(self, created, failed):
+        from observability_migration.targets.kibana.alerting import RULE_CREATION_ATTEMPTED
+
+        return {
+            "rule_creation": {
+                "requested": True,
+                "status": RULE_CREATION_ATTEMPTED,
+                "reason": "",
+                "message": "",
+                "summary": {"created": created, "failed": failed, "skipped": 0},
+            }
+        }
+
+    def test_attempted_with_failures_exits_non_zero_and_names_the_counts(self):
+        buf = io.StringIO()
+        with redirect_stderr(buf), self.assertRaises(SystemExit) as ctx:
+            self._alerting().exit_if_rule_creation_incomplete(self._attempted(created=4, failed=2))
+        self.assertEqual(ctx.exception.code, 1)
+        message = buf.getvalue()
+        self.assertIn("2 Kibana alerting rule(s) failed", message)
+        self.assertIn("4 succeeded", message)
+
+    def test_attempted_with_no_failures_is_silent_and_does_not_exit(self):
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            self._alerting().exit_if_rule_creation_incomplete(self._attempted(created=6, failed=0))
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_zero_created_zero_failed_stays_green(self):
+        # An entirely manual_required translation creates nothing by design; a
+        # zero created count must never be read as a failure.
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            self._alerting().exit_if_rule_creation_incomplete(self._attempted(created=0, failed=0))
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_skipped_still_exits_non_zero(self):
+        buf = io.StringIO()
+        summary = {"rule_creation": self._alerting().rule_creation_skipped("missing_kibana_api_key")}
+        with redirect_stderr(buf), self.assertRaises(SystemExit) as ctx:
+            self._alerting().exit_if_rule_creation_incomplete(summary)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_legacy_alias_still_resolves(self):
+        self.assertIs(
+            self._alerting().exit_if_rule_creation_skipped,
+            self._alerting().exit_if_rule_creation_incomplete,
+        )
