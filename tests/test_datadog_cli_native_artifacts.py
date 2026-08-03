@@ -118,7 +118,26 @@ class TestDatadogCliNativeArtifacts:
             {"dashboards": [exports[stem]]}
         )
 
-        assert artifact["payload"] == bridged_payload
+        # The kb-dashboard document cannot express dashboard-level `tags` -- its
+        # schema is additionalProperties: false, which is exactly why
+        # native_dashboard_from_ir reads dashboard fields off the IR rather than
+        # through to_yaml_dict(). So the divergence is *pinned* rather than
+        # ignored: tags may differ, nothing else may, and tags must actually be
+        # populated (an empty list would make the two payloads match again and
+        # silently re-open the bug where Datadog tags never reached the upload).
+        divergent_keys = {
+            key
+            for key in set(artifact["payload"]) | set(bridged_payload)
+            if artifact["payload"].get(key) != bridged_payload.get(key)
+        }
+        assert divergent_keys <= {"tags"}, (
+            f"native payload diverged from the YAML bridge on {divergent_keys - {'tags'}}, "
+            "which the document shape can represent"
+        )
+        assert {k: v for k, v in artifact["payload"].items() if k != "tags"} == {
+            k: v for k, v in bridged_payload.items() if k != "tags"
+        }
+        assert artifact["payload"]["tags"] == ["team:infra"]
 
     def test_native_artifact_envelope_shape(self, tmp_path):
         _write_dashboard(tmp_path)
@@ -224,3 +243,30 @@ class TestDatadogCliNativeArtifacts:
         entry = dashboard_entries[0]
         assert entry.get("native_artifact_path", "").endswith(".native.json")
         assert entry.get("ir_artifact_path", "").endswith(".ir.json")
+
+    def test_source_tags_and_lineage_reach_the_ir_and_uploaded_payload(self, tmp_path):
+        """Datadog source tags must survive into both artifacts.
+
+        The IR is built from the kb-dashboard document, whose shape carries
+        neither tags nor source lineage, so both have to be set from the
+        normalized dashboard. They were not: ``ir/<stem>.ir.json`` recorded
+        ``tags: []`` and an empty ``source_file``, and because
+        ``native_dashboard_from_ir`` reads tags straight off the IR, a dashboard
+        tagged in Datadog uploaded to Kibana with no tags at all. The fixture is
+        tagged ``team:infra``; Datadog's ``key:value`` form is preserved rather
+        than split, so no scoping information is invented.
+        """
+        _write_dashboard(tmp_path)
+        out_dir = tmp_path / "out"
+        _run(tmp_path, out_dir)
+
+        ir_file = next((out_dir / "dashboards" / "ir").glob("*.ir.json"))
+        dashboard_ir = json.loads(ir_file.read_text())["dashboard_ir"]
+        assert dashboard_ir["tags"] == ["team:infra"]
+        assert dashboard_ir["source_file"].endswith("infra.json")
+
+        native_file = next((out_dir / "dashboards" / "native").glob("*.native.json"))
+        payload = json.loads(native_file.read_text())["payload"]
+        assert payload.get("tags") == ["team:infra"], (
+            "tags must reach the payload the run uploads, not just the IR"
+        )

@@ -365,6 +365,14 @@ def generate_dashboard_artifacts(
     dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
     dashboard_ir.uid = str(dashboard.id or "")
     dashboard_ir.title = dashboard.title or dashboard_ir.title
+    # The YAML document shape carries neither tags nor source lineage, so both
+    # have to come off the normalized dashboard: otherwise they are absent from
+    # ir/<stem>.ir.json, and because native_dashboard_from_ir reads tags
+    # straight off the IR they are also stripped from the dashboard this run
+    # uploads. Datadog tags keep their source ``key:value`` form rather than
+    # being split, so no scoping information is invented or lost.
+    dashboard_ir.tags = [str(tag) for tag in (dashboard.tags or [])]
+    dashboard_ir.source_file = str(dashboard.source_file or "")
     template_vars_by_name = {
         variable.name: variable
         for variable in dashboard.template_variables
