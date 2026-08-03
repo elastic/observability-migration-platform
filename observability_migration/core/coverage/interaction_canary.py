@@ -5,8 +5,11 @@
 
 Builds a deterministic :class:`DashboardIR` that exercises ES|QL and classic
 dashboard controls independently of Grafana/Datadog translator coverage. The
-same IR feeds ``native_dashboard_from_ir`` for upload and
-``DashboardIR.to_yaml_dict()`` for telemetry-contract extraction.
+same IR feeds ``native_dashboard_from_ir`` for upload and is persisted as an
+``ir/<stem>.ir.json`` artifact for telemetry-contract extraction.
+
+This canary is self-contained: it *writes* its own input rather than reading a
+migration's, so it is unaffected by what a real run emits.
 """
 
 from __future__ import annotations
@@ -15,13 +18,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from observability_migration.core.assets.control import ControlIR
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.panel import PanelIR
 from observability_migration.core.assets.status import AssetStatus
 from observability_migration.core.assets.visual import VisualIR, VisualLayout, VisualPresentation
+from observability_migration.targets.kibana.native_artifacts import (
+    IR_ARTIFACT_DIRNAME,
+    write_ir_artifact,
+)
 
 INTERACTION_CANARY_UID = "obs-migrate-interaction-canary"
 INTERACTION_CANARY_TITLE = "obs-migrate interaction canary (synthetic controls)"
@@ -537,17 +542,20 @@ def build_interaction_failure_canaries() -> tuple[InteractionFailureCanary, ...]
 
 
 def write_interaction_canary_artifact(artifact_dir: str | Path) -> Path:
-    """Write the synthetic dashboard YAML used by telemetry-contract tests."""
+    """Write the synthetic dashboard IR artifact used by telemetry-contract tests.
+
+    This canary *creates* its own input rather than reading a migration's:
+    it is a self-contained fixture, so it writes the same
+    ``ir/<stem>.ir.json`` envelope a real run writes and the telemetry
+    contract reads. It previously wrote ``yaml/interaction-canary.yaml``,
+    which stopped being an input once the contract moved to the IR.
+    """
     artifact_path = Path(artifact_dir)
-    yaml_dir = artifact_path / "yaml"
-    yaml_dir.mkdir(parents=True, exist_ok=True)
-    output_path = yaml_dir / "interaction-canary.yaml"
-    payload = {"dashboards": [build_interaction_canary().to_yaml_dict()]}
-    output_path.write_text(
-        yaml.safe_dump(payload, sort_keys=False),
-        encoding="utf-8",
+    return write_ir_artifact(
+        dashboard_ir=build_interaction_canary(),
+        ir_dir=artifact_path / IR_ARTIFACT_DIRNAME,
+        stem="interaction-canary",
     )
-    return output_path
 
 
 __all__ = [

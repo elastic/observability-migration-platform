@@ -464,7 +464,10 @@ class DashboardResult:
     preflight_passed: bool = True
     preflight_issues: list[dict[str, str]] = field(default_factory=list)
     validation_summary: dict[str, int] = field(default_factory=dict)
-    yaml_path: str = ""
+    # Filename stem shared by this dashboard's artifacts
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``,
+    # ``compiled/<stem>/``).
+    artifact_stem: str = ""
     compiled_path: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of

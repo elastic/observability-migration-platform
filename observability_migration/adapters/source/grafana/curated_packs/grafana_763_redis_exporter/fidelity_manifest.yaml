@@ -83,8 +83,14 @@ panels:
   - id: 5
     title: "Total Items per DB"
     grafana_type: timeseries
-    fidelity: PERFECT
-    notes: "redis_db_keys gauge grouped by db and instance"
+    fidelity: APPROXIMATE
+    notes: >
+      redis_db_keys grouped by labels.db and labels.instance. Grafana renders one series
+      per (db, instance) pair with both labels in the legend. Kibana XY supports only one
+      breakdown dimension; the translator emits a single breakdown field and builds a
+      synthetic CONCAT(db, instance) legend via an EVAL, which collapses the two-dimension
+      grouping into a single series key. Semantically equivalent for typical single-instance
+      deployments but loses the independent db/instance breakdown axis in multi-instance setups.
     grafana_grid: {x: 0, y: 14, w: 12, h: 7}
     kibana_grid: {x: 0, y: 14, w: 16, h: 8}
 
@@ -154,8 +160,8 @@ variables:
 
 summary:
   total_panels: 13
-  perfect: 11
-  approximate: 2
+  perfect: 10
+  approximate: 3
   not_feasible: 0
   overall_fidelity: HIGH
   live_validation:

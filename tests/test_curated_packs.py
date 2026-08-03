@@ -255,23 +255,15 @@ def test_redis_memory_ratio_uses_ts_source():
     assert "esql" in yaml_panel, "Expected esql panel, got markdown"
     query = yaml_panel["esql"]["query"]
 
-    assert query.startswith("TS "), f"Bug 1: query should use TS source, got: {query[:50]}"
-    # This gauge declares no reduceOptions.calcs, so it takes Grafana's default
-    # of lastNotNull -- which a single whole-range bucket cannot express (the
-    # value becomes the range aggregate rather than the current one). It keeps
-    # the adaptive bucket and collapses with LAST instead. Verified on the rig:
-    # both forms return 1.2334 here, so this costs nothing and fixes the panels
-    # whose value does move (Node Exporter Full's "Sys Load" read 3.48 vs 6.2).
-    assert "TBUCKET(100," in query, f"Bug 3: scalar gauge should keep resolution, got: {query}"
-    assert "LAST(computed_value, time_bucket)" in query, query
-    # The core translator now handles this shape (colocated_binary_agg_family),
-    # so the curated pack no longer carries a hand-written query. The alias is
-    # the generic ``computed_value`` rather than the pack's ``memory_pct``; what
-    # matters is unchanged -- SUM (matching PromQL sum()) over the per-document
-    # ratio, verified numerically identical to the old pack query on live data.
-    assert "SUM(" in query and "computed_value" in query, f"Bug 2: should use SUM (not AVG) to match PromQL sum(), got: {query}"
-    assert "time_bucket = MAX(time_bucket)" not in query, "Bug 3: should not keep time_bucket in collapse"
-    assert yaml_panel["esql"]["metric"]["field"] == "computed_value"
+    # The 763 curated pack carries a hand-written query override for Memory Usage
+    # that computes the ratio in a single STATS clause — semantically exact for
+    # the prometheus_native TSDB layout (vs auto-translation which uses per-doc
+    # arithmetic inside SUM, introducing join-faithfulness risk).
+    assert query.startswith("TS "), f"query should use TS source: {query[:60]}"
+    assert "LAST_OVER_TIME(metrics.redis_memory_used_bytes)" in query, query
+    assert "LAST_OVER_TIME(metrics.redis_memory_max_bytes)" in query, query
+    assert "RLIKE ?instance" in query, f"should filter by instance via RLIKE: {query}"
+    assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
 
 
 def test_find_14091_by_gnet_id():
@@ -376,3 +368,255 @@ def test_resolve_pack_11835_stamps_curated_pack_name():
     dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
     assert getattr(resolved, "_curated_pack_name", "") == "grafana_11835_redis_exporter_helm"
+
+
+# ---------------------------------------------------------------------------
+# Panel query override — mechanism tests
+# ---------------------------------------------------------------------------
+
+_SIMPLE_METRIC_ESQL = (
+    "TS metrics-*\n"
+    "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
+    "| STATS value = MAX(LAST_OVER_TIME(some_metric))"
+)
+
+
+def test_panel_query_override_fires_for_matching_title():
+    """When a pack has a panel_query_override, the curated ES|QL fires for title match."""
+    pack = RulePackConfig()
+    pack.panel_query_overrides = [{
+        "title_match": "My Ratio Panel",
+        "esql_query": _SIMPLE_METRIC_ESQL,
+        "status_override": "migrated",
+    }]
+
+    panel = {
+        "type": "singlestat",
+        "title": "My Ratio Panel",
+        "targets": [{"expr": "some_metric", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=pack)
+    assert result.status == "migrated", f"Expected migrated, got {result.status}: {result.reasons}"
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected curated ES|QL panel spec"
+    assert result.confidence == 1.0
+
+
+def test_panel_query_override_case_insensitive():
+    """title_match comparison is case-insensitive."""
+    pack = RulePackConfig()
+    pack.panel_query_overrides = [{
+        "title_match": "MEMORY USAGE",
+        "esql_query": _SIMPLE_METRIC_ESQL,
+        "status_override": "migrated",
+    }]
+
+    panel = {
+        "type": "singlestat",
+        "title": "Memory Usage",
+        "targets": [{"expr": "some_metric", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=pack)
+    assert result.status == "migrated"
+    assert yaml_panel is not None and "esql" in yaml_panel
+
+
+def test_panel_query_override_nonmatching_title_falls_through():
+    """A panel with a different title is NOT intercepted by the override."""
+    pack = RulePackConfig()
+    pack.panel_query_overrides = [{
+        "title_match": "Memory Usage",
+        "esql_query": _SIMPLE_METRIC_ESQL,
+        "status_override": "migrated",
+    }]
+
+    panel = {
+        "type": "singlestat",
+        "title": "CPU Usage",
+        "targets": [{"expr": "some_other_metric", "refId": "A"}],
+    }
+
+    yaml_panel, _result = translate_panel(panel, rule_pack=pack)
+    # Falls through to normal translation — must NOT use the curated ES|QL
+    if yaml_panel and "esql" in yaml_panel:
+        query = yaml_panel["esql"].get("query", "")
+        assert "some_metric" not in query
+
+
+def test_panel_query_override_user_wins_over_curated():
+    """When user pack has same title_match, user query wins over curated."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_query_overrides = [{
+        "title_match": "Memory Usage",
+        "esql_query": "TS metrics-*\n| STATS value = MAX(LAST_OVER_TIME(used))\n-- curated",
+        "status_override": "migrated",
+    }]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_query_overrides = [{
+        "title_match": "Memory Usage",
+        "esql_query": "TS metrics-*\n| STATS value = MAX(LAST_OVER_TIME(used))\n-- user override",
+        "status_override": "migrated",
+    }]
+
+    merged = _merge_curated_into_base(curated, user)
+    assert len(merged.panel_query_overrides) == 1, (
+        "Deduplication by title_match should keep only one entry"
+    )
+    assert "user override" in merged.panel_query_overrides[0]["esql_query"]
+
+
+def test_panel_query_override_merge_keeps_both_different_titles():
+    """Overrides with different title_match values both survive the merge."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_query_overrides = [
+        {"title_match": "Memory Usage", "esql_query": "TS metrics-*\n| STATS v = MAX(LAST_OVER_TIME(m))", "status_override": "migrated"},
+    ]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_query_overrides = [
+        {"title_match": "CPU Usage", "esql_query": "TS metrics-*\n| STATS v = MAX(LAST_OVER_TIME(cpu))", "status_override": "migrated"},
+    ]
+
+    merged = _merge_curated_into_base(curated, user)
+    titles = {o["title_match"] for o in merged.panel_query_overrides}
+    assert titles == {"Memory Usage", "CPU Usage"}
+
+
+def test_11835_memory_usage_panel_uses_curated_override():
+    """The 11835 pack's Memory Usage singlestat uses the curated ES|QL, status=migrated."""
+    dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    memory_panel = {
+        "type": "singlestat",
+        "title": "Memory Usage",
+        "targets": [{
+            "expr": 'redis_memory_used_bytes{instance=~"$instance"} / redis_memory_max_bytes{instance=~"$instance"} * 100',
+            "refId": "A",
+        }],
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+    }
+
+    yaml_panel, result = translate_panel(memory_panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    assert result.confidence == 1.0
+    query = yaml_panel["esql"].get("query", "")
+    assert "redis_memory_used_bytes" in query
+    assert "redis_memory_max_bytes" in query
+    assert "?instance" in query  # instance filter preserved from original PromQL
+
+
+def test_18405_memory_usage_panel_uses_curated_override():
+    """The 18405 pack's Memory Usage stat uses the curated ES|QL, status=migrated."""
+    dashboard = {"gnetId": 18405, "title": "Redis Enterprise...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    memory_panel = {
+        "type": "stat",
+        "title": "Memory Usage",
+        "targets": [{
+            "expr": 'bdb_used_memory{cluster=~"$cluster",bdb=~"$bdb"} / bdb_memory_limit{cluster=~"$cluster",bdb=~"$bdb"}',
+            "refId": "A",
+        }],
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+    }
+
+    yaml_panel, result = translate_panel(memory_panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    assert result.confidence == 1.0
+    query = yaml_panel["esql"].get("query", "")
+    assert "bdb_used_memory" in query
+    assert "bdb_memory_limit" in query
+
+
+def test_18406_memory_usage_panel_uses_curated_override():
+    """The 18406 pack's Memory Usage stat uses the curated ES|QL, status=migrated."""
+    dashboard = {"gnetId": 18406, "title": "Redis Cloud...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    memory_panel = {
+        "type": "stat",
+        "title": "Memory Usage",
+        "targets": [{
+            "expr": 'bdb_used_memory{cluster=~"$cluster",bdb=~"$bdb"} / bdb_memory_limit{cluster=~"$cluster",bdb=~"$bdb"}',
+            "refId": "A",
+        }],
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+    }
+
+    yaml_panel, result = translate_panel(memory_panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    assert result.confidence == 1.0
+
+
+def test_schema_validates_pack_with_query_overrides():
+    """pack.yaml with panel.query_overrides validates against the extension schema."""
+    from observability_migration.adapters.source.grafana.extension_schema import validate_rule_pack_payload
+
+    raw = {
+        "query": {"metric_kinds": {"some_metric": "gauge"}},
+        "panel": {
+            "query_overrides": [
+                {
+                    "title_match": "Memory Usage",
+                    "esql_query": _SIMPLE_METRIC_ESQL,
+                    "status_override": "migrated",
+                }
+            ]
+        },
+    }
+    payload = validate_rule_pack_payload(raw)
+    assert len(payload.panel.query_overrides) == 1
+    assert payload.panel.query_overrides[0].title_match == "Memory Usage"
+    assert payload.panel.query_overrides[0].status_override == "migrated"
+
+
+def test_panel_query_override_loaded_from_pack_yaml_round_trip():
+    """load_rule_pack_files parses query_overrides into RulePackConfig.panel_query_overrides."""
+    import os
+    import tempfile
+
+    from observability_migration.adapters.source.grafana.rules import load_rule_pack_files
+
+    yaml_content = (
+        "query:\n"
+        "  metric_kinds:\n"
+        "    some_gauge: gauge\n"
+        "panel:\n"
+        "  query_overrides:\n"
+        "    - title_match: 'Memory Usage'\n"
+        "      esql_query: |\n"
+        "        TS metrics-*\n"
+        "        | STATS value = MAX(LAST_OVER_TIME(some_gauge))\n"
+        "      status_override: migrated\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        tmp_path = f.name
+
+    try:
+        pack = load_rule_pack_files([tmp_path])
+        assert len(pack.panel_query_overrides) == 1
+        override = pack.panel_query_overrides[0]
+        assert override["title_match"] == "Memory Usage"
+        assert "some_gauge" in override["esql_query"]
+        assert override["status_override"] == "migrated"
+    finally:
+        os.unlink(tmp_path)

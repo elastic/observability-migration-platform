@@ -69,7 +69,7 @@ On Elastic Serverless, a raw `GET /api/dashboards/dashboard/<id>` may 404 even w
 | `dashboards/schema_change_report.md` | Field mapping table |
 | `target_readiness_contract.json` (Datadog) / `required_target_contract.json` (Grafana) | Missing vs confirmed fields |
 
-YAML under `dashboards/yaml/` is a compatibility view — prefer native/IR + the validate report for “what Kibana ran.”
+A migration writes no `dashboards/yaml/` — `native/` + `ir/` plus the validate report are “what Kibana ran.”
 
 ## Decision tree
 

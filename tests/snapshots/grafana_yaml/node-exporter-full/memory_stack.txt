@@ -7,5 +7,4 @@ metrics: ['Apps_Memory_used_by_user_space_applications', 'PageTables_Memory_used
 breakdown: series_group
 mode: stacked
 axis_title: bytes
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

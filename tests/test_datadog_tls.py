@@ -18,6 +18,7 @@ from observability_migration.adapters.source.datadog.execution import (
     build_source_execution_summary,
 )
 from observability_migration.adapters.source.datadog.models import DashboardResult, TranslationResult
+from observability_migration.core.assets.native_dashboard import NativeDashboard
 
 
 class TestDatadogTlsParser(unittest.TestCase):
@@ -205,7 +206,8 @@ class TestDatadogTlsCliThreading(unittest.TestCase):
             "kibana_url": "https://kibana.example",
         }
         result = DashboardResult(
-            yaml_path="dash.yaml",
+            artifact_stem="dash",
+            native_dashboard=NativeDashboard(title="Dash"),
             dashboard_title="Dash",
             dashboard_id="dash-1",
             compiled=True,

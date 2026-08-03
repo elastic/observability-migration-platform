@@ -446,8 +446,37 @@ The Datadog path is now organized around executable stages:
 2. `planner.py`: run registry-backed planning rules that choose `lens`, `esql`, `esql_with_kql`, `markdown`, `image`, `group`, or `blocked`.
 3. `preflight.py`: resolve mapped target fields and surface capability risks before translation.
 4. `translate.py`: run registry-backed metric, log, and Lens translation rules.
-5. `generate.py`: assemble `DashboardIR`, derive native Dashboards API payload
-   and kb-dashboard YAML, then hand off to review-artifact/report/compile steps.
+5. `generate.py`: assemble `DashboardIR` and derive the native Dashboards API
+   payload from it, then hand off to review-artifact/report/compile steps. The
+   kb-dashboard YAML document is derived alongside but stays in memory: the run
+   writes `dashboards/native/` and `dashboards/ir/`, never a `dashboards/yaml/`
+   directory.
+
+### Layout Derivation And Curated Layout Packs
+
+Datadog widgets carry a free-form 12-column grid position. `generate.py`
+rescales each source row proportionally onto Kibana's 48-column grid, then
+resolves any residual overlap and applies the shared style-guide layout pass.
+That keeps the source grouping recognizable and is checked by a geometry gate
+(no overlaps, `x + w <= 48`, no sub-minimum widths), but it also inherits the
+source's asymmetric splits and ragged heights.
+
+For a small number of high-traffic dashboards, a bundled **curated layout pack**
+replaces that auto-derived geometry with a hand-tuned Kibana-native layout. The
+pack is matched by dashboard title and applies automatically — there is no flag
+and no operator step — and it changes **layout only**: panel size/position and
+section collapsed state, never a query, panel type, or field mapping. Dashboards
+with no matching pack are unaffected. `Redis - Overview` is the only dashboard
+with a pack today, and the Datadog pack directory is not yet declared as package
+data, so the curated layout currently applies from a repo checkout or editable
+install rather than a released wheel (see the *Packaging* note in the design doc
+below).
+
+Pack format, selector semantics, and the authoring/validation loop:
+`../design/curated-dashboard-packs.md#datadog-curated-layout-packs`. Note that
+these Datadog layout packs are a different mechanism from the Grafana curated
+*rule* packs described in the same document, which override query semantics and
+panel fidelity instead.
 
 ### Hostmap Fallback
 
@@ -558,6 +587,9 @@ Important modules:
 - `planner.py`: widget planning and execution-path selection.
 - `query_parser.py`, `log_parser.py`, `translate.py`: query and formula translation.
 - `field_map.py`: built-in field profiles and custom profile loading.
+- `curated_packs/`: per-dashboard curated Kibana layout packs, auto-matched by
+  dashboard title (see
+  [Layout Derivation And Curated Layout Packs](#layout-derivation-and-curated-layout-packs)).
 
 ---
 

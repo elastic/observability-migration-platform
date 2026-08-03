@@ -26,6 +26,7 @@ from observability_migration.adapters.source.grafana import (
     translate,
     verification,
 )
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.reporting import report as report
 from observability_migration.core.verification import disposition as disposition
 from observability_migration.targets.kibana import compile as compile_module
@@ -44,7 +45,7 @@ migrate = SimpleNamespace(
     validate_query_with_fixes=esql_validate.validate_query_with_fixes,
     MigrationResult=report.MigrationResult,
     PanelResult=report.PanelResult,
-    sync_result_queries_to_yaml=compile_module.sync_result_queries_to_yaml,
+    sync_result_queries_to_ir=compile_module.sync_result_queries_to_ir,
     mark_panel_requires_manual_after_validation=report.mark_panel_requires_manual_after_validation,
     mark_panel_requires_manual_after_failed_validation=report.mark_panel_requires_manual_after_failed_validation,
     mark_panel_migrated_with_missing_target_fields=report.mark_panel_migrated_with_missing_target_fields,
@@ -61,6 +62,30 @@ migrate = SimpleNamespace(
     build_runtime_summary=report.build_runtime_summary,
     _esql_field=promql._esql_field,
 )
+
+
+def _sync_document(result, payload):
+    """Run the post-validation sync over one dashboard document.
+
+    ``sync_result_queries_to_ir`` folds validation fixes into
+    ``result.dashboard_ir`` -- one of the two artifacts the pipeline writes --
+    instead of rewriting an on-disk YAML file. Seed the IR from the document
+    under test and return ``(updated, document_the_rebuilt_IR_serializes_to)``.
+    """
+    result.dashboard_ir = DashboardIR.from_yaml_dict(
+        payload["dashboards"][0], source_adapter="grafana"
+    )
+    updated = migrate.sync_result_queries_to_ir(result)
+    return updated, {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+
+
+def _polish_document(result, payload, **kwargs):
+    """Run metadata polish over one dashboard document (see _sync_document)."""
+    result.dashboard_ir = DashboardIR.from_yaml_dict(
+        payload["dashboards"][0], source_adapter="grafana"
+    )
+    summary = migrate.apply_metadata_polish(result, **kwargs)
+    return summary, {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
 
 class DatasourceIdentityTests(unittest.TestCase):
@@ -6732,11 +6757,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         section_panels = rewritten["dashboards"][0]["panels"][0]["section"]["panels"]
         load_yaml = next(p for p in section_panels if p["title"] == "Load [1m]")
@@ -6772,11 +6793,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         self.assertEqual(
@@ -6788,11 +6805,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
 
-    def test_sync_result_queries_to_yaml_rebuilds_stale_native_dashboard(self):
+    def test_sync_result_queries_rebuilds_stale_native_dashboard(self):
         # Regression test for PR #278 review: a --validate --upload run must
         # not upload the pre-validation native IR after ES|QL fixes have been
-        # applied. sync_result_queries_to_yaml is the last point where
-        # `result` is aligned with the corrected YAML before upload, so it
+        # applied. sync_result_queries_to_ir is the last point where
+        # `result` is aligned with the corrected dashboard before upload, so it
         # must rebuild `result.native_dashboard` in place.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
@@ -6815,29 +6832,26 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
+        # Simulate the pre-validation native IR built at translation time,
+        # from the same (stale) dashboard doc that is about to be fixed.
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+        stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+        self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
 
-            # Simulate the pre-validation native IR built at translation time,
-            # from the same (stale) dashboard doc that is about to be fixed.
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-            stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
-            self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
-
-            updated = migrate.sync_result_queries_to_yaml(result, path)
+        updated, _rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         rebuilt_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
         self.assertEqual(rebuilt_query, "FROM metrics-prometheus-synthetic\n| LIMIT 10")
 
-    def test_sync_result_queries_to_yaml_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+    def test_sync_result_queries_rebuilds_dashboard_ir_and_native_payload_together(self):
         # IR-first: the sync must refresh `result.dashboard_ir` (not just
-        # `result.native_dashboard`), and the on-disk YAML it writes must be
-        # exactly what that rebuilt IR serializes to.
+        # `result.native_dashboard`), and the native payload it derives must
+        # carry exactly what that rebuilt IR serializes to -- neither artifact
+        # may keep the pre-validation query.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
         panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
@@ -6859,55 +6873,35 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
 
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-
-            migrate.sync_result_queries_to_yaml(result, path)
-            on_disk = yaml.safe_load(path.read_text())
+        _updated, derived = _sync_document(result, payload)
 
         self.assertIsNotNone(result.dashboard_ir)
         self.assertEqual(
             result.dashboard_ir.panels[0].visual.presentation.config["query"],
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
-        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+        self.assertEqual(
+            derived["dashboards"][0]["panels"][0]["esql"]["query"],
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"],
+        )
 
-    def test_sync_result_queries_to_yaml_leaves_missing_native_dashboard_alone(self):
-        # Callers that never set result.native_dashboard (e.g. legacy-only
-        # runs) must not trip the rebuild path or its deferred import.
+    def test_sync_result_queries_without_dashboard_ir_is_a_no_op(self):
+        # The dashboard IR is the sync's only input now that no YAML file is
+        # written. A result that carries none has nothing to fold fixes into, so
+        # the sync must report "nothing updated" instead of raising.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
         panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
         result.panel_results = [panel]
         result.yaml_panel_results = [panel]
 
-        payload = {
-            "dashboards": [{
-                "name": "Dashboard",
-                "panels": [
-                    {
-                        "title": "Panel",
-                        "esql": {
-                            "type": "datatable",
-                            "query": "FROM metrics-*\n| LIMIT 10",
-                        },
-                    }
-                ],
-            }]
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-
-        self.assertTrue(updated)
+        self.assertIsNone(result.dashboard_ir)
+        self.assertFalse(migrate.sync_result_queries_to_ir(result))
         self.assertIsNone(result.native_dashboard)
 
     def test_sync_result_queries_to_yaml_adds_controls_for_new_params(self):
@@ -6969,11 +6963,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         controls = rewritten["dashboards"][0].get("controls", [])
@@ -7005,11 +6995,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         controls = rewritten["dashboards"][0].get("controls", [])
         self.assertFalse(
@@ -7052,11 +7038,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         controls = [
             control
@@ -7100,11 +7082,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         panel_payload = rewritten["dashboards"][0]["panels"][0]["esql"]
@@ -7134,11 +7112,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         self.assertEqual(
             rewritten["dashboards"][0]["panels"][0]["esql"]["query"],
@@ -7180,11 +7154,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertNotIn("esql", panel_payload)
@@ -7308,11 +7278,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertIn("esql", panel_payload)
@@ -7353,16 +7319,163 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertNotIn("esql", panel_payload)
         self.assertIn("markdown", panel_payload)
         self.assertIn("failed live ES|QL validation", panel_payload["markdown"]["content"])
+
+    def _tagged_sync_scenario(self):
+        """A validate-stage sync scenario whose IR carries API-only fields.
+
+        The sync's input is a full ``DashboardIR``, not a YAML document, so the
+        fixture seeds the fields the YAML shape cannot express -- dashboard
+        identity (``uid``/``folder``/``tags``), lineage and the referenced asset
+        collections. Returns ``(result, ir)``.
+        """
+        from observability_migration.core.assets.annotation import AnnotationIR
+        from observability_migration.core.assets.link import LinkIR
+
+        result = migrate.MigrationResult("Tagged Dashboard", "abc123uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        ir = DashboardIR.from_yaml_dict(
+            {
+                "name": "Tagged Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            },
+            source_adapter="grafana",
+        )
+        ir.uid = "abc123uid"
+        ir.folder = "Production"
+        ir.tags = ["prometheus", "redis"]
+        ir.source_file = "redis.json"
+        ir.metadata = {"gnet_id": 763}
+        ir.source_extension = {"grafana": {"schemaVersion": 39}}
+        ir.annotations = [AnnotationIR(name="Deploys")]
+        ir.links = [LinkIR(title="Runbook")]
+        result.dashboard_ir = ir
+        return result, ir
+
+    def test_sync_result_queries_preserves_ir_fields_the_yaml_shape_cannot_carry(self):
+        # Regression: the sync rebuilds `DashboardIR` from the YAML document it
+        # just mutated, and that shape carries only name/description/
+        # minimum_kibana_version/settings/panels/filters/controls. Every other
+        # IR field used to fall back to its dataclass default on the rebuild, so
+        # a `--validate --upload` run that auto-fixed any query uploaded the
+        # dashboard with its `tags` stripped -- `native_dashboard_from_ir` reads
+        # `dashboard_ir.tags` straight off the IR precisely because the YAML
+        # shape (additionalProperties: false) cannot carry them.
+        result, _ir = self._tagged_sync_scenario()
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        rebuilt = result.dashboard_ir
+        # The validation fix landed...
+        self.assertEqual(
+            rebuilt.panels[0].visual.presentation.config["query"],
+            "FROM metrics-prometheus-synthetic\n| LIMIT 10",
+        )
+        # ...without costing the dashboard its identity, lineage or referenced
+        # assets.
+        self.assertEqual(rebuilt.tags, ["prometheus", "redis"])
+        self.assertEqual(rebuilt.uid, "abc123uid")
+        self.assertEqual(rebuilt.folder, "Production")
+        self.assertEqual(rebuilt.source_file, "redis.json")
+        self.assertEqual(rebuilt.metadata, {"gnet_id": 763})
+        self.assertEqual(rebuilt.source_extension, {"grafana": {"schemaVersion": 39}})
+        self.assertEqual([entry.name for entry in rebuilt.annotations], ["Deploys"])
+        self.assertEqual([entry.title for entry in rebuilt.links], ["Runbook"])
+        self.assertEqual(rebuilt.source_adapter, "grafana")
+        # The user-visible symptom: the tags must still be in the payload this
+        # run uploads to Kibana.
+        self.assertEqual(
+            result.native_dashboard.to_api_payload().get("tags"),
+            ["prometheus", "redis"],
+        )
+
+    def test_sync_result_queries_deep_copies_carried_ir_collections(self):
+        # The carried-over values must not alias the pre-rebuild IR: the two
+        # objects coexist (the caller's `dashboard_outputs` still holds the
+        # original), so a mutation of one must not reach the other.
+        result, original = self._tagged_sync_scenario()
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        rebuilt = result.dashboard_ir
+        self.assertIsNot(rebuilt, original)
+        self.assertIsNot(rebuilt.tags, original.tags)
+        self.assertIsNot(rebuilt.metadata, original.metadata)
+        self.assertIsNot(rebuilt.annotations, original.annotations)
+
+        rebuilt.tags.append("mutated")
+        rebuilt.metadata["touched"] = True
+        rebuilt.annotations[0].name = "Renamed"
+        self.assertEqual(original.tags, ["prometheus", "redis"])
+        self.assertEqual(original.metadata, {"gnet_id": 763})
+        self.assertEqual(original.annotations[0].name, "Deploys")
+
+    def test_sync_result_queries_keeps_non_grafana_source_adapter(self):
+        # `sync_result_queries_to_ir` lives in shared `targets/kibana/` code and
+        # hardcodes "grafana" on the rebuild. The IR under sync knows its own
+        # source, so that literal must never overwrite it.
+        result, ir = self._tagged_sync_scenario()
+        ir.source_adapter = "datadog"
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        self.assertEqual(result.dashboard_ir.source_adapter, "datadog")
+
+    def test_validate_stage_ir_rebuild_classifies_every_dashboard_ir_field(self):
+        """Exhaustiveness guard for the validate-stage ``DashboardIR`` rebuild.
+
+        ``sync_result_queries_to_ir`` rebuilds the IR from the YAML document
+        shape, which can only round-trip
+        ``compile.YAML_ROUND_TRIPPED_IR_FIELDS``. Everything else has to be
+        carried across from the pre-rebuild IR, and a field in *neither* set is
+        silently reset to its dataclass default whenever validation fixes a
+        query -- which is exactly how dashboard ``tags`` got stripped from
+        uploads. Fail loudly the moment a new field is unclassified.
+        """
+        import dataclasses
+
+        round_tripped = set(compile_module.YAML_ROUND_TRIPPED_IR_FIELDS)
+        carried = set(compile_module.IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD)
+        declared = {f.name for f in dataclasses.fields(DashboardIR)}
+
+        self.assertEqual(
+            round_tripped | carried,
+            declared,
+            "Unclassified DashboardIR field(s): "
+            f"{sorted(declared - (round_tripped | carried))}. You added a field "
+            "to DashboardIR; classify it for the validate-stage rebuild in "
+            "observability_migration/targets/kibana/compile.py. If "
+            "DashboardIR.to_yaml_dict()/from_yaml_dict() genuinely round-trip "
+            "it, add it to YAML_ROUND_TRIPPED_IR_FIELDS (and only then -- check "
+            "both methods). Otherwise add it to "
+            "IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD, which is the set this test "
+            "asserts is exhaustive; the rebuild already copies unlisted fields "
+            "across, so listing it here is an acknowledgement, not the fix. "
+            "Fields removed from DashboardIR must be dropped from these sets.",
+        )
+        self.assertEqual(
+            round_tripped & carried,
+            set(),
+            "A DashboardIR field cannot be both round-tripped through the YAML "
+            f"shape and carried across the rebuild: {sorted(round_tripped & carried)}.",
+        )
 
     def test_hidden_query_result_variable_is_not_translated_to_control(self):
         controls = migrate.translate_variables(
@@ -10011,11 +10124,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         esql = rewritten["dashboards"][0]["panels"][0]["esql"]
         self.assertNotIn("minimum", esql)
@@ -10487,17 +10596,15 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            payload = yaml.safe_load(yaml_path.read_text())
+        result, _yaml_path = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        summary = migrate.apply_metadata_polish(result, enable_ai=False)
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         self.assertEqual(summary["mode"], "heuristic")
         self.assertEqual(payload["dashboards"][0]["panels"][0]["title"], "Node Memory Memtotal Bytes")
         self.assertEqual(payload["dashboards"][0]["controls"][0]["label"], "Event Duration")
@@ -10529,11 +10636,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            rewritten = yaml.safe_load(yaml_path.read_text())
+        summary, rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
         self.assertEqual(rewritten["dashboards"][0]["panels"][0]["title"], "Foo Total")
@@ -10569,29 +10672,25 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+        # Simulate the pre-polish native IR built at translation time,
+        # from the same (stale) dashboard doc that is about to be polished.
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+        stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+        self.assertEqual(stale_title, "graph")
 
-            # Simulate the pre-polish native IR built at translation time,
-            # from the same (stale) dashboard doc that is about to be polished.
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-            stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
-            self.assertEqual(stale_title, "graph")
-
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+        summary, _rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
         rebuilt_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
         self.assertEqual(rebuilt_title, "Foo Total")
 
-    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_native_payload_together(self):
         # IR-first: metadata polish must refresh `result.dashboard_ir` (not
-        # just `result.native_dashboard`), and the on-disk YAML it writes
-        # must be exactly what that rebuilt IR serializes to.
+        # just `result.native_dashboard`), and the native payload it derives
+        # must carry exactly the polished title that rebuilt IR serializes.
         result = migrate.MigrationResult("Dashboard", "uid")
         emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
         emitted.source_panel_id = "2"
@@ -10615,25 +10714,24 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
 
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-
-            migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            on_disk = yaml.safe_load(yaml_path.read_text())
+        _summary, derived = _polish_document(result, payload, enable_ai=False)
 
         self.assertIsNotNone(result.dashboard_ir)
         self.assertEqual(result.dashboard_ir.panels[0].title, "Foo Total")
-        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+        self.assertEqual(
+            derived["dashboards"][0]["panels"][0]["title"],
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"],
+        )
 
-    def test_apply_metadata_polish_leaves_missing_native_dashboard_alone(self):
-        # Callers that never set result.native_dashboard must not trip the
-        # rebuild path or its deferred import.
+    def test_apply_metadata_polish_rebuilds_native_dashboard_from_the_ir(self):
+        # Polish derives both artifacts from result.dashboard_ir, so a result
+        # that arrives without a native payload leaves with one that carries the
+        # polished title.
         result = migrate.MigrationResult("Dashboard", "uid")
         emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
         emitted.source_panel_id = "2"
@@ -10657,12 +10755,83 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+        self.assertIsNone(result.native_dashboard)
+        summary, _rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        self.assertIsNotNone(result.native_dashboard)
+        self.assertEqual(
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"],
+            "Foo Total",
+        )
+
+    def test_apply_metadata_polish_preserves_ir_fields_the_yaml_shape_drops(self):
+        # Polish rebuilds the IR from the lossy YAML document shape (its schema
+        # declares additionalProperties: false), so every field that shape cannot
+        # express has to be carried across. This path used to carry only
+        # tags/uid by hand and silently dropped folder/source_file/metadata/
+        # annotations. `tags` is the user-visible one: native_dashboard_from_ir
+        # reads it straight off the IR, so losing it strips tags from the
+        # dashboard the run uploads. Mirrors the validate-stage guarantee in
+        # test_validate_stage_ir_rebuild_preserves_non_yaml_fields.
+        from observability_migration.core.assets.annotation import AnnotationIR
+
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        result.dashboard_ir = DashboardIR.from_yaml_dict(
+            {
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {"type": "line", "query": "FROM metrics-*\n| LIMIT 10"},
+                    }
+                ],
+            },
+            source_adapter="grafana",
+        )
+        result.dashboard_ir.tags = ["linux", "prometheus"]
+        result.dashboard_ir.uid = "rYdddlPWk"
+        result.dashboard_ir.folder = "Observability"
+        result.dashboard_ir.source_file = "node-exporter-full.json"
+        result.dashboard_ir.metadata = {"origin": "grafana.com/763"}
+        result.dashboard_ir.annotations = [AnnotationIR()]
+
+        summary = migrate.apply_metadata_polish(result, enable_ai=False)
+        # Guard the premise: polish must actually have rebuilt the IR, otherwise
+        # this test would pass trivially without exercising the carry-over.
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+
+        self.assertEqual(result.dashboard_ir.tags, ["linux", "prometheus"])
+        self.assertEqual(result.dashboard_ir.uid, "rYdddlPWk")
+        self.assertEqual(result.dashboard_ir.folder, "Observability")
+        self.assertEqual(result.dashboard_ir.source_file, "node-exporter-full.json")
+        self.assertEqual(result.dashboard_ir.metadata, {"origin": "grafana.com/763"})
+        self.assertEqual(len(result.dashboard_ir.annotations), 1)
+
+        # The symptom that reaches Kibana.
+        self.assertEqual(
+            result.native_dashboard.to_api_payload()["tags"],
+            ["linux", "prometheus"],
+        )
+
+    def test_apply_metadata_polish_without_dashboard_ir_is_a_no_op(self):
+        # The dashboard IR is polish's only input now that no YAML file is
+        # written, so a result without one must report nothing polished rather
+        # than raise.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        self.assertIsNone(result.dashboard_ir)
+        self.assertEqual(migrate.apply_metadata_polish(result, enable_ai=False), {})
         self.assertIsNone(result.native_dashboard)
 
     def test_verification_packet_marks_green_for_clean_panel(self):

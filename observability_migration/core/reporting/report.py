@@ -77,7 +77,10 @@ class MigrationResult:
     kibana_saved_object_id: str = ""
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
-    yaml_path: str = ""
+    # Filename stem shared by this dashboard's artifacts
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``,
+    # ``compiled/<stem>/``). Empty when translation failed.
+    artifact_stem: str = ""
     compiled_path: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of

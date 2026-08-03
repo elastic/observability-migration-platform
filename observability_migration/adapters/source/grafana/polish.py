@@ -3,10 +3,7 @@
 
 import os
 import re
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from observability_migration.targets.kibana.compile import (
     _iter_leaf_panels,
@@ -229,7 +226,6 @@ def _build_ai_payload(result: Any, yaml_doc: dict[str, Any], heuristic: dict[str
 
 
 def apply_metadata_polish(
-    yaml_path: str | Path,
     result: Any,
     enable_ai: bool = False,
     ai_endpoint: str = "",
@@ -237,8 +233,17 @@ def apply_metadata_polish(
     ai_api_key: str = "",
     timeout: int = 20,
 ) -> dict[str, Any]:
-    yaml_path = Path(yaml_path)
-    yaml_doc = yaml.safe_load(yaml_path.read_text())
+    """Polish panel titles / control labels on ``result``'s dashboard IR.
+
+    Operates on the dashboard document derived from ``result.dashboard_ir``
+    (the primary artifact) and folds the polish back into the IR and the native
+    payload. The migration no longer writes a ``yaml/`` file, so nothing is
+    written to disk here.
+    """
+    dashboard_ir = getattr(result, "dashboard_ir", None)
+    if dashboard_ir is None:
+        return {}
+    yaml_doc: dict[str, Any] = {"dashboards": [dashboard_ir.to_yaml_dict()]}
     dashboard = (yaml_doc.get("dashboards") or [{}])[0]
     visible_panel_results = _emitted_panel_results(result)
 
@@ -289,41 +294,41 @@ def apply_metadata_polish(
         dashboard["controls"][idx]["label"] = value
 
     polish_touched_ir = bool(applied.get("panel_titles") or applied.get("control_labels"))
-    if polish_touched_ir and (
-        getattr(result, "native_dashboard", None) is not None or getattr(result, "dashboard_ir", None) is not None
-    ):
+    if polish_touched_ir:
         # Panel titles and control labels flow into the native IR's
         # panel/pinned-control config (see map_yaml_panel/map_yaml_control in
         # dashboards_api.py). `DashboardIR` is the primary artifact from this
         # point on: rebuild it from this same in-memory `dashboard` dict just
-        # polished, and derive both the native IR and the on-disk YAML *from
-        # that IR* (mirrors the rebuild in
-        # targets.kibana.compile.sync_result_queries_to_yaml), so a
+        # polished, and derive the native payload *from that IR* (mirrors the
+        # rebuild in targets.kibana.compile.sync_result_queries_to_ir), so a
         # --polish-metadata --upload run can't ship the pre-polish IR and
         # the two artifacts can't drift from each other.
         from observability_migration.core.assets.dashboard import DashboardIR
+        from observability_migration.targets.kibana.compile import (
+            carry_over_non_yaml_ir_fields,
+        )
         from observability_migration.targets.kibana.dashboards_api import (
             native_dashboard_from_ir,
         )
 
         # The YAML document shape is a LOSSY carrier: its schema declares
-        # additionalProperties: false, so rebuilding the IR from it drops any
-        # API-only field. Carry those across explicitly rather than losing them
-        # on a metadata-polish pass.
-        previous_ir = getattr(result, "dashboard_ir", None)
+        # additionalProperties: false, so rebuilding the IR from it resets every
+        # field that shape cannot express. Carrying only `tags`/`uid` by hand
+        # silently dropped the rest (`folder`, `annotations`, `links`,
+        # `metadata`, ...), so this shares the rebuild helper with
+        # ``sync_result_queries_to_ir``: it is driven off
+        # ``dataclasses.fields(DashboardIR)``, so a field added to the IR is
+        # carried here too without anyone remembering to update this call.
+        previous_ir = dashboard_ir
         dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
-        if previous_ir is not None:
-            dashboard_ir.tags = list(getattr(previous_ir, "tags", []) or [])
-            dashboard_ir.uid = getattr(previous_ir, "uid", "") or dashboard_ir.uid
+        carry_over_non_yaml_ir_fields(
+            dashboard_ir, previous_ir, fallback_source_adapter="grafana"
+        )
         result.dashboard_ir = dashboard_ir
-        yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
         native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
         result.native_dashboard = native_dashboard
         native_counts_dict, native_reasons = native_counts.as_dicts()
         result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
-
-    with yaml_path.open("w") as fh:
-        yaml.safe_dump(yaml_doc, fh, sort_keys=False, allow_unicode=True, width=120)
 
     result.metadata_polish = {
         "mode": applied.get("mode", "heuristic"),

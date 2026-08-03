@@ -56,11 +56,17 @@ package installed. Outputs land under `/tmp/obs-migrate-e2e/` (Grafana) and
 
 - `audit_pipeline.py` — audit every bundled dashboard through the full pipeline
   and regenerate the trace docs (`--update-docs`)
-- `validate_panel_queries.py` — validate emitted panel queries against a cluster
-  (used by `run_migration.sh`)
-- `validate_panels_from_yaml.py` — counter-aware ES|QL reconstruction validator
-  that mirrors the Kibana time picker; pairs with `lens_reconstruct.py`
+- `validate_panel_queries.py` — validate emitted panel queries against a cluster;
+  reads each run's `dashboards/ir/*.ir.json` (used by `run_migration.sh`)
+- `validate_panels_from_artifacts.py` — counter-aware ES|QL reconstruction
+  validator that mirrors the Kibana time picker; reads each run's
+  `dashboards/ir/*.ir.json` and pairs with `lens_reconstruct.py`
 - `lens_reconstruct.py` — rebuild Lens panel ES|QL for the validator above
+
+Both validators are fail-closed on an empty corpus: discovering zero panels
+exits `1` and names the directory/globs searched, instead of dividing by zero
+and reporting a clean pass over nothing.
+
 - `generate_alert_support_report.py`, `verify_alert_rule_uploads.py`,
   `audit_migrated_rules.py` — alert migration support reporting and verification
 

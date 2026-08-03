@@ -38,20 +38,46 @@ The top-level container: `title`, `description`, `filters`, `settings`,
 Both adapters still assemble a kb-dashboard-core dict first (the per-panel /
 per-widget translators are the expensive, well-tested part of the pipeline
 and stay dict-shaped), then convert that dict to a `DashboardIR` via
-`DashboardIR.from_yaml_dict()` *before* the native mapping and the on-disk
-YAML write. From that point on, the dict is no longer the source of truth:
-the native Dashboards API payload and the exported YAML file are both
-produced from the `DashboardIR`, so they cannot drift from each other (see
+`DashboardIR.from_yaml_dict()` *before* the native mapping. From that point on,
+the dict is no longer the source of truth: the native Dashboards API payload and
+the kb-dashboard YAML *document* are both produced from the `DashboardIR`, so
+they cannot drift from each other (see
 `tests/test_grafana_native_dashboard_emission.py` and
 `tests/test_datadog_native_dashboard_emission.py`).
 
+**A migration writes no dashboard YAML.** The two persisted representations are
+`dashboards/native/<stem>.native.json` and `dashboards/ir/<stem>.ir.json`; the
+YAML document stays an in-memory derivation (`DashboardIR.to_yaml_dict()`) used
+by the structural equivalence guards, and is materialized as a *file* only into a
+scratch directory that `--compile` / `--legacy-import` delete again, because
+`kb-dashboard-cli` takes a YAML path. `obs-migrate compile` and
+`upload --artifact-format yaml` / `--yaml-dir` still accept an externally
+supplied (hand-written or archived) YAML directory.
+
 Grafana mutators that run after emission --
-`targets/kibana/compile.py::sync_result_queries_to_yaml` (post-validation
+`targets/kibana/compile.py::sync_result_queries_to_ir` (post-validation
 ES|QL fixes) and `adapters/source/grafana/polish.py::apply_metadata_polish`
-(title/label polish) -- follow the same pattern: mutate the dict, rebuild
-`DashboardIR.from_yaml_dict()`, then re-derive both the native IR and the
-on-disk YAML from that rebuilt IR. Datadog's post-validation rewrite
-(`adapters/source/datadog/cli.py::_rewrite_dashboard_yaml`) regenerates
+(title/label polish) -- follow the same pattern: take the document derived from
+`result.dashboard_ir`, mutate it, rebuild `DashboardIR.from_yaml_dict()`, then
+re-derive the native payload from that rebuilt IR. Neither touches the disk.
+
+That rebuild is **lossy by construction**: the YAML document shape is validated
+against `docs/dashboards/schema.json` (`additionalProperties: false`), so
+`to_yaml_dict()`/`from_yaml_dict()` only round-trip `title`, `description`,
+`minimum_kibana_version`, `settings`, `panels`, `filters` and `controls`. Every
+other `DashboardIR` field -- `uid`, `folder`, `tags`, `source_file`, `metadata`,
+`source_extension`, `alerts`, `annotations`, `links`, `transforms`, `version`,
+`source_adapter` -- has to be carried across the rebuild explicitly, or it
+reverts to its dataclass default. `native_dashboard_from_ir` reads dashboard
+`tags` straight off the IR precisely because the YAML shape cannot express them,
+so dropping them on the rebuild uploaded the dashboard to Kibana with its tags
+stripped. `targets/kibana/compile.py` owns the classification
+(`YAML_ROUND_TRIPPED_IR_FIELDS` vs `IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD`) and
+carries over everything outside the round-tripped set by iterating
+`dataclasses.fields(DashboardIR)`; a new IR field is therefore preserved
+automatically, and an exhaustiveness test fails until it is classified.
+Datadog's post-validation rewrite
+(`adapters/source/datadog/cli.py::_rewrite_dashboard_artifacts`) regenerates
 artifacts through `generate_dashboard_artifacts`, which rebuilds the IR the
 same way.
 
@@ -118,6 +144,36 @@ default `auto`, which prefers native when present) deploys that exact
 reviewed payload with `dashboards_api.upload_native_artifact()` -- no YAML
 re-mapping, and no legacy fallback, since there is nothing to silently
 re-derive a rejected native payload from.
+
+### Reading the IR artifact back
+
+`DashboardIR.from_dict()` (with `PanelIR.from_dict()`,
+`VisualIR.from_dict()`, `ControlIR.from_dict()`) is the inverse of
+`to_dict()` and therefore the import direction of
+`dashboards/ir/<stem>.ir.json`. Every in-repo tool that used to read the
+dashboard YAML off disk reads that artifact and rebuilds the IR through
+these classmethods, so the readers and the migration share one definition of
+what a dashboard is:
+
+| Reader | Reads | Uses |
+|---|---|---|
+| `core/telemetry_contract.py` | `ir/*.ir.json` | panel queries, controls, dashboard filters for the seed contract and schema-change report |
+| `targets/kibana/interaction_audit_local.py` | `ir/*.ir.json` | stable panel identities plus the `?param` binding gate |
+| `parity-rig/verifier/collectors.py` | `ir/*.ir.json` | the verifier's T2 tier |
+| `parity-rig/verifier/visual_regression.py` | `ir/*.ir.json` | Kibana-side panel discovery in canonical order |
+| `parity-rig/verifier/classifier.py` | `native/*.native.json` + `ir/*.ir.json` | artifact mtime for the `kibana_cache_stale` rule |
+| `core/telemetry_contract.py::count_declared_controls` | `native/*.native.json` | `mapping.controls` cross-check |
+
+`from_dict()` restores dashboard identity, `panels` (layout + presentation),
+`controls`, `filters` and `settings` -- everything `to_yaml_dict()` and those
+readers consume. It deliberately does not rehydrate the referenced asset
+collections (`alerts`/`annotations`/`links`/`transforms`) or a panel's
+embedded `QueryIR`: no artifact reader consumes them, and they are exported
+through `to_dict()` rather than through this path.
+
+Prefer `ir/` for semantic content (queries, titles, controls, filters) and
+`native/` for the typed API shape (`payload.panels[].grid`) and `mapping.*`
+counters.
 
 ## QueryIR vs TargetQueryContract vs TargetQueryPlan
 

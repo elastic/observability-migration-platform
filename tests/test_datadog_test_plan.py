@@ -1167,9 +1167,13 @@ class TestPromotionStubs(unittest.TestCase):
     def test_dashboard_result_has_paths(self):
         dr = DashboardResult(
             dashboard_id="1", dashboard_title="Test",
-            yaml_path="/tmp/test.yaml",
+            artifact_stem="test",
+            native_artifact_path="/tmp/native/test.native.json",
+            ir_artifact_path="/tmp/ir/test.ir.json",
         )
-        self.assertTrue(dr.yaml_path)
+        self.assertTrue(dr.artifact_stem)
+        self.assertTrue(dr.native_artifact_path)
+        self.assertTrue(dr.ir_artifact_path)
 
     def test_compile_path_set_after_compile(self):
         dr = DashboardResult(dashboard_id="1", dashboard_title="Test")

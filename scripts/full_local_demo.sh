@@ -212,7 +212,7 @@ else
   RUN_INPUT_DIR="$INPUT_DIR"
 fi
 
-DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"
+DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"
 RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"
 
 check_command docker
@@ -310,7 +310,7 @@ Full local demo completed.
 
 Artifacts:
   Migration output: $OUTPUT_DIR
-  Dashboard YAML:   $DASHBOARD_YAML_DIR
+  Dashboard artifacts: $DASHBOARD_ARTIFACT_DIR (native/, ir/)
   Run summary:      $RUN_SUMMARY
   Smoke report:     $OUTPUT_DIR/upload_smoke_report.json
   Browser audit:    $OUTPUT_DIR/browser_qa

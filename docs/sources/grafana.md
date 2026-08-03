@@ -76,11 +76,11 @@ end-to-end source pipeline in the repo.
 ```text
 rule packs/plugins/schema setup
   -> extract dashboards
-  -> translate_dashboard() (assemble DashboardIR; derive native + YAML)
-  -> optional metadata polish (rebuild DashboardIR; re-derive native + YAML)
-  -> optional emitted-query validation and YAML sync (same IR rebuild)
+  -> translate_dashboard() (assemble DashboardIR; derive native payload)
+  -> optional metadata polish (rebuild DashboardIR; re-derive native payload)
+  -> optional emitted-query validation and IR sync (same IR rebuild)
   -> persist native/IR review artifacts
-  -> YAML lint
+  -> optional (--compile/--legacy-import only) scratch YAML render + lint
   -> optional compile and layout validation
   -> optional upload (typed API prefers native_dashboard from IR)
   -> optional integrated smoke validation / browser audit / screenshot capture
@@ -93,11 +93,11 @@ rule packs/plugins/schema setup
 |---|---|---|
 | Setup | `cli.py`, `rules.py`, `schema.py` | Load rule packs/plugins, configure dataset filters, build `SchemaResolver`, discover fields when `--es-url` is present |
 | Extract | `extract.py` | Read dashboards from files or Grafana API |
-| Translate + emit | `panels.py`, `translate.py`, `promql.py` | Choose native `PROMQL`, rule-engine ES\|QL, LLM fallback, or native ES\|QL reuse; map panels; assemble `DashboardIR`; derive native Dashboards API payload + YAML |
+| Translate + emit | `panels.py`, `translate.py`, `promql.py` | Choose native `PROMQL`, rule-engine ES\|QL, LLM fallback, or native ES\|QL reuse; map panels; assemble `DashboardIR`; derive the native Dashboards API payload from it. No dashboard YAML is written |
 | Feature-gap extraction | `links.py`, `annotations.py`, `alerts.py`, `transforms.py` | Collect reviewer-facing artifacts for non-query surfaces |
 | Optional validate | `esql_validate.py` | Validate emitted target queries against Elasticsearch, auto-fix safe cases, and manualize broken ones |
 | Native/IR review artifacts | `targets/kibana/native_artifacts.py` | Persist `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`, and `dashboards/native/index.json` after final IR/native regeneration so review artifacts match an immediate upload |
-| Lint / compile / layout | `targets/kibana/compile.py` | Lint YAML; optional compile NDJSON and validate compiled layout |
+| Lint / compile / layout | `targets/kibana/compile.py` | Only with `--compile`/`--legacy-import`: render each dashboard's kb-dashboard YAML from its IR into a scratch directory, lint it, compile NDJSON, validate compiled layout, then delete the scratch directory |
 | Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Typed API upload prefers in-memory `native_dashboard` from IR; standalone `obs-migrate upload --artifact-dir` prefers the persisted native artifact when present, rejects mixed native/YAML artifact roots, and falls back to YAML only when native artifacts are absent or YAML is selected |
 | Optional integrated smoke | `cli.py`, `targets/kibana/smoke.py`, `smoke_integration.py` | Validate uploaded dashboards, optionally run browser audit / screenshots, then merge post-upload smoke results back into the migration evidence |
 | Verification + reporting | `verification.py`, `report.py`, `manifest.py`, `rollout.py` | Build semantic gates, save reports/manifests/verification packets, and generate rollout guidance |

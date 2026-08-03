@@ -9,9 +9,6 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field, fields, replace
-from pathlib import Path
-
-import yaml
 
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.operational import build_operational_ir
@@ -24,6 +21,7 @@ from observability_migration.core.reporting.report import (
     recompute_result_counts,
 )
 from observability_migration.core.verification.field_capabilities import assess_field_usage
+from observability_migration.targets.kibana.compile import write_dashboard_yaml
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
@@ -562,6 +560,14 @@ _PROMQL_LABEL_PRESERVING_AGG_FUNCS = frozenset({"topk", "bottomk"})
 _PROMQL_UNLABELED_FUNCS = frozenset({
     "absent", "absent_over_time", "pi", "scalar", "time", "vector",
 })
+
+# Warnings that are generated during per-target pre-translation of binary
+# expressions but become stale once _build_multi_target_series_query succeeds
+# (co-located STATS+EVAL fusion resolves them exactly).
+_STALE_AFTER_COLOCATED_FUSION = frozenset([
+    "Approximated PromQL arithmetic using same-bucket ES|QL math",
+    "PromQL series labels were not retained; output is bucket-level and may collapse multiple source series",
+])
 
 
 def _strip_wrapping_parentheses(expr):
@@ -3258,6 +3264,49 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             yaml_panel=yaml_panel,
         )
 
+    if rule_pack.panel_query_overrides and kibana_type:
+        _title_lower = (title or "").lower()
+        for _override in rule_pack.panel_query_overrides:
+            if _title_lower == (_override.get("title_match") or "").lower():
+                _curated_query = (_override.get("esql_query") or "").strip()
+                _status = _override.get("status_override") or "migrated"
+                if _curated_query and query_index:
+                    # Replace the hardcoded source index with the runtime index so
+                    # the override respects --datasource-index / --data-stream-name.
+                    _curated_query = re.sub(
+                        r"^(TS|FROM)\s+\S+",
+                        lambda m: f"{m.group(1)} {query_index}",
+                        _curated_query,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                if _curated_query:
+                    _override_warnings = []
+                    _esql_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
+                    _native_panel = _native_esql_panel_spec(
+                        _curated_query, kibana_type, mode=_esql_mode, warnings=_override_warnings
+                    )
+                    if _native_panel:
+                        yaml_panel["esql"] = _native_panel
+                        enrich_yaml_panel_display(yaml_panel, panel)
+                        _score = 1.0 if _status == "migrated" else 0.7
+                        _panel_result = PanelResult(
+                            title, panel_type, kibana_type, _status, _score,
+                            reasons=_override_warnings,
+                            promql_expr=_curated_query,
+                            esql_query=_curated_query,
+                        )
+                        return yaml_panel, _enrich_panel_result(
+                            _panel_result,
+                            panel=panel,
+                            datasource=datasource,
+                            query_language=query_language,
+                            notes=panel_notes,
+                            inventory=panel_inventory,
+                            yaml_panel=yaml_panel,
+                        )
+                break
+
     targets = panel.get("targets", [])
     value_aliases = _panel_value_aliases(panel)
     hide_unmapped_values = panel_type in {"table", "table-old"} and bool(value_aliases) and _panel_hides_unmapped_values(panel)
@@ -3512,6 +3561,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 else:
                     # Fall through to single-query merge with whatever fused.
                     merged_query = _build_multi_target_series_query(fused_series)
+                    _colocated_fusion = merged_query is not None
                     if merged_query is None:
                         merged_query = _merge_pretranslated_xy_queries(fused_series)
                     if merged_query:
@@ -3526,8 +3576,14 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         primary.output_group_fields = merged_query["group_fields"]
                         for warning in merged_query["warnings"]:
                             _append_unique(primary.warnings, warning)
+                        if _colocated_fusion:
+                            primary.warnings = [
+                                w for w in primary.warnings
+                                if w not in _STALE_AFTER_COLOCATED_FUSION
+                            ]
             else:
                 merged_query = _build_multi_target_series_query(fused_series)
+                _colocated_fusion = merged_query is not None
                 if merged_query is None:
                     # Formula-plan fusion can fail on complex OR-chain targets that
                     # each translate alone (MySQL Network Traffic). Fall back to
@@ -3545,6 +3601,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                     primary.output_group_fields = merged_query["group_fields"]
                     for warning in merged_query["warnings"]:
                         _append_unique(primary.warnings, warning)
+                    if _colocated_fusion:
+                        primary.warnings = [
+                            w for w in primary.warnings
+                            if w not in _STALE_AFTER_COLOCATED_FUSION
+                        ]
     if (
         len(targets_with_expr) > 1
         and len(fused_series) == 1
@@ -8747,8 +8808,22 @@ def _translate_panel_group(
     return yaml_panels, panel_results
 
 
-def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
+def translate_dashboard(dashboard, output_dir=None, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                         llm_endpoint="", llm_model="", llm_api_key="", output_stem=None):
+    """Translate one Grafana dashboard into a :class:`MigrationResult`.
+
+    Returns ``(result, yaml_path)``. The migration pipeline passes no
+    ``output_dir`` and gets ``yaml_path=None``: the artifacts it writes are
+    ``native/*.native.json`` and ``ir/*.ir.json``, both derived from
+    ``result.dashboard_ir``, and no dashboard YAML is written at all.
+
+    Passing ``output_dir`` additionally materializes the derived kb-dashboard
+    YAML document there and returns its path. That bridge exists for callers
+    that explicitly need the (deprecated) YAML document shape -- the structural
+    equivalence guards, and the ``kb-dashboard-cli`` compile / legacy ``_import``
+    path, which take a YAML *file*. It is always rendered from the same IR, so
+    it cannot drift from the native payload.
+    """
     rule_pack = rule_pack or RulePackConfig()
     title = dashboard.get("title", "Untitled Dashboard")
     uid = dashboard.get("uid", "unknown")
@@ -9070,18 +9145,15 @@ def translate_dashboard(dashboard, output_dir, datasource_index="metrics-*", esq
     dashboard_ir.tags = source_tags
     result.dashboard_ir = dashboard_ir
 
-    safe_name = output_stem or _dashboard_output_stem(title)
-    output_path = Path(output_dir) / f"{safe_name}.yaml"
-    exported_yaml_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
-    with open(output_path, "w") as f:
-        yaml.dump(exported_yaml_doc, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
-
     native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
     result.native_dashboard = native_dashboard
     native_counts_dict, native_reasons = native_counts.as_dicts()
     result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
 
-    return result, output_path
+    if output_dir is None:
+        return result, None
+    safe_name = output_stem or _dashboard_output_stem(title)
+    return result, write_dashboard_yaml(dashboard_ir, output_dir, safe_name)
 
 
 __all__ = [

@@ -57,6 +57,48 @@ class PanelIR:
         d["status"] = self.status.value
         return d
 
+    @classmethod
+    def from_dict(cls, raw: Any) -> PanelIR:
+        """Rebuild a :class:`PanelIR` tree from its :meth:`to_dict` form.
+
+        Inverse of :meth:`to_dict`, used to read back the on-disk
+        ``ir/<stem>.ir.json`` artifact. ``children`` and ``visual`` are
+        rehydrated recursively; the embedded :class:`QueryIR` is not, because
+        every artifact reader works from ``visual.presentation`` (the panel's
+        emitted query) and ``query`` duplicates translator bookkeeping that no
+        reader consumes. Anything not restored here still round-trips through
+        :meth:`to_dict` untouched.
+        """
+        raw = raw if isinstance(raw, dict) else {}
+        try:
+            status = AssetStatus(str(raw.get("status") or ""))
+        except ValueError:
+            status = AssetStatus.SKIPPED
+        children = [
+            cls.from_dict(child)
+            for child in (raw.get("children") or [])
+            if isinstance(child, dict)
+        ]
+        visual_raw = raw.get("visual")
+        metadata = raw.get("metadata")
+        source_extension = raw.get("source_extension")
+        return cls(
+            panel_id=str(raw.get("panel_id") or ""),
+            title=str(raw.get("title") or ""),
+            source_type=str(raw.get("source_type") or ""),
+            target_type=str(raw.get("target_type") or ""),
+            status=status,
+            kind=str(raw.get("kind") or "panel"),
+            hide_title=bool(raw.get("hide_title")),
+            collapsed=bool(raw.get("collapsed")),
+            children=children,
+            visual=VisualIR.from_dict(visual_raw) if isinstance(visual_raw, dict) else None,
+            warnings=[str(item) for item in (raw.get("warnings") or [])],
+            semantic_losses=[str(item) for item in (raw.get("semantic_losses") or [])],
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+            source_extension=dict(source_extension) if isinstance(source_extension, dict) else {},
+        )
+
     def to_yaml_panel_entry(self) -> dict[str, Any]:
         """Serialize back to one kb-dashboard-core ``panels[]`` entry.
 

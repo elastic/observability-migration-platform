@@ -1,9 +1,12 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import contextlib
 import importlib.util
+import io
 import os
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -67,6 +70,59 @@ class ValidatePanelQueriesScriptTests(unittest.TestCase):
         self.assertEqual(detail, "valid")
         self.assertEqual(rows, 0)
         es_request.assert_called_once_with("POST", "/_query", {"query": query})
+
+
+class EmptyCorpusIsFatalTests(unittest.TestCase):
+    """An empty corpus must never print VALIDATION PASSED.
+
+    ``broken_pct`` used to be ``0`` whenever the denominator was zero, and
+    ``0 > MAX_BROKEN_PCT`` is false, so a corpus with no panels reported a
+    clean pass and exited 0.
+    """
+
+    def test_broken_percentage_rejects_zero_denominator(self):
+        with self.assertRaises(validate_panel_queries.EmptyCorpusError) as ctx:
+            validate_panel_queries.broken_percentage(0, 0, 0)
+        self.assertIn("0 panels reached a verdict", str(ctx.exception))
+
+    def test_broken_percentage_computes_normally(self):
+        self.assertEqual(validate_panel_queries.broken_percentage(8, 2, 0), 20.0)
+
+    def test_main_fails_on_directory_without_yaml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = validate_panel_queries.main(
+                    [tmp, "--es-endpoint", "http://localhost:9200", "--api-key", "k"]
+                )
+            output = buf.getvalue()
+
+        self.assertEqual(rc, 1)
+        self.assertNotIn("VALIDATION PASSED", output)
+        self.assertIn("no panel queries discovered", output)
+        # The message must name the directory it searched.
+        self.assertIn(tmp, output)
+
+    def test_main_fails_when_yaml_has_no_queryable_panels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "dash.yaml").write_text(
+                "dashboards:\n"
+                "  - name: Empty\n"
+                "    panels:\n"
+                "      - markdown:\n"
+                "          content: nothing to validate\n",
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = validate_panel_queries.main(
+                    [tmp, "--es-endpoint", "http://localhost:9200", "--api-key", "k"]
+                )
+            output = buf.getvalue()
+
+        self.assertEqual(rc, 1)
+        self.assertNotIn("VALIDATION PASSED", output)
+        self.assertIn("no panel queries discovered", output)
 
 
 if __name__ == "__main__":

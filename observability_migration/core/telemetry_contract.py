@@ -6,13 +6,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import product
 from pathlib import Path
 from typing import Any
 
-import yaml
+from .assets.dashboard import DashboardIR
+
+LOG = logging.getLogger(__name__)
+
+# The migration's semantic IR export, written per dashboard next to the
+# native Dashboards API payload (``targets/kibana/native_artifacts.py``).
+# This is the contract's dashboard input: it carries every panel query,
+# control and dashboard filter, and unlike the YAML export it is not
+# scheduled for removal.
+_IR_ARTIFACT_DIRNAME = "ir"
+_IR_ARTIFACT_GLOB = "*.ir.json"
+# Artifact subdirectories a caller may hand us instead of the dashboards
+# artifact root; ``ir/`` is then a sibling rather than a child.
+_ARTIFACT_SUBDIRS = ("ir", "native", "yaml")
 
 _IDENT_RE = r"(?:`[^`]+`|[A-Za-z_][\w.-]*)"
 
@@ -706,19 +720,108 @@ def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
             info.pop("relationships", None)
 
 
-def _iter_artifact_queries(artifact_path: Path):
-    yaml_dir = artifact_path / "yaml"
-    if not yaml_dir.exists():
-        yaml_dir = artifact_path
-    for yaml_file in sorted(yaml_dir.glob("*.yaml")):
+def count_declared_controls(artifact_dir: str | Path) -> int:
+    """Count the dashboard controls the source declared, from the native payload.
+
+    Reads ``mapping.controls`` from ``native/*.native.json``, which the
+    migration writes per dashboard independently of the IR export. That
+    makes it a usable cross-check on the contract: a source that
+    declares controls must yield ``control_fields``, otherwise the
+    seeder emits data that matches no control selection while the
+    contract still looks healthy (``streams`` stays non-empty).
+
+    Returns 0 when there are no native artifacts to read — absence of
+    evidence must not be turned into an assertion.
+    """
+    artifact_path = Path(artifact_dir)
+    candidates = [artifact_path / "native"]
+    if artifact_path.name in _ARTIFACT_SUBDIRS:
+        candidates.append(artifact_path.parent / "native")
+    native_dir = next((path for path in candidates if path.is_dir()), None)
+    if native_dir is None:
+        return 0
+    total = 0
+    for native_file in sorted(native_dir.glob("*.native.json")):
         try:
-            payload = yaml.safe_load(yaml_file.read_text(encoding="utf-8")) or {}
+            payload = json.loads(native_file.read_text(encoding="utf-8"))
         except Exception:
             continue
-        yield from _iter_yaml_queries(payload, f"yaml:{yaml_file.name}")
+        mapping = payload.get("mapping") if isinstance(payload, dict) else None
+        declared = mapping.get("controls") if isinstance(mapping, dict) else None
+        if isinstance(declared, bool) or not isinstance(declared, int):
+            continue
+        total += max(0, declared)
+    return total
+
+
+def _resolve_ir_dir(artifact_path: Path, *, caller: str) -> Path:
+    """Locate the dashboard-IR directory for an artifact path.
+
+    Callers pass either the dashboards artifact root (which holds an
+    ``ir/`` subdirectory) or one of its artifact subdirectories -- most
+    often ``ir/`` itself, but ``yaml/``/``native/`` are accepted because
+    the CLI's ``--yaml-dir``/``--compiled-dir`` flags still point there.
+    The fallback to ``artifact_path`` is legitimate for the ``ir/`` shape.
+    It is *not* legitimate for anything else: an unconditional fallback
+    root-globs ``*.ir.json``, matches nothing, and warns nothing — so a
+    wrong path looks exactly like a dashboard with no queries. Warn
+    loudly instead; the caller may still find queries in
+    ``verification_packets.json``, so this is not fatal here.
+    """
+    ir_dir = artifact_path / _IR_ARTIFACT_DIRNAME
+    if ir_dir.is_dir():
+        return ir_dir
+    if artifact_path.name in _ARTIFACT_SUBDIRS:
+        sibling = artifact_path.parent / _IR_ARTIFACT_DIRNAME
+        if sibling.is_dir():
+            return sibling
+    if artifact_path.is_dir() and any(artifact_path.glob(_IR_ARTIFACT_GLOB)):
+        return artifact_path
+    LOG.warning(
+        "%s: no dashboard IR found for %s — neither %s (expected a "
+        "migration's ir/ directory) nor %s/%s matched. Falling back to "
+        "root-globbing %s, which will yield zero queries from the IR.",
+        caller,
+        artifact_path,
+        ir_dir,
+        artifact_path,
+        _IR_ARTIFACT_GLOB,
+        artifact_path,
+    )
+    return artifact_path
+
+
+def _iter_artifact_dashboards(artifact_path: Path, *, caller: str):
+    """Yield ``(source_label, dashboard_document)`` per IR artifact.
+
+    ``dashboard_document`` is the kb-dashboard-core ``{"dashboards": [...]}``
+    shape that :meth:`DashboardIR.to_yaml_dict` produces -- the same shape
+    the dashboard YAML carried, rebuilt straight from ``ir/*.ir.json`` so the
+    extractors below keep one input contract while the YAML export goes away.
+    """
+    ir_dir = _resolve_ir_dir(artifact_path, caller=caller)
+    for ir_file in sorted(ir_dir.glob(_IR_ARTIFACT_GLOB)):
+        try:
+            artifact = json.loads(ir_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(artifact, dict):
+            continue
+        dashboard_ir = artifact.get("dashboard_ir")
+        if not isinstance(dashboard_ir, dict):
+            continue
+        entry = DashboardIR.from_dict(dashboard_ir).to_yaml_dict()
+        yield f"ir:{ir_file.name}", {"dashboards": [entry]}
+
+
+def _iter_artifact_queries(artifact_path: Path):
+    for source, document in _iter_artifact_dashboards(
+        artifact_path, caller="_iter_artifact_queries"
+    ):
+        yield from _iter_dashboard_queries(document, source)
 
     packet_candidates = [artifact_path / "verification_packets.json"]
-    if artifact_path.name == "yaml":
+    if artifact_path.name in _ARTIFACT_SUBDIRS:
         packet_candidates.append(artifact_path.parent / "verification_packets.json")
     packets_path = next((path for path in packet_candidates if path.exists()), None)
     if packets_path is not None:
@@ -953,13 +1056,20 @@ def _expand_identifier_control_queries(
         yield rendered
 
 
-def _iter_yaml_queries(
+def _iter_dashboard_queries(
     node: Any,
     source: str,
     identifier_choices: Mapping[str, Sequence[str]] | None = None,
     skip_params: set[str] | None = None,
     param_defaults: Mapping[str, str] | None = None,
 ):
+    """Walk a kb-dashboard-core dashboard document and yield ``(query, source)``.
+
+    The document comes from :func:`_iter_artifact_dashboards`, i.e. from
+    ``ir/*.ir.json`` via :meth:`DashboardIR.to_yaml_dict`. The walk is
+    shape-driven rather than schema-driven so ``esql``/``lens`` presentation
+    blocks are found at any nesting depth (dashboard, section, panel).
+    """
     if isinstance(node, dict):
         controls = node.get("controls")
         scoped_choices = dict(identifier_choices or {})
@@ -988,7 +1098,7 @@ def _iter_yaml_queries(
         if lens_query:
             yield _substitute_non_field_esql_params(lens_query, scoped_defaults), source
         for value in node.values():
-            yield from _iter_yaml_queries(
+            yield from _iter_dashboard_queries(
                 value,
                 source,
                 scoped_choices,
@@ -997,7 +1107,7 @@ def _iter_yaml_queries(
             )
     elif isinstance(node, list):
         for item in node:
-            yield from _iter_yaml_queries(
+            yield from _iter_dashboard_queries(
                 item,
                 source,
                 identifier_choices,
@@ -2010,7 +2120,7 @@ def _decode_pseudo_value(value: str) -> str:
 
 def _iter_schema_change_rows(artifact_path: Path):
     packets_path = _resolve_packets_path(artifact_path)
-    yaml_panel_index = _build_yaml_panel_index(artifact_path)
+    ir_panel_index = _build_ir_panel_index(artifact_path)
     seen_keys: set[tuple[str, str]] = set()
     packet_entries: list[dict[str, Any]] = []
     if packets_path is not None:
@@ -2046,14 +2156,14 @@ def _iter_schema_change_rows(artifact_path: Path):
         target_dimensions = _extract_dimensions(target_query)
         target_stream = _query_index(target_query)
 
-        yaml_panel = yaml_panel_index.get(_panel_key(dashboard, panel)) or yaml_panel_index.get(
+        ir_panel = ir_panel_index.get(_panel_key(dashboard, panel)) or ir_panel_index.get(
             _panel_key("", panel)
         )
-        if yaml_panel is not None:
-            target_metrics |= yaml_panel["metrics"]
-            target_dimensions |= yaml_panel["dimensions"]
+        if ir_panel is not None:
+            target_metrics |= ir_panel["metrics"]
+            target_dimensions |= ir_panel["dimensions"]
             if not target_stream:
-                target_stream = yaml_panel["stream"]
+                target_stream = ir_panel["stream"]
 
         target_fields = sorted(target_metrics | target_dimensions)
         if not (source_fields or target_fields):
@@ -2067,24 +2177,24 @@ def _iter_schema_change_rows(artifact_path: Path):
             "target_fields": target_fields,
         }
 
-    for key, yaml_panel in yaml_panel_index.items():
+    for key, ir_panel in ir_panel_index.items():
         if key in seen_keys:
             continue
-        target_fields = sorted(yaml_panel["metrics"] | yaml_panel["dimensions"])
+        target_fields = sorted(ir_panel["metrics"] | ir_panel["dimensions"])
         if not target_fields:
             continue
         yield {
-            "dashboard": yaml_panel["dashboard"],
-            "panel": yaml_panel["panel"],
+            "dashboard": ir_panel["dashboard"],
+            "panel": ir_panel["panel"],
             "source_fields": [],
-            "target_stream": yaml_panel["stream"],
+            "target_stream": ir_panel["stream"],
             "target_fields": target_fields,
         }
 
 
 def _resolve_packets_path(artifact_path: Path) -> Path | None:
     candidates: list[Path] = [artifact_path / "verification_packets.json"]
-    if artifact_path.name == "yaml":
+    if artifact_path.name in _ARTIFACT_SUBDIRS:
         candidates.append(artifact_path.parent / "verification_packets.json")
     for path in candidates:
         if path.exists():
@@ -2092,16 +2202,18 @@ def _resolve_packets_path(artifact_path: Path) -> Path | None:
     return None
 
 
-def _build_yaml_panel_index(artifact_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    yaml_dir = artifact_path / "yaml"
-    if not yaml_dir.exists():
-        yaml_dir = artifact_path
+def _build_ir_panel_index(artifact_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """Index every panel's target metrics/dimensions/stream from the IR export.
+
+    Keyed on ``(dashboard title, panel title)`` so
+    :func:`_iter_schema_change_rows` can enrich a verification packet with the
+    fields the emitted query actually references, and can still emit a row for
+    a panel that has no packet at all.
+    """
     index: dict[tuple[str, str], dict[str, Any]] = {}
-    for yaml_file in sorted(yaml_dir.glob("*.yaml")):
-        try:
-            payload = yaml.safe_load(yaml_file.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
+    for _source, payload in _iter_artifact_dashboards(
+        artifact_path, caller="_build_ir_panel_index"
+    ):
         for dashboard in payload.get("dashboards", []) or []:
             dashboard_title = str(
                 dashboard.get("name") or dashboard.get("title") or ""
@@ -2265,6 +2377,7 @@ __all__ = [
     "build_combined_telemetry_contract",
     "build_schema_change_report",
     "build_telemetry_contract",
+    "count_declared_controls",
     "merge_metric_kind_overrides",
     "metric_kinds_from_field_caps",
     "metric_kinds_from_prometheus_metadata",

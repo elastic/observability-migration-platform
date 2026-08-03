@@ -345,7 +345,7 @@ class KibanaTargetAdapter(TargetAdapter):
 
     def _native_upload_file(
         self,
-        yaml_file: Path,
+        yaml_file: Path | None,
         out_dir: Path,
         data_views: list[dict[str, Any]],
         *,
@@ -357,16 +357,27 @@ class KibanaTargetAdapter(TargetAdapter):
         target_space: str,
         native_dashboard: Any = None,
         native_dashboard_stats: dict[str, Any] | None = None,
+        artifact_label: str = "",
     ) -> dict[str, Any]:
         """Deploy one dashboard via the typed Dashboards API with legacy fallback.
 
-        Rejected (and empty) dashboards degrade gracefully to the legacy
-        compile + ``_import`` path so nothing silently vanishes.
+        ``yaml_file`` is optional: the migration pipeline uploads the in-memory
+        ``native_dashboard`` payload and produces no YAML, so it passes ``None``
+        and an ``artifact_label`` (the artifact stem) for reporting. When a YAML
+        file *is* available -- an externally supplied YAML directory, or the
+        ``--legacy-import`` path -- an empty dashboard still degrades gracefully
+        to the legacy compile + ``_import`` path so nothing silently vanishes.
         """
         out_dir.mkdir(parents=True, exist_ok=True)
+        label = artifact_label or (yaml_file.name if yaml_file is not None else "(native payload)")
         fallback_state: dict[str, Any] = {"used": False, "count": 0, "success": True, "output": []}
 
         def _fallback(_path: str, dashboard: dict[str, Any] | None = None) -> tuple[bool, str]:
+            if yaml_file is None:
+                # Nothing to compile: there is no YAML representation of this
+                # dashboard on disk. Report the native status as-is rather than
+                # inventing one (mirrors how a "rejected" payload is terminal).
+                return False, "no YAML artifact available for the legacy compile fallback"
             fallback_state["used"] = True
             fallback_state["count"] = int(fallback_state["count"]) + 1
             fallback_yaml = yaml_file
@@ -420,10 +431,14 @@ class KibanaTargetAdapter(TargetAdapter):
                 # already handled above: report it and let the operator opt into
                 # --legacy-import deliberately.
                 print(
-                    f"    ✗ Dashboards API rejected the payload for {Path(yaml_file).name}; "
+                    f"    ✗ Dashboards API rejected the payload for {label}; "
                     "not falling back to the deprecated compiler. "
                     "Re-run with --legacy-import to use it explicitly."
                 )
+        elif yaml_file is None:
+            raise ValueError(
+                "_native_upload_file needs either a native_dashboard payload or a YAML file"
+            )
         else:
             results = dashboards_api.upload_yaml_files(
                 [str(yaml_file)],
@@ -438,7 +453,7 @@ class KibanaTargetAdapter(TargetAdapter):
         # dashboard with a dashboard payload, but older/mocked helpers may only
         # report the empty status. Route such files through legacy rather than
         # silently dropping them.
-        if not fallback_state["used"] and any(r.status == "empty" for r in results):
+        if not fallback_state["used"] and yaml_file is not None and any(r.status == "empty" for r in results):
             _fallback(str(yaml_file))
         mapped = sum(r.mapped for r in results)
         unmapped = sum(r.unmapped for r in results)
@@ -471,7 +486,7 @@ class KibanaTargetAdapter(TargetAdapter):
             ) or "no dashboards mapped"
 
         return {
-            "yaml_file": yaml_file.name,
+            "yaml_file": label,
             "success": success,
             "output": output,
             "space_id": space_id or target_space,
@@ -688,7 +703,7 @@ class KibanaTargetAdapter(TargetAdapter):
 
     def upload_dashboard(
         self,
-        yaml_path: str | Path,
+        yaml_path: str | Path | None,
         output_dir: str | Path,
         *,
         kibana_url: str,
@@ -698,7 +713,21 @@ class KibanaTargetAdapter(TargetAdapter):
         use_dashboards_api: bool = True,
         native_dashboard: Any = None,
         native_dashboard_stats: dict[str, Any] | None = None,
+        artifact_label: str = "",
     ) -> dict[str, Any]:
+        """Deploy one dashboard.
+
+        ``yaml_path`` may be ``None`` when ``native_dashboard`` is supplied: the
+        migration pipeline writes no YAML and uploads the typed payload it holds
+        in memory, passing ``artifact_label`` (the artifact stem) for reporting.
+        The legacy ``use_dashboards_api=False`` path compiles YAML through
+        kb-dashboard-cli and therefore still requires a real file.
+        """
+        if yaml_path is None and (native_dashboard is None or not use_dashboards_api):
+            raise ValueError(
+                "upload_dashboard requires a YAML file unless a native_dashboard "
+                "payload is uploaded through the typed Dashboards API"
+            )
         data_views = self._ensure_default_data_views(
             kibana_url,
             api_key=kibana_api_key,
@@ -710,7 +739,7 @@ class KibanaTargetAdapter(TargetAdapter):
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
         if use_dashboards_api:
             record = self._native_upload_file(
-                Path(yaml_path),
+                Path(yaml_path) if yaml_path is not None else None,
                 Path(output_dir),
                 data_views,
                 kibana_url=kibana_url,
@@ -721,6 +750,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 target_space=target_space,
                 native_dashboard=native_dashboard,
                 native_dashboard_stats=native_dashboard_stats,
+                artifact_label=artifact_label,
             )
             return {
                 "success": record["success"],

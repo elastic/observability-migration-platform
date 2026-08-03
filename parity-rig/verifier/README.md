@@ -8,12 +8,20 @@ A 5-tier verification framework for migrated Grafana → Kibana dashboards. For 
 | --- | --- | --- |
 | **T0** | `migration_report.json:panels[*].promql` | the original Grafana panel as authored |
 | **T1** | `migration_report.json:panels[*].esql` | what obs-migrate emitted |
-| **T2** | `<output>/yaml/<dash>.yaml` | the kb-dashboard-cli input |
+| **T2** | `<output>/ir/<dash>.ir.json` | the migration's semantic `DashboardIR` export, as emitted (`visual.presentation.config.query`) |
 | **T3** | `<output>/compiled/<dash>/compiled_dashboards.ndjson` | the kb-dashboard-cli output, ready for upload |
 | **T4** | `GET /api/saved_objects/dashboard/<id>` (or HAR walker fallback) | what Kibana stores as the saved object |
 | **T5** | live `POST /_query` response | what the cluster actually executes |
 
 T0 → T1 is expected to differ (different languages); the verifier only flags drift on `T1=T2`, `T2=T3`, `T3=T4`, `T4=T5`.
+
+T2 used to read `<output>/yaml/<dash>.yaml`. It now reads the IR export, which
+is the artifact the YAML was *derived* from (`DashboardIR.to_yaml_dict`), so
+`T1=T2` still measures the same thing: post-translator emitter transforms
+(composite-legend splice, synthetic gauge bounds) that
+`migration_report.json:esql` does not carry. The tier field in the JSON report
+is `tiers.t2_ir_esql`; `tiers.t2_yaml_esql` is still accepted when reading
+reports written before the move.
 
 ## Verdicts
 
@@ -68,7 +76,7 @@ obs-migrate verify-panels \
 
 The comparator uses a canonical form (stripped + collapsed whitespace) for the pairwise check. Two transforms are known and explicitly suppressed:
 
-- **Composite-legend splice** (T1 → T2): the YAML emitter adds `EVAL legend = CONCAT(...)` plus an extended `KEEP` clause that the translator's bare `migration_report.json:esql` does not have. Working as designed; not flagged.
+- **Composite-legend splice** (T1 → T2): the panel emitter adds `EVAL legend = CONCAT(...)` plus an extended `KEEP` clause that the translator's bare `migration_report.json:esql` does not have, before the query lands in the IR export. Working as designed; not flagged.
 
 To add another known transform, edit `_KNOWN_T1_T2_RIGHT_ONLY_PATTERNS` in `compare.py` with a short comment explaining the source of the transform.
 

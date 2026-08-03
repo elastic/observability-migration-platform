@@ -62,20 +62,22 @@ from observability_migration.targets.kibana.alerting import (
 _DOCS_URL = "https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md"
 
 _UPLOAD_SHAPE_HELP = (
-    "Accepted input shapes: a directory of .yaml files, a dashboard artifact "
-    "dir with a 'yaml/' child (for example "
-    "'migration_output/dashboards' or 'migration_output/dashboards/yaml'), "
-    "or that artifact dir's sibling 'compiled/' directory (for example "
-    "'migration_output/dashboards/compiled')."
+    "Accepted input shapes: a dashboard artifact dir with a 'native/' child "
+    "(for example 'migration_output/dashboards'), the 'native/' directory "
+    "itself, or -- for externally supplied or archived YAML -- a directory of "
+    ".yaml files, a dir with a 'yaml/' child, or that dir's sibling 'compiled/' "
+    "directory. 'obs-migrate migrate' writes native/ and ir/ artifacts; it does "
+    "not produce a 'yaml/' directory."
 )
 
 _UPLOAD_ARTIFACT_DIR_HELP = (
     "Canonical upload input: the dashboard artifact directory written by "
     "'obs-migrate migrate' (for example 'migration_output/dashboards'), or "
-    "directly its 'native/' or 'yaml/' child. Combine with --artifact-format "
-    "to pick a representation; the default 'auto' prefers reviewed native "
-    "Dashboard-as-Code artifacts ('native/*.native.json') when present, else "
-    f"falls back to YAML. {_UPLOAD_SHAPE_HELP}"
+    "directly its 'native/' child. Combine with --artifact-format to pick a "
+    "representation; the default 'auto' resolves to the reviewed native "
+    "Dashboard-as-Code artifacts ('native/*.native.json') a migration writes, "
+    "and falls back to YAML only for a directory that actually contains "
+    f".yaml files. {_UPLOAD_SHAPE_HELP}"
 )
 
 
@@ -380,10 +382,11 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_group.add_argument(
         "--compiled-dir",
         help="[Deprecated alias for --yaml-dir] Kept for backward compatibility. "
-             "May point at the dashboard artifact dir's sibling 'compiled/' directory "
-             "(for example 'migration_output/dashboards/compiled'). Despite the name, "
-             "this upload step recompiles YAML from the matching 'yaml/' directory; "
-             "it does not consume pre-compiled NDJSON.",
+             "May point at a 'compiled/' directory whose sibling 'yaml/' directory "
+             "holds the externally supplied YAML. Despite the name, this upload step "
+             "recompiles YAML from the matching 'yaml/' directory; it does not consume "
+             "pre-compiled NDJSON. A migration no longer writes 'yaml/', so this only "
+             "applies to a hand-written or archived YAML tree.",
     )
     upload_cmd.add_argument(
         "--artifact-format",
@@ -440,7 +443,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_cmd.add_argument(
         "--migration-out",
         required=True,
-        help="Per-dashboard obs-migrate output directory (contains migration_report.json, yaml/, compiled/).",
+        help="Per-dashboard obs-migrate output directory (contains migration_report.json, ir/, native/, and compiled/ when --compile ran).",
     )
     verify_cmd.add_argument("--kibana-url", default="", help="Kibana base URL (required for T4).")
     verify_cmd.add_argument("--es-url", default="", help="Elasticsearch base URL (required for T5).")
@@ -484,7 +487,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "state file for Kibana SAML auth.",
     )
     visual_cmd.add_argument("--migration-out", required=True,
-                            help="Per-dashboard migration output (contains yaml/, compiled/).")
+                            help="Per-dashboard migration output (contains ir/, native/, and compiled/ when --compile ran).")
     visual_cmd.add_argument("--grafana-url", default="http://localhost:23000",
                             help="Parity-rig Grafana base URL (default: http://localhost:23000).")
     visual_cmd.add_argument("--grafana-uid", required=True,
@@ -538,7 +541,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Build a human-readable source-to-target schema report (and, optionally, "
             "the telemetry producer contract JSON) from one or more migrated dashboard "
             "artifact directories. Each artifact dir is a per-source 'dashboards/' "
-            "output containing yaml/ and verification_packets.json (for example "
+            "output containing ir/ and verification_packets.json (for example "
             "'migration_output/dashboards'). Repeat --artifact-dir to merge multiple "
             "sources into one report."
         ),
@@ -548,7 +551,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="artifact_dir",
         action="append",
         required=True,
-        help="Migrated dashboard artifact directory (contains yaml/ and "
+        help="Migrated dashboard artifact directory (contains ir/ and "
              "verification_packets.json). Repeat to merge multiple sources.",
     )
     schema_report_cmd.add_argument(
@@ -675,7 +678,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     seed_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
-                          help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+                          help="Migrated dashboard artifact dir (contains ir/ and native/). Repeat to combine.")
     seed_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
                           help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
     seed_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
@@ -705,7 +708,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     remove_cmd.add_argument("--artifact-dir", dest="artifact_dir", action="append", required=True,
-                            help="Migrated dashboard artifact dir (contains yaml/). Repeat to combine.")
+                            help="Migrated dashboard artifact dir (contains ir/ and native/). Repeat to combine.")
     remove_cmd.add_argument("--es-url", default=os.getenv("ELASTICSEARCH_ENDPOINT", os.getenv("ES_URL", "")),
                             help="Elasticsearch URL (defaults to ELASTICSEARCH_ENDPOINT or ES_URL).")
     remove_cmd.add_argument("--api-key", default=os.getenv("KEY", ""), help="Elasticsearch API key (defaults to KEY).")
@@ -1474,13 +1477,12 @@ def _run_upload(args: Any) -> None:
         sys.exit(1)
     if not upload_payload["records"]:
         print(
-            f"No dashboard YAML files found under {input_dir}. "
-            "Point --yaml-dir (or --artifact-dir) at a directory of .yaml files, "
-            "a dashboard artifact dir containing 'yaml/' (e.g. "
-            "'migration_output/dashboards' or "
-            "'migration_output/dashboards/yaml'), or that dir's sibling "
-            "'compiled/' directory (e.g. "
-            "'migration_output/dashboards/compiled').",
+            f"No dashboard artifacts found under {input_dir}. "
+            "Point --artifact-dir at a migration's dashboard artifact dir (e.g. "
+            "'migration_output/dashboards', which holds native/ and ir/), or -- "
+            "for externally supplied YAML -- point --yaml-dir at a directory of "
+            ".yaml files, a dir containing 'yaml/', or that dir's sibling "
+            "'compiled/' directory.",
             file=sys.stderr,
         )
         sys.exit(1)

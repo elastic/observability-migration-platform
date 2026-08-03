@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import os
 import re
 import shlex
@@ -32,6 +34,41 @@ def _run_command(cmd, timeout, env=None):
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s: {shlex.join(str(part) for part in cmd)}"
     return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+
+
+def dashboard_yaml_text(dashboard_ir) -> str:
+    """Render one dashboard IR as a kb-dashboard YAML document.
+
+    The migration pipeline no longer writes YAML artifacts: ``native/`` and
+    ``ir/`` are the artifacts it produces. This renderer exists for the two
+    places that still need the (deprecated) kb-dashboard document shape --
+    ``kb-dashboard-cli compile`` / the legacy ``_import`` upload, which take a
+    YAML *file* path -- and for the structural equivalence guards that
+    cross-check the native payload against the YAML bridge. It is always
+    derived from :class:`DashboardIR`, so it cannot drift from the native
+    payload.
+    """
+    return yaml.dump(
+        {"dashboards": [dashboard_ir.to_yaml_dict()]},
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=120,
+    )
+
+
+def write_dashboard_yaml(dashboard_ir, output_dir, stem) -> Path:
+    """Materialize ``<output_dir>/<stem>.yaml`` from a dashboard IR.
+
+    Callers own the lifetime of ``output_dir``. The migration pipeline points
+    it at a scratch directory it deletes again, so a migration run leaves no
+    YAML behind (see docs/architecture/asset-model.md).
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{stem}.yaml"
+    path.write_text(dashboard_yaml_text(dashboard_ir), encoding="utf-8")
+    return path
 
 
 def compile_yaml(yaml_path, output_dir):
@@ -397,12 +434,99 @@ def _ensure_controls_for_emitted_params(dashboard, leaf_panels):
     return True
 
 
-def sync_result_queries_to_yaml(result, yaml_path):
-    payload = yaml.safe_load(Path(yaml_path).read_text()) or {}
-    dashboards = payload.get("dashboards") or []
-    if not dashboards:
+# The YAML document shape is a LOSSY carrier for a ``DashboardIR``: its schema
+# (``docs/dashboards/schema.json``) declares ``additionalProperties: false``, so
+# ``DashboardIR.to_yaml_dict()`` emits -- and ``from_yaml_dict()`` restores --
+# only the fields below. Rebuilding an IR from that document therefore resets
+# every *other* field to its dataclass default unless it is carried across
+# explicitly (see :func:`carry_over_non_yaml_ir_fields`).
+YAML_ROUND_TRIPPED_IR_FIELDS: frozenset[str] = frozenset(
+    {
+        "title",
+        "description",
+        "minimum_kibana_version",
+        "settings",
+        "panels",
+        "filters",
+        "controls",
+    }
+)
+
+# The complement: ``DashboardIR`` fields the YAML shape cannot express, which the
+# rebuild has to carry over from the pre-rebuild IR. Spelled out rather than
+# derived so the exhaustiveness guard in ``tests/test_migrate.py``
+# (``test_validate_stage_ir_rebuild_classifies_every_dashboard_ir_field``) fails
+# when a new IR field is left unclassified. The rebuild itself carries *any*
+# field outside :data:`YAML_ROUND_TRIPPED_IR_FIELDS`, so a newly added field is
+# never silently dropped while that classification is pending.
+IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD: frozenset[str] = frozenset(
+    {
+        "version",
+        "uid",
+        "source_adapter",
+        "source_file",
+        "folder",
+        "tags",
+        "alerts",
+        "annotations",
+        "links",
+        "transforms",
+        "metadata",
+        "source_extension",
+    }
+)
+
+# ``sync_result_queries_to_ir`` lives in shared target code but is only reached
+# from the Grafana pipeline today, so the rebuild needs a source adapter to name
+# when the IR under sync does not carry one. It is a *fallback*, never an
+# override -- see :func:`carry_over_non_yaml_ir_fields`.
+_REBUILD_FALLBACK_SOURCE_ADAPTER = "grafana"
+
+
+def carry_over_non_yaml_ir_fields(rebuilt, original, *, fallback_source_adapter=""):
+    """Copy every ``DashboardIR`` field the YAML document shape cannot carry.
+
+    Driven off ``dataclasses.fields(DashboardIR)`` instead of a hand-written copy
+    list: a field added to the IR is carried across automatically, so this cannot
+    quietly start losing data (dashboard ``tags`` -- which
+    ``dashboards_api.native_dashboard_from_ir`` reads straight off the IR and
+    uploads to Kibana -- were lost exactly that way). Values are deep-copied so
+    the pre- and post-rebuild IRs never alias each other.
+
+    ``source_adapter`` is handled deliberately rather than copied blind: the
+    original IR is authoritative, and ``fallback_source_adapter`` applies only
+    when it is empty.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    for ir_field in dataclasses.fields(DashboardIR):
+        name = ir_field.name
+        if name in YAML_ROUND_TRIPPED_IR_FIELDS or not hasattr(original, name):
+            continue
+        value = getattr(original, name)
+        if name == "source_adapter":
+            setattr(rebuilt, name, str(value or fallback_source_adapter))
+            continue
+        setattr(rebuilt, name, copy.deepcopy(value))
+    return rebuilt
+
+
+def sync_result_queries_to_ir(result):
+    """Fold post-validation query fixes back into ``result.dashboard_ir``.
+
+    Validation mutates ``panel_result.esql_query`` (auto-fixes) and can
+    manualize a panel into a markdown placeholder. Those fixes have to reach
+    the artifacts the run actually writes (``native/``, ``ir/``), so this walks
+    the dashboard document derived from the IR, applies the fixes to it, and
+    rebuilds both the IR and the native payload from the mutated document.
+
+    Previously this also rewrote the dashboard's ``yaml/`` file; the pipeline no
+    longer produces one, so nothing is written here.
+    """
+    dashboard_ir = getattr(result, "dashboard_ir", None)
+    if dashboard_ir is None:
         return False
-    dashboard = dashboards[0]
+    dashboard = dashboard_ir.to_yaml_dict()
     panels = dashboard.get("panels") or []
     leaf_panels = list(_iter_leaf_panels(panels))
     yaml_panel_results = getattr(result, "yaml_panel_results", None)
@@ -437,41 +561,52 @@ def sync_result_queries_to_yaml(result, yaml_path):
     if _ensure_controls_for_emitted_params(dashboard, leaf_panels):
         updated = True
     if updated:
-        if getattr(result, "native_dashboard", None) is not None or getattr(result, "dashboard_ir", None) is not None:
-            # Deferred import: dashboards_api.py imports kibana_url_for_space
-            # from this module, so a module-level import here would cycle.
-            # `DashboardIR` becomes the primary artifact from this point on:
-            # rebuild it from the same in-memory `dashboard` dict just
-            # mutated (post-validation fixes -- placeholder rewrites,
-            # corrected queries/indexes/controls) and derive both the native
-            # IR and the on-disk YAML *from that IR*, so neither one can
-            # drift from post-validation fixes or from each other.
-            from observability_migration.core.assets.dashboard import DashboardIR
-            from observability_migration.targets.kibana.dashboards_api import (
-                native_dashboard_from_ir,
-            )
-
-            dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
-            result.dashboard_ir = dashboard_ir
-            payload = {"dashboards": [dashboard_ir.to_yaml_dict()]}
-            native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
-            result.native_dashboard = native_dashboard
-            native_counts_dict, native_reasons = native_counts.as_dicts()
-            result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
-        Path(yaml_path).write_text(
-            yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+        # Deferred import: dashboards_api.py imports kibana_url_for_space
+        # from this module, so a module-level import here would cycle.
+        # `DashboardIR` is the primary artifact: rebuild it from the same
+        # in-memory `dashboard` dict just mutated (post-validation fixes --
+        # placeholder rewrites, corrected queries/indexes/controls) and derive
+        # the native payload *from that IR*, so the two artifacts the run
+        # writes cannot drift from post-validation fixes or from each other.
+        from observability_migration.core.assets.dashboard import DashboardIR
+        from observability_migration.targets.kibana.dashboards_api import (
+            native_dashboard_from_ir,
         )
+
+        # The YAML document is a lossy carrier (additionalProperties: false), so
+        # the rebuild alone would reset dashboard identity, lineage and the
+        # referenced asset collections to their defaults -- shipping the
+        # dashboard to Kibana with, for one, its `tags` stripped.
+        previous_ir = dashboard_ir
+        dashboard_ir = DashboardIR.from_yaml_dict(
+            dashboard, source_adapter=_REBUILD_FALLBACK_SOURCE_ADAPTER
+        )
+        carry_over_non_yaml_ir_fields(
+            dashboard_ir,
+            previous_ir,
+            fallback_source_adapter=_REBUILD_FALLBACK_SOURCE_ADAPTER,
+        )
+        result.dashboard_ir = dashboard_ir
+        native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
+        result.native_dashboard = native_dashboard
+        native_counts_dict, native_reasons = native_counts.as_dicts()
+        result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
     return updated
 
 
 __all__ = [
     "COMMAND_TIMEOUT_SECONDS",
+    "IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD",
+    "YAML_ROUND_TRIPPED_IR_FIELDS",
+    "carry_over_non_yaml_ir_fields",
     "compile_all",
     "compile_yaml",
+    "dashboard_yaml_text",
     "detect_space_id_from_kibana_url",
     "kibana_url_for_space",
     "lint_dashboard_yaml",
-    "sync_result_queries_to_yaml",
+    "sync_result_queries_to_ir",
     "upload_yaml",
     "validate_compiled_layout",
+    "write_dashboard_yaml",
 ]

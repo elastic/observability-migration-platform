@@ -381,7 +381,12 @@ def save_detailed_report(
             "compiled": dr.compiled,
             "compiled_path": dr.compiled_path,
             "compile_error": dr.compile_error,
-            "yaml_path": dr.yaml_path,
+            # Deprecated: migration no longer writes YAML. Mirrors
+            # ``native_artifact_path``; read that (or ``artifact_stem``) instead.
+            "yaml_path": dr.native_artifact_path,
+            "artifact_stem": dr.artifact_stem,
+            "native_artifact_path": dr.native_artifact_path,
+            "ir_artifact_path": dr.ir_artifact_path,
             "runtime_summary": dr.build_runtime_summary(),
             "validation": dr.validation_summary,
             "verification_summary": dr.verification_summary,

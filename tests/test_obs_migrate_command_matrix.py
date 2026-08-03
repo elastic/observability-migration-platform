@@ -30,6 +30,8 @@ from unittest.mock import patch
 
 from observability_migration.adapters.source.grafana import cli as grafana_cli
 from observability_migration.app import cli as app_cli
+from observability_migration.core.assets.dashboard import DashboardIR
+from observability_migration.targets.kibana.compile import dashboard_yaml_text
 
 # Keep in lockstep with ``obs-migrate --help`` positional choices.
 OBS_MIGRATE_SUBCOMMANDS = (
@@ -580,9 +582,10 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
             finally:
                 sys.argv = original
 
-            yaml_files = list((out_dir / "dashboards" / "yaml").glob("*.yaml"))
-            self.assertTrue(yaml_files, "expected migrated YAML")
-            text = yaml_files[0].read_text(encoding="utf-8")
+            ir_files = list((out_dir / "dashboards" / "ir").glob("*.ir.json"))
+            self.assertTrue(ir_files, "expected migrated IR artifacts")
+            artifact = json.loads(ir_files[0].read_text(encoding="utf-8"))
+            text = dashboard_yaml_text(DashboardIR.from_dict(artifact["dashboard_ir"]))
             # Concrete stream must appear for query targets.
             self.assertIn(CONCRETE_INDEX, text)
             # Native PROMQL must not keep the broad data-view as PROMQL index.

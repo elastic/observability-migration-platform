@@ -99,7 +99,7 @@ against the schema, and is the fixture the live render audit uploads.
 | Gate | Module | Proves | Run |
 |---|---|---|---|
 | Fidelity ratchet | `verifier.scorecard` | Layer-9 invariant ERROR counts don't regress vs a committed baseline | `tests/e2e/test_fidelity_ratchet.py` |
-| Kibana-schema gate | `tests/e2e/test_kibana_schema_gate.py` | emitted YAML validates against the vendored `DashboardConfig` schema (`docs/dashboards/schema.json`) via `jsonschema` | e2e |
+| Kibana-schema gate | `tests/e2e/test_kibana_schema_gate.py` | the document rebuilt from each run's `ir/*.ir.json` validates against the vendored `DashboardConfig` schema (`docs/dashboards/schema.json`) via `jsonschema` | e2e |
 | Invariant linter | `verifier.invariants` | broken Lens accessors, merged series, dropped placeholders (Layer-9) | used by the matrices + scorecard |
 | Mutation self-test | `verifier.mutations` | the invariant verifier catches deliberate corruptions | `tests/test_verifier_mutations.py` |
 
@@ -312,7 +312,9 @@ contract is documented below. It is Playwright-driven, requires Elastic Stack
   `cluster + job`).
 - **Two-pass local flow** (`scripts/run_interaction_audit_local.sh`): optional
   bootstrap migrate → live-schema migrate + native upload → seed telemetry from
-  the final YAML contract → YAML/schema lint (+ optional live ES\|QL) → resolve
+  the final IR contract (`dashboards/ir/*.ir.json`) → artifact lint
+  (`lint_migration_artifacts`: IR panel identities + the `?param`/`??param`
+  binding gate) (+ optional live ES\|QL) → resolve
   runtime panel contract → Playwright scenario. The script never starts Docker;
   the caller owns stack lifecycle (same compose file as the render audit).
 - **Evidence:** request/panel correlation on ES\|QL traffic, deterministic settle

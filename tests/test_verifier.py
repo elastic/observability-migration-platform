@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VERIFIER_PARENT = ROOT / "parity-rig"
 sys.path.insert(0, str(VERIFIER_PARENT))
 
+from conftest import write_dashboard_ir_artifact  # noqa: E402
 from verifier import cli as verifier_cli  # noqa: E402
 from verifier import collectors, compare  # noqa: E402
 from verifier.records import DRIFT_AXES, PanelRecord, Verdict  # noqa: E402
@@ -71,6 +72,45 @@ def test_scope_report_to_panels_drops_dashboards_with_no_sampled_panels() -> Non
     report = _build_migration_report([{"title": "A"}, {"title": "B"}])
     scoped = verifier_cli._scope_report_to_panels(report, {("Other", "A")})
     assert scoped["dashboards"] == []
+
+
+def test_load_compiled_panels_reads_compiled_dashboards_ndjson(tmp_path) -> None:
+    compiled = tmp_path / "my_dash"
+    compiled.mkdir(parents=True)
+    panels_json = json.dumps([
+        {
+            "panelIndex": "1",
+            "type": "lens",
+            "embeddableConfig": {
+                "attributes": {
+                    "title": "A",
+                    "state": {"query": {"esql": "FROM metrics-* | LIMIT 1"}},
+                }
+            },
+        }
+    ])
+    (compiled / "compiled_dashboards.ndjson").write_text(
+        json.dumps({"type": "dashboard", "attributes": {"panelsJSON": panels_json}})
+        + "\n"
+    )
+    assert verifier_cli._load_compiled_panels(tmp_path) == {
+        "A": "FROM metrics-* | LIMIT 1"
+    }
+
+
+def test_load_compiled_panels_ignores_legacy_yaml_ndjson(tmp_path) -> None:
+    """``yaml.ndjson`` is no longer a compiled-NDJSON source.
+
+    It was the last reader of that filename anywhere in the repo, and nothing
+    writes it, so the branch could only ever mask a missing
+    ``compiled_dashboards.ndjson`` with stale input.
+    """
+    compiled = tmp_path / "my_dash"
+    compiled.mkdir(parents=True)
+    (compiled / "yaml.ndjson").write_text(
+        json.dumps({"type": "dashboard", "attributes": {"panelsJSON": "[]"}}) + "\n"
+    )
+    assert verifier_cli._load_compiled_panels(tmp_path) == {}
 
 
 # --------------------------------------------------------------------- #
@@ -168,58 +208,84 @@ class TestMigrationReportCollector:
 
 
 # --------------------------------------------------------------------- #
-# Collectors — YAML
+# Collectors — IR export (T2)
 # --------------------------------------------------------------------- #
 
 
-class TestYamlCollector:
-    def test_load_yaml_panels_extracts_esql_query(self, tmp_path):
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "dash.yaml").write_text(
-            """
-dashboards:
-- name: Dash
-  panels:
-  - title: section-1
-    section:
-      panels:
-      - title: A
-        esql:
-          query: "FROM metrics-* | STATS x = COUNT(*)"
-      - title: B
-        markdown:
-          content: "Migration Required"
-""".strip()
+class TestIrCollector:
+    """T2 is sourced from ``ir/*.ir.json``, not the dashboard YAML.
+
+    The IR's ``visual.presentation.config.query`` is the same string the YAML
+    export carried in ``esql.query`` (the YAML is derived from the IR), so
+    these assertions are the pre-port ones with the artifact swapped.
+    """
+
+    def test_load_ir_panels_extracts_esql_query(self, tmp_path):
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "Dash",
+                "panels": [
+                    {
+                        "title": "section-1",
+                        "section": {
+                            "panels": [
+                                {
+                                    "title": "A",
+                                    "esql": {
+                                        "query": "FROM metrics-* | STATS x = COUNT(*)"
+                                    },
+                                },
+                                {
+                                    "title": "B",
+                                    "markdown": {"content": "Migration Required"},
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
         )
-        out = collectors.load_yaml_panels(yaml_dir)
+        out = collectors.load_ir_panels(tmp_path / "ir")
         assert out["A"].startswith("FROM metrics-*")
         # markdown panels yield an empty query (still mapped, so we know
         # they exist).
         assert out["B"] == ""
 
-    def test_load_yaml_panels_handles_nested_sections(self, tmp_path):
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "nested.yaml").write_text(
-            """
-dashboards:
-- name: D
-  panels:
-  - title: outer
-    section:
-      panels:
-      - title: inner-section
-        section:
-          panels:
-          - title: deep
-            esql:
-              query: "TS metrics-*"
-""".strip()
+    def test_load_ir_panels_handles_nested_sections(self, tmp_path):
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "D",
+                "panels": [
+                    {
+                        "title": "outer",
+                        "section": {
+                            "panels": [
+                                {
+                                    "title": "inner-section",
+                                    "section": {
+                                        "panels": [
+                                            {
+                                                "title": "deep",
+                                                "esql": {"query": "TS metrics-*"},
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+            stem="nested",
         )
-        out = collectors.load_yaml_panels(yaml_dir)
+        out = collectors.load_ir_panels(tmp_path / "ir")
         assert "deep" in out
         assert out["deep"] == "TS metrics-*"
+
+    def test_load_ir_panels_returns_empty_when_no_artifacts(self, tmp_path):
+        assert collectors.load_ir_panels(tmp_path / "ir") == {}
 
 
 # --------------------------------------------------------------------- #
@@ -377,7 +443,7 @@ class TestCompare:
         esql = "FROM metrics-* | LIMIT 1"
         record = _make_record(
             t1_translator_esql=esql,
-            t2_yaml_esql=esql,
+            t2_ir_esql=esql,
             t3_ndjson_esql=esql,
             t4_cluster_esql=esql,
             t5_live_query_body=esql,
@@ -393,7 +459,7 @@ class TestCompare:
             + "\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85"
         )
         record = _make_record(
-            t1_translator_esql=t1, t2_yaml_esql=t2, t3_ndjson_esql=t2, t4_cluster_esql=t2,
+            t1_translator_esql=t1, t2_ir_esql=t2, t3_ndjson_esql=t2, t4_cluster_esql=t2,
         )
         compare.compare_panel_record(record)
         assert "T1=T2" not in record.drift_axes, (
@@ -412,7 +478,7 @@ class TestCompare:
             "| EVAL legend = CONCAT(COALESCE(method, \"\"), \" - \", COALESCE(status, \"\"))\n"
             "| KEEP step, value, method, legend"
         )
-        record = _make_record(t1_translator_esql=t1, t2_yaml_esql=t2, t3_ndjson_esql=t2, t4_cluster_esql=t2)
+        record = _make_record(t1_translator_esql=t1, t2_ir_esql=t2, t3_ndjson_esql=t2, t4_cluster_esql=t2)
         compare.compare_panel_record(record)
         assert "T1=T2" not in record.drift_axes, (
             f"composite-legend splice should NOT count as drift; got: {record.drift_axes}"
@@ -421,7 +487,7 @@ class TestCompare:
     def test_real_canonical_mismatch_reported_as_drift(self):
         record = _make_record(
             t1_translator_esql="FROM metrics-* | LIMIT 1",
-            t2_yaml_esql="FROM other-index | LIMIT 1",
+            t2_ir_esql="FROM other-index | LIMIT 1",
             t3_ndjson_esql="FROM other-index | LIMIT 1",
             t4_cluster_esql="FROM other-index | LIMIT 1",
         )
@@ -444,7 +510,7 @@ class TestCompare:
         esql = "FROM metrics-* | LIMIT 1"
         record = _make_record(
             t1_translator_esql=esql,
-            t2_yaml_esql=esql,
+            t2_ir_esql=esql,
             t3_ndjson_esql=esql,
             t4_cluster_esql=esql,
             t5_live_query_body=esql,
@@ -458,7 +524,7 @@ class TestCompare:
         esql = "FROM metrics-* | LIMIT 1"
         record = _make_record(
             t1_translator_esql=esql,
-            t2_yaml_esql=esql,
+            t2_ir_esql=esql,
             t3_ndjson_esql="",
             t4_cluster_esql="",
         )
@@ -469,7 +535,7 @@ class TestCompare:
         record = _make_record(
             t0_source_promql="rate(foo[5m])",
             t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
-            t2_yaml_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
+            t2_ir_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
             t3_ndjson_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
             t4_cluster_esql="TS metrics-* | STATS x = AVG(RATE(foo))",
         )

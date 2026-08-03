@@ -62,6 +62,16 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
 
+Every gate that measures a *percentage* of discovered panels is fail-closed on
+an empty corpus: zero discovered panels exits non-zero instead of reporting a
+vacuous 0%/`captured=0` pass. This applies to `verifier.visual_regression`
+(exits `2`; also raised via `obs-migrate verify-visual`),
+`scripts/validate_panel_queries.py`, and
+`scripts/validate_panels_from_artifacts.py`
+(both exit `1` and name the directory/globs they searched). Treat a
+"nothing to measure" exit as a broken input — an un-run migration or a wrong
+`--migration-out` / `E2E_ROOT` — not as a gate failure to be suppressed.
+
 Offline coverage gates (no cluster, every PR) live in the unit suite, not
 `verifier/`: `tests/core/coverage/test_supported_types.py` cross-checks the
 supported-type registry (`observability_migration/core/coverage/supported_types.py`)
@@ -345,11 +355,29 @@ Dashboards API bundle while the API remains technical preview, because the
 standard Kibana bundle may contain redirect-only shells.
 
 Dashboard YAML lint and compiled-layout validation run automatically inside
-`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+`obs-migrate compile` and inside `migrate --compile`/`--legacy-import` (which
+render the YAML into a scratch directory they delete afterwards -- a migration
+writes no `yaml/` directory). To run them ad hoc, call the in-process modules:
 
 ```python
+# Render the deprecated YAML document from a run's IR artifacts first, since the
+# migration does not write one.
+import json
+from pathlib import Path
+from observability_migration.core.assets.dashboard import DashboardIR
+from observability_migration.targets.kibana.compile import write_dashboard_yaml
+
+yaml_dir = Path("/tmp/yaml-lint-input")
+for artifact in sorted(Path("migration_output/dashboards/ir").glob("*.ir.json")):
+    payload = json.loads(artifact.read_text())
+    write_dashboard_yaml(
+        DashboardIR.from_dict(payload["dashboard_ir"]),
+        yaml_dir,
+        artifact.name[: -len(".ir.json")],
+    )
+
 from observability_migration.targets.kibana.lint import lint_dashboard_yaml
-ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+ok, output = lint_dashboard_yaml(str(yaml_dir))
 
 from observability_migration.targets.kibana.layout import validate_compiled_layout
 ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
@@ -357,6 +385,18 @@ ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
 
 The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
 `elastic-observability-migration[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
+
+`lint_dashboard_yaml` belongs to the deprecated YAML compile path. The
+artifact-oriented equivalent, used by the interaction audit, reads the IR
+export instead and keeps the `?param`/`??param` binding gate (issues #131 /
+#282):
+
+```python
+from observability_migration.targets.kibana.interaction_audit_local import (
+    lint_migration_artifacts,
+)
+lint_migration_artifacts(Path("migration_output/dashboards"))
+```
 
 ### Data Setup
 
@@ -388,8 +428,8 @@ Keep the per-source stream layout the operator doc recommends under
 Datadog, `logs-generic-default` shared. Mixing Prometheus-style labels and
 Datadog/ECS field objects in one stream produces mapping conflicts.
 
-The common setup script discovers YAML and verification packets from each
-artifact root. Useful flags:
+The common setup script discovers dashboard IR artifacts (`ir/*.ir.json`) and
+verification packets from each artifact root. Useful flags:
 
 | Flag | Meaning |
 |---|---|

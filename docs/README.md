@@ -43,7 +43,7 @@ setup and PR expectations.
 | `contributing/import-paths.md` | You need the canonical Python import paths |
 | `contributing/add-source.md` | You are adding a new source adapter |
 | `contributing/add-asset-type.md` | You are adding a new shared asset type |
-| `dashboards/README.md` | You want the dashboard YAML schema, lint, and layout validation tooling |
+| `dashboards/README.md` | You want the (deprecated) dashboard YAML schema, lint, and layout validation tooling that `obs-migrate compile` and `--legacy-import` still consume |
 | `../scripts/README.md` | You want an inventory of repo-maintained helper scripts and where they fit |
 
 ### Testing And Verification

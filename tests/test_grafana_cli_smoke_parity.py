@@ -13,7 +13,9 @@ from unittest import mock
 
 from observability_migration.adapters.source.grafana import alert_pipeline as grafana_alert_pipeline
 from observability_migration.adapters.source.grafana import cli as grafana_cli
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.reporting.report import MigrationResult, PanelResult
+from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 
 
 class GrafanaCliSmokeParityTests(unittest.TestCase):
@@ -318,6 +320,25 @@ class GrafanaAlertSpaceSelectionTests(unittest.TestCase):
         self.assertEqual(mock_create.call_args.kwargs["space_id"], "shadow")
 
 
+def _fake_migration_result(dashboard):
+    """A translated result carrying the IR the pipeline derives artifacts from.
+
+    ``translate_dashboard`` writes no YAML; downstream stages render the
+    transient compile input from ``result.dashboard_ir``, so a stub has to carry
+    one.
+    """
+    result = MigrationResult(dashboard["title"], dashboard["uid"])
+    result.dashboard_ir = DashboardIR(
+        title=dashboard["title"],
+        uid=dashboard["uid"],
+        source_adapter="grafana",
+    )
+    result.native_dashboard, counts = native_dashboard_from_ir(result.dashboard_ir)
+    counts_dict, reasons = counts.as_dicts()
+    result.native_dashboard_stats = {**counts_dict, "reasons": reasons}
+    return result
+
+
 class GrafanaAssetIsolationTests(unittest.TestCase):
     def test_dashboards_only_clears_stale_dashboard_yaml_before_compile(self):
         rule_pack = SimpleNamespace(
@@ -339,10 +360,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "current-dashboard.yaml"
-            yaml_path.write_text("dashboard: current\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         compiled_yaml_names = []
 
@@ -455,7 +474,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                     ]
                 )
 
-        self.assertEqual(compiled_yaml_names, ["current-dashboard.yaml"])
+        self.assertEqual(compiled_yaml_names, ["current_dashboard.yaml"])
 
     def test_default_native_path_skips_kb_dashboard_cli_compile(self):
         """Without --compile/--legacy-import, the [5/7] step must not invoke the
@@ -480,10 +499,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "current-dashboard.yaml"
-            yaml_path.write_text("dashboard: current\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
@@ -820,19 +837,17 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "demo-dashboard.yaml"
-            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo-dashboard"
+            compiled_leaf = compiled_dir / "demo_dashboard"
             compiled_leaf.mkdir(parents=True, exist_ok=True)
             (compiled_leaf / "compiled_dashboards.ndjson").write_text(
                 "{}\n",
                 encoding="utf-8",
             )
-            return [("demo-dashboard.yaml", True, "")]
+            return [("demo_dashboard.yaml", True, "")]
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli,
@@ -932,8 +947,9 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             run_summary = json.loads(
                 (Path(tmpdir) / "run_summary.json").read_text(encoding="utf-8")
             )
-            yaml_output_path = Path(tmpdir) / "dashboards" / "yaml" / "demo-dashboard.yaml"
-            yaml_output_exists = yaml_output_path.exists()
+            dashboards_dir = Path(tmpdir) / "dashboards"
+            yaml_output_exists = (dashboards_dir / "yaml").exists()
+            native_artifacts = sorted((dashboards_dir / "native").glob("*.native.json"))
 
         self.assertEqual(run_summary["requested_assets"], "dashboards")
         self.assertEqual(run_summary["ran"], {"dashboards": True, "alerts": False})
@@ -945,7 +961,10 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         # machine-readable run summary so an offline/unverified run is auditable.
         self.assertTrue(run_summary["dashboards"]["field_discovery"]["otel_fallback"])
         self.assertEqual(run_summary["dashboards"]["field_discovery"]["status"], "offline")
-        self.assertTrue(yaml_output_exists)
+        # Dashboard artifacts land under dashboards/native + dashboards/ir; a
+        # migration never writes a yaml/ directory.
+        self.assertFalse(yaml_output_exists)
+        self.assertEqual([path.name for path in native_artifacts], ["demo_dashboard.native.json"])
 
     def test_dashboards_only_writes_markdown_summary(self):
         rule_pack = SimpleNamespace(
@@ -967,10 +986,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "demo-dashboard.yaml"
-            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         def _fake_compile_all(_yaml_dir, compiled_dir):
             compiled_leaf = compiled_dir / "demo-dashboard"
@@ -1059,10 +1076,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "demo-dashboard.yaml"
-            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         def _fake_compile_all(_yaml_dir, compiled_dir):
             compiled_leaf = compiled_dir / "demo-dashboard"
@@ -1149,10 +1164,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "demo-dashboard.yaml"
-            yaml_path.write_text("dashboard: true\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         def _fake_compile_all(_yaml_dir, compiled_dir):
             compiled_leaf = compiled_dir / "demo-dashboard"
@@ -1246,13 +1259,11 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "kibana_url": "https://kibana.example/s/shadow",
         }
 
-        def _fake_translate_dashboard(dashboard, yaml_dir, **_kwargs):
-            yaml_path = yaml_dir / "demo-dashboard.yaml"
-            yaml_path.write_text("dashboards: []\n", encoding="utf-8")
-            return MigrationResult(dashboard["title"], dashboard["uid"]), yaml_path
+        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
+            return _fake_migration_result(dashboard), None
 
         def _fake_compile_all(_yaml_dir, _compiled_dir):
-            return [("demo-dashboard.yaml", False, "legacy compile failed")]
+            return [("demo_dashboard.yaml", False, "legacy compile failed")]
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli,
@@ -1360,17 +1371,21 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 ]
             )
 
-            yaml_path = Path(tmpdir) / "dashboards" / "yaml" / "demo-dashboard.yaml"
-            compiled_dir = Path(tmpdir) / "dashboards" / "compiled" / "demo-dashboard"
+            compiled_dir = Path(tmpdir) / "dashboards" / "compiled" / "demo_dashboard"
 
+        # The native path uploads the in-memory payload: no YAML file exists, so
+        # the adapter is handed None plus the artifact stem for reporting.
         adapter.upload_dashboard.assert_called_once_with(
-            yaml_path,
+            None,
             compiled_dir,
+            artifact_label="demo_dashboard",
             kibana_url="https://kibana.example",
             space_id="shadow",
             kibana_api_key="secret",
             verify=True,
             use_dashboards_api=True,
+            native_dashboard=mock.ANY,
+            native_dashboard_stats=mock.ANY,
         )
 
     def test_lint_failure_skips_only_failing_yaml_before_compile(self):
@@ -1465,25 +1480,21 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         }
 
     def test_exception_in_translate_returns_stub_result(self):
-        import tempfile
-        from pathlib import Path
         from unittest.mock import patch
 
         dashboard = self._make_minimal_dashboard("Exploding Dashboard")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch(
-                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
-                side_effect=RuntimeError("simulated crash"),
-            ):
-                result, yaml_path = grafana_cli._translate_dashboard_resilient(
-                    dashboard,
-                    Path(tmpdir),
-                    datasource_index="metrics-*",
-                    esql_index="metrics-*",
-                    rule_pack=None,
-                    resolver=None,
-                )
+        with patch(
+            "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+            side_effect=RuntimeError("simulated crash"),
+        ):
+            result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                dashboard,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=None,
+                resolver=None,
+            )
 
         self.assertIsNone(yaml_path)
         self.assertEqual(result.dashboard_title, "Exploding Dashboard")
@@ -1491,30 +1502,26 @@ class TestTranslateDashboardResilient(unittest.TestCase):
         self.assertEqual(result.migrated, 0)
 
     def test_success_passes_through_unchanged(self):
-        import tempfile
-        from pathlib import Path
         from unittest.mock import patch
 
         dashboard = self._make_minimal_dashboard("Good Dashboard")
         fake_result = MigrationResult(dashboard_title="Good Dashboard", dashboard_uid="abc123")
-        fake_path = Path("/tmp/good.yaml")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch(
-                "observability_migration.adapters.source.grafana.cli.translate_dashboard",
-                return_value=(fake_result, fake_path),
-            ):
-                result, yaml_path = grafana_cli._translate_dashboard_resilient(
-                    dashboard,
-                    Path(tmpdir),
-                    datasource_index="metrics-*",
-                    esql_index="metrics-*",
-                    rule_pack=None,
-                    resolver=None,
-                )
+        with patch(
+            "observability_migration.adapters.source.grafana.cli.translate_dashboard",
+            return_value=(fake_result, None),
+        ):
+            result, yaml_path = grafana_cli._translate_dashboard_resilient(
+                dashboard,
+                datasource_index="metrics-*",
+                esql_index="metrics-*",
+                rule_pack=None,
+                resolver=None,
+            )
 
         self.assertEqual(result, fake_result)
-        self.assertEqual(yaml_path, fake_path)
+        # Translation writes no YAML, so there is no path to pass through.
+        self.assertIsNone(yaml_path)
 
     def test_stub_result_does_not_crash_yaml_path_lookups(self):
         """Stub results from failed translation must not crash any code that iterates dashboard_outputs."""

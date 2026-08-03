@@ -5,6 +5,4 @@ chart_type: line
 dimension: time_bucket
 metrics: ['Memory_usage_in']
 axis_title: MEMORY
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 warning: Applied Grafana transformation 'calculateField' as ES|QL rewrite

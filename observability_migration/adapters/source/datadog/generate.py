@@ -30,6 +30,7 @@ from observability_migration.targets.kibana.emit.layout import (
     apply_style_guide_layout,
 )
 
+from .curated_packs import load_curated_pack
 from .display import enrich_panel_display
 from .field_map import FieldMapProfile
 from .models import (
@@ -76,6 +77,136 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
     "_dd_widget_id",
     "_markdown_role",
 )
+
+
+PANEL_PRESENTATION_KINDS = ("markdown", "esql", "lens", "links", "image")
+
+
+def _panel_presentation_kind(panel: dict[str, Any]) -> str:
+    """Return a leaf panel's presentation block key (``markdown``, ``esql``, ...).
+
+    Curated packs select notes by kind rather than title because emitted note
+    titles are generated (``Datadog note <widget id>`` / ``Datadog note <ordinal>``)
+    and are therefore not stable pack keys.
+    """
+    for kind in PANEL_PRESENTATION_KINDS:
+        if kind in panel:
+            return kind
+    return ""
+
+
+def _curated_spec_candidates(
+    sec_panels: list[dict[str, Any]],
+    layout_entry: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Leaf panels a curated pack spec selects, in section order (before ``nth``).
+
+    A spec constrains the leaf title when ``title`` is given and non-empty, and
+    the presentation kind when ``kind`` is given; an omitted selector matches
+    anything, so ``kind: markdown`` + ``nth: 1`` means "the second markdown panel
+    in this section" regardless of its generated title.
+    """
+    want_title = str(layout_entry.get("title", "") or "")
+    want_kind = str(layout_entry.get("kind", "") or "")
+    candidates: list[dict[str, Any]] = []
+    for leaf in _iter_leaf_panels(sec_panels):
+        if want_title and leaf.get("title", "") != want_title:
+            continue
+        if want_kind and _panel_presentation_kind(leaf) != want_kind:
+            continue
+        candidates.append(leaf)
+    return candidates
+
+
+def _warn_uncovered_curated_panels(
+    dashboard_name: str,
+    section_title: str,
+    sec_panels: list[dict[str, Any]],
+    covered: set[int],
+    title_to_result: dict[str, TranslationResult],
+) -> list[str]:
+    """Report and self-heal a curated section that left panels unpositioned.
+
+    A curated pack only moves the panels its specs match. When a spec stops
+    matching (emitted titles changed, a widget was added upstream), the leftover
+    panels keep auto-generated coordinates and can collide with the curated ones,
+    so the miss is surfaced as an operator-visible warning on the affected panels
+    and the generic overlap resolver is re-applied to the section. With a complete
+    pack this is a no-op.
+    """
+    uncovered = [leaf for leaf in _iter_leaf_panels(sec_panels) if id(leaf) not in covered]
+    if not uncovered:
+        return []
+    titles = [str(leaf.get("title", "") or "(untitled)") for leaf in uncovered]
+    detail = (
+        f"Curated layout pack for dashboard '{dashboard_name}' does not cover "
+        f"{len(uncovered)} panel(s) in section '{section_title}': {', '.join(titles)}. "
+        "Those panels kept their auto-generated positions and the generic overlap "
+        "resolver was re-applied, so this section no longer matches the curated "
+        "design. Add a matching panel spec (title, or kind + nth) to the pack."
+    )
+    for title in titles:
+        result = title_to_result.get(title)
+        if result is None:
+            continue
+        if detail not in result.warnings:
+            result.warnings.append(detail)
+    _resolve_overlaps(sec_panels)
+    return titles
+
+
+def _apply_curated_layout(
+    doc: dict[str, Any],
+    pack: dict[str, Any],
+    results: list[TranslationResult] | None = None,
+) -> None:
+    """Apply size/position overrides from a curated Datadog pack.
+
+    Each ``sections[].panels[]`` spec selects one leaf panel by ``title`` and/or
+    ``kind`` plus ``nth`` (see :func:`_curated_spec_candidates`). Panels no spec
+    matched are reported and de-overlapped by
+    :func:`_warn_uncovered_curated_panels`, so a partially covered pack can never
+    emit overlapping panels.
+    """
+    title_to_result: dict[str, TranslationResult] = {}
+    for result in results or []:
+        title = str(result.title or "")
+        if title:
+            title_to_result.setdefault(title, result)
+
+    for dashboard in doc.get("dashboards", []):
+        dashboard_name = str(dashboard.get("name", "") or "")
+        panels = dashboard.get("panels", [])
+        for section_spec in pack.get("sections", []):
+            sec_title = section_spec.get("title", "")
+            section_panel = next(
+                (p for p in panels if p.get("title") == sec_title and "section" in p),
+                None,
+            )
+            if section_panel is None:
+                continue
+            if "collapsed" in section_spec:
+                section_panel["section"]["collapsed"] = section_spec["collapsed"]
+            sec_panels = section_panel["section"].get("panels", [])
+            covered: set[int] = set()
+            for layout_entry in section_spec.get("panels", []):
+                nth = int(layout_entry.get("nth", 0))
+                candidates = _curated_spec_candidates(sec_panels, layout_entry)
+                if nth < 0 or nth >= len(candidates):
+                    continue
+                leaf = candidates[nth]
+                if "size" in layout_entry:
+                    leaf["size"] = dict(layout_entry["size"])
+                if "position" in layout_entry:
+                    leaf["position"] = dict(layout_entry["position"])
+                covered.add(id(leaf))
+            _warn_uncovered_curated_panels(
+                dashboard_name,
+                str(sec_title),
+                sec_panels,
+                covered,
+                title_to_result,
+            )
 
 
 def _build_dashboard_yaml_doc(
@@ -159,6 +290,11 @@ def _build_dashboard_yaml_doc(
         doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(doc)
+
+    curated_pack = load_curated_pack(dashboard.title)
+    if curated_pack:
+        _apply_curated_layout(doc, curated_pack, results)
+
     return doc
 
 

@@ -24,6 +24,7 @@ import requests
 from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_telemetry_contract,
+    count_declared_controls,
     merge_metric_kind_overrides,
     metric_kinds_from_prometheus_metadata,
 )
@@ -175,6 +176,31 @@ def _build_contract(artifact_dirs: list[Path], metric_kind_overrides: dict[str, 
     return build_combined_telemetry_contract(artifact_dirs, metric_kind_overrides=metric_kind_overrides)
 
 
+def _require_control_fields(artifact_dirs: list[Path], streams: dict[str, Any]) -> None:
+    """Fail when the source declares controls but none reached the contract.
+
+    ``streams`` stays non-empty when only the control-carrying artifact is
+    unreadable, so the ``no telemetry requirements`` guard does not fire:
+    ``control_fields`` silently collapses to zero while the contract still
+    looks healthy, and the seeded documents then match no control selection.
+    Cross-check against the native artifacts, which declare the control count
+    independently of the YAML the contract reads.
+    """
+    declared = sum(count_declared_controls(artifact_dir) for artifact_dir in artifact_dirs)
+    if not declared:
+        return
+    if any((stream or {}).get("control_fields") for stream in streams.values()):
+        return
+    searched = ", ".join(str(artifact_dir) for artifact_dir in artifact_dirs)
+    raise RuntimeError(
+        f"no control fields discovered in the artifact directories although "
+        f"{declared} dashboard control(s) are declared there (searched "
+        f"mapping.controls in native/*.native.json under {searched}); zero "
+        f"control fields is an error, not an empty dashboard — the seeded "
+        f"documents would match no control selection"
+    )
+
+
 def seed_sample_data(
     artifact_dirs: list[Path],
     request: RequestFn,
@@ -193,6 +219,7 @@ def seed_sample_data(
     streams = contract.get("streams") or {}
     if not streams:
         raise RuntimeError("no telemetry requirements discovered in the artifact directories")
+    _require_control_fields(artifact_dirs, streams)
     if purge_foreign:
         purge_foreign_streams(contract, request)
     if not no_recreate:

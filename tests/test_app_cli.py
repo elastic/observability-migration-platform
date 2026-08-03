@@ -828,10 +828,15 @@ class TestUnifiedCliRouting(unittest.TestCase):
             parser.parse_args(["upload", "--help"])
 
         self.assertEqual(ctx.exception.code, 0)
-        help_text = stdout.getvalue()
+        help_text = " ".join(stdout.getvalue().split())
         self.assertIn("migration_output/dashboards", help_text)
-        self.assertIn("migration_output/dashboards/yaml", help_text)
-        self.assertIn("migration_output/dashboards/compiled", help_text)
+        # A migration writes native/ + ir/; the YAML shapes are still accepted
+        # for externally supplied or archived YAML, and must stay documented.
+        self.assertIn("'native/' child", help_text)
+        self.assertIn("directory of .yaml files", help_text)
+        self.assertIn("'yaml/' child", help_text)
+        self.assertIn("'compiled/' directory", help_text)
+        self.assertIn("does not produce a 'yaml/' directory", help_text)
         self.assertNotIn("single .yaml file", help_text)
         self.assertNotIn("migration_output/yaml", help_text)
 
@@ -859,11 +864,14 @@ class TestUnifiedCliRouting(unittest.TestCase):
                 )
 
         self.assertEqual(ctx.exception.code, 1)
-        error_text = stderr.getvalue()
+        error_text = " ".join(stderr.getvalue().split())
         self.assertIn("migration_output/dashboards", error_text)
-        self.assertIn("migration_output/dashboards/yaml", error_text)
-        self.assertIn("migration_output/dashboards/compiled", error_text)
-        self.assertNotIn("a .yaml file", error_text)
+        self.assertIn("which holds native/ and ir/", error_text)
+        # The externally-supplied YAML shapes stay documented in the failure.
+        self.assertIn("directory of .yaml files", error_text)
+        self.assertIn("a dir containing 'yaml/'", error_text)
+        self.assertIn("'compiled/' directory", error_text)
+        self.assertNotIn("a .yaml file,", error_text)
         self.assertNotIn("migration_output/yaml", error_text)
 
     # -- --artifact-dir / --artifact-format (native review artifacts) --------

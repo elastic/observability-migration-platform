@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+from conftest import ir_fixture_dir
 
 from scripts import setup_telemetry_data
 
@@ -25,9 +26,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_builds_contract_and_ingests_with_generic_engine(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -81,9 +81,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_no_recreate_only_ingests_and_skips_template_mutations(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -167,9 +166,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_handles_template_setup_failure_without_traceback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -270,9 +268,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
         # missing) and threaded through to make_es_request verbatim.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump({"dashboards": [{"panels": [{"esql": {
                     "query": "FROM logs-*\n| STATS count = COUNT(*) BY service.name"}}]}]}),
                 encoding="utf-8",
@@ -337,9 +334,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
     def test_main_logs_per_stream_doc_counts_and_ingest_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -398,10 +394,10 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
 
     def test_main_accepts_multiple_artifact_dirs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            first = Path(tmpdir) / "first" / "yaml"
-            second = Path(tmpdir) / "second" / "yaml"
-            first.mkdir(parents=True)
-            second.mkdir(parents=True)
+            first_artifacts = Path(tmpdir) / "first"
+            second_artifacts = Path(tmpdir) / "second"
+            first = ir_fixture_dir(first_artifacts)
+            second = ir_fixture_dir(second_artifacts)
             (first / "a.yaml").write_text(
                 yaml.safe_dump({"dashboards": [{"panels": [{"esql": {"query": "FROM metrics-*\n| STATS value = SUM(first_metric)"}}]}]}),
                 encoding="utf-8",
@@ -422,8 +418,8 @@ class SetupTelemetryDataScriptTests(unittest.TestCase):
             with mock.patch.object(setup_telemetry_data, "make_es_request", return_value=fake_request):
                 exit_code = setup_telemetry_data.main(
                     [
-                        str(first.parent),
-                        str(second.parent),
+                        str(first_artifacts),
+                        str(second_artifacts),
                         "--es-endpoint",
                         "https://example.invalid",
                         "--api-key",

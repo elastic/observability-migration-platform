@@ -45,12 +45,12 @@ class DatadogDemoScriptTests(unittest.TestCase):
 
         self.assertRegex(script_text, re.compile(r"--assets\s+dashboards"))
         self.assertIn('ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"', script_text)
-        self.assertIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"', script_text)
+        self.assertIn('DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"', script_text)
         self.assertIn('RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"', script_text)
-        self.assertIn('YAML:   $DASHBOARD_YAML_DIR', script_text)
+        self.assertIn('Artifacts: $DASHBOARD_ARTIFACT_DIR', script_text)
         self.assertIn('Run summary: $RUN_SUMMARY', script_text)
-        self.assertNotIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/yaml"', script_text)
-        self.assertNotIn('YAML:   $OUTPUT_DIR/yaml', script_text)
+        # A migration writes native/ + ir/, never a yaml/ directory.
+        self.assertNotIn("dashboards/yaml", script_text)
 
 
 if __name__ == "__main__":

@@ -210,7 +210,7 @@ Every migration command that moves source assets into target artifacts accepts
 
 Rules:
 - `dashboards` never writes alert artifacts
-- `alerts` never writes dashboard YAML or compiled output
+- `alerts` never writes dashboard artifacts or compiled output
 - `all` is the union of both isolated pipelines
 
 Dashboard artifacts are written under `<output-dir>/dashboards`. Alert artifacts
@@ -256,7 +256,7 @@ Datadog.
 | `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto`; use `native` or `esql` only for explicit operator control |
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
 | `--validate` | Grafana, Datadog | Validate emitted ES\|QL queries against Elasticsearch after translation | Requires `--es-url`. Auto-applies safe query fixes and manualizes broken ones before compile/upload. |
-| `--compile` | Grafana, Datadog dashboards | Also compile generated dashboard YAML to legacy NDJSON and validate compiled layout | Optional local/debug artifact; not required for typed Dashboards API upload. Implied by `--legacy-import` when combined with `--upload`. |
+| `--compile` | Grafana, Datadog dashboards | Also compile each dashboard to legacy NDJSON (through a scratch YAML file rendered from its IR and deleted afterwards) and validate compiled layout | Optional local/debug artifact; not required for typed Dashboards API upload. Implied by `--legacy-import` when combined with `--upload`. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload by default; still writes `native/*.native.json`, `ir/*.ir.json`, YAML, and reports for review/audit. |
 | `--legacy-import` | Grafana, Datadog dashboards | Force legacy YAML compile + saved-object import instead of the typed Dashboards API | Requires YAML and implies the legacy compile/import backend. Use only when you intentionally need the older importer behavior. |
 | `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). |
@@ -352,26 +352,24 @@ obs-migrate migrate \
   --alert-folder "infra-folder-uid"
 ```
 
-`obs-migrate migrate` emits native Dashboard-as-Code review artifacts
-(`dashboards/native/*.native.json`), semantic IR review artifacts
-(`dashboards/ir/*.ir.json`), and dashboard YAML during dashboard runs for both Grafana and Datadog.
-Local compilation to Kibana NDJSON via `kb-dashboard-cli` is opt-in through
-`--compile` (and is implied by `--legacy-import`); the default typed-API upload
-uses the native payload derived from `DashboardIR` and never consumes the
-NDJSON. Alerts-only runs do not emit dashboard YAML, native dashboard artifacts,
-or compiled output.
+`obs-migrate migrate` emits exactly two dashboard representations during
+dashboard runs for both Grafana and Datadog: native Dashboard-as-Code review
+artifacts (`dashboards/native/*.native.json`) and semantic IR review artifacts
+(`dashboards/ir/*.ir.json`). **A migration no longer writes a `dashboards/yaml/`
+directory.** Local compilation to Kibana NDJSON via `kb-dashboard-cli` is opt-in
+through `--compile` (and is implied by `--legacy-import`); the default typed-API
+upload uses the native payload derived from `DashboardIR` and never consumes the
+NDJSON. Alerts-only runs emit neither dashboard artifacts nor compiled output.
 
-For both Grafana and Datadog, the native IR and the on-disk YAML are no
-longer two independent renderings of the same source data: a semantic
-`DashboardIR` is the primary working artifact, and both `native_dashboard`
-(the typed API payload) and the YAML file are *derived* from it
+For both Grafana and Datadog a semantic `DashboardIR` is the primary working
+artifact, and both persisted representations are *derived* from it
 (`observability_migration/core/assets/dashboard.py`,
 `observability_migration/targets/kibana/dashboards_api.py::
-native_dashboard_from_ir`). YAML is written for `kb-dashboard-lint`
-compatibility and the `--compile`/`--legacy-import` paths, not because the
-typed-API upload needs it — see `docs/architecture/asset-model.md` for the
-IR shape and the phased plan to retire YAML as anything but a deprecated
-export.
+native_dashboard_from_ir`). The deprecated kb-dashboard YAML document is still
+*derivable* from the same IR (`DashboardIR.to_yaml_dict()`), and `--compile` /
+`--legacy-import` render it into a scratch directory that is deleted before the
+run ends, because `kb-dashboard-cli` takes a YAML *file*. Nothing else produces
+YAML — see `docs/architecture/asset-model.md`.
 
 When a dashboard run discovers no input dashboards (for example
 `--input-dir` points at an empty directory, or none of its files match the
@@ -978,15 +976,31 @@ obs-migrate migrate \
 ### Review Dashboard Artifacts Before Upload
 
 Every dashboard migration run (`obs-migrate migrate`, `grafana-migrate`,
-`datadog-migrate`) writes three parallel representations of each dashboard
+`datadog-migrate`) writes two parallel representations of each dashboard
 under the dashboard artifact directory, whether or not `--upload` is passed:
 
 ```text
 migration_output/dashboards/native/<stem>.native.json   # exact typed Dashboards API payload
 migration_output/dashboards/native/index.json           # index over every native artifact in the run
 migration_output/dashboards/ir/<stem>.ir.json            # semantic DashboardIR export
-migration_output/dashboards/yaml/<stem>.yaml             # kb-dashboard-core YAML (lint/legacy-import input)
 ```
+
+There is no `migration_output/dashboards/yaml/` directory: dashboard YAML is not
+a migration output. `obs-migrate compile` and `upload --artifact-format yaml`
+still *accept* a YAML directory (see below), for hand-written or archived YAML.
+
+Because of that, the JSON artifacts that used to point at YAML now describe what
+the run produced:
+
+| Artifact | Field | Now |
+|---|---|---|
+| `rollout_plan.json` | `artifact_bundle.yaml_paths` | **removed**, replaced by `artifact_bundle.native_artifact_paths` and `artifact_bundle.ir_artifact_paths` |
+| `rollout_plan.json` | `dashboards[].yaml_path` | **removed**, replaced by `dashboards[].native_artifact_path` and `dashboards[].ir_artifact_path` |
+| `migration_manifest.json`, `migration_report.json` | `dashboards[].yaml_path` | kept for backward compatibility but **deprecated**: it now mirrors `native_artifact_path`. Read `native_artifact_path` / `ir_artifact_path`, or the new `artifact_stem` (the shared filename stem of a dashboard's `native/`, `ir/` and `compiled/` artifacts) |
+
+A stale `yaml/` directory left in an output directory by an older release is
+deleted on the next run, so it cannot make `upload --artifact-format auto` see a
+mixed native/YAML tree.
 
 `native/<stem>.native.json` is exactly `NativeDashboard.to_api_payload()` — the
 same body `migrate --upload` would send immediately — wrapped in a small
@@ -1051,19 +1065,20 @@ The same pattern applies to Datadog — replace `--source grafana` and
 #### Current vs compatibility dashboard paths
 
 Native IR / native Dashboard-as-Code is the current dashboard migration path.
-YAML and NDJSON are still emitted because existing operators, linters, and
-legacy import workflows rely on them, but new automation should prefer
-`migrate --upload` or `obs-migrate upload --artifact-dir ...` with the default
-`--artifact-format auto`.
+NDJSON is still emitted on request (`--compile`) because existing operators and
+legacy import workflows rely on it. Dashboard YAML is no longer emitted at all;
+the YAML-consuming surfaces below stay supported for externally supplied YAML.
+New automation should prefer `migrate --upload` or `obs-migrate upload
+--artifact-dir ...` with the default `--artifact-format auto`.
 
 | Surface | Status | Use it when |
 |---|---|---|
 | `migrate --upload` | Current default | You want a one-step migration that uploads the in-memory `native_dashboard` derived from `DashboardIR`. |
 | `obs-migrate upload --artifact-dir <dashboards>` | Current default for two-step review/upload | You reviewed `native/*.native.json` and want to upload the exact persisted typed Dashboards API payload. |
 | `--artifact-format native` | Current explicit mode | You want to reject the run if reviewed native artifacts are missing. |
-| `--artifact-format yaml` / `--yaml-dir` | Compatibility path | You intentionally want to map YAML files through the typed API, with per-dashboard legacy fallback for rejected/empty YAML-derived dashboards. |
+| `--artifact-format yaml` / `--yaml-dir` | Compatibility path for externally supplied YAML | You have a hand-written or archived kb-dashboard YAML directory (a migration does not produce one) and want to map those files through the typed API, with per-dashboard legacy fallback for rejected/empty YAML-derived dashboards. |
 | `obs-migrate compile` / `--compile` | Legacy/debug artifact path | You need local NDJSON/layout evidence or legacy-import readiness checks. Typed API upload does not consume this NDJSON. |
-| `--legacy-import` | Legacy fallback path | You intentionally need the old `kb-dashboard-cli` compile+saved-object import behavior. It requires YAML and bypasses the native artifact upload path. |
+| `--legacy-import` | Legacy fallback path | You intentionally need the old `kb-dashboard-cli` compile+saved-object import behavior. It requires YAML (rendered into a scratch directory inside `migrate`, or supplied externally to standalone `upload`) and bypasses the native artifact upload path. |
 | `--compiled-dir` | Deprecated compatibility alias | Older scripts still pass it. New scripts should use `--artifact-dir` or `--yaml-dir`; NDJSON directories are not uploaded directly. |
 | `--fetch-alerts` / `--fetch-monitors` | Deprecated compatibility aliases | Older scripts still use them. New scripts should use `--assets alerts` or `--assets all`. |
 
@@ -1082,31 +1097,49 @@ obs-migrate upload \
 
 #### Optional: compile to NDJSON (legacy/debug artifact only)
 
-Not required for upload. Use this only when you need local NDJSON layout evidence or are verifying `--legacy-import` readiness:
+Not required for upload. Use this only when you need local NDJSON layout evidence or are verifying `--legacy-import` readiness.
+
+To compile a migration's own dashboards, pass `--compile` to `migrate`: it renders
+the kb-dashboard YAML each dashboard needs into a scratch directory, compiles it,
+and deletes the scratch directory, leaving `dashboards/compiled/<stem>/`:
+
+```bash
+obs-migrate migrate --source grafana --input-dir ./dashboards \
+  --output-dir migration_output --compile
+```
+
+The standalone `obs-migrate compile` command consumes an *externally supplied*
+YAML directory (hand-written or archived), since a migration does not produce one:
 
 ```bash
 obs-migrate compile \
-  --yaml-dir migration_output/dashboards/yaml \
-  --output-dir migration_output/dashboards/compiled
+  --yaml-dir ./hand-written-yaml \
+  --output-dir ./compiled
 ```
 
 `obs-migrate compile` is a local step and does not require Elasticsearch or Kibana. It can still exit nonzero after writing NDJSON if the YAML lint or compiled-layout checks return nonzero, so inspect both the exit status and the generated output directory.
 
 `obs-migrate upload` takes `--artifact-dir <path>`, the dashboard artifact
-directory (or directly its `native/` or `yaml/` child). `--artifact-format`
+directory (or directly its `native/` child; a YAML directory is also accepted
+for externally supplied YAML). `--artifact-format`
 picks the representation:
 
 - `auto` (default) — prefer reviewed native artifacts (`native/*.native.json`)
-  when present, else fall back to YAML. When both native artifacts and YAML
-  artifacts are present under an artifact root, their stems must match; a mixed
-  or incomplete tree is rejected so dashboards are not silently skipped. Point
-  directly at `native/` to intentionally upload only native artifacts, or pass
-  `--artifact-format yaml` to intentionally use YAML.
+  when present, else fall back to YAML. For a migration's own artifact directory
+  this always resolves to `native/`, because no YAML is written. It only falls
+  back to YAML for a directory that genuinely contains `.yaml` files. If both
+  native artifacts and YAML artifacts are present under an artifact root (e.g. a
+  hand-assembled tree), their stems must match; a mixed or incomplete tree is
+  rejected so dashboards are not silently skipped. Point directly at `native/`
+  to intentionally upload only native artifacts, or pass `--artifact-format
+  yaml` to intentionally use YAML.
 - `native` — upload the reviewed typed API payload exactly, with **no** YAML
   re-mapping and **no** legacy fallback. A rejection is reported as-is, since
   there is nothing to silently re-derive it from; pass `--artifact-format
   yaml` explicitly if that fallback is wanted.
-- `yaml` — force the existing YAML-to-native mapping path: each YAML file maps
+- `yaml` — force the YAML-to-native mapping path for an externally supplied
+  YAML directory (hand-written or archived; a migration does not produce one).
+  Each YAML file maps
   through `native_dashboard_from_yaml` to API panels, including sections,
   controls (`pinned_panels`), markdown, and all 11 ES\|QL visualization
   families. Rejected or empty dashboards fall back per-dashboard to the legacy
@@ -1116,20 +1149,24 @@ picks the representation:
 This is the file-based upload entry. During `obs-migrate migrate --upload`,
 Grafana and Datadog prefer the in-memory `native_dashboard` already derived from
 `DashboardIR` (same payload shape as the persisted `native/*.native.json`
-artifact). For standalone upload, the portable default artifact is now
-`native/*.native.json`; on-disk YAML remains supported for explicit
-`--artifact-format yaml`, lint, and `--compile`/`--legacy-import`.
+artifact). For standalone upload, the portable artifact is
+`native/*.native.json` — the only dashboard payload a migration writes.
+Externally supplied on-disk YAML remains supported for explicit
+`--artifact-format yaml`, `obs-migrate compile`, and `--legacy-import`.
 
 Pass `--legacy-import` to force the legacy `kb-dashboard-cli` resolution path
 (installed console script, otherwise pinned `uvx` fallback) for every
 dashboard instead of the typed API. `--legacy-import` always requires YAML (it
 forces `--artifact-format yaml`, since the legacy importer compiles from YAML)
-and does **not** consume the NDJSON produced by `obs-migrate compile`.
+and does **not** consume the NDJSON produced by `obs-migrate compile`. Because a
+migration writes no YAML, standalone `upload --legacy-import` needs an externally
+supplied YAML directory; inside `migrate --legacy-import` the pipeline renders
+the YAML it needs into a scratch directory it deletes afterwards.
 `--yaml-dir` remains accepted as a compatibility alias for `--artifact-dir ...
 --artifact-format yaml`, and the older `--compiled-dir` alias is still
 accepted for backward compatibility but prefer `--artifact-dir`/`--yaml-dir`
 in new scripts. Pointing `--artifact-dir`/`--yaml-dir` at
-`migration_output/dashboards` (which contains `native/`/`yaml/`
+`migration_output/dashboards` (which contains `native/`/`ir/`
 subdirectories) also works.
 
 **Re-upload conflict:** The native `PUT /api/dashboards/{id}` returns `409 Conflict` if a saved object with the same ID already exists — including `[DELETED]` placeholder objects left by `obs-migrate cluster delete-dashboards`. Pass `--legacy-import` to force the `_import?overwrite=true` path, which overwrites any existing saved object:
@@ -1192,7 +1229,7 @@ obs-migrate schema-report \
   --contract-out telemetry_contract.json
 ```
 
-Each `--artifact-dir` is a per-source `dashboards/` output (containing `yaml/`
+Each `--artifact-dir` is a per-source `dashboards/` output (containing `ir/`
 and `verification_packets.json`). `--contract-out` is optional; without it only
 the Markdown report is written.
 
@@ -1268,6 +1305,14 @@ honors the shared `--ca-cert`/`--insecure` TLS flags, and is **ES-only** (it
 does not touch Kibana); pair it with `remove-sample-data` to clean up
 afterward. Exit code is `2` when Elasticsearch is unreachable or inputs are
 invalid, `1` on ingest errors, and `0` otherwise.
+
+It is **fail-closed on empty discovery**: seeding exits `2` when the contract
+discovers no telemetry requirements at all, and also when the artifacts declare
+dashboard controls (`mapping.controls` in `native/*.native.json`) but the
+contract produced zero control fields. The second case used to seed
+"successfully" while omitting every field the dashboard filters on, so the
+seeded documents matched no control selection and every filtered panel rendered
+empty.
 
 ```bash
 # Seed synthetic data for a single migrated artifact directory.
@@ -1559,6 +1604,11 @@ obs-migrate verify-visual \
 Like `verify-panels`, this wrapper does **not** expose `--ca-cert` /
 `--insecure` today.
 
+It exits `2` when either side discovers zero panels — an empty/absent
+`--migration-out` `ir/` directory, or a `--grafana-uid` with no panels. A
+zero-panel run previously reported `captured=0 median=0.0000` and exited `0`,
+which is indistinguishable from a perfect pixel match.
+
 ## Dedicated Source CLIs
 
 Dedicated entry points (`grafana-migrate`, `datadog-migrate`) are thin wrappers around `python -m observability_migration.adapters.source.grafana.cli` and `python -m observability_migration.adapters.source.datadog.cli`.
@@ -1640,8 +1690,8 @@ obs-migrate migrate \
 
 Without `--es-url`, Grafana skips schema discovery and emitted-query
 validation. Dashboard-capable runs (`--assets dashboards` or `--assets all`)
-still write `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`,
-dashboard YAML, and the normal dashboard report artifacts (local NDJSON
+still write `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`
+and the normal dashboard report artifacts (local NDJSON
 compilation is opt-in via `--compile`, matching Datadog dashboard runs).
 Alerts-only runs (`--assets alerts`) skip dashboard emission and
 write alert artifacts under `<output-dir>/alerts`. For pure source-side alert
@@ -1729,7 +1779,7 @@ rejections fall back per-dashboard to the legacy `kb-dashboard-cli`
 compile+import; native-artifact rejections do not silently fall back. Pass
 `--legacy-import` to force that legacy path for every dashboard, which
 auto-enables legacy compilation. Alerts-only runs (`--assets alerts`) skip
-dashboard YAML/native/IR artifacts and compiled output, write monitor artifacts
+dashboard native/IR artifacts and compiled output, write monitor artifacts
 under `<output-dir>/alerts`, and still emit the root
 `run_summary.json`. Use the dedicated Datadog CLI when you need explicit
 dashboard scoping via `--dashboard-ids` before any Elastic target exists.

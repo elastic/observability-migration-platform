@@ -2,7 +2,31 @@
 
 **Date:** 2026-07-29  
 **Status:** Approved  
-**Scope:** Per-dashboard curated rule packs, auto-loaded by gnetId; Redis 12776 as the first pack; curation playbook for scaling to Top 100 Grafana community dashboards.
+**Scope:** Per-dashboard curated rule packs, auto-loaded by gnetId; Redis 12776 as the first pack; curation playbook for scaling to Top 100 Grafana community dashboards. Also specifies the separate Datadog curated **layout** packs — see [Datadog Curated Layout Packs](#datadog-curated-layout-packs).
+
+---
+
+## Two Pack Families
+
+"Curated pack" names two independent mechanisms. Both are bundled in the
+package and both auto-fire with no operator step, but they solve different
+problems and share no code, schema, or registry:
+
+| | Grafana curated rule packs | Datadog curated layout packs |
+|---|---|---|
+| What it overrides | Query semantics (`query.metric_kinds`, `query.label_candidates`), `panel.type_map`, hand-written `panel.query_overrides`, plus the `fidelity_manifest.yaml` contract | Panel `size` / `position` and section `collapsed` state — geometry only |
+| Files | `pack.yaml` + optional `plugin.py` + `fidelity_manifest.yaml` under `adapters/source/grafana/curated_packs/<pack_dir>/` | a single `pack.yaml` under `adapters/source/datadog/curated_packs/<pack_dir>/` |
+| Matched by | `registry.yaml` on `gnetId`, with a title/tags fallback | `match.title_contains` declared inside the pack itself |
+| Selects a panel by | `title_match` against the source panel title | the **emitted** panel title and/or presentation `kind`, plus `nth` |
+| Applied | before translation (composes a `RulePackConfig`) | after translation and after `apply_style_guide_layout`, as the last word on layout |
+| Operator opt-out | `--no-curated-packs` | none |
+| Specified in | *Problem* → *Open Questions Resolved* below | [Datadog Curated Layout Packs](#datadog-curated-layout-packs) |
+
+A Datadog pack never touches a query; a Grafana `panel.query_overrides` entry
+never moves a panel. Do not port a construct from one family into the other —
+the loaders do not understand each other's keys and will silently ignore them.
+
+Everything from here to *Open Questions Resolved* describes the Grafana family.
 
 ---
 
@@ -40,6 +64,8 @@ observability_migration/adapters/source/grafana/curated_packs/
 ├── registry.yaml                    # gnetId → pack mapping
 └── grafana_12776_redis/
     ├── pack.yaml                    # declarative rules (same schema as --rules-file)
+    │                                # supports: query (metric_kinds, label_candidates, ...),
+    │                                #           panel (type_map, skip_types, query_overrides)
     ├── plugin.py                    # optional Python hooks (same API as --plugin)
     └── fidelity_manifest.yaml       # panel-by-panel fidelity classification
 ```
@@ -117,6 +143,38 @@ Curated pack Python plugins are registered onto the resolved pack's registries, 
   ```
   Curated pack matched: grafana_12776_redis (gnetId=12776)
   ```
+
+---
+
+### 6. Panel-Level Query Overrides
+
+For panels where auto-translation produces APPROXIMATE output — typically binary expressions between two gauge metrics with no outer aggregation — curated packs can supply a hand-crafted ES|QL query that bypasses auto-translation entirely:
+
+```yaml
+panel:
+  query_overrides:
+    - title_match: "Memory Usage"      # case-insensitive exact match against panel title
+      esql_query: |                    # hand-crafted ES|QL; must produce the right shape
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS value = MAX(LAST_OVER_TIME(redis_memory_used_bytes)) / MAX(LAST_OVER_TIME(redis_memory_max_bytes)) * 100.0
+      status_override: migrated        # migrated | migrated_with_warnings (default: migrated)
+```
+
+**Merge semantics:** User pack overrides win by `title_match`. If both the curated pack and the user `--rules-file` declare an override for the same panel title, the user's query wins. Overrides with different titles are merged (both apply).
+
+**ES|QL shape constraints:** The query must produce a shape that `_native_esql_panel_spec` can parse for the target Kibana panel type:
+- `metric` / `gauge` panels: a `STATS` query with exactly one metric column and no `BY` clause. The simplest form is an inline division: `STATS value = MAX(...) / MAX(...)`.
+- `line` / `area` / `bar` panels: a `STATS ... BY time_bucket [, group_label]` query with `SORT time_bucket ASC`.
+
+**When to use:** Add a `panel_query_overrides` entry when:
+1. A specific panel is APPROXIMATE due to a known translator gap (e.g. binary expression without outer aggregation or `on()` modifier)
+2. A hand-crafted ES|QL query can express the same computation exactly
+3. The gap cannot be fixed in the general translator without risk to other panels
+
+**When NOT to use:** Do not use for panels that are APPROXIMATE due to data-availability gaps (`field_gap`, `data_gap`) or Kibana API limitations — those are documented deltas, not translator bugs.
+
+**Deployed examples:** `grafana_11835_redis_exporter_helm`, `grafana_18405_redis_enterprise`, and `grafana_18406_redis_cloud` all carry `Memory Usage` overrides that compute the used/max ratio directly in ES|QL, promoting those panels from APPROXIMATE to PERFECT.
 
 ---
 
@@ -501,3 +559,330 @@ For the Redis 12776 pack specifically:
 - **No panel abandoned**: All panels get best-effort treatment. BEST_EFFORT replaces NOT_FEASIBLE — find the closest Kibana alternative, document the delta.
 - **Layout curation**: Curated packs control Kibana grid layout, not just queries/visuals.
 - **Dashboard version drift**: Packs pin `gnet_revision`; migration warns (not errors) on mismatch and still applies the pack.
+
+---
+
+## Datadog Curated Layout Packs
+
+**Status:** Implemented (`datadog_redis_overview` is the only pack today)  
+**Scope:** Per-dashboard hand-tuned Kibana geometry for Datadog dashboards, auto-loaded by dashboard title. Layout only — no query, type, or field overrides.
+
+### Why A Datadog Pack Exists
+
+Datadog dashboards are laid out on a free-form 12-column grid with per-widget
+heights that carry no Kibana equivalent. `generate.py` rescales each source row
+proportionally onto Kibana's 48-column grid (`_apply_row_layout`, then
+`_resolve_overlaps` and `apply_style_guide_layout`). That is structurally sound —
+the layout-invariant gate proves no overlaps, no overflow, no sub-minimum widths —
+but it inherits every quirk of the source: a 5/7-column split becomes a 20/28
+split, single stat tiles stretch to whatever their source row implied, and tall
+note widgets set the height for the charts beside them. The result reads as
+mechanically ported.
+
+For a dashboard we ship, demo, or point customers at, that is not good enough. A
+curated layout pack replaces the auto-derived geometry for that one dashboard
+with a hand-tuned Kibana-native layout.
+
+**Reach for a pack when** the dashboard is high-traffic enough to hand-tune, the
+panels themselves already translate correctly, and the only remaining complaint
+is arrangement.
+
+**Do not reach for a pack** to work around a translation problem. A Datadog pack
+runs after translation and only sees emitted panel titles and geometry — it
+cannot change a query, a panel type, a field mapping, or a title. A wrong panel
+is a translator bug; fix it in the translator so every dashboard benefits.
+
+### Directory Shape And Discovery
+
+```
+observability_migration/adapters/source/datadog/curated_packs/
+├── __init__.py                     # load_curated_pack(dashboard_title)
+└── datadog_redis_overview/
+    └── pack.yaml                   # match + sections[].panels[] geometry
+```
+
+There is no registry file. `load_curated_pack` scans the immediate
+subdirectories of `curated_packs/` for a `pack.yaml`, reads each one's
+`match.title_contains`, and returns the first pack whose value is a
+**case-insensitive substring** of the dashboard title:
+
+```yaml
+match:
+  title_contains: "Redis - Overview"
+```
+
+Directory scan order is filesystem order, not defined, so keep
+`title_contains` specific enough that no two packs can match the same
+dashboard.
+
+### Call Site
+
+`_build_dashboard_yaml_doc` in `generate.py` calls `load_curated_pack` once per
+dashboard, *after* `apply_style_guide_layout`, and applies any hit via
+`_apply_curated_layout`:
+
+```python
+apply_style_guide_layout(doc)
+
+curated_pack = load_curated_pack(dashboard.title)
+if curated_pack:
+    _apply_curated_layout(doc, curated_pack, results)
+```
+
+The pack therefore has the last word on layout — nothing rescales or re-rows the
+panels afterwards. Because that document is then converted to `DashboardIR`, from
+which both the typed Dashboards API payload and the YAML are derived, the curated
+coordinates reach every emitted artifact from one place.
+
+There is no CLI flag and no operator step. A dashboard whose title matches gets
+the curated layout; every other dashboard is untouched and costs nothing.
+
+### Selector Model
+
+Each `sections[]` entry is matched to a generated section by exact `title`, and
+each `panels[]` entry under it selects exactly one leaf panel:
+
+```yaml
+sections:
+  - title: "Overview"        # exact match against the emitted section title
+    collapsed: false         # optional; only set when present
+    panels:
+      # All three selectors are optional and shown together here; the real pack
+      # uses `title` alone for named panels and `kind` + `nth` for notes.
+      - title: "Hit rate"    # selector
+        kind: esql           # selector
+        nth: 0               # selector
+        size: {w: 12, h: 6}  # applied only when present
+        position: {x: 0, y: 0}
+```
+
+| Key | Meaning |
+|---|---|
+| `title` | Exact, case-sensitive match against the **emitted** leaf panel title. Constrains the match only when present and non-empty. |
+| `kind` | The panel's presentation block key — one of `markdown`, `esql`, `lens`, `links`, `image` (`PANEL_PRESENTATION_KINDS`). Constrains the match only when present. |
+| `nth` | 0-based index among the candidates that satisfied the `title`/`kind` constraints, in section order. Defaults to `0`. |
+| `size` | `{w, h}` in Kibana grid columns/rows. Applied only when present; otherwise the auto-derived size stands. |
+| `position` | `{x, y}` relative to the section's own coordinate space. Applied only when present. |
+
+An omitted selector matches anything, so `kind: markdown` + `nth: 1` means
+"the second markdown panel in this section, whatever it is called".
+
+Failure modes are quiet by design and caught downstream, not at load time:
+
+- A `sections[]` entry whose `title` matches no generated section is skipped
+  silently. The coverage test asserts every declared section exists.
+- A `panels[]` entry whose `nth` is out of range for its candidate list is
+  skipped silently. The panel it was supposed to move then shows up in the
+  coverage warning below.
+
+### Emitted Titles, Not Datadog Titles
+
+**This is the part that bites.** Before a pack is applied,
+`_ensure_unique_leaf_panel_titles` rewrites blank and duplicate panel titles,
+because the migration report and the render audit key per-panel verdicts by
+title and would otherwise collapse them. So the titles a pack must use are the
+*post-rewrite* ones:
+
+| Source situation | Emitted title |
+|---|---|
+| Widget has a unique title | unchanged (`Hit rate`) |
+| Widget has no title | `Datadog <source type> <widget id>` — e.g. `Datadog note 8013519185925578`; with no widget id, a bare `Datadog note` plus a de-duplicating ` (<ordinal>)` suffix |
+| Two widgets share a title | first keeps it; later ones get ` (widget <id>)` — e.g. `Cache hit rate` and `Cache hit rate (widget 21)` |
+
+Two consequences:
+
+- **`title: ""` never matches anything.** An empty string is falsy, so it does
+  not constrain the match at all (`_curated_spec_candidates` treats it as
+  absent) — the spec silently selects the nth panel of the whole section
+  instead. There are no blank emitted titles left to match anyway.
+- **The second of two same-titled panels must be addressed by its real emitted
+  title**, `Cache hit rate (widget 21)`, not by the source title plus an `nth`
+  guess.
+
+**Select notes with `kind: markdown` + `nth`, never by title.** A generated note
+title is either widget-id-derived (opaque, and gone the moment the widget is
+recreated upstream) or ordinal-derived — and the ordinal counts every leaf panel
+in the dashboard, so adding or removing *any* widget renumbers it and the spec
+stops matching a panel it used to move. "The nth markdown panel in this section"
+survives all of that. `_panel_presentation_kind` exists precisely so packs never
+have to depend on a generated title.
+
+### Full Coverage Is Required
+
+**Every leaf panel in a section the pack declares must be covered by some spec.**
+A partially covered section is a bug, not a partial improvement: the panels no
+spec matched keep their auto-derived coordinates while their neighbours move to
+curated ones, so they collide.
+
+Two safeguards make that visible instead of shipping:
+
+1. **Coverage guard** — `_warn_uncovered_curated_panels` appends a warning naming
+   the dashboard, the section, and every uncovered panel to those panels'
+   `TranslationResult.warnings`, which surfaces in the operator migration
+   report. The message ends with the fix: *"Add a matching panel spec (title, or
+   kind + nth) to the pack."*
+2. **Overlap re-resolution** — the generic `_resolve_overlaps` pass is re-run
+   over that section, so a partially covered pack can never emit overlapping
+   panels. The section no longer matches the curated design, but it stays
+   renderable.
+
+On a complete pack the guard is inert: it finds no uncovered panels and returns
+before touching anything. Sections the pack does *not* declare are not affected
+either way — they keep their auto-derived layout in full.
+
+### Worked Example
+
+From `datadog_redis_overview/pack.yaml` (excerpt — the shipped pack covers all
+seven sections):
+
+```yaml
+match:
+  title_contains: "Redis - Overview"
+
+sections:
+  - title: "Overview"
+    collapsed: false
+    panels:
+      # Row 0: 4 stats across the full 48 columns
+      - title: "Hit rate"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 0}
+      - title: "Blocked clients"
+        size: {w: 12, h: 6}
+        position: {x: 12, y: 0}
+      - title: "Redis keyspace"
+        size: {w: 12, h: 6}
+        position: {x: 24, y: 0}
+      - title: "Unsaved changes"
+        size: {w: 12, h: 6}
+        position: {x: 36, y: 0}
+      # Row 1: stat + its explanatory note, note selected by kind
+      - title: "Primary link down"
+        size: {w: 24, h: 8}
+        position: {x: 0, y: 6}
+      - kind: markdown
+        nth: 0
+        size: {w: 24, h: 8}
+        position: {x: 24, y: 6}
+
+  - title: "Performance Metrics"
+    collapsed: false
+    panels:
+      # Row 0: wide chart + narrow note
+      - title: "Latency by Host"
+        size: {w: 36, h: 12}
+        position: {x: 0, y: 0}
+      - kind: markdown
+        nth: 0
+        size: {w: 12, h: 12}
+        position: {x: 36, y: 0}
+      # Row 1: the duplicate-title pair — a stat and a line chart that were both
+      # called "Cache hit rate" in Datadog
+      - title: "Cache hit rate"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 12}
+      - title: "Cache hit rate (widget 21)"
+        size: {w: 36, h: 12}
+        position: {x: 12, y: 12}
+      # ... remaining Performance Metrics panels omitted; the real section
+      # covers all eight
+```
+
+Note what the `kind: markdown` + `nth: 0` entries buy: the emitted titles behind
+them are `Datadog note 7896589211182748` and `Datadog note 18`, neither of which
+belongs in a hand-maintained file.
+
+### Authoring And Validating A New Pack
+
+1. **Generate the dashboard offline.** No cluster needed:
+
+   ```bash
+   .venv/bin/datadog-migrate --source files \
+     --input-dir <dir with the dashboard JSON> \
+     --output-dir /tmp/dd-pack --field-profile otel --assets dashboards
+   ```
+
+2. **List the emitted titles per section** — these, not the Datadog titles, are
+   the pack keys. The native review artifact is the shortest path:
+
+   ```bash
+   jq -r '.payload.panels[]
+          | if .panels
+            then "SECTION \(.title) (collapsed=\(.collapsed))",
+                 (.panels[] | "    \(.type)  \(.config.title)  \(.grid.x),\(.grid.y) \(.grid.w)x\(.grid.h)")
+            else "PANEL \(.config.title)" end' \
+     /tmp/dd-pack/dashboards/native/*.native.json
+   ```
+
+   The native `type` (`vis` / `markdown`) is the API discriminator, not the pack
+   `kind`; only `markdown` is spelled the same in both. It is still enough to
+   spot the notes.
+
+3. **Write `curated_packs/<pack_dir>/pack.yaml`** with a `match.title_contains`
+   specific to that dashboard and a spec for **every** leaf panel of every
+   section you declare. Use titles for real panels, `kind: markdown` + `nth` for
+   notes, and the `(widget NN)` form for duplicates. Keep each row's widths
+   summing to 48 and `y` monotonic per row.
+
+4. **Confirm with the gates:**
+
+   ```bash
+   .venv/bin/python -m pytest tests/test_datadog_curated_layout.py tests/e2e/test_layout_invariants.py -v
+   ```
+
+   `test_shipped_redis_pack_covers_every_generated_panel` is the important one:
+   it migrates the real dashboard and runs the **production matcher**
+   (`_curated_spec_candidates`) against the generated document, then asserts both
+   directions — no spec that matched nothing, no generated panel that no spec
+   matched — and that the in-generator coverage guard stayed silent for the same
+   run. A coverage gap fails CI rather than shipping a collided section.
+   `tests/e2e/test_layout_invariants.py` independently re-checks the geometry of
+   every shipped Datadog and Grafana dashboard: no overlap, `x + w <= 48`, no
+   negative coordinates, no width below the readability floor.
+
+5. **Look at it in Kibana** (render audit or a clean view-mode session). The
+   gates prove the geometry is legal, not that it looks good — that is the whole
+   point of curating it by hand.
+
+### Packaging
+
+A pack directory only reaches an installed operator if it is declared as package
+data. `pyproject.toml` currently declares the Grafana family only:
+
+```toml
+[tool.setuptools.package-data]
+"observability_migration.adapters.source.grafana.curated_packs" = ["registry.yaml", "**/*.yaml"]
+```
+
+As of 2026-08-03 there is **no equivalent entry for
+`observability_migration.adapters.source.datadog.curated_packs`**, so
+`datadog_redis_overview/pack.yaml` is absent from a built wheel (verified by
+inspecting the wheel contents) and the curated layout applies only from a repo
+checkout or editable install. Adding a Datadog pack means adding the matching
+`package-data` line.
+
+### File Map
+
+| File | Purpose |
+|---|---|
+| `observability_migration/adapters/source/datadog/curated_packs/__init__.py` | `load_curated_pack(dashboard_title)` — scans pack directories, case-insensitive `match.title_contains` |
+| `observability_migration/adapters/source/datadog/curated_packs/datadog_redis_overview/pack.yaml` | The only shipped pack: seven sections of hand-tuned geometry for Datadog "Redis - Overview" |
+| `observability_migration/adapters/source/datadog/generate.py` | `PANEL_PRESENTATION_KINDS`, `_panel_presentation_kind`, `_curated_spec_candidates`, `_warn_uncovered_curated_panels`, `_apply_curated_layout`, and the `_build_dashboard_yaml_doc` hook |
+| `tests/test_datadog_curated_layout.py` | Loader, selector semantics, per-section geometry, coverage-vs-generated-document gate, and the incomplete-pack warning/no-overlap safety net |
+| `tests/e2e/test_layout_invariants.py` | Source-agnostic geometry invariants over every shipped dashboard |
+
+### Design Decisions
+
+- **No registry file.** One `match.title_contains` per pack keeps the match rule
+  next to the layout it applies to; Datadog has no stable community-dashboard id
+  like `gnetId` to key a registry on.
+- **Title match, not dashboard id.** Datadog dashboard ids are per-account, so an
+  id-keyed pack could never fire for a customer's copy of an integration
+  dashboard.
+- **Layout only.** Query and field behavior belongs in the translator or a field
+  profile, where every dashboard benefits, not in a per-dashboard pack.
+- **`kind` + `nth` alongside `title`.** Generated note titles are not stable pack
+  keys; a positional selector over the presentation kind is.
+- **Warn and self-heal rather than fail.** A stale pack degrades to the
+  auto-derived layout for the panels it lost, reports why on the affected panels,
+  and can never emit an overlap — a broken pack must not break a migration.

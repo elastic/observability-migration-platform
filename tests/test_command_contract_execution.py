@@ -75,6 +75,26 @@ def _run(
     return result
 
 
+def _render_yaml_from_ir(ir_dir: Path, dest_dir: Path) -> Path:
+    """Build a YAML directory from a run's ``ir/*.ir.json`` artifacts.
+
+    ``obs-migrate compile`` and ``upload --artifact-format yaml`` still accept an
+    externally supplied YAML directory; a migration no longer produces one, so
+    the contract examples that consume YAML build their input here.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+    from observability_migration.targets.kibana.compile import write_dashboard_yaml
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for artifact_file in sorted(ir_dir.glob("*.ir.json")):
+        artifact = json.loads(artifact_file.read_text(encoding="utf-8"))
+        dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
+        write_dashboard_yaml(
+            dashboard_ir, dest_dir, artifact_file.name[: -len(".ir.json")]
+        )
+    return dest_dir
+
+
 @unittest.skipUnless(OBS.is_file(), "obs-migrate venv binary missing; run make sync")
 class CommandContractOfflineExecutionTests(unittest.TestCase):
     """Run every offline contract example end-to-end."""
@@ -166,9 +186,10 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
                 env={"_CONTRACT_OFFLINE": "1"},
                 timeout=240,
             )
-            yaml_dir = out / "dashboards" / "yaml"
-            self.assertTrue(yaml_dir.is_dir())
-            self.assertTrue(list(yaml_dir.glob("*.yaml")))
+            dashboards_dir = out / "dashboards"
+            self.assertFalse((dashboards_dir / "yaml").exists())
+            self.assertTrue(list((dashboards_dir / "native").glob("*.native.json")))
+            self.assertTrue(list((dashboards_dir / "ir").glob("*.ir.json")))
             self.assertTrue((out / "dashboards" / "migration_report.json").is_file())
             self.assertTrue((out / "run_summary.json").is_file())
 
@@ -197,9 +218,10 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
                 env={"_CONTRACT_OFFLINE": "1"},
                 timeout=240,
             )
-            yaml_dir = out / "dashboards" / "yaml"
-            self.assertTrue(yaml_dir.is_dir())
-            self.assertTrue(list(yaml_dir.glob("*.yaml")))
+            dashboards_dir = out / "dashboards"
+            self.assertFalse((dashboards_dir / "yaml").exists())
+            self.assertTrue(list((dashboards_dir / "native").glob("*.native.json")))
+            self.assertTrue(list((dashboards_dir / "ir").glob("*.ir.json")))
             self.assertTrue((out / "run_summary.json").is_file())
 
     def test_dedicated_grafana_and_datadog_migrate_offline(self):
@@ -249,8 +271,10 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
                 env={"_CONTRACT_OFFLINE": "1"},
                 timeout=240,
             )
-            self.assertTrue(list((g_out / "dashboards" / "yaml").glob("*.yaml")))
-            self.assertTrue(list((d_out / "dashboards" / "yaml").glob("*.yaml")))
+            for produced in (g_out / "dashboards", d_out / "dashboards"):
+                self.assertFalse((produced / "yaml").exists())
+                self.assertTrue(list((produced / "native").glob("*.native.json")))
+                self.assertTrue(list((produced / "ir").glob("*.ir.json")))
 
     def test_compile_and_schema_report_offline(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,7 +305,11 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
                 env={"_CONTRACT_OFFLINE": "1"},
                 timeout=240,
             )
-            yaml_dir = migrate_out / "dashboards" / "yaml"
+            # `obs-migrate compile` still consumes YAML, but a migration no
+            # longer emits any, so render the compiler's input from the run's IR
+            # artifacts exactly as the --compile path does internally.
+            yaml_dir = root / "external_yaml"
+            _render_yaml_from_ir(migrate_out / "dashboards" / "ir", yaml_dir)
             compile_result = _run(
                 [
                     str(OBS),

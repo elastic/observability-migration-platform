@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -49,8 +50,9 @@ from observability_migration.targets.kibana.compile import (
     detect_space_id_from_kibana_url,
     kibana_url_for_space,
     lint_dashboard_yaml,
-    sync_result_queries_to_yaml,
+    sync_result_queries_to_ir,
     validate_compiled_layout,
+    write_dashboard_yaml,
 )
 from observability_migration.targets.kibana.dashboards_api import (
     upload_warnings_from_reasons,
@@ -810,10 +812,10 @@ def _collect_feature_gap_artifacts(dashboard_outputs, data_view):
     all_transform_tasks = []
     all_alert_tasks = []
 
-    for result, yaml_path, dashboard in dashboard_outputs:
+    for result, artifact_stem, dashboard in dashboard_outputs:
         if result.translation_error:
             continue
-        result.yaml_path = str(yaml_path) if yaml_path is not None else ""
+        result.artifact_stem = str(artifact_stem or "")
         dashboard_links = translate_dashboard_links(dashboard)
         annotations = translate_annotations(dashboard, data_view=data_view)
         alert_tasks = build_alert_migration_tasks(extract_alerts_from_dashboard(dashboard))
@@ -1851,17 +1853,26 @@ def _print_schema_discovery_status(
 
 
 def _clear_dashboard_artifacts(
-    yaml_dir: Path,
     compiled_dir: Path,
     *,
     native_dir: Path | None = None,
     ir_dir: Path | None = None,
 ) -> int:
+    """Remove a previous run's dashboard artifacts from the output directory.
+
+    Also sweeps a ``yaml/`` sibling left behind by a pre-native release: the
+    pipeline no longer produces one, and leaving stale YAML next to fresh
+    ``native/`` artifacts would make ``upload --artifact-format auto`` see
+    mixed artifacts and refuse the upload.
+    """
     removed = 0
-    if yaml_dir.exists():
-        for yaml_file in yaml_dir.glob("*.yaml"):
+    legacy_yaml_dir = compiled_dir.parent / "yaml"
+    if legacy_yaml_dir.is_dir():
+        for yaml_file in legacy_yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+        if not any(legacy_yaml_dir.iterdir()):
+            legacy_yaml_dir.rmdir()
     for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
         if artifact_dir is not None and artifact_dir.exists():
             for artifact_file in artifact_dir.glob(pattern):
@@ -2080,7 +2091,6 @@ def _run_preflight_reporting(
 
 def _translate_dashboard_resilient(
     dashboard: dict,
-    yaml_dir: Path,
     *,
     datasource_index: str,
     esql_index: str,
@@ -2092,7 +2102,6 @@ def _translate_dashboard_resilient(
     try:
         return translate_dashboard(
             dashboard,
-            yaml_dir,
             datasource_index=datasource_index,
             esql_index=esql_index,
             rule_pack=rule_pack,
@@ -2216,14 +2225,12 @@ def main(argv: list[str] | None = None):
     )
 
     base_dir = dashboard_output_dir(root_output_dir)
-    yaml_dir = base_dir / "yaml"
     compiled_dir = base_dir / "compiled"
     native_dir = base_dir / "native"
     ir_dir = base_dir / "ir"
-    yaml_dir.mkdir(parents=True, exist_ok=True)
     compiled_dir.mkdir(parents=True, exist_ok=True)
     removed_stale_artifacts = _clear_dashboard_artifacts(
-        yaml_dir, compiled_dir, native_dir=native_dir, ir_dir=ir_dir,
+        compiled_dir, native_dir=native_dir, ir_dir=ir_dir,
     )
     if removed_stale_artifacts:
         print(f"\n  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {base_dir}")
@@ -2307,8 +2314,10 @@ def main(argv: list[str] | None = None):
         sys.exit(1)
     print(f"  Found {len(dashboards)} dashboards")
 
-    print("\n[2/7] Translating dashboards to YAML...")
+    print("\n[2/7] Translating dashboards...")
     results = []
+    # (result, artifact_stem, raw_dashboard); ``artifact_stem`` is None when
+    # translation raised, which is what downstream stages skip on.
     dashboard_outputs = []
     used_dashboard_stems: set[str] = set()
     for dashboard in dashboards:
@@ -2330,9 +2339,8 @@ def main(argv: list[str] | None = None):
             dashboard_resolver = resolver.copy_with_pack(dashboard_pack)
         else:
             dashboard_resolver = resolver
-        result, yaml_path = _translate_dashboard_resilient(
+        result, _unused_yaml_path = _translate_dashboard_resilient(
             dashboard,
-            yaml_dir,
             datasource_index=args.data_view,
             esql_index=args.esql_index or args.data_view,
             rule_pack=dashboard_pack,
@@ -2344,11 +2352,10 @@ def main(argv: list[str] | None = None):
             result.curated_pack = curated_pack_name
         if result.translation_error:
             results.append(result)
-            dashboard_outputs.append((result, yaml_path, dashboard))
+            dashboard_outputs.append((result, None, dashboard))
             continue
         if args.polish_metadata:
             polish_summary = apply_metadata_polish(
-                yaml_path,
                 result,
                 enable_ai=args.local_ai_polish,
                 ai_endpoint=args.local_ai_endpoint,
@@ -2364,7 +2371,7 @@ def main(argv: list[str] | None = None):
                     f"{len(polish_summary.get('control_labels', {}))} control label changes"
                 )
         results.append(result)
-        dashboard_outputs.append((result, yaml_path, dashboard))
+        dashboard_outputs.append((result, output_stem, dashboard))
         status_icon = "✓" if result.not_feasible == 0 else "⚠"
         print(
             f"  {status_icon} {result.dashboard_title}: "
@@ -2537,10 +2544,10 @@ def main(argv: list[str] | None = None):
         if args.suggest_rule_pack_out:
             write_suggested_rule_pack(args.suggest_rule_pack_out, validation_summary)
             print(f"  Suggested rule pack: {args.suggest_rule_pack_out}")
-        for result, yaml_path, _dashboard in dashboard_outputs:
-            if yaml_path is None:
+        for result, artifact_stem, _dashboard in dashboard_outputs:
+            if artifact_stem is None:
                 continue
-            sync_result_queries_to_yaml(result, yaml_path)
+            sync_result_queries_to_ir(result)
     else:
         print(
             "\n[3/7] Verification-packet ES|QL validation: skipped "
@@ -2548,13 +2555,28 @@ def main(argv: list[str] | None = None):
             "native PROMQL parse validation that runs with --es-url)"
         )
 
-    yaml_files = sorted(yaml_dir.glob("*.yaml"))
     # The YAML lint validates the DEPRECATED kb-dashboard-cli document shape.
     # The default typed Dashboards API upload never consumes it, so linting it
     # there only produces failures against a format the run does not use --
     # noise that reads as a migration problem. Run it only when something
     # actually consumes the YAML.
     _yaml_consumers = getattr(args, "compile", False) or getattr(args, "legacy_import", False)
+    # kb-dashboard-cli compile and the legacy `_import` upload are the only
+    # remaining consumers that need a YAML *file*. The migration's artifacts are
+    # native/ + ir/, so the YAML is rendered from each dashboard's IR into a
+    # scratch directory that is removed again before the run ends -- a migration
+    # never produces a `yaml/` artifact directory.
+    yaml_scratch_dir: Path | None = None
+    yaml_paths_by_stem: dict[str, Path] = {}
+    if _yaml_consumers:
+        yaml_scratch_dir = Path(tempfile.mkdtemp(prefix="obs-migrate-yaml-"))
+        for result, artifact_stem, _dashboard in dashboard_outputs:
+            if artifact_stem is None or result.dashboard_ir is None:
+                continue
+            yaml_paths_by_stem[artifact_stem] = write_dashboard_yaml(
+                result.dashboard_ir, yaml_scratch_dir, artifact_stem
+            )
+    yaml_files = [yaml_paths_by_stem[stem] for stem in sorted(yaml_paths_by_stem)]
     if not _yaml_consumers:
         print(
             "\n[4/7] Linting generated dashboard YAML: skipped "
@@ -2564,12 +2586,12 @@ def main(argv: list[str] | None = None):
     else:
         print("\n[4/7] Linting generated dashboard YAML...")
         yaml_lint_ok, yaml_lint_results, yaml_lint_output = _lint_generated_yaml_files(yaml_files)
-    for result, yaml_path, _dashboard in dashboard_outputs:
-        if yaml_path is None or not _yaml_consumers:
+    for result, artifact_stem, _dashboard in dashboard_outputs:
+        if artifact_stem is None or not _yaml_consumers:
             continue
         result.yaml_linted = True
         lint_ok, lint_output = yaml_lint_results.get(
-            Path(yaml_path).name,
+            f"{artifact_stem}.yaml",
             (False, "Dashboard YAML lint result missing."),
         )
         result.yaml_lint_error = "" if lint_ok else lint_output
@@ -2596,9 +2618,9 @@ def main(argv: list[str] | None = None):
             "\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli: skipped "
             "(native Dashboards API path; pass --compile or --legacy-import to enable)"
         )
-    elif yaml_lint_ok:
+    elif yaml_lint_ok and yaml_scratch_dir is not None:
         print("\n[5/7] Compiling YAML -> Kibana NDJSON via kb-dashboard-cli...")
-        compile_results = compile_all(yaml_dir, compiled_dir)
+        compile_results = compile_all(yaml_scratch_dir, compiled_dir)
     else:
         passing_lint = sum(1 for ok, _output in yaml_lint_results.values() if ok)
         if passing_lint:
@@ -2612,10 +2634,10 @@ def main(argv: list[str] | None = None):
         compile_results = _compile_linted_yaml_files(yaml_files, yaml_lint_results, compiled_dir)
 
     compile_map = {Path(name).stem: (ok, output) for name, ok, output in compile_results}
-    for result, yaml_path, _dashboard in dashboard_outputs:
-        if yaml_path is None:
+    for result, artifact_stem, _dashboard in dashboard_outputs:
+        if artifact_stem is None:
             continue
-        dashboard_stem = Path(yaml_path).stem
+        dashboard_stem = artifact_stem
         if not result.translation_error:
             result.compiled_path = str(compiled_dir / dashboard_stem / "compiled_dashboards.ndjson")
         compiled_state = compile_map.get(dashboard_stem)
@@ -2641,10 +2663,10 @@ def main(argv: list[str] | None = None):
 
     print("\n  Writing native Dashboard-as-Code review artifacts...")
     native_index_entries: list[dict[str, Any]] = []
-    for result, yaml_path, _dashboard in dashboard_outputs:
-        if yaml_path is None or result.dashboard_ir is None or result.native_dashboard is None:
+    for result, artifact_stem, _dashboard in dashboard_outputs:
+        if artifact_stem is None or result.dashboard_ir is None or result.native_dashboard is None:
             continue
-        stem = Path(yaml_path).stem
+        stem = artifact_stem
         native_path = write_native_artifact(
             dashboard_ir=result.dashboard_ir,
             native_dashboard=result.native_dashboard,
@@ -2691,14 +2713,14 @@ def main(argv: list[str] | None = None):
                 result.upload_error = upload_blocker
         else:
             compiled_ok_stems = {Path(name).stem for name, ok, _output in compile_results if ok}
-            for result, yaml_path, _dashboard in dashboard_outputs:
+            for result, artifact_stem, _dashboard in dashboard_outputs:
                 result.upload_attempted = True
-                if yaml_path is None:
+                if artifact_stem is None:
                     continue
-                if not use_dashboards_api and yaml_path.stem not in compiled_ok_stems:
+                if not use_dashboards_api and artifact_stem not in compiled_ok_stems:
                     result.uploaded = False
                     result.upload_error = "Upload skipped because this dashboard did not compile."
-                    print(f"  - {yaml_path.name} skipped (dashboard did not compile)")
+                    print(f"  - {artifact_stem} skipped (dashboard did not compile)")
                     continue
                 upload_kwargs: dict[str, Any] = {
                     "kibana_url": args.kibana_url,
@@ -2712,8 +2734,9 @@ def main(argv: list[str] | None = None):
                     upload_kwargs["native_dashboard"] = native_dashboard
                     upload_kwargs["native_dashboard_stats"] = getattr(result, "native_dashboard_stats", None)
                 upload_result = target_adapter.upload_dashboard(
-                    yaml_path,
-                    compiled_dir / yaml_path.stem,
+                    yaml_paths_by_stem.get(artifact_stem),
+                    compiled_dir / artifact_stem,
+                    artifact_label=artifact_stem,
                     **upload_kwargs,
                 )
                 ok = upload_result["success"]
@@ -2726,12 +2749,17 @@ def main(argv: list[str] | None = None):
                 result.uploaded_space = upload_space or target_space
                 result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
-                print(f"  {icon} {yaml_path.name}")
+                print(f"  {icon} {artifact_stem}")
                 if not ok:
                     for line in output.strip().splitlines()[:10]:
                         print(f"    {line}")
                 for warning in result.upload_warnings:
                     print(f"    warning: {warning}", file=sys.stderr)
+
+    if yaml_scratch_dir is not None:
+        # Every YAML consumer (lint, compile, legacy _import) has run.
+        shutil.rmtree(yaml_scratch_dir, ignore_errors=True)
+        yaml_scratch_dir = None
 
     smoke_merge_summary = {}
     integrated_smoke_output = ""

@@ -42,10 +42,11 @@ class ScriptHelpCliTests(unittest.TestCase):
 
         self.assertRegex(script_text, re.compile(r"--assets\s+dashboards"))
         self.assertIn('ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"', script_text)
-        self.assertIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"', script_text)
+        self.assertIn('DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"', script_text)
         self.assertIn('COMPILED_DIR="$OUTPUT_DIR/dashboards/compiled"', script_text)
         self.assertIn('RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"', script_text)
-        self.assertNotIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/yaml"', script_text)
+        # A migration writes native/ + ir/, never a yaml/ directory.
+        self.assertNotIn("dashboards/yaml", script_text)
 
     def test_helper_scripts_default_to_dashboard_scoped_layouts(self):
         panel_help = subprocess.run(
@@ -55,7 +56,7 @@ class ScriptHelpCliTests(unittest.TestCase):
             text=True,
         )
 
-        self.assertIn("migration_output_native/dashboards/yaml", panel_help.stdout)
+        self.assertIn("migration_output_native/dashboards/ir", panel_help.stdout)
 
     def test_alert_support_scripts_use_canonical_alert_assets_and_paths(self):
         report_text = GENERATE_ALERT_SUPPORT_REPORT_SCRIPT.read_text(encoding="utf-8")

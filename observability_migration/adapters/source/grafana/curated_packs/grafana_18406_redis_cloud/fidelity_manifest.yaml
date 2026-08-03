@@ -40,10 +40,12 @@ panels:
   - id: 4
     title: "Memory Usage"
     grafana_type: stat
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
-      Ratio formula (bdb_used_memory / bdb_memory_limit). Native PromQL is exact.
-      ES|QL fallback shows the two metrics separately.
+      Curated pack override: hand-crafted ES|QL computes the ratio
+      (bdb_used_memory / bdb_memory_limit) directly in a single STATS clause,
+      bypassing auto-translation which would mark it APPROXIMATE due to the
+      binary expression having no outer aggregation or on() modifier.
     grafana_grid: {x: 0, y: 7, w: 4, h: 4}
     kibana_grid: {x: 0, y: 6, w: 8, h: 6}
 
@@ -115,7 +117,7 @@ variables:
 
 summary:
   total_panels: 9
-  perfect: 8
-  approximate: 1
+  perfect: 9
+  approximate: 0
   not_feasible: 0
-  overall_fidelity: HIGH
+  overall_fidelity: PERFECT

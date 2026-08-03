@@ -20,14 +20,18 @@ Dashboard authoring flow for local migration work:
   or local path explicitly so ordinary lint/test runs do not depend on live
   network availability.
 
-- Dashboard YAML lint and compiled-layout validation now run **automatically**
-  inside `obs-migrate compile`/`migrate` (in-process, via
-  `observability_migration.targets.kibana.{lint,layout}`). They no longer have
-  standalone scripts. To run them ad hoc:
+- Dashboard YAML lint and compiled-layout validation run **automatically**
+  inside `obs-migrate compile` and inside `migrate --compile`/`--legacy-import`
+  (in-process, via `observability_migration.targets.kibana.{lint,layout}`). They
+  no longer have standalone scripts. A migration writes no `yaml/` directory, so
+  ad-hoc lint needs a YAML directory of its own — either an externally supplied
+  one, or one rendered from a run's `ir/*.ir.json`
+  (`targets.kibana.compile.write_dashboard_yaml`; see
+  `docs/contributing/dev-commands.md`):
 
 ```python
 from observability_migration.targets.kibana.lint import lint_dashboard_yaml
-ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
+ok, output = lint_dashboard_yaml("/tmp/yaml-lint-input")
 
 from observability_migration.targets.kibana.layout import validate_compiled_layout
 ok, output = validate_compiled_layout("migration_output/dashboards/compiled")

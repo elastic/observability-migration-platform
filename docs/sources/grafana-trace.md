@@ -64,12 +64,12 @@ queries because the Kibana control applies the filter at dashboard level.
 | grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 22 | 0 | 0 | 0 | 1 |
 | grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
-| grafana | Kubernetes / Views / Global | 26 | 10 | 16 | 0 | 0 | 0 | 4 |
+| grafana | Kubernetes / Views / Global | 26 | 11 | 15 | 0 | 0 | 0 | 4 |
 | grafana | Kitchen Sink Panel Canary | 16 | 9 | 7 | 0 | 0 | 0 | 0 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Node Exporter Full | 117 | 43 | 74 | 0 | 0 | 0 | 16 |
 | grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 11 | 5 | 0 | 0 | 0 |
-| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 8 | 4 | 0 | 0 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 9 | 3 | 0 | 0 | 0 | 0 |
 
 **9 dashboards, 266 panels** audited from `infra/grafana/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
@@ -90,11 +90,11 @@ queries because the Kibana control applies the filter at dashboard level.
 | Count | Warning |
 |------:|---------|
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 35 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 35 | Grafana panel description is not carried into Kibana YAML automatically |
 | 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 24 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 22 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 20 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
+| 14 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
 | 9 | Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead |
 | 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
 | 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
@@ -163,6 +163,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -257,6 +258,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -800,6 +802,7 @@ ALERTS{alertstate="firing"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1050,6 +1053,7 @@ sum(
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1235,6 +1239,7 @@ http_requests_total{instance="$instance"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1330,6 +1335,7 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family` → translated histogram_quantile to PERCENTILE
 - `query_postprocessors` / `index_rewrite`
@@ -1422,6 +1428,7 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family` → translated histogram_quantile to PERCENTILE
 - `query_postprocessors` / `index_rewrite`
@@ -1514,6 +1521,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1610,6 +1618,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1706,6 +1715,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1802,6 +1812,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1898,6 +1909,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -1994,6 +2006,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2090,6 +2103,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2186,6 +2200,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2282,6 +2297,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2378,6 +2394,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2502,6 +2519,7 @@ count(up == 1)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2590,6 +2608,7 @@ scrape_duration_seconds
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2817,6 +2836,7 @@ up
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -2906,7 +2926,7 @@ TS metrics-prometheus-*
 | CPU Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
 | Memory Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
 | CPU Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE (NOT (mode RLIKE "idle\|iowait\|steal") OR (mod... |
-| Memory Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
+| Memory Utilization by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | CPU Throttled seconds by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
 | CPU Core Throttled by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_cpu_core_throttles_total{cluster="$cluster", job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_cpu_core_throttles_total IS NOT NULL \| ST... |
 | Kubernetes Pods QoS classes | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_status_qos_class{cluster="$cluster"}) by (qos_class) \|\|\| sum(kub... | TS metrics-prometheus-* \| WHERE kube_pod_status_qos_class IS NOT NULL OR kube_p... |
@@ -2994,7 +3014,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `Requests`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific), Approximated bargauge as bar chart
+- Semantic losses: Dropped variable-driven label filters during migration, Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific), Approximated bargauge as bar chart
 
 **Visual IR:**
 
@@ -3012,9 +3032,9 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
+**Semantic losses:** Dropped variable-driven label filters during migration; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3094,7 +3114,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `Requests`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
 
 **Visual IR:**
 
@@ -3112,9 +3132,9 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite; Approximated bargauge as bar chart
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3150,6 +3170,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family` → translated nested count(count()) expression
@@ -3238,6 +3259,7 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -3333,6 +3355,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -3422,6 +3445,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -3557,7 +3581,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `Requests`
 - Output groups: `time_bucket`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated grouped stat panel as summary table
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated grouped stat panel as summary table
 
 **Visual IR:**
 
@@ -3575,9 +3599,9 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Fused multi-target panel from independently translated ES|QL queries; Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align)
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Fused multi-target panel from independently translated ES|QL queries; Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align); Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3613,6 +3637,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -3704,6 +3729,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family` → translated nested avg over rate expression
@@ -3841,7 +3867,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `Memory_usage_in`
 - Output groups: `time_bucket`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
@@ -3859,9 +3885,9 @@ TS metrics-prometheus-*
 - targets: 2
 - transformations: 1
 
-**Warnings:** Grafana panel has 1 transformation(s); manual review recommended; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series; Applied Grafana transformation 'calculateField' as ES|QL rewrite
+**Warnings:** Grafana panel has 1 transformation(s); manual review recommended; Applied Grafana transformation 'calculateField' as ES|QL rewrite
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration
 
 **Notes:** Grafana panel has 1 transformation(s); manual review recommended
 
@@ -4081,6 +4107,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family` → translated nested avg over rate expression
@@ -4216,7 +4243,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `instance`
 - Output groups: `time_bucket, instance`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
@@ -4233,9 +4260,7 @@ TS metrics-prometheus-*
 
 - targets: 2
 
-**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math
-
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration
 
 **Verdict:** MINOR_ISSUE
 
@@ -4269,6 +4294,7 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4406,6 +4432,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4499,6 +4526,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4592,6 +4620,7 @@ sum(redis_connected_clients{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4686,6 +4715,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4780,6 +4810,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4877,6 +4908,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -4972,6 +5004,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5067,6 +5100,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5162,6 +5196,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5257,6 +5292,7 @@ sum(redis_commands_processed_total{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5355,6 +5391,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5453,6 +5490,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5550,6 +5588,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5643,6 +5682,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5738,6 +5778,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5824,7 +5865,7 @@ TS metrics-prometheus-*
 | Service Route Rate | `timeseries` → `line` | migrated | **CORRECT** | sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route) | TS metrics-prometheus-* \| WHERE status RLIKE "2.." \| WHERE http_requests_total... |
 | Queue Depth Bullet | `bargauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | avg(queue_depth) | TS metrics-prometheus-* \| WHERE queue_depth IS NOT NULL \| STATS queue_depth = ... |
 | Merged Request Streams | `timeseries` → `line` | migrated | **CORRECT** | rate(frontend_requests_total[5m]) \|\|\| rate(worker_jobs_total[5m]) | TS metrics-prometheus-* \| WHERE frontend_requests_total IS NOT NULL OR worker_j... |
-| Partial Target Drop | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(api_requests_total[5m]) \|\|\| avg(node_load1) \|\|\| histogram_quantile(0.... | TS metrics-prometheus-* \| WHERE api_requests_total IS NOT NULL OR node_load1 IS... |
+| Partial Target Drop | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(api_requests_total[5m]) \|\|\| avg(node_load1) \|\|\| histogram_quantile(0.... | TS metrics-prometheus-* \| STATS api_requests_total_A = CASE((api_requests_total... |
 | Native ESQL Errors | `barchart` → `bar` | migrated | **CORRECT** | FROM metrics-* \| WHERE service.name == "api" \| STATS errors = SUM(http.server.... | FROM metrics-* \| WHERE service.name == "api" \| STATS errors = SUM(http.server.... |
 | Namespace Pod Count | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_info) by (pod) | TS metrics-prometheus-* \| WHERE kube_pod_info IS NOT NULL \| STATS kube_pod_inf... |
 | SLO Burn Rate | `gauge` → `gauge` | migrated | **CORRECT** | avg(slo_burn_rate) | TS metrics-prometheus-* \| WHERE slo_burn_rate IS NOT NULL \| STATS slo_burn_rat... |
@@ -5865,6 +5906,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -5958,6 +6000,7 @@ avg(queue_depth)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -6052,6 +6095,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -6142,6 +6186,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -6167,9 +6212,11 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 
 ```
 TS metrics-prometheus-*
-| WHERE api_requests_total IS NOT NULL OR node_load1 IS NOT NULL
-| STATS api = RATE(api_requests_total), load = AVG_OVER_TIME(node_load1, 5m) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
-| KEEP time_bucket, api, load
+| STATS api_requests_total_A = CASE((api_requests_total IS NOT NULL), RATE(api_requests_total), NULL), node_load1_B = AVG(CASE((node_load1 IS NOT NULL), node_load1, NULL)), api_request_duration_seconds_C = PERCENTILE(CASE((api_request_duration_seconds IS NOT NULL), api_request_duration_seconds, NULL), 95) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| EVAL api = api_requests_total_A
+| EVAL load = node_load1_B
+| EVAL p95 = api_request_duration_seconds_C
+| KEEP time_bucket, api, load, p95
 | SORT time_bucket ASC
 ```
 
@@ -6184,7 +6231,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `api`
 - Output groups: `time_bucket`
-- Semantic losses: Dropped 1 incompatible target(s); showing 2 mergeable targets
+- Semantic losses: histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
 **Visual IR:**
 
@@ -6201,9 +6248,9 @@ TS metrics-prometheus-*
 
 - targets: 3
 
-**Warnings:** Dropped 1 incompatible target(s); showing 2 mergeable targets
+**Warnings:** Fused multi-target panel from independently translated ES|QL queries; histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
-**Semantic losses:** Dropped 1 incompatible target(s); showing 2 mergeable targets
+**Semantic losses:** histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
 **Verdict:** MINOR_ISSUE
 
@@ -6279,6 +6326,7 @@ sum(kube_pod_info) by (pod)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -6373,6 +6421,7 @@ avg(slo_burn_rate)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -6567,11 +6616,11 @@ FROM logs-*
 | SWAP Total | `stat` → `metric` | migrated | **MINOR_ISSUE** | node_memory_SwapTotal_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_SwapTotal_bytes IS NOT NULL \| STAT... |
 | CPU Basic | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL \| STATS nod... |
 | Memory Basic | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} \|\|\| node_memory_MemTo... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| Network Traffic Basic | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Network Traffic Basic | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
 | Disk Space Used Basic | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | 100 - ((node_filesystem_avail_bytes{instance="$node",job="$job",device!~'rootfs'... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
 | CPU | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL \| STATS nod... |
 | Memory Stack | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} - node_memory_MemFree_by... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| Network Traffic | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Network Traffic | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
 | Disk Space Used | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_filesystem_size_bytes{instance="$node",job="$job",device!~'rootfs'} - node_... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
 | Disk IOps | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
 | I/O Usage Read / Write | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job",device=~"$diskdevic... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
@@ -6623,7 +6672,7 @@ FROM logs-*
 | Systemd Units State | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_systemd_units{instance="$node",job="$job",state="activating"} \|\|\| node_s... | TS metrics-prometheus-* \| WHERE node_systemd_units IS NOT NULL \| STATS Activat... |
 | Disk IOps Completed | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
 | Disk R/W Data | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job"}[$__rate_interval])... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
-| Disk Average Wait Time | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_time_seconds_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_disk_read_time_seconds_total IS NOT NULL O... |
+| Disk Average Wait Time | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_read_time_seconds_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_disk_read_time_seconds_total IS NOT NULL O... |
 | Average Queue Size | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_weighted_seconds_total{instance="$node",job="$job"}[$__r... | TS metrics-prometheus-* \| WHERE node_disk_io_time_weighted_seconds_total IS NOT... |
 | Disk R/W Merged | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_merged_total{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_disk_reads_merged_total IS NOT NULL OR nod... |
 | Time Spent Doing I/Os | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL OR ... |
@@ -6705,6 +6754,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -7282,6 +7332,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family` → translated nested count(count()) expression
@@ -7464,6 +7515,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -7560,6 +7612,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -7654,6 +7707,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -7789,7 +7843,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `Busy_System`
 - Output groups: `time_bucket`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Visual IR:**
 
@@ -7808,9 +7862,9 @@ TS metrics-prometheus-*
 - field_overrides: 7
 - has_description: True
 
-**Warnings:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Approximated nested count(count()) as COUNT_DISTINCT(cpu); PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Notes:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
 
@@ -7846,6 +7900,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -7986,7 +8041,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `recv`
 - Output groups: `time_bucket`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
@@ -8005,11 +8060,9 @@ TS metrics-prometheus-*
 - field_overrides: 24
 - has_description: True
 
-**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
 
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
-
-**Notes:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+**Semantic losses:** Dropped variable-driven label filters during migration
 
 **Verdict:** MINOR_ISSUE
 
@@ -8286,6 +8339,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -8376,6 +8430,7 @@ prometheus_build_info{instance="$instance"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -8622,6 +8677,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -8718,6 +8774,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -8815,6 +8872,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9012,6 +9070,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9108,6 +9167,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9204,6 +9264,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family` → translated nested max expression
@@ -9296,6 +9357,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9395,6 +9457,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9492,6 +9555,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9581,9 +9645,9 @@ TS metrics-prometheus-*
 | Total Memory Usage | `graph` → `line` | migrated | **MINOR_ISSUE** | redis_memory_used_bytes{instance=~"$instance"}  \|\|\| redis_memory_max_bytes{in... | TS metrics-prometheus-* \| WHERE redis_memory_used_bytes IS NOT NULL OR redis_me... |
 | Network I/O | `graph` → `line` | migrated | **MINOR_ISSUE** | rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) \|\|\| rate(redis_n... | TS metrics-prometheus-* \| WHERE redis_net_input_bytes_total IS NOT NULL OR redi... |
 | Total Items per DB | `graph` → `area` | migrated | **MINOR_ISSUE** | sum (redis_db_keys{instance=~"$instance"}) by (db) | TS metrics-prometheus-* \| WHERE redis_db_keys IS NOT NULL \| STATS redis_db_key... |
-| Expiring vs Not-Expiring Keys | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc... | TS metrics-prometheus-* \| WHERE redis_db_keys IS NOT NULL OR redis_db_keys_expi... |
+| Expiring vs Not-Expiring Keys | `graph` → `area` | migrated | **MINOR_ISSUE** | sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc... | TS metrics-prometheus-* \| WHERE redis_db_keys IS NOT NULL OR redis_db_keys_expi... |
 | Expired / Evicted | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) \|\... | TS metrics-prometheus-* \| WHERE redis_expired_keys_total IS NOT NULL OR redis_e... |
-| Command Calls / sec | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | topk(5, irate(redis_commands_total{instance=~"$instance"} [1m])) | TS metrics-prometheus-* \| WHERE redis_commands_total IS NOT NULL \| STATS _buck... |
+| Command Calls / sec | `graph` → `area` | migrated_with_warnings | **MINOR_ISSUE** | topk(5, irate(redis_commands_total{instance=~"$instance"} [1m])) | TS metrics-prometheus-* \| WHERE redis_commands_total IS NOT NULL \| STATS value... |
 | Redis connected clients | `graph` → `line` | migrated | **MINOR_ISSUE** | redis_connected_clients{instance="$instance"} | TS metrics-prometheus-* \| WHERE redis_connected_clients IS NOT NULL \| STATS re... |
 
 <details>
@@ -9619,6 +9683,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9710,6 +9775,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9886,6 +9952,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -9978,6 +10045,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10071,6 +10139,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10164,6 +10233,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10257,6 +10327,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10386,7 +10457,7 @@ TS metrics-prometheus-*
 - Target index: `metrics-prometheus-*`
 - Output metric: `not_expiring`
 - Output groups: `time_bucket`
-- Semantic losses: Approximated PromQL arithmetic using same-bucket ES|QL math, Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
@@ -10403,9 +10474,7 @@ TS metrics-prometheus-*
 
 - targets: 2
 
-**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
-
-**Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration
 
 **Verdict:** MINOR_ISSUE
 
@@ -10439,6 +10508,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10534,7 +10604,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_translators` / `uptime_family`
 - `query_translators` / `join_family`
 - `query_translators` / `binary_expr_family`
-- `query_translators` / `topk_family` → translated grouped topk expression
+- `query_translators` / `topk_family` → translated grouped topk as time-series breakdown for XY panel
 - `query_postprocessors` / `index_rewrite`
 - `query_postprocessors` / `render_esql`
 - `query_postprocessors` / `value_wrapper_transforms`
@@ -10557,12 +10627,8 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 ```
 TS metrics-prometheus-*
 | WHERE redis_commands_total IS NOT NULL
-| STATS _bucket_value = AVG(IRATE(redis_commands_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), cmd
+| STATS value = AVG(IRATE(redis_commands_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), cmd
 | SORT time_bucket ASC
-| STATS value = LAST(_bucket_value, time_bucket) BY cmd
-| KEEP cmd, value
-| SORT value DESC
-| LIMIT 5
 ```
 
 **Query IR:**
@@ -10571,12 +10637,12 @@ TS metrics-prometheus-*
 - Metric: `redis_commands_total`
 - Range func: `irate`
 - Range window: `1m`
-- Output shape: `table`
+- Output shape: `time_series`
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `value`
-- Output groups: `cmd`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Output groups: `time_bucket, cmd`
+- Semantic losses: Dropped variable-driven label filters during migration, Translated topk() as time-series breakdown by cmd; ES|QL has no subquery support so all series are shown (top-5 filtering approximated)
 
 **Visual IR:**
 
@@ -10593,9 +10659,9 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Warnings:** Translated grouped topk() as latest-bucket ES|QL top N
+**Warnings:** Translated topk() as time-series breakdown by cmd; ES|QL has no subquery support so all series are shown (top-5 filtering approximated)
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; Translated topk() as time-series breakdown by cmd; ES|QL has no subquery support so all series are shown (top-5 filtering approximated)
 
 **Verdict:** MINOR_ISSUE
 
@@ -10629,6 +10695,7 @@ redis_connected_clients{instance="$instance"}
 - `query_translators` / `binary_expr_family`
 - `query_translators` / `topk_family`
 - `query_translators` / `label_replace_family`
+- `query_translators` / `label_join_family`
 - `query_translators` / `scaled_agg_family`
 - `query_translators` / `histogram_quantile_family`
 - `query_translators` / `nested_agg_family`
@@ -10716,8 +10783,8 @@ From the latest trace run:
 ```
 Elements:            289 total (266 panels + 23 rows)
 Renderable panels:   266
-  Migrated:             109 (41.0%)
-  With warnings:        150 (56.4%)
+  Migrated:             114 (42.9%)
+  With warnings:        145 (54.5%)
   Requires manual:        5 (1.9%)
   Not feasible:           1 (0.4%)
   Skipped:                1 (0.4%)
@@ -10750,4 +10817,4 @@ Every panel marked `not_feasible` in the trace run (1 total):
 
 ---
 
-*Last generated: 2026-08-02 17:51 UTC*
+*Last generated: 2026-08-03 17:23 UTC*

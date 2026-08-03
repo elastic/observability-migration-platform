@@ -380,7 +380,7 @@ def _verifier_payload_with_one_panel(
         dashboard_uid="dash-1",
         dashboard_title="Dash 1",
         t1_translator_esql=t3,
-        t2_yaml_esql=t3,
+        t2_ir_esql=t3,
         t3_ndjson_esql=t3,
         t4_cluster_esql=t3,
         verdict=verdict,

@@ -69,7 +69,7 @@ set -a && source serverless_creds.env && set +a
 INPUT_DIR="infra/grafana/dashboards"
 OUTPUT_DIR="migration_output_native"
 ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"
-DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"
+DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"
 COMPILED_DIR="$OUTPUT_DIR/dashboards/compiled"
 RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"
 DATA_VIEW="metrics-*"
@@ -105,7 +105,7 @@ if [ "$SKIP_DATA" = false ]; then
   DATA_HOURS="${DATA_HOURS:-6}" \
   INTERVAL_SEC="${INTERVAL_SEC:-30}" \
   BATCH_DOC_LIMIT="${BATCH_DOC_LIMIT:-8000}" \
-    $VENV "$SCRIPT_DIR/setup_telemetry_data.py" "$DASHBOARD_YAML_DIR" "${PURGE_FLAG[@]}"
+    $VENV "$SCRIPT_DIR/setup_telemetry_data.py" "$DASHBOARD_ARTIFACT_DIR" "${PURGE_FLAG[@]}"
 fi
 
 if [ "$SKIP_UPLOAD" = false ]; then
@@ -141,7 +141,7 @@ if [ "$SKIP_UPLOAD" = false ]; then
   echo "  Step 5: Validate panel queries against live ES"
   echo "============================================================"
   MAX_BROKEN_PCT="${MAX_BROKEN_PCT:-10}" \
-    $VENV "$SCRIPT_DIR/validate_panel_queries.py" "$DASHBOARD_YAML_DIR"
+    $VENV "$SCRIPT_DIR/validate_panel_queries.py" "$DASHBOARD_ARTIFACT_DIR"
 fi
 
 echo ""
@@ -149,5 +149,5 @@ echo "============================================================"
 echo "  Pipeline complete"
 echo "============================================================"
 echo "Output dir:         $OUTPUT_DIR"
-echo "Dashboard YAML:     $DASHBOARD_YAML_DIR"
+echo "Dashboard artifacts: $DASHBOARD_ARTIFACT_DIR (native/, ir/)"
 echo "Run summary:        $RUN_SUMMARY"

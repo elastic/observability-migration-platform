@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import write_dashboard_ir_artifact
 
 from observability_migration.targets.kibana import (
     interaction_audit_local as local,
@@ -244,6 +245,78 @@ def test_native_artifact_counts_match_payload_and_declared_expectations(tmp_path
     assert counts["mapped"] == 8
     assert counts["unmapped"] == 0
     assert counts["controls"] == 7
+
+
+def test_lint_migration_artifacts_reads_the_ir_and_keeps_the_param_gate(tmp_path):
+    """The pre-live-validation lint reads ``ir/*.ir.json``, not ``yaml/*.yaml``.
+
+    Two behaviours must survive the move: the "no dashboards emitted" failure
+    (which now has to name ``ir/``) and the issue-#131/#282 gate that an
+    emitted ``?param``/``??param`` is bound by a control. The kb-dashboard-lint
+    pass is deliberately dropped -- it lints the deprecated YAML export.
+    """
+    artifact_root = tmp_path / "dashboards"
+    artifact_root.mkdir()
+
+    with pytest.raises(FileNotFoundError, match=r"ir$|ir/|no dashboard IR"):
+        local.lint_migration_artifacts(artifact_root)
+
+    # An unbound ``?environment`` must fail the gate.
+    write_dashboard_ir_artifact(
+        artifact_root,
+        {
+            "name": "Unbound",
+            "panels": [
+                {
+                    "title": "Metric",
+                    "esql": {
+                        "type": "metric",
+                        "query": (
+                            "FROM metrics-* | WHERE service.environment == "
+                            "?environment | STATS value = AVG(v)"
+                        ),
+                    },
+                }
+            ],
+        },
+        stem="unbound",
+    )
+    with pytest.raises(RuntimeError, match="unbound-esql-param"):
+        local.lint_migration_artifacts(artifact_root)
+
+    # Binding it with an ES|QL control clears the gate.
+    write_dashboard_ir_artifact(
+        artifact_root,
+        {
+            "name": "Unbound",
+            "controls": [
+                {
+                    "type": "esql",
+                    "variable_name": "environment",
+                    "variable_type": "values",
+                    "query": "FROM metrics-* | KEEP service.environment",
+                }
+            ],
+            "panels": [
+                {
+                    "title": "Metric",
+                    "esql": {
+                        "type": "metric",
+                        "query": (
+                            "FROM metrics-* | WHERE service.environment == "
+                            "?environment | STATS value = AVG(v)"
+                        ),
+                    },
+                }
+            ],
+        },
+        stem="unbound",
+    )
+    local.lint_migration_artifacts(artifact_root)
+
+    documents = local.load_dashboard_documents_from_ir(artifact_root)
+    assert [name for name, _doc in documents] == ["unbound.ir.json"]
+    assert documents[0][1]["dashboards"][0]["name"] == "Unbound"
 
 
 def test_runtime_contract_preserves_query_panel_denominator():

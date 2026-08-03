@@ -42,6 +42,9 @@ source-specific rewrite logic.
 `observability_migration/targets/kibana/compile.py` exposes the shared runtime
 functions:
 
+- `dashboard_yaml_text()` / `write_dashboard_yaml()` render the deprecated
+  kb-dashboard YAML document from a `DashboardIR` (in memory, or into a caller-
+  owned scratch directory). A migration writes no YAML artifact directory.
 - `compile_yaml()` and `compile_all()` compile dashboard YAML to NDJSON.
 - `upload_yaml()` compiles and uploads a dashboard through `kb-dashboard-cli`
   (legacy path).
@@ -57,8 +60,16 @@ functions:
   (`observability_migration.targets.kibana.lint`).
 - `validate_compiled_layout()` runs the in-process layout validator
   (`observability_migration.targets.kibana.layout`).
-- `sync_result_queries_to_yaml()` rebuilds `DashboardIR` after post-validation
-  query rewrites and re-derives both native payload and on-disk YAML.
+- `sync_result_queries_to_ir()` rebuilds `DashboardIR` after post-validation
+  query rewrites and re-derives the native payload from it (it writes no YAML).
+  The rebuild goes through the YAML document shape, which can only carry
+  `compile.YAML_ROUND_TRIPPED_IR_FIELDS`, so every other IR field --
+  dashboard identity (`uid`/`folder`/`tags`), lineage and the referenced asset
+  collections -- is carried across from the pre-rebuild IR. Adding a
+  `DashboardIR` field means classifying it in
+  `compile.YAML_ROUND_TRIPPED_IR_FIELDS` or
+  `compile.IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD`; an exhaustiveness test
+  fails until you do.
 
 The **default** upload path is the typed Dashboards API (no
 `kb-dashboard-cli`). Compilation and the `--legacy-import` fallback shell out
@@ -122,18 +133,20 @@ written paths as `native_artifact_path` / `ir_artifact_path`, and
 ### `obs-migrate upload` Input Shape
 
 `obs-migrate upload` takes `--artifact-dir <path>`: the dashboard artifact
-directory, or directly its `native/` or `yaml/` child. `--artifact-format`
+directory, or directly its `native/` child. `--artifact-format`
 (`auto` default, `native`, or `yaml`) picks the representation -- `auto`
 prefers the reviewed native artifacts when present, else falls back to
-mapping YAML through Kibana's typed Dashboards API. With `--legacy-import`
-(which forces `--artifact-format yaml`), it instead recompiles every YAML
-through the `kb-dashboard-cli` resolution path and imports the resulting
-saved objects. The accepted shapes are:
+mapping YAML through Kibana's typed Dashboards API. Because a migration writes
+no YAML, `auto` always resolves to `native/` for its own output; the YAML branch
+exists for an externally supplied (hand-written or archived) YAML directory. With
+`--legacy-import` (which forces `--artifact-format yaml`), it instead recompiles
+every YAML through the `kb-dashboard-cli` resolution path and imports the
+resulting saved objects. The accepted shapes are:
 
 - A directory containing `*.native.json` review artifacts directly (e.g. `migration_output/dashboards/native`).
-- A directory containing `*.yaml` dashboard files directly (e.g. `migration_output/dashboards/yaml`).
-- A dashboard artifacts directory that holds `native/` and/or `yaml/` subdirectories (e.g. `migration_output/dashboards`).
-- The compiled sibling of a dashboard artifacts directory, because the command falls back to the sibling `yaml/` directory (e.g. `migration_output/dashboards/compiled`).
+- A dashboard artifacts directory that holds `native/` (e.g. `migration_output/dashboards`).
+- A directory containing externally supplied `*.yaml` dashboard files directly.
+- A directory that holds a `yaml/` subdirectory of externally supplied YAML, or that directory's `compiled/` sibling (the command falls back to the sibling `yaml/` directory).
 
 When `--artifact-format auto` sees both native artifacts and YAML under an
 artifact root, it requires their stems to match exactly. A partial/mixed tree

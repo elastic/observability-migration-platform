@@ -1,0 +1,194 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated Kibana layout for Datadog "Redis - Overview" dashboard.
+# The auto-translated layout inherits Datadog's 12-col free-form grid, which
+# produces asymmetric splits and tall note panels. This pack replaces it with
+# a clean 48-column Kibana-native layout.
+#
+# Match: title_contains is case-insensitive substring match on dashboard.title.
+
+match:
+  title_contains: "Redis - Overview"
+
+# sections[] controls collapsed state and panel positions within each section.
+#
+# A panels[] entry selects one leaf panel with, in combination:
+#   title  exact match on the *emitted* panel title (skipped when omitted/empty)
+#   kind   the panel's presentation block: markdown | esql | lens | links | image
+#          (skipped when omitted)
+#   nth    0-based index among the panels that matched title/kind, in section
+#          order (defaults to 0)
+#
+# Emitted titles, not Datadog source titles, are the keys here: the generator
+# de-duplicates and back-fills titles before this pack is applied, so a repeated
+# source title arrives as "Cache hit rate" + "Cache hit rate (widget 21)", and an
+# untitled note arrives as "Datadog note <widget id>" or "Datadog note <ordinal>".
+# Notes are therefore matched by `kind: markdown` + nth: generated note titles are
+# unstable (the ordinal ones shift whenever the panel count changes), while "the
+# nth markdown panel in this section" is stable.
+#
+# Coverage must be complete. Any leaf panel no entry matches keeps its
+# auto-generated position, which the generator reports as a warning before
+# re-running generic overlap resolution over the section.
+
+sections:
+  - title: "About Redis"
+    collapsed: true
+    panels:
+      - kind: markdown
+        nth: 0
+        size: {w: 24, h: 8}
+        position: {x: 0, y: 0}
+      - kind: markdown
+        nth: 1
+        size: {w: 24, h: 8}
+        position: {x: 24, y: 0}
+
+  - title: "Overview"
+    collapsed: false
+    panels:
+      # Row 0: 4 stats across the full width
+      - title: "Hit rate"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 0}
+      - title: "Blocked clients"
+        size: {w: 12, h: 6}
+        position: {x: 12, y: 0}
+      - title: "Redis keyspace"
+        size: {w: 12, h: 6}
+        position: {x: 24, y: 0}
+      - title: "Unsaved changes"
+        size: {w: 12, h: 6}
+        position: {x: 36, y: 0}
+      # Row 1: Primary link down stat + explanatory note
+      - title: "Primary link down"
+        size: {w: 24, h: 8}
+        position: {x: 0, y: 6}
+      - kind: markdown
+        nth: 0
+        size: {w: 24, h: 8}
+        position: {x: 24, y: 6}
+
+  - title: "Performance Metrics"
+    collapsed: false
+    panels:
+      # Row 0: Latency chart (wide) + note (narrow)
+      - title: "Latency by Host"
+        size: {w: 36, h: 12}
+        position: {x: 0, y: 0}
+      - kind: markdown
+        nth: 0
+        size: {w: 12, h: 12}
+        position: {x: 36, y: 0}
+      # Row 1: Cache hit rate stat + line side-by-side
+      - title: "Cache hit rate"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 12}
+      - title: "Cache hit rate (widget 21)"
+        size: {w: 36, h: 12}
+        position: {x: 12, y: 12}
+      # Row 2: Slowlog tables side-by-side
+      - title: "Slowlog duration"
+        size: {w: 28, h: 12}
+        position: {x: 0, y: 24}
+      - title: "Slowlog query rates"
+        size: {w: 20, h: 12}
+        position: {x: 28, y: 24}
+      # Row 3: CPU (full width)
+      - title: "Average CPU usage"
+        size: {w: 48, h: 12}
+        position: {x: 0, y: 36}
+      # Row 4: Replication delay (full width)
+      - title: "Average replication delay (offset)"
+        size: {w: 48, h: 12}
+        position: {x: 0, y: 48}
+
+  - title: "Memory Metrics"
+    collapsed: false
+    panels:
+      # Row 0: Memory % chart + note
+      - title: "Percent Used Memory by Host"
+        size: {w: 36, h: 12}
+        position: {x: 0, y: 0}
+      - kind: markdown
+        nth: 0
+        size: {w: 12, h: 12}
+        position: {x: 36, y: 0}
+      # Row 1: Evictions + Total allocated side-by-side
+      - title: "Evictions"
+        size: {w: 24, h: 12}
+        position: {x: 0, y: 12}
+      - title: "Total allocated memory"
+        size: {w: 24, h: 12}
+        position: {x: 24, y: 12}
+      # Row 2: Fragmentation stat + line
+      - title: "Fragmentation ratio"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 24}
+      - title: "Fragmentation ratio (widget 27)"
+        size: {w: 36, h: 12}
+        position: {x: 12, y: 24}
+
+  - title: "Base Activity Metrics"
+    collapsed: false
+    panels:
+      # Row 0: explanatory note (full width)
+      - kind: markdown
+        nth: 0
+        size: {w: 48, h: 6}
+        position: {x: 0, y: 0}
+      # Row 1: Commands/sec stat + Connected clients line
+      - title: "Commands per second"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 6}
+      - title: "Connected clients"
+        size: {w: 36, h: 12}
+        position: {x: 12, y: 6}
+      # Row 2: Blocked clients + Connected replicas
+      - title: "Blocked clients (widget 29)"
+        size: {w: 24, h: 12}
+        position: {x: 0, y: 18}
+      - title: "Connected replicas"
+        size: {w: 24, h: 12}
+        position: {x: 24, y: 18}
+      # Row 3: Rejected connections (full width)
+      - title: "Rejected connections"
+        size: {w: 48, h: 12}
+        position: {x: 0, y: 30}
+
+  - title: "Key Metrics"
+    collapsed: false
+    panels:
+      # Row 0: note (full width)
+      - kind: markdown
+        nth: 0
+        size: {w: 48, h: 6}
+        position: {x: 0, y: 0}
+      # Row 1: Current total stat + Total keys line
+      - title: "Current total"
+        size: {w: 12, h: 6}
+        position: {x: 0, y: 6}
+      - title: "Total keys"
+        size: {w: 36, h: 12}
+        position: {x: 12, y: 6}
+      # Row 2: Expired keys + Keys with expiration stat + Key length distribution
+      - title: "Expired keys"
+        size: {w: 24, h: 12}
+        position: {x: 0, y: 18}
+      - title: "Keys with expiration"
+        size: {w: 12, h: 6}
+        position: {x: 24, y: 18}
+      - title: "Key length distribution"
+        size: {w: 12, h: 12}
+        position: {x: 36, y: 18}
+
+  - title: "Logs"
+    collapsed: false
+    panels:
+      - title: "Error Logs"
+        size: {w: 24, h: 16}
+        position: {x: 0, y: 0}
+      - title: "All Logs"
+        size: {w: 24, h: 16}
+        position: {x: 24, y: 0}

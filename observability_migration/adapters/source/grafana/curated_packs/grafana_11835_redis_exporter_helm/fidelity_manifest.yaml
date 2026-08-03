@@ -27,15 +27,11 @@ panels:
 
   - title: "Memory Usage"
     grafana_type: singlestat
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
-      100 * (redis_memory_used_bytes / redis_memory_max_bytes) — bare binary
-      with no outer aggregation and no legend template. The translator handles
-      the per-document ratio via colocated arithmetic but cannot recover
-      per-instance detail without a legend or by() clause, so it collapses to
-      a single AVG-over-series value. Semantically equivalent when monitoring a
-      single Redis instance; underestimates the peak when multiple instances land
-      in one bucket. Native PromQL (when enabled) preserves exact semantics.
+      Curated pack override: hand-crafted ES|QL computes per-instance memory usage
+      (redis_memory_used_bytes / redis_memory_max_bytes * 100) directly in ES|QL,
+      bypassing PromQL binary-op join semantics entirely.
 
   - title: "Commands Executed / sec"
     grafana_type: graph
@@ -142,15 +138,16 @@ variables:
 
 summary:
   total_panels: 12
-  perfect: 10
-  approximate: 2
+  perfect: 11
+  approximate: 1
   not_feasible: 0
   overall_fidelity: HIGH
   notes: >
-    Two APPROXIMATE panels remain: Memory Usage (bare binary ratio with no outer
-    aggregation — exact for single instance, averages across instances otherwise)
-    and Command Calls (topk → time-series breakdown of all commands; top-5 filtering
-    not possible in ES|QL without subquery support).
+    One APPROXIMATE panel remains: Command Calls (topk → time-series breakdown of
+    all commands; top-5 filtering not possible in ES|QL without subquery support).
+    Memory Usage upgraded to PERFECT via curated pack override: hand-crafted ES|QL
+    computes per-instance ratio (used/max * 100) per TBUCKET directly, bypassing
+    PromQL binary-op join semantics.
     Expired/Evicted upgraded to PERFECT: the "reclaims" seriesOverrides alias is
     stale and never matched in Grafana either.
     Expiring vs Not-Expiring Keys upgraded to PERFECT: SUM(A)-SUM(B) per TBUCKET

@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -171,10 +170,11 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         dash = raw
     dash["__source_file__"] = str(dashboard_path)
 
-    tmp = tempfile.mkdtemp(prefix="audit_grafana_")
     try:
-        result, yaml_path = translate_dashboard(
-            dash, tmp,
+        # No output directory: translation writes nothing, and the audit reads
+        # the in-memory result / IR (see ``controls`` below).
+        result, _yaml_path = translate_dashboard(
+            dash,
             datasource_index=data_view,
             esql_index=data_view,
         )
@@ -189,8 +189,6 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
                 warnings=[f"Pipeline crashed: {exc}"],
             )],
         )
-
-    yaml_content = yaml_path.read_text() if yaml_path and yaml_path.exists() else ""
 
     panels = []
     for pr in result.panel_results:
@@ -243,16 +241,14 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         "skipped": result.skipped,
     }
 
-    controls = []
-    if yaml_content:
-        try:
-            import yaml as _yaml
-            doc = _yaml.safe_load(yaml_content) or {}
-            dashboards = doc.get("dashboards", [])
-            if dashboards:
-                controls = dashboards[0].get("controls", [])
-        except Exception:
-            pass
+    # Controls come straight from the translated ``DashboardIR``. This used
+    # to re-parse the emitted dashboard YAML off disk, which silently
+    # reported ``controls = []`` whenever the YAML was absent or unreadable.
+    dashboard_ir = getattr(result, "dashboard_ir", None)
+    controls = [
+        control.to_yaml_control()
+        for control in (getattr(dashboard_ir, "controls", None) or [])
+    ]
 
     return DashboardAudit(
         source="grafana",
@@ -262,7 +258,6 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         total_panels=result.total_panels,
         status_counts=counts,
         panels=panels,
-        yaml_content=yaml_content,
         controls=controls,
         feature_gap_summary=dict(getattr(result, "feature_gap_summary", {}) or {}),
     )

@@ -61,6 +61,12 @@ class IndexRewriteRuleModel(_StrictModel):
     replace: str
 
 
+class PanelQueryOverrideModel(_StrictModel):
+    title_match: str
+    esql_query: str
+    status_override: str = "migrated"
+
+
 class QueryConfigModel(_StrictModel):
     not_feasible_patterns: list[PatternRuleModel] = Field(default_factory=list)
     warning_patterns: list[PatternRuleModel] = Field(default_factory=list)
@@ -113,6 +119,7 @@ class QueryConfigModel(_StrictModel):
 class PanelConfigModel(_StrictModel):
     type_map: dict[str, str] = Field(default_factory=dict)
     skip_types: list[str] = Field(default_factory=list)
+    query_overrides: list[PanelQueryOverrideModel] = Field(default_factory=list)
 
 
 class ControlsConfigModel(_StrictModel):
@@ -199,6 +206,7 @@ __all__ = [
     "GrafanaRulePackModel",
     "IndexRewriteRuleModel",
     "PanelConfigModel",
+    "PanelQueryOverrideModel",
     "PatternRuleModel",
     "QueryConfigModel",
     "SchemaConfigModel",

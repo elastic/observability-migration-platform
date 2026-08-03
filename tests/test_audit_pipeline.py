@@ -104,5 +104,63 @@ class PipelineTraceSummaryTests(unittest.TestCase):
             )
 
 
+class GrafanaAuditControlsTests(unittest.TestCase):
+    """Controls are read from ``result.dashboard_ir``, not from emitted YAML.
+
+    The audit used to re-parse the dashboard YAML the translator had just
+    written and reported ``controls = []`` whenever that read failed, so a
+    dashboard with template variables looked like a dashboard with none.
+    """
+
+    def _dashboard_with_a_template_variable(self) -> dict:
+        return {
+            "title": "Controls Audit",
+            "uid": "controls-audit-1",
+            "schemaVersion": 30,
+            "templating": {
+                "list": [
+                    {
+                        "name": "instance",
+                        "type": "query",
+                        "datasource": {"type": "prometheus"},
+                        "query": "label_values(up, instance)",
+                        "multi": True,
+                        "current": {"text": "All", "value": "$__all"},
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "title": "Up",
+                    "type": "stat",
+                    "gridPos": {"w": 12, "h": 8, "x": 0, "y": 0},
+                    "targets": [{"refId": "A", "expr": "up", "instant": True}],
+                }
+            ],
+        }
+
+    def test_grafana_audit_reports_declared_controls(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_a_template_variable()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_grafana_dashboard(source, "metrics-*")
+
+        self.assertTrue(
+            audit.controls,
+            "expected the audit to report the dashboard's template variable",
+        )
+        names = {
+            str(control.get("variable_name") or control.get("field_name") or "")
+            for control in audit.controls
+        }
+        self.assertIn("instance", names)
+
+
 if __name__ == "__main__":
     unittest.main()

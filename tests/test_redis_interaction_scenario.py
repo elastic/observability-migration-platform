@@ -41,10 +41,7 @@ REDIS_SOURCE = REPO_ROOT / "infra/grafana/dashboards/redis-11835.json"
 REDIS_CONTROL_SCHEMA = REPO_ROOT / "infra/grafana/dashboards/control_schemas/redis-11835.json"
 
 _REDIS_BASELINE_WARNING_PANELS = (
-    "Memory Usage",
     "Network I/O",
-    "Expiring vs Not-Expiring Keys",
-    "Expired / Evicted",
     "Command Calls / sec",
 )
 

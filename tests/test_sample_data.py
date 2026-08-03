@@ -3,25 +3,47 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import requests
-import yaml
+from conftest import write_dashboard_ir_artifact
 
 from observability_migration.core import sample_data
 
 
-def _write_artifact(root: Path, query: str) -> Path:
-    yaml_dir = root / "yaml"
-    yaml_dir.mkdir(parents=True)
-    (yaml_dir / "dash.yaml").write_text(
-        yaml.safe_dump({"dashboards": [{"panels": [{"esql": {"query": query}}]}]}),
+def _write_artifact(root: Path, query: str, controls: list[dict] | None = None) -> Path:
+    """Write one dashboard IR artifact -- what the telemetry contract reads.
+
+    The fixture is described in the kb-dashboard-core ``dashboards[]`` shape
+    and converted with ``DashboardIR.from_yaml_dict``, the same conversion the
+    translator runs before writing ``ir/<stem>.ir.json``.
+    """
+    dashboard: dict = {"panels": [{"esql": {"query": query}}]}
+    if controls is not None:
+        dashboard["controls"] = controls
+    write_dashboard_ir_artifact(root, dashboard)
+    return root
+
+
+def _write_native_control_count(root: Path, controls: int) -> None:
+    """Declare ``controls`` dashboard controls the way the migration does."""
+    native_dir = root / "native"
+    native_dir.mkdir(parents=True, exist_ok=True)
+    (native_dir / "dash.native.json").write_text(
+        json.dumps({"title": "dash", "payload": {}, "mapping": {"controls": controls}}),
         encoding="utf-8",
     )
-    return root
+
+
+def _noop_request(method, path, body=None, content_type="application/json"):
+    if path == "/_bulk":
+        docs = [ln for ln in (body or b"").decode().splitlines() if ln.startswith('{"create"')]
+        return {"items": [{"create": {}} for _ in docs]}
+    return {"acknowledged": True}
 
 
 class SeedSampleDataTests(unittest.TestCase):
@@ -73,6 +95,73 @@ class SeedSampleDataTests(unittest.TestCase):
 
     def test_load_metric_kind_overrides_empty_without_files(self):
         self.assertEqual(sample_data.load_metric_kind_overrides([]), {})
+
+
+class ControlFieldSeedingGuardTests(unittest.TestCase):
+    """Declared controls that produce zero ``control_fields`` are fatal.
+
+    When the control-carrying artifact is unreadable, ``control_fields``
+    collapses from N to 0 while ``streams`` stays non-empty, so the
+    ``no telemetry requirements discovered`` guard does not fire. The seeded
+    documents then match no control selection and every filtered panel
+    renders empty — but the seed reports success.
+    """
+
+    _QUERY = "FROM logs-*\n| STATS count = COUNT(*) BY service.name"
+    _CONTROLS = [
+        {
+            "type": "options",
+            "label": "env",
+            "data_view": "logs-*",
+            "field": "deployment.environment",
+        }
+    ]
+
+    def test_raises_when_declared_controls_produce_no_control_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = _write_artifact(Path(tmp) / "dashboards", self._QUERY)
+            # The native artifacts declare 2 controls; the YAML declares none.
+            _write_native_control_count(artifact, 2)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                sample_data.seed_sample_data(
+                    [artifact], _noop_request, data_hours=1, interval_sec=3600,
+                    batch_docs=5000, max_combinations=12,
+                )
+
+        message = str(ctx.exception)
+        self.assertIn("no control fields discovered", message)
+        self.assertIn("2 dashboard control(s) are declared", message)
+        self.assertIn("native/*.native.json", message)
+
+    def test_passes_when_declared_controls_reach_the_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = _write_artifact(
+                Path(tmp) / "dashboards", self._QUERY, controls=self._CONTROLS
+            )
+            _write_native_control_count(artifact, 1)
+
+            summary = sample_data.seed_sample_data(
+                [artifact], _noop_request, data_hours=1, interval_sec=3600,
+                batch_docs=5000, max_combinations=12,
+            )
+
+        self.assertEqual(summary.errors, 0)
+        self.assertGreater(summary.ok, 0)
+
+    def test_no_declared_controls_means_no_assertion(self):
+        """Absence of evidence is not evidence: a dashboard genuinely
+        without controls must still seed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = _write_artifact(Path(tmp) / "dashboards", self._QUERY)
+            _write_native_control_count(artifact, 0)
+
+            summary = sample_data.seed_sample_data(
+                [artifact], _noop_request, data_hours=1, interval_sec=3600,
+                batch_docs=5000, max_combinations=12,
+            )
+
+        self.assertGreater(summary.ok, 0)
 
 
 class MakeEsRequestTests(unittest.TestCase):
@@ -219,8 +308,8 @@ class MakeEsRequestTests(unittest.TestCase):
 class SeedOrchestrationEdgeTests(unittest.TestCase):
     def test_seed_raises_on_empty_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
-            empty = Path(tmp) / "dashboards" / "yaml"
-            empty.mkdir(parents=True)  # no yaml files -> no streams
+            empty = Path(tmp) / "dashboards" / "ir"
+            empty.mkdir(parents=True)  # no IR artifacts -> no streams
             with self.assertRaises(RuntimeError):
                 sample_data.seed_sample_data(
                     [Path(tmp) / "dashboards"],

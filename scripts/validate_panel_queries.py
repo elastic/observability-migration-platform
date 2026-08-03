@@ -1,7 +1,11 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Validate every panel query in compiled YAML against the live ES cluster.
+"""Validate every migrated panel query against the live ES cluster.
+
+Reads ``<run>/dashboards/ir/*.ir.json`` -- the migration's semantic export --
+and rebuilds each dashboard document through ``DashboardIR``. The migration no
+longer writes dashboard YAML; ``ir/`` is the artifact it produces.
 
 Two-phase approach:
   Phase 1: Fetch field_caps once per index pattern, locally verify all
@@ -17,12 +21,16 @@ import json
 import os
 import re
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from observability_migration.core.assets.dashboard import DashboardIR
 
 ES_ENDPOINT = os.environ.get("ELASTICSEARCH_ENDPOINT", "")
 KEY = os.environ.get("KEY", "")
@@ -206,12 +214,29 @@ def phase2_validate(query: str) -> tuple[str, str, int]:
 # Panel extraction
 # ---------------------------------------------------------------------------
 
-def extract_panels(yaml_path: str):
-    with open(yaml_path) as f:
-        data = yaml.safe_load(f)
-    panels = []
-    for dash in data.get("dashboards", []):
-        _walk_panels(dash.get("panels", []), panels)
+def resolve_artifact_dir(artifact_dir: str) -> Path:
+    """Accept either an ``ir/`` directory or a dashboard artifact root.
+
+    ``migration_output/dashboards`` and ``migration_output/dashboards/ir`` both
+    resolve to the directory holding ``*.ir.json``.
+    """
+    path = Path(artifact_dir)
+    nested = path / "ir"
+    if not any(path.glob("*.ir.json")) and nested.is_dir():
+        return nested
+    return path
+
+
+def extract_panels(artifact_path: str | Path):
+    """Return the queryable panels of one ``*.ir.json`` artifact."""
+    with open(artifact_path) as f:
+        artifact = json.load(f)
+    dashboard_ir = artifact.get("dashboard_ir") if isinstance(artifact, dict) else None
+    if not isinstance(dashboard_ir, dict):
+        return []
+    dashboard = DashboardIR.from_dict(dashboard_ir).to_yaml_dict()
+    panels: list[dict] = []
+    _walk_panels(dashboard.get("panels", []), panels)
     return panels
 
 
@@ -224,6 +249,35 @@ def _walk_panels(items, out):
 
 
 # ---------------------------------------------------------------------------
+# Gate arithmetic
+# ---------------------------------------------------------------------------
+
+class EmptyCorpusError(RuntimeError):
+    """Raised when the gate has nothing to measure.
+
+    Zero validated panels used to divide out to ``broken_pct == 0``, which
+    is under every ``MAX_BROKEN_PCT`` threshold, so an empty corpus printed
+    ``VALIDATION PASSED``. There is no broken percentage of nothing.
+    """
+
+
+def broken_percentage(total_ok: int, total_err: int, total_empty: int) -> float:
+    """Return the broken-panel percentage, refusing a zero denominator.
+
+    Raises:
+        EmptyCorpusError: when no panel reached a verdict.
+    """
+    total = total_ok + total_err + total_empty
+    if total == 0:
+        raise EmptyCorpusError(
+            "0 panels reached a verdict (OK/ERROR/EMPTY), so there is no "
+            "broken percentage to compare against the threshold. Zero "
+            "validated panels is an error, not a pass."
+        )
+    return (total_err + total_empty) * 100 / total
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -233,16 +287,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "yaml_dir",
+        "artifact_dir",
         nargs="?",
-        default="migration_output_native/dashboards/yaml",
-        help="Directory containing compiled YAML dashboards",
+        default="migration_output_native/dashboards/ir",
+        help="Dashboard artifact directory: either the 'ir/' directory of "
+             "'*.ir.json' artifacts or the artifact root that holds it "
+             "(for example 'migration_output/dashboards')",
     )
     parser.add_argument(
         "specific",
         nargs="?",
         default=None,
-        help="Optional dashboard filename substring to filter on",
+        help="Optional dashboard artifact filename substring to filter on",
     )
     parser.add_argument(
         "--es-endpoint",
@@ -285,19 +341,19 @@ def main(argv: list[str] | None = None):
         print("ERROR: ELASTICSEARCH_ENDPOINT and KEY must be set (or pass --es-endpoint/--api-key)")
         return 1
 
-    yaml_dir = args.yaml_dir
+    artifact_dir = args.artifact_dir
     specific = args.specific
 
-    yaml_files = sorted(
-        f for f in os.listdir(yaml_dir)
-        if f.endswith(".yaml") and (not specific or specific in f)
+    resolved_dir = resolve_artifact_dir(artifact_dir)
+    artifact_files = sorted(
+        path for path in resolved_dir.glob("*.ir.json")
+        if not specific or specific in path.name
     )
 
     all_panels: list[tuple[str, str, str, str]] = []
-    for yf in yaml_files:
-        path = os.path.join(yaml_dir, yf)
-        dash_name = yf.replace(".yaml", "")
-        for panel in extract_panels(path):
+    for artifact_file in artifact_files:
+        dash_name = artifact_file.name[: -len(".ir.json")]
+        for panel in extract_panels(artifact_file):
             title = panel.get("title", "?")
             esql = panel.get("esql") or panel.get("promql") or {}
             query = esql.get("query", "") if isinstance(esql, dict) else ""
@@ -305,7 +361,19 @@ def main(argv: list[str] | None = None):
             if query:
                 all_panels.append((dash_name, title, ptype, query))
 
-    print(f"Found {len(all_panels)} panels across {len(yaml_files)} dashboards\n")
+    print(f"Found {len(all_panels)} panels across {len(artifact_files)} dashboards\n")
+
+    if not all_panels:
+        filter_note = f" matching '{specific}'" if specific else ""
+        print(
+            f"ERROR: no panel queries discovered in {resolved_dir}{filter_note}.\n"
+            f"  Searched {len(artifact_files)} *.ir.json artifact(s) for panels carrying an\n"
+            f"  'esql.query' or 'promql.query'; found none.\n"
+            "  Zero panels is an error, not a pass: an empty corpus makes the\n"
+            "  broken percentage 0%, which is under every threshold, so this\n"
+            "  gate used to report success without validating a single query."
+        )
+        return 1
 
     # Phase 1
     t0 = time.time()
@@ -387,8 +455,15 @@ def main(argv: list[str] | None = None):
             print(f"                  {detail}")
 
     total = total_ok + total_err + total_empty
-    broken = total_err + total_empty
-    broken_pct = (broken * 100 / total) if total else 0
+    try:
+        broken_pct = broken_percentage(total_ok, total_err, total_empty)
+    except EmptyCorpusError as exc:
+        print(
+            f"\nERROR: {exc}\n"
+            f"  {len(all_panels)} panel(s) were discovered in {resolved_dir} but "
+            f"none reached a verdict."
+        )
+        return 1
 
     print(f"\n{'#' * 70}")
     print(f"  TOTAL: OK={total_ok}  ERROR={total_err}  EMPTY={total_empty}  ({total_ok}/{total})")

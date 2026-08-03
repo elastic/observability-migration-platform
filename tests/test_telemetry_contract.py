@@ -8,13 +8,16 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+from conftest import ir_fixture_dir
 
 from observability_migration.core.telemetry_contract import (
     _extract_group_fields,
+    _resolve_ir_dir,
     _substitute_non_field_esql_params,
     build_combined_telemetry_contract,
     build_schema_change_report,
     build_telemetry_contract,
+    count_declared_controls,
     merge_metric_kind_overrides,
     metric_kinds_from_field_caps,
     metric_kinds_from_prometheus_metadata,
@@ -92,9 +95,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_build_contract_from_yaml_and_verification_packets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -163,9 +165,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_extracts_generic_data_requirements_from_esql_lens_and_promql(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -233,9 +234,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_seeds_each_late_bound_field_control_choice(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "late-bound.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "late-bound.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [{
@@ -290,9 +290,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_extracts_required_values_from_kql_function_filters(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "logs.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "logs.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -324,10 +323,10 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertEqual(logs["required_values"]["service.name"], ["redis"])
         self.assertEqual(logs["required_values"]["log.level"], ["error"])
 
-    def test_contract_finds_parent_verification_packets_when_given_yaml_dir(self):
+    def test_contract_finds_parent_verification_packets_when_given_ir_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "dashboards" / "yaml"
-            yaml_dir.mkdir(parents=True)
+            ir_dir = Path(tmpdir) / "dashboards" / "ir"
+            ir_dir.mkdir(parents=True)
             (Path(tmpdir) / "dashboards" / "verification_packets.json").write_text(
                 json.dumps(
                     {
@@ -344,7 +343,7 @@ class TelemetryContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            contract = build_telemetry_contract(yaml_dir)
+            contract = build_telemetry_contract(ir_dir)
 
         stream = contract["streams"]["metrics-*"]
         self.assertIn("packet_only_metric", stream["fields"])
@@ -353,9 +352,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_preserves_source_promql_requirements_from_manualized_packets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "node.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "node.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -440,9 +438,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_promql_discovery_handles_bare_metrics_ranges_and_negative_matchers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -478,9 +475,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_promql_group_labels_are_not_classified_as_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -543,9 +539,8 @@ class TelemetryContractTests(unittest.TestCase):
         # seeder generates it.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -589,9 +584,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_grouped_field_wins_over_metric_collision_in_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -622,9 +616,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_skips_translator_scaffold_aliases_as_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -664,9 +657,8 @@ class TelemetryContractTests(unittest.TestCase):
         # must treat it as a keyword, never harvest it as a gauge field.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -749,9 +741,8 @@ class TelemetryContractTests(unittest.TestCase):
         # metrics (node-exporter "Pressure" panel leaked CPU/Mem/Irq/I_O).
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -791,9 +782,8 @@ class TelemetryContractTests(unittest.TestCase):
         # ``Unknown column [<field>]``. It must be seeded as a gauge metric.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -831,9 +821,8 @@ class TelemetryContractTests(unittest.TestCase):
         # them would pollute the synthetic stream with phantom metric columns.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -876,9 +865,8 @@ class TelemetryContractTests(unittest.TestCase):
         # seeded values never match the regex and the panel returns zero rows.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -916,9 +904,8 @@ class TelemetryContractTests(unittest.TestCase):
         # values the panel immediately filters out.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -953,9 +940,8 @@ class TelemetryContractTests(unittest.TestCase):
         # be promoted to required patterns.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -993,9 +979,8 @@ class TelemetryContractTests(unittest.TestCase):
         # the very false-negative this fix targets.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1031,9 +1016,8 @@ class TelemetryContractTests(unittest.TestCase):
         # gauge field.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1068,9 +1052,8 @@ class TelemetryContractTests(unittest.TestCase):
         # (presence) is captured.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1103,9 +1086,8 @@ class TelemetryContractTests(unittest.TestCase):
         # The excluded value must not be seeded, exactly as for negated RLIKE.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1139,9 +1121,8 @@ class TelemetryContractTests(unittest.TestCase):
         # negation; its regex must not become a required pattern.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1175,9 +1156,8 @@ class TelemetryContractTests(unittest.TestCase):
         # paren-stack ``pop`` logic that a regression would otherwise mask.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1212,9 +1192,8 @@ class TelemetryContractTests(unittest.TestCase):
         # still skip ``!=`` and ``NOT LIKE`` for non-negated matchers.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1249,9 +1228,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_does_not_extract_duration_unit_as_metric(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1324,9 +1302,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_rejects_composite_template_required_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1357,9 +1334,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_contract_keeps_literal_label_prefixed_dimension_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1394,9 +1370,8 @@ class TelemetryContractTests(unittest.TestCase):
         # rows).
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1438,9 +1413,8 @@ class TelemetryContractTests(unittest.TestCase):
         # fields; only the real source metric is a field.
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1477,9 +1451,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_dashboard_controls_and_filters_are_contract_dimensions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1525,9 +1498,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_esql_control_value_queries_seed_presence_scoping_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1562,9 +1534,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_single_line_esql_control_query_parses_by_before_inline_pipes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1605,9 +1576,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_dashboard_control_fields_are_available_on_all_streams(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1655,10 +1625,10 @@ class TelemetryContractTests(unittest.TestCase):
 
     def test_combined_contract_merges_multiple_artifact_directories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            first = Path(tmpdir) / "first" / "dashboards" / "yaml"
-            second = Path(tmpdir) / "second" / "dashboards" / "yaml"
-            first.mkdir(parents=True)
-            second.mkdir(parents=True)
+            first_artifacts = Path(tmpdir) / "first" / "dashboards"
+            second_artifacts = Path(tmpdir) / "second" / "dashboards"
+            first = ir_fixture_dir(first_artifacts)
+            second = ir_fixture_dir(second_artifacts)
             (first / "a.yaml").write_text(
                 yaml.safe_dump({"dashboards": [{"panels": [{"esql": {"query": "FROM metrics-*\n| STATS value = SUM(first_metric)"}}]}]}),
                 encoding="utf-8",
@@ -1668,12 +1638,12 @@ class TelemetryContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            contract = build_combined_telemetry_contract([first.parent, second.parent])
+            contract = build_combined_telemetry_contract([first_artifacts, second_artifacts])
 
         self.assertIn("metrics-*", contract["streams"])
         self.assertIn("logs-*", contract["streams"])
         self.assertIn("first_metric", contract["streams"]["metrics-*"]["fields"])
-        self.assertEqual(contract["artifact_dirs"], [str(first.parent), str(second.parent)])
+        self.assertEqual(contract["artifact_dirs"], [str(first_artifacts), str(second_artifacts)])
 
     def test_schema_change_report_shows_source_and_target_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1712,9 +1682,8 @@ class TelemetryContractTests(unittest.TestCase):
     def test_schema_change_report_handles_lens_panels_without_translated_query(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "host_cpu.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "host_cpu.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -1769,9 +1738,8 @@ class TelemetryContractTests(unittest.TestCase):
         `title` field."""
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "host.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "host.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -2340,9 +2308,8 @@ class DimensionValueHygieneTests(unittest.TestCase):
         required dimension values — seeding them produces unqueryable series."""
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -2384,9 +2351,8 @@ class DimensionValueHygieneTests(unittest.TestCase):
     def test_legacy_bracket_template_variable_is_filtered(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -2427,9 +2393,8 @@ class MetricKindGaugeOverrideTests(unittest.TestCase):
         ``_Free`` gauge and trips a mapping ambiguity at index time)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -2694,9 +2659,8 @@ class KeywordMultifieldTests(unittest.TestCase):
     def test_dimension_referenced_with_keyword_suffix_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "dash.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
                 yaml.safe_dump(self._dd_dashboard(), sort_keys=False),
                 encoding="utf-8",
             )
@@ -2713,10 +2677,10 @@ class KeywordMultifieldTests(unittest.TestCase):
 
     def test_keyword_multifield_flag_survives_contract_combination(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            first = Path(tmpdir) / "a" / "dashboards" / "yaml"
-            second = Path(tmpdir) / "b" / "dashboards" / "yaml"
-            first.mkdir(parents=True)
-            second.mkdir(parents=True)
+            first_artifacts = Path(tmpdir) / "a" / "dashboards"
+            second_artifacts = Path(tmpdir) / "b" / "dashboards"
+            first = ir_fixture_dir(first_artifacts)
+            second = ir_fixture_dir(second_artifacts)
             (first / "dash.yaml").write_text(
                 yaml.safe_dump(self._dd_dashboard(), sort_keys=False),
                 encoding="utf-8",
@@ -2748,7 +2712,7 @@ class KeywordMultifieldTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            combined = build_combined_telemetry_contract([first.parent, second.parent])
+            combined = build_combined_telemetry_contract([first_artifacts, second_artifacts])
 
         fields = combined["streams"]["metrics-*"]["fields"]
         self.assertTrue(fields["deployment.environment"].get("keyword_multifield"))
@@ -2805,9 +2769,8 @@ class KeywordMultifieldTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"
-            yaml_dir = artifact_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "nginx.yaml").write_text(
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "nginx.yaml").write_text(
                 yaml.safe_dump(
                     {
                         "dashboards": [
@@ -2849,6 +2812,121 @@ class KeywordMultifieldTests(unittest.TestCase):
             {"404", "500"},
         )
         self.assertIn("nginx", logs["required_values"]["service.name"])
+
+
+class ResolveIrDirTests(unittest.TestCase):
+    """The ``ir/``-missing fallback must not be silent.
+
+    ``ir_dir = artifact_path / "ir"`` followed by an unconditional
+    ``if not ir_dir.exists(): ir_dir = artifact_path`` would root-glob
+    ``*.ir.json``, match nothing, and warn nothing — so a wrong artifact
+    path would look exactly like a dashboard with no queries.
+    """
+
+    def test_prefers_the_ir_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            (artifact_dir / "ir").mkdir(parents=True)
+            with self.assertNoLogs("observability_migration.core.telemetry_contract", "WARNING"):
+                resolved = _resolve_ir_dir(artifact_dir, caller="test")
+        self.assertEqual(resolved, artifact_dir / "ir")
+
+    def test_accepts_being_pointed_at_the_ir_dir_itself_without_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ir_dir = Path(tmpdir) / "dashboards" / "ir"
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "dash.ir.json").write_text(
+                json.dumps({"kind": "dashboard_ir", "dashboard_ir": {}}),
+                encoding="utf-8",
+            )
+            with self.assertNoLogs("observability_migration.core.telemetry_contract", "WARNING"):
+                resolved = _resolve_ir_dir(ir_dir, caller="test")
+        self.assertEqual(resolved, ir_dir)
+
+    def test_resolves_sibling_ir_dir_when_pointed_at_the_yaml_dir(self):
+        """``--yaml-dir`` still points scripts at ``yaml/``; find ``ir/`` next to it.
+
+        The YAML export is on its way out but the CLI flag that names it is a
+        documented compatibility alias, so pointing there must resolve to the
+        sibling IR directory rather than warning and finding nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            (artifact_dir / "yaml").mkdir(parents=True)
+            (artifact_dir / "ir").mkdir(parents=True)
+            with self.assertNoLogs("observability_migration.core.telemetry_contract", "WARNING"):
+                resolved = _resolve_ir_dir(artifact_dir / "yaml", caller="test")
+        self.assertEqual(resolved, artifact_dir / "ir")
+
+    def test_warns_when_neither_shape_matches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            with self.assertLogs(
+                "observability_migration.core.telemetry_contract", "WARNING"
+            ) as captured:
+                resolved = _resolve_ir_dir(artifact_dir, caller="unit-test-caller")
+        self.assertEqual(resolved, artifact_dir)
+        message = "\n".join(captured.output)
+        self.assertIn("no dashboard IR found", message)
+        self.assertIn("unit-test-caller", message)
+        self.assertIn(str(artifact_dir / "ir"), message)
+
+    def test_contract_build_warns_instead_of_silently_finding_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            with self.assertLogs(
+                "observability_migration.core.telemetry_contract", "WARNING"
+            ) as captured:
+                contract = build_telemetry_contract(artifact_dir)
+        self.assertEqual(contract["streams"], {})
+        self.assertIn("_iter_artifact_queries", "\n".join(captured.output))
+
+
+class CountDeclaredControlsTests(unittest.TestCase):
+    """``mapping.controls`` in the native artifacts is the YAML-independent
+    declaration of how many dashboard controls the source had."""
+
+    def _write_native(self, artifact_dir: Path, name: str, mapping: dict) -> None:
+        native_dir = artifact_dir / "native"
+        native_dir.mkdir(parents=True, exist_ok=True)
+        (native_dir / f"{name}.native.json").write_text(
+            json.dumps({"title": name, "payload": {}, "mapping": mapping}),
+            encoding="utf-8",
+        )
+
+    def test_sums_controls_across_native_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            self._write_native(artifact_dir, "a", {"controls": 2})
+            self._write_native(artifact_dir, "b", {"controls": 3})
+            self._write_native(artifact_dir, "c", {"controls": 0})
+            self.assertEqual(count_declared_controls(artifact_dir), 5)
+
+    def test_resolves_native_dir_when_pointed_at_yaml_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            (artifact_dir / "yaml").mkdir(parents=True)
+            self._write_native(artifact_dir, "a", {"controls": 4})
+            self.assertEqual(count_declared_controls(artifact_dir / "yaml"), 4)
+
+    def test_absent_native_artifacts_assert_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            self.assertEqual(count_declared_controls(artifact_dir), 0)
+
+    def test_unreadable_or_untyped_mapping_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            self._write_native(artifact_dir, "typed", {"controls": 1})
+            self._write_native(artifact_dir, "bool", {"controls": True})
+            self._write_native(artifact_dir, "text", {"controls": "two"})
+            (artifact_dir / "native" / "broken.native.json").write_text(
+                "{not json", encoding="utf-8"
+            )
+            self.assertEqual(count_declared_controls(artifact_dir), 1)
 
 
 if __name__ == "__main__":

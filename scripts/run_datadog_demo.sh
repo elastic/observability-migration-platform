@@ -329,7 +329,7 @@ if [[ $OUTPUT_DIR_SET -eq 0 ]]; then
 fi
 
 ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"
-DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"
+DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"
 RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"
 
 if [[ $INPUT_DIR_SET -eq 1 ]]; then
@@ -413,7 +413,7 @@ KEY="${ES_API_KEY:-dummy}" \
 DATA_HOURS="$DATA_HOURS" \
 INTERVAL_SEC="$INTERVAL_SEC" \
 BATCH_DOC_LIMIT="$BATCH_DOC_LIMIT" \
-  "$PYTHON_BIN" "$ROOT/scripts/setup_telemetry_data.py" "$DASHBOARD_YAML_DIR"
+  "$PYTHON_BIN" "$ROOT/scripts/setup_telemetry_data.py" "$DASHBOARD_ARTIFACT_DIR"
 
 wait_for_esql_query "metrics" "FROM $DATA_VIEW | LIMIT 1" 45 2
 wait_for_esql_query "logs" "FROM $LOGS_INDEX | LIMIT 1" 45 2
@@ -465,6 +465,6 @@ Datadog demo completed.
 
 Artifacts:
   Output: $OUTPUT_DIR
-  YAML:   $DASHBOARD_YAML_DIR
+  Artifacts: $DASHBOARD_ARTIFACT_DIR (native/, ir/)
   Run summary: $RUN_SUMMARY
 EOF

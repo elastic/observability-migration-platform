@@ -21,12 +21,16 @@ translated output, see the source-specific trace docs:
 This is the **shared** pipeline contract, not the exact dedicated CLI sequence
 for every source. The source adapters differ materially:
 
-- Grafana runs a broader end-to-end flow with translation, IR-first emission (`DashboardIR` → native Dashboards API payload + YAML), optional emitted-query validation, lint, optional compile/layout, optional upload, verification, and rollout artifacts.
+- Grafana runs a broader end-to-end flow with translation, IR-first emission (`DashboardIR` → native Dashboards API payload), optional emitted-query validation, optional lint/compile/layout, optional upload, verification, and rollout artifacts.
 - Datadog runs a more explicit `normalize -> plan -> translate -> emit` flow with capability-aware preflight, the same IR-first emission, first-class emitted-query validation, optional compile, first-class upload, post-upload smoke validation, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining gap is broader source execution coverage for logs and multi-query widgets.
 
 For both sources, `DashboardIR` is the primary working artifact after
-translation/assembly; native upload payload and on-disk YAML are derived from
-it. See `docs/architecture/asset-model.md`.
+translation/assembly; the native upload payload is derived from it, and the two
+persisted artifacts are `dashboards/native/*.native.json` and
+`dashboards/ir/*.ir.json`. A migration writes no dashboard YAML; the deprecated
+kb-dashboard YAML document is still derivable from the same IR and is rendered
+into a scratch directory only for `--compile` / `--legacy-import`. See
+`docs/architecture/asset-model.md`.
 
 For the exact source-specific stage order, see `docs/architecture.md`,
 `docs/sources/grafana.md`, and `docs/sources/datadog.md`.
@@ -63,19 +67,20 @@ Source dashboard files (Grafana JSON / Datadog JSON)
   │                         produces: emitted target query + QueryIR
   ▼
 [4] ASSEMBLE — panel type mapping, layout normalisation, variable→control, display enrichment
-  │              produces: DashboardIR (primary) → native Dashboards API payload + YAML
+  │              produces: DashboardIR (primary) → native Dashboards API payload
   │                        (+ VisualIR / OperationalIR snapshots for reporting)
   ▼
 [5] POLISH (optional) — improve titles and labels (heuristic or AI); rebuild DashboardIR
   │
   ▼
 [6] VALIDATE (optional) — run emitted target queries against Elasticsearch, fix/downgrade broken ones
-  │                        (rebuild DashboardIR; re-derive native + YAML)
+  │                        (rebuild DashboardIR; re-derive native payload)
   ▼
-[7] LINT — schema-validate derived YAML via kb-dashboard-lint
-  │
+[7] LINT (only with --compile / --legacy-import) — render scratch YAML from the IR,
+  │                        schema-validate it via kb-dashboard-lint
   ▼
-[8] COMPILE (optional) — YAML → Kibana NDJSON via kb-dashboard-cli (--compile / --legacy-import)
+[8] COMPILE (optional) — scratch YAML → Kibana NDJSON via kb-dashboard-cli
+  │                        (--compile / --legacy-import); scratch dir deleted afterwards
   │
   ▼
 [9] VERIFY — build verification packets, assign semantic gates, refresh OperationalIR
@@ -84,7 +89,7 @@ Source dashboard files (Grafana JSON / Datadog JSON)
 [10] REPORT — write migration_report.json, manifest, verification packets
   │
   ▼
-[11] UPLOAD (optional) — typed Dashboards API from native_dashboard / reviewed native artifact; YAML fallback by explicit format or absence
+[11] UPLOAD (optional) — typed Dashboards API from native_dashboard / reviewed native artifact; externally supplied YAML only by explicit format
   │
   ▼
 [12] SMOKE (optional) — validate uploaded dashboards in Kibana
@@ -154,9 +159,11 @@ reports, verification, and downstream analysis.
 
 - Source queries + layout + display metadata → kb-dashboard-core dict, then
   `DashboardIR` (primary working artifact)
-- From `DashboardIR`, derive both:
-  - native Dashboards API payload (`native_dashboard_from_ir`)
-  - on-disk YAML (`DashboardIR.to_yaml_dict`) for lint / `--compile` / explicit YAML upload
+- From `DashboardIR`, derive:
+  - the native Dashboards API payload (`native_dashboard_from_ir`) — persisted as
+    `dashboards/native/*.native.json`, alongside `dashboards/ir/*.ir.json`
+  - the kb-dashboard YAML document (`DashboardIR.to_yaml_dict`) — in memory only;
+    materialized into a scratch file for lint / `--compile` / `--legacy-import`
 - Grafana 24-column grid → Kibana 48-column grid
 - Template variables → Kibana dashboard controls / `pinned_panels` (both sources)
 - Display enrichment: units, legend, axis titles, thresholds, colour overrides
@@ -165,13 +172,13 @@ reports, verification, and downstream analysis.
 
 | Step | Tool / Module | Outcome |
 |------|--------------|---------|
-| 5. Polish | Heuristic / AI | Better panel titles; rebuild `DashboardIR` + re-derive native/YAML |
+| 5. Polish | Heuristic / AI | Better panel titles; rebuild `DashboardIR` + re-derive the native payload |
 | 6. Validate | `_query` API | Catches runtime errors early; same IR rebuild on fixes |
-| 7. Lint | `kb-dashboard-lint` | Schema validation of derived YAML |
-| 8. Compile (optional) | `kb-dashboard-cli` | YAML → Kibana NDJSON when `--compile` / `--legacy-import` |
+| 7. Lint | `kb-dashboard-lint` | Schema validation of the scratch YAML rendered from the IR (only with `--compile` / `--legacy-import`) |
+| 8. Compile (optional) | `kb-dashboard-cli` | Scratch YAML → Kibana NDJSON when `--compile` / `--legacy-import` |
 | 9. Verify | Semantic gates | Green / yellow / red quality signal |
 | 10. Report | `migration_report.json` | Persistent audit trail |
-| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
+| 11. Upload | Typed Dashboards API | Prefer in-memory `native_dashboard` from IR or reviewed native artifacts; externally supplied YAML maps only when native artifacts are absent or `--artifact-format yaml` is selected |
 | 12. Smoke | Saved-object check | Validates dashboards are loadable |
 | 13. Interaction audit (optional) | `targets/kibana/interaction_*.py` + Playwright | Control selection rewrites affected panel queries; see `docs/testing.md` |
 
@@ -185,11 +192,11 @@ reports, verification, and downstream analysis.
 | **Inventory** | Classifies query language | Wrong translator would run |
 | **Translation** | Source query → target query | Panel becomes `not_feasible` placeholder |
 | **QueryIR** | Typed contract of source meaning | Downstream analysis blind |
-| **Assembly** | Query + layout + display → `DashboardIR` → native + YAML | No deployable / lintable output |
+| **Assembly** | Query + layout + display → `DashboardIR` → native payload | No deployable artifact |
 | **Layout** | 24→48 col, overlap resolution | Visual layout corruption |
 | **Validation** | Runs query against ES | Errors surface only after upload |
-| **Lint** | Schema validation | Blocks optional compile / flags bad YAML |
-| **Compile** | Optional YAML → NDJSON | Only blocks `--legacy-import` / explicit `--compile` paths |
+| **Lint** | Schema validation of the scratch YAML | Blocks optional compile / flags a bad derived document |
+| **Compile** | Optional scratch YAML → NDJSON | Only blocks `--legacy-import` / explicit `--compile` paths |
 | **Upload** | Typed API from native IR (default) | Dashboard not in Kibana; legacy fallback may still succeed |
 | **Verification** | Semantic gates | All panels look equally trustworthy |
 | **Report** | Persistent audit trail | No post-run analysis |

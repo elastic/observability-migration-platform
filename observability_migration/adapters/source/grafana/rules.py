@@ -165,6 +165,7 @@ class RulePackConfig:
     metric_map: dict = field(default_factory=dict)
     panel_type_overrides: dict = field(default_factory=dict)
     skip_panel_types: list = field(default_factory=list)
+    panel_query_overrides: list = field(default_factory=list)
     index_rewrites: list = field(default_factory=list)
     native_promql: bool = False
     runtime_features: dict = field(default_factory=dict)
@@ -267,6 +268,13 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
 
         pack.panel_type_overrides.update(panel_cfg.type_map)
 
+        for override in panel_cfg.query_overrides:
+            pack.panel_query_overrides.append({
+                "title_match": override.title_match,
+                "esql_query": override.esql_query,
+                "status_override": override.status_override,
+            })
+
         for field_name in (
             "default_rate_window",
             "default_gauge_agg",
@@ -361,6 +369,14 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.label_rewrites.update(user.label_rewrites)
     result.panel_type_overrides.update(user.panel_type_overrides)
     result.control_field_overrides.update(user.control_field_overrides)
+
+    # panel_query_overrides: user overrides win by title_match
+    user_override_titles = {o["title_match"] for o in user.panel_query_overrides}
+    result.panel_query_overrides = [
+        o for o in result.panel_query_overrides
+        if o["title_match"] not in user_override_titles
+    ]
+    result.panel_query_overrides.extend(user.panel_query_overrides)
 
     # Lists: append-unique; user entries take precedence by appearing first
     for item in user.not_feasible_patterns:

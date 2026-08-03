@@ -72,7 +72,6 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 import requests
-import yaml
 
 LOG = logging.getLogger(__name__)
 
@@ -103,6 +102,22 @@ NOTE_UNPAIRED_KIBANA = "no_matching_grafana_panel"
 # Tuned to 2 KiB after observing that markdown / "Migration Required"
 # panels render in ~6 KiB while SAML redirect pages are ~3 KiB.
 MIN_REAL_SCREENSHOT_BYTES = 2 * 1024
+
+# Exit code for "the harness could not run at all". Distinct from 0
+# (ran, no regression) so a caller can tell a passing measurement from
+# an empty one.
+EXIT_NOTHING_TO_MEASURE = 2
+
+
+class EmptyPanelDiscoveryError(RuntimeError):
+    """Raised when a side of the comparison discovered zero panels.
+
+    Zero discovered panels used to sail through as a green run printing
+    ``captured=0 median=0.0000``, which is indistinguishable from a
+    perfect score. It is always an input/setup failure — a missing
+    migration output, an un-run migration, or the wrong Grafana UID —
+    so it is fatal.
+    """
 
 
 # --------------------------------------------------------------------- #
@@ -184,7 +199,7 @@ def list_grafana_panels(
 
     Panels are emitted in **migration-canonical walk order** so that
     position N in this list corresponds to position N in the migrated
-    Kibana dashboard's YAML/NDJSON. The order is:
+    Kibana dashboard's IR export / NDJSON. The order is:
 
     1. Top-level panels sorted by ``(gridPos.y, gridPos.x, id)``.
     2. When a row container is encountered in that sort, its
@@ -328,31 +343,43 @@ def _assign_runtime_ids(
 def list_kibana_panels_from_migration(
     migration_out: Path,
 ) -> list[dict[str, Any]]:
-    """Discover Kibana panels by reading the migration's YAML.
+    """Discover Kibana panels by reading the migration's IR export.
 
     We deliberately use the local artifacts rather than Kibana's API
     so the harness still works in environments where the cluster
     saved-object API is locked down (the verifier already handles
     this exact case the same way).
 
-    The migration YAML nests panels inside ``section.panels`` when
-    the source had Grafana rows; we recurse so every leaf panel is
-    discovered regardless of nesting depth. Section containers
-    themselves are excluded (they have no ES|QL / markdown to
-    render).
+    The source is ``ir/*.ir.json`` — the migration's semantic export,
+    written per dashboard next to the native Dashboards API payload.
+    Section containers hold their panels in ``children`` (the IR shape
+    of a Grafana row); we recurse so every leaf panel is discovered
+    regardless of nesting depth, and the containers themselves are
+    excluded (they have no ES|QL / markdown to render). Untitled leaf
+    panels are skipped, matching the pairing contract below where
+    identity is position within this list.
+
+    The IR walk order is the migration's canonical emit order, which is
+    what :func:`pair_panels_by_position` requires of this side.
 
     The ``id`` field is **the Kibana panel UUID** taken from the
     compiled NDJSON's ``panelsJSON.panelIndex`` (cross-referenced by
-    title). YAML alone doesn't carry the UUID; the compiled NDJSON
-    is the canonical source.
+    title). Neither the IR nor the YAML export carries the UUID — the
+    IR's own ``panel_id`` is a stable *migration* id, not a Kibana one,
+    so it must not be used to build a Kibana solo-panel URL. The
+    compiled NDJSON stays the canonical source for that.
     """
     panels: list[dict[str, Any]] = []
-    yaml_files = sorted(migration_out.glob("yaml/*.yaml"))
-    for yaml_file in yaml_files:
-        with open(yaml_file) as f:
-            doc = yaml.safe_load(f) or {}
-        for dash in doc.get("dashboards") or []:
-            _collect_yaml_panels(dash.get("panels") or [], panels)
+    for ir_file in sorted(migration_out.glob("ir/*.ir.json")):
+        try:
+            artifact = json.loads(ir_file.read_text())
+        except json.JSONDecodeError:
+            LOG.warning("skipping unparseable IR artifact %s", ir_file)
+            continue
+        dashboard_ir = (artifact or {}).get("dashboard_ir")
+        if not isinstance(dashboard_ir, dict):
+            continue
+        _collect_ir_panels(dashboard_ir.get("panels") or [], panels)
 
     # Backfill ``id`` from the compiled NDJSON, keyed on title.
     ndjson_panel_ids = _read_compiled_panel_ids_by_title(migration_out)
@@ -362,29 +389,40 @@ def list_kibana_panels_from_migration(
     return panels
 
 
-def _collect_yaml_panels(
+def _collect_ir_panels(
     panel_nodes: list[dict[str, Any]],
     out: list[dict[str, Any]],
 ) -> None:
-    """Recursively flatten the migration YAML's nested panel tree.
+    """Recursively flatten the IR's nested panel tree.
 
-    Walks ``section.panels`` children but skips the section node
-    itself. Leaf panels (markdown, esql, lens, ...) are appended to
-    ``out``.
+    Walks a section container's ``children`` but skips the container
+    node itself. Leaf panels (markdown, esql, lens, ...) are appended
+    to ``out`` with ``id`` left empty for the NDJSON UUID backfill and
+    ``type`` taken from the IR's resolved Kibana panel type.
     """
     for node in panel_nodes:
-        section = node.get("section")
-        if isinstance(section, dict):
-            _collect_yaml_panels(section.get("panels") or [], out)
+        if not isinstance(node, dict):
             continue
-        title = (node.get("title") or "").strip()
+        children = node.get("children")
+        if isinstance(children, list) and children:
+            _collect_ir_panels(children, out)
+            continue
+        if str(node.get("kind") or "panel").strip().lower() != "panel":
+            continue
+        visual = node.get("visual") if isinstance(node.get("visual"), dict) else {}
+        title = (visual.get("title") or node.get("title") or "").strip()
         if not title:
             continue
+        presentation = (
+            visual.get("presentation")
+            if isinstance(visual.get("presentation"), dict)
+            else {}
+        )
         out.append(
             {
-                "id": node.get("id") or node.get("panel_id") or "",
+                "id": "",
                 "title": title,
-                "type": node.get("type"),
+                "type": visual.get("kibana_type") or presentation.get("kind") or None,
             }
         )
 
@@ -754,8 +792,8 @@ def pair_panels_by_position(
       walks ``(gridPos.y, gridPos.x, id)`` with row containers
       expanded in place.
     * Kibana side: produced by :func:`list_kibana_panels_from_migration`,
-      which walks the migration YAML / NDJSON
-      (``section.panels`` flattened in their emit order).
+      which walks the migration IR export / NDJSON (section
+      ``children`` flattened in their emit order).
 
     The migration emits both sides in the same canonical order, so
     pairing reduces to: position N on the left pairs with position N
@@ -772,7 +810,40 @@ def pair_panels_by_position(
         2-tuple of the underlying panel dicts (with all metadata
         including ``id``, ``title``, ``type``) so the caller can
         reach for whichever identifier it needs.
+
+    Raises:
+        EmptyPanelDiscoveryError: when either side is empty. The
+            return shape cannot express the difference between "the
+            two sides paired perfectly" and "there was nothing to
+            pair": both collapse to ``([], [], [])``. An empty side
+            is always a discovery failure, so name which side (or
+            both) came back empty instead of returning a vacuous
+            perfect pairing.
     """
+    if not grafana_panels or not kibana_panels:
+        if not grafana_panels and not kibana_panels:
+            detail = (
+                "both sides discovered 0 panels — no Grafana panels AND no "
+                "Kibana panels, i.e. neither the source dashboard nor the "
+                "migration artifacts were readable"
+            )
+        elif not grafana_panels:
+            detail = (
+                f"the Grafana side discovered 0 panels while the Kibana side "
+                f"discovered {len(kibana_panels)} — the source dashboard is "
+                f"empty or the Grafana UID is wrong"
+            )
+        else:
+            detail = (
+                f"the Kibana side discovered 0 panels while the Grafana side "
+                f"discovered {len(grafana_panels)} — the migration artifacts "
+                f"are missing or empty"
+            )
+        raise EmptyPanelDiscoveryError(
+            f"cannot pair panels: {detail}. Zero panels on either side is an "
+            f"error, not a passing comparison."
+        )
+
     paired: list[tuple[dict[str, Any], dict[str, Any]]] = []
     common = min(len(grafana_panels), len(kibana_panels))
     for i in range(common):
@@ -822,6 +893,52 @@ def aggregate_scores(panels: list[PanelComparison]) -> tuple[float, float, float
 # --------------------------------------------------------------------- #
 
 
+def _require_discovered_panels(
+    grafana_panels: list[dict[str, Any]],
+    kibana_panels: list[dict[str, Any]],
+    *,
+    grafana_url: str,
+    grafana_uid: str,
+    migration_out: Path,
+) -> None:
+    """Fail loudly when either side discovered zero panels.
+
+    A run with zero panels produced a green ``captured=0
+    median=0.0000`` report, so a missing migration output looked
+    exactly like a flawless visual match. Report the directories and
+    endpoints that were searched so the operator can see *which* input
+    was empty.
+    """
+    if grafana_panels and kibana_panels:
+        return
+
+    ir_glob = migration_out / "ir" / "*.ir.json"
+    compiled_glob = migration_out / "compiled" / "*" / "compiled_dashboards.ndjson"
+    problems: list[str] = []
+    if not grafana_panels:
+        problems.append(
+            f"0 Grafana panels from {grafana_url.rstrip('/')}"
+            f"/api/dashboards/uid/{grafana_uid} (expected at least one "
+            f"non-row panel in dashboard.panels[] or dashboard.rows[].panels[])"
+        )
+    if not kibana_panels:
+        problems.append(
+            f"0 Kibana panels from {ir_glob} (expected at least one titled "
+            f"leaf panel under dashboard_ir.panels[], including panels nested "
+            f"in a section's children[]); panel ids are backfilled from "
+            f"{compiled_glob}"
+        )
+    raise EmptyPanelDiscoveryError(
+        "visual regression has nothing to measure: "
+        + "; ".join(problems)
+        + ". Zero discovered panels is now an error — a previous run would "
+        "have reported captured=0 median=0.0000 and exited 0, which is "
+        "indistinguishable from a perfect score. Re-run the migration for "
+        f"{migration_out} (or point --migration-out at a directory that "
+        "contains ir/) and confirm --grafana-uid names a real dashboard."
+    )
+
+
 def run_dashboard(
     grafana_url: str,
     grafana_uid: str,
@@ -841,7 +958,7 @@ def run_dashboard(
 
     Steps:
         1. List Grafana panels via API (in migration-canonical order).
-        2. List Kibana panels via migration YAML (also canonical).
+        2. List Kibana panels via the migration IR export (also canonical).
         3. Pair by position (U2 universal fix).
         4. For each pair: capture Grafana + Kibana, diff, score.
         5. Aggregate, build report.
@@ -867,6 +984,13 @@ def run_dashboard(
         "grafana panels: %d (non-row), kibana panels (from migration): %d",
         len(grafana_panels),
         len(kibana_panels),
+    )
+    _require_discovered_panels(
+        grafana_panels,
+        kibana_panels,
+        grafana_url=grafana_url,
+        grafana_uid=grafana_uid,
+        migration_out=migration_out,
     )
 
     paired, only_grafana, only_kibana = pair_panels_by_position(
@@ -924,7 +1048,7 @@ def run_dashboard(
         # We need a kibana panel id; fall back to title-derived slug
         # (not pretty but Kibana's expandedPanelId is the panel uuid
         # from panelsJSON; we'd ideally look that up but the migration
-        # YAML doesn't always include it. For the harness today we
+        # artifacts don't carry it. For the harness today we
         # screenshot the *full* dashboard if expandedPanelId isn't
         # resolvable and rely on the selector to crop to the panel).
         kibana_panel_id = str(k_meta.get("id") or "")
@@ -1011,7 +1135,7 @@ def build_argparser() -> argparse.ArgumentParser:
         description="Visual regression harness for migrated dashboards.",
     )
     parser.add_argument("--migration-out", required=True, type=Path,
-                        help="Per-dashboard migration output (contains yaml/, compiled/)")
+                        help="Per-dashboard migration output (contains ir/, compiled/)")
     parser.add_argument("--grafana-url", default="http://localhost:23000",
                         help="Parity-rig Grafana base URL (default: http://localhost:23000)")
     parser.add_argument("--grafana-uid", required=True,
@@ -1048,20 +1172,24 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    report = run_dashboard(
-        grafana_url=args.grafana_url,
-        grafana_uid=args.grafana_uid,
-        grafana_slug=args.grafana_slug,
-        kibana_url=args.kibana_url,
-        kibana_dashboard_id=args.kibana_dash_id,
-        migration_out=args.migration_out,
-        output_dir=args.output_dir,
-        from_=args.from_,
-        to=args.to,
-        threshold=args.threshold,
-        wait_extra_seconds=args.wait_extra_seconds,
-        state_file=args.state,
-    )
+    try:
+        report = run_dashboard(
+            grafana_url=args.grafana_url,
+            grafana_uid=args.grafana_uid,
+            grafana_slug=args.grafana_slug,
+            kibana_url=args.kibana_url,
+            kibana_dashboard_id=args.kibana_dash_id,
+            migration_out=args.migration_out,
+            output_dir=args.output_dir,
+            from_=args.from_,
+            to=args.to,
+            threshold=args.threshold,
+            wait_extra_seconds=args.wait_extra_seconds,
+            state_file=args.state,
+        )
+    except EmptyPanelDiscoveryError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_NOTHING_TO_MEASURE
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report.to_jsonable(), indent=2))
     print(
@@ -1079,7 +1207,9 @@ __all__ = [
     "DEFAULT_FROM",
     "DEFAULT_THRESHOLD",
     "DEFAULT_TO",
+    "EXIT_NOTHING_TO_MEASURE",
     "DashboardReport",
+    "EmptyPanelDiscoveryError",
     "PanelComparison",
     "_looks_like_auth_redirect",
     "aggregate_scores",

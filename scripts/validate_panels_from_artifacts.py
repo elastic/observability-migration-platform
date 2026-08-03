@@ -3,7 +3,14 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 """
-Validate panels by reading ES|QL queries directly from YAML source files.
+Validate panels by reading ES|QL queries from a migration's IR artifacts.
+
+Reads ``<run>/dashboards/ir/*.ir.json`` -- the migration's semantic export --
+and rebuilds each dashboard into the kb-dashboard-core ``{"dashboards": [...]}``
+shape via ``DashboardIR.to_yaml_dict``. That is the same shape the dashboard
+YAML carried (the YAML was derived from this IR, never the reverse), so panel
+walking, Lens reconstruction and the ``?param`` binding below are unchanged;
+only the input artifact moved.
 
 Improvements over original:
   - Parallel execution (ThreadPoolExecutor, 20 workers)
@@ -26,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-import yaml
+from observability_migration.core.assets.dashboard import DashboardIR
 
 # Reconstruct Lens panels into ES|QL so they validate like native ES|QL panels.
 # This script is run directly (not imported as a package), so load the sibling
@@ -62,9 +69,13 @@ _DEFAULT_PARAMS: dict = {
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _E2E_ROOT = os.environ.get("E2E_ROOT", "/tmp/obs-migrate-e2e")
 
-YAML_FILES = sorted(
-    glob.glob(os.path.join(_E2E_ROOT, "grafana/*/dashboards/yaml/*.yaml"))
-    + glob.glob(os.path.join(_REPO_ROOT, "e2e_datadog_run/*/dashboards/yaml/*.yaml"))
+IR_GLOBS = [
+    os.path.join(_E2E_ROOT, "grafana/*/dashboards/ir/*.ir.json"),
+    os.path.join(_REPO_ROOT, "e2e_datadog_run/*/dashboards/ir/*.ir.json"),
+]
+
+IR_FILES = sorted(
+    path for pattern in IR_GLOBS for path in glob.glob(pattern)
 )
 
 # Serverless ES has ~1 GB per-query circuit breaker. PROMQL and complex TS
@@ -501,7 +512,7 @@ def _is_time_expr(expr: str) -> bool:
 
 def static_structural_issues(panel: dict) -> list[str]:
     """
-    Check YAML panel declaration against its parsed query shape.
+    Check the panel's presentation declaration against its parsed query shape.
 
     Returns a list of issue strings (empty = no issues).
     """
@@ -716,21 +727,23 @@ def _walk_panels(
 
 def collect_panels() -> list[dict]:
     all_panels: list[dict] = []
-    for yf in YAML_FILES:
-        slug = yf.split("/")[-4]
-        with open(yf) as f:
-            doc = yaml.safe_load(f)
-        if not isinstance(doc, dict):
+    for artifact_file in IR_FILES:
+        # .../<slug>/dashboards/ir/<stem>.ir.json -> <slug>
+        slug = artifact_file.split("/")[-4]
+        with open(artifact_file) as f:
+            artifact = json.load(f)
+        dashboard_ir = artifact.get("dashboard_ir") if isinstance(artifact, dict) else None
+        if not isinstance(dashboard_ir, dict):
             continue
-        for dash in doc.get("dashboards", []):
-            title = dash.get("name") or dash.get("title") or yf.split("/")[-1]
-            _walk_panels(
-                dash.get("panels", []),
-                all_panels,
-                slug,
-                title,
-                _field_control_defaults(dash.get("controls")),
-            )
+        dash = DashboardIR.from_dict(dashboard_ir).to_yaml_dict()
+        title = dash.get("name") or dash.get("title") or artifact_file.split("/")[-1]
+        _walk_panels(
+            dash.get("panels", []),
+            all_panels,
+            slug,
+            title,
+            _field_control_defaults(dash.get("controls")),
+        )
 
     _reconstruct_lens_panels(all_panels)
     return all_panels
@@ -810,6 +823,46 @@ def _missing_columns(result: dict, expected: list[str]) -> list[str]:
 # Main
 # ---------------------------------------------------------------------------
 
+def _empty_corpus_error(panels: list[dict], lens_unsupported: list[dict]) -> str:
+    """Explain a zero-panel corpus in operator terms.
+
+    Called only when there is nothing to validate. Distinguishes "the
+    IR globs matched nothing" from "the IR was read but no panel carries
+    a validatable query", because the fixes are different.
+    """
+    lines = ["ERROR: 0 panels to validate — refusing to report a 0/0 pass."]
+    if not IR_FILES:
+        lines.append("  No IR artifacts matched. Searched:")
+        lines.extend(f"    {pattern}" for pattern in IR_GLOBS)
+        lines.append(
+            "  Expected at least one migrated dashboard IR artifact with"
+            " dashboard_ir.panels[]."
+        )
+        lines.append(
+            f"  Set E2E_ROOT (currently {_E2E_ROOT}) or run the migration first."
+        )
+    else:
+        lines.append(
+            f"  Read {len(IR_FILES)} IR artifact(s) and found {len(panels)} panel"
+            " entr(ies), but none carried a validatable ES|QL query."
+        )
+        if lens_unsupported:
+            lines.append(
+                f"  {len(lens_unsupported)} Lens panel(s) could not be"
+                " reconstructed:"
+            )
+            lines.extend(
+                f"    [{lp['slug']}] {lp['dashboard']} / {lp['panel']}: "
+                f"{lp.get('unsupported_reason', 'unknown')}"
+                for lp in lens_unsupported
+            )
+    lines.append(
+        "  Zero validated panels is an error, not a pass: this script used to"
+        " report a vacuous all-panels-passed summary and exit 0."
+    )
+    return "\n".join(lines)
+
+
 def main() -> int:
     panels = collect_panels()
 
@@ -818,6 +871,10 @@ def main() -> int:
     esql_panels = [p for p in panels
                    if (p["kind"] == "esql" or p.get("is_lens")) and p.get("query")]
     lens_unsupported = [p for p in panels if p.get("is_lens") and not p.get("query")]
+
+    if not esql_panels:
+        print(_empty_corpus_error(panels, lens_unsupported))
+        return 1
 
     # Static structural validation (no ES call needed). Reconstructed Lens
     # panels are skipped: the reconstruction parses migrator-authored ES|QL
@@ -977,7 +1034,7 @@ def main() -> int:
             for si in sw["static_issues"]:
                 print(f"    {si}")
 
-    out_path = os.path.join(_E2E_ROOT, "panel_validation_yaml.json")
+    out_path = os.path.join(_E2E_ROOT, "panel_validation_artifacts.json")
     with open(out_path, "w") as f:
         json.dump({
             "total": total_panels,

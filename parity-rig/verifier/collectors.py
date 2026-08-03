@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-import yaml
 
 from .records import PanelRecord
 
@@ -111,50 +110,79 @@ def _extract_index_from_esql(esql: str) -> str:
 
 
 # --------------------------------------------------------------------- #
-# T2  — yaml on disk (kb-dashboard-cli input)
+# T2  — the migration's IR export (ir/*.ir.json)
 # --------------------------------------------------------------------- #
 
 
-def load_yaml_panels(yaml_dir: Path) -> dict[str, str]:
-    """Return a ``{panel_title: esql_query}`` mapping for every YAML
-    dashboard in ``yaml_dir``.
+def load_ir_panels(ir_dir: Path) -> dict[str, str]:
+    """Return a ``{panel_title: esql_query}`` mapping for every IR
+    dashboard artifact in ``ir_dir``.
 
-    YAML schema (the kb-dashboard-cli contract)::
+    ``ir/<stem>.ir.json`` is the migration's semantic export, written next
+    to the native Dashboards API payload::
 
-        dashboards:
-        - panels:
-          - title: <section title>
-            section:
-              panels:
-              - title: <panel title>
-                esql: { query: <ES|QL> }
-                # or
-                markdown: { content: <markdown> }
+        {
+          "kind": "dashboard_ir",
+          "dashboard_ir": {
+            "title": ...,
+            "panels": [
+              {"kind": "section", "children": [...]},
+              {"kind": "panel", "title": ..., "visual": {
+                  "presentation": {"kind": "esql", "config": {"query": ...}}}}
+            ]
+          }
+        }
+
+    This replaces the previous ``yaml/*.yaml`` read. The IR's
+    ``visual.presentation.config.query`` is the exact string the YAML
+    export carried in ``esql.query`` -- the YAML was derived from this IR
+    (``DashboardIR.to_yaml_dict``), never the other way around -- so T2
+    means the same thing it always did while sourcing it from the artifact
+    that survives.
     """
     out: dict[str, str] = {}
-    for yaml_path in sorted(yaml_dir.glob("*.yaml")):
+    for ir_path in sorted(ir_dir.glob("*.ir.json")):
         try:
-            doc = yaml.safe_load(yaml_path.read_text())
+            artifact = json.loads(ir_path.read_text())
         except Exception as exc:  # pragma: no cover - defensive
-            LOG.warning("failed to parse %s: %s", yaml_path, exc)
+            LOG.warning("failed to parse %s: %s", ir_path, exc)
             continue
-        for dash in (doc or {}).get("dashboards", []):
-            for panel in _iter_yaml_panels(dash.get("panels", [])):
-                out[panel["title"]] = panel.get("esql_query", "")
+        dashboard_ir = (artifact or {}).get("dashboard_ir")
+        if not isinstance(dashboard_ir, dict):
+            continue
+        for panel in _iter_ir_panels(dashboard_ir.get("panels") or []):
+            out[panel["title"]] = panel.get("esql_query", "")
     return out
 
 
-def _iter_yaml_panels(panels: list[dict[str, Any]]) -> Iterable[dict[str, str]]:
+def _iter_ir_panels(panels: list[dict[str, Any]]) -> Iterable[dict[str, str]]:
+    """Flatten an IR panel tree to ``{title, esql_query}`` leaf records.
+
+    Section containers (``kind == "section"``) carry their panels in
+    ``children`` and have no query of their own, mirroring the YAML
+    export's ``section.panels`` nesting.
+    """
     for panel in panels or []:
-        section = panel.get("section")
-        if isinstance(section, dict):
-            yield from _iter_yaml_panels(section.get("panels", []))
+        if not isinstance(panel, dict):
             continue
-        title = panel.get("title") or "(untitled)"
-        esql_block = panel.get("esql") or {}
+        children = panel.get("children")
+        if isinstance(children, list) and children:
+            yield from _iter_ir_panels(children)
+            continue
+        if str(panel.get("kind") or "panel").strip().lower() != "panel":
+            continue
+        visual = panel.get("visual") or {}
+        title = (
+            (visual.get("title") if isinstance(visual, dict) else "")
+            or panel.get("title")
+            or "(untitled)"
+        )
         query = ""
-        if isinstance(esql_block, dict):
-            query = (esql_block.get("query") or "").strip()
+        presentation = visual.get("presentation") if isinstance(visual, dict) else None
+        if isinstance(presentation, dict) and presentation.get("kind") == "esql":
+            config = presentation.get("config") or {}
+            if isinstance(config, dict):
+                query = (config.get("query") or "").strip()
         yield {"title": title, "esql_query": query}
 
 
@@ -369,9 +397,9 @@ __all__ = [
     "annotate_record_with_live_response",
     "cluster_dashboard_panels",
     "fetch_cluster_dashboard",
+    "load_ir_panels",
     "load_migration_report",
     "load_ndjson_panels",
-    "load_yaml_panels",
     "panels_from_migration_report",
     "run_cluster_query",
 ]

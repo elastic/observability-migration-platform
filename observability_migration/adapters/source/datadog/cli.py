@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,7 +54,10 @@ from observability_migration.core.verification.disposition import (
     missing_target_field_warning,
     validation_failure_self_heals,
 )
-from observability_migration.targets.kibana.compile import validate_compiled_layout
+from observability_migration.targets.kibana.compile import (
+    validate_compiled_layout,
+    write_dashboard_yaml,
+)
 from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
 from observability_migration.targets.kibana.native_artifacts import (
     write_ir_artifact,
@@ -202,17 +206,26 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _clear_dashboard_artifacts(
-    yaml_dir: Path,
     compiled_dir: Path,
     *,
     native_dir: Path | None = None,
     ir_dir: Path | None = None,
 ) -> int:
+    """Remove a previous run's dashboard artifacts from the output directory.
+
+    Also sweeps a ``yaml/`` sibling left behind by a pre-native release: the
+    pipeline no longer produces one, and leaving stale YAML next to fresh
+    ``native/`` artifacts would make ``upload --artifact-format auto`` see
+    mixed artifacts and refuse the upload.
+    """
     removed = 0
-    if yaml_dir.exists():
-        for yaml_file in yaml_dir.glob("*.yaml"):
+    legacy_yaml_dir = compiled_dir.parent / "yaml"
+    if legacy_yaml_dir.is_dir():
+        for yaml_file in legacy_yaml_dir.glob("*.yaml"):
             yaml_file.unlink()
             removed += 1
+        if not any(legacy_yaml_dir.iterdir()):
+            legacy_yaml_dir.rmdir()
     for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
         if artifact_dir is not None and artifact_dir.exists():
             for artifact_file in artifact_dir.glob(pattern):
@@ -299,19 +312,17 @@ def _run_dashboard_pipeline(
     print(f"  Found {len(raw_dashboards)} dashboard(s)\n")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    yaml_dir = output_dir / "yaml"
     native_dir = output_dir / "native"
     ir_dir = output_dir / "ir"
-    yaml_dir.mkdir(parents=True, exist_ok=True)
     removed_stale_artifacts = _clear_dashboard_artifacts(
-        yaml_dir, output_dir / "compiled", native_dir=native_dir, ir_dir=ir_dir,
+        output_dir / "compiled", native_dir=native_dir, ir_dir=ir_dir,
     )
     if removed_stale_artifacts:
         print(f"  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {output_dir}")
 
     all_results: list[DashboardResult] = []
     dashboard_outputs: list[tuple[DashboardResult, Any]] = []
-    used_yaml_stems: set[str] = set()
+    used_artifact_stems: set[str] = set()
 
     for raw in raw_dashboards:
         dashboard = normalize_dashboard(raw)
@@ -343,7 +354,11 @@ def _run_dashboard_pipeline(
                     panel_results.append(_translate_widget(child, field_map, args))
 
         dashboard_result.panel_results = panel_results
-        dashboard_yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+        # ``dashboard_yaml`` stays in memory: it is the derived kb-dashboard
+        # document that the structural equivalence guards cross-check the native
+        # payload against. The run's artifacts are native/ + ir/; no YAML is
+        # written (see docs/architecture/asset-model.md).
+        _dashboard_yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             panel_results,
             data_view=field_map.metric_index,
@@ -356,16 +371,11 @@ def _run_dashboard_pipeline(
         dashboard_result.native_dashboard = native_dashboard
         dashboard_result.native_dashboard_stats = native_stats
 
-        stem = _allocate_yaml_stem(
+        dashboard_result.artifact_stem = _allocate_artifact_stem(
             title=dashboard.title,
             dashboard_id=dashboard.id,
-            used_stems=used_yaml_stems,
+            used_stems=used_artifact_stems,
         )
-        yaml_path = yaml_dir / f"{stem}.yaml"
-        yaml_path.write_text(dashboard_yaml, encoding="utf-8")
-        dashboard_result.yaml_path = str(yaml_path)
-
-        print(f"    YAML written: {yaml_path}")
 
         dashboard_result.recompute_counts()
         all_results.append(dashboard_result)
@@ -387,12 +397,12 @@ def _run_dashboard_pipeline(
     native_index_entries: list[dict[str, Any]] = []
     for dashboard_result, _dashboard in dashboard_outputs:
         if (
-            not dashboard_result.yaml_path
+            not dashboard_result.artifact_stem
             or dashboard_result.dashboard_ir is None
             or dashboard_result.native_dashboard is None
         ):
             continue
-        stem = Path(dashboard_result.yaml_path).stem
+        stem = dashboard_result.artifact_stem
         native_path = write_native_artifact(
             dashboard_ir=dashboard_result.dashboard_ir,
             native_dashboard=dashboard_result.native_dashboard,
@@ -416,12 +426,39 @@ def _run_dashboard_pipeline(
         write_native_artifact_index(native_dir, native_index_entries)
     print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
 
-    if compile_requested:
-        _compile_all_dashboards(all_results, output_dir, target_adapter)
-    if args.upload and args.ensure_data_views:
-        _ensure_data_views(args, target_adapter, field_map, verify=verify)
-    if args.upload:
-        _upload_all_dashboards(all_results, output_dir, args, target_adapter, verify=verify)
+    # kb-dashboard-cli compile and the legacy `_import` upload are the only
+    # remaining consumers that need a YAML *file*. Render it from each
+    # dashboard's IR into a scratch directory that is removed again before the
+    # run ends, so a migration never produces a `yaml/` artifact directory.
+    yaml_scratch_dir: Path | None = None
+    yaml_paths_by_stem: dict[str, Path] = {}
+    if compile_requested or getattr(args, "legacy_import", False):
+        yaml_scratch_dir = Path(tempfile.mkdtemp(prefix="obs-migrate-yaml-"))
+        for dashboard_result, _dashboard in dashboard_outputs:
+            if not dashboard_result.artifact_stem or dashboard_result.dashboard_ir is None:
+                continue
+            yaml_paths_by_stem[dashboard_result.artifact_stem] = write_dashboard_yaml(
+                dashboard_result.dashboard_ir,
+                yaml_scratch_dir,
+                dashboard_result.artifact_stem,
+            )
+    try:
+        if compile_requested:
+            _compile_all_dashboards(all_results, output_dir, target_adapter, yaml_paths_by_stem)
+        if args.upload and args.ensure_data_views:
+            _ensure_data_views(args, target_adapter, field_map, verify=verify)
+        if args.upload:
+            _upload_all_dashboards(
+                all_results,
+                output_dir,
+                args,
+                target_adapter,
+                verify=verify,
+                yaml_paths=yaml_paths_by_stem,
+            )
+    finally:
+        if yaml_scratch_dir is not None:
+            shutil.rmtree(yaml_scratch_dir, ignore_errors=True)
 
     smoke_payload: dict[str, Any] = {}
     if args.smoke:
@@ -723,19 +760,26 @@ def _compile_all_dashboards(
     results: list[DashboardResult],
     output_dir: Path,
     target_adapter: Any,
+    yaml_paths: dict[str, Path],
 ) -> None:
-    """Compile YAML to NDJSON using the shared Kibana target runtime."""
+    """Compile YAML to NDJSON using the shared Kibana target runtime.
+
+    ``yaml_paths`` maps each dashboard's artifact stem to the transient YAML file
+    rendered from its IR for the external compiler (the migration itself writes
+    no YAML).
+    """
     compiled_dir = output_dir / "compiled"
     compiled_dir.mkdir(parents=True, exist_ok=True)
 
     for dr in results:
-        if not dr.yaml_path:
+        stem = dr.artifact_stem
+        yaml_path = yaml_paths.get(stem) if stem else None
+        if yaml_path is None:
             continue
-        stem = Path(dr.yaml_path).stem
         out_dir = compiled_dir / stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        success, output = target_adapter.compile_dashboard(dr.yaml_path, out_dir)
+        success, output = target_adapter.compile_dashboard(yaml_path, out_dir)
         if success:
             dr.compiled = True
             dr.compiled_path = str(out_dir)
@@ -957,14 +1001,17 @@ def _apply_failed_validation_outcome(
     return "placeholder"
 
 
-def _rewrite_dashboard_yaml(
+def _rewrite_dashboard_artifacts(
     dashboard: Any,
     result: DashboardResult,
     field_map: Any,
 ) -> None:
-    if not result.yaml_path:
-        return
-    yaml_str, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+    """Regenerate a dashboard's artifacts after validation changed its panels.
+
+    The regenerated YAML string stays in memory (the run writes native/ + ir/);
+    only the IR and the native payload are stored back on ``result``.
+    """
+    _yaml_str, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         result.panel_results,
         data_view=field_map.metric_index,
@@ -973,7 +1020,6 @@ def _rewrite_dashboard_yaml(
         logs_index=field_map.logs_index,
         field_map=field_map,
     )
-    Path(result.yaml_path).write_text(yaml_str, encoding="utf-8")
     result.dashboard_ir = dashboard_ir
     result.native_dashboard = native_dashboard
     result.native_dashboard_stats = native_stats
@@ -1064,7 +1110,7 @@ def _validate_all_dashboards(
         result.validation_summary = per_dashboard_counts
         result.recompute_counts()
         if dashboard_changed:
-            _rewrite_dashboard_yaml(dashboard, result, field_map)
+            _rewrite_dashboard_artifacts(dashboard, result, field_map)
 
     validation_summary = summarize_validation_records(validation_records)
     print(
@@ -1182,8 +1228,15 @@ def _upload_all_dashboards(
     target_adapter: Any,
     *,
     verify: bool | str | None = None,
+    yaml_paths: dict[str, Path] | None = None,
 ) -> None:
-    """Upload compiled dashboards to Kibana via the shared target runtime."""
+    """Upload dashboards to Kibana via the shared target runtime.
+
+    The default typed Dashboards API path uploads the in-memory native payload.
+    ``yaml_paths`` (artifact stem -> transient YAML file) is only needed by the
+    ``--legacy-import`` path, which compiles YAML through kb-dashboard-cli.
+    """
+    yaml_paths = yaml_paths or {}
     from observability_migration.targets.kibana.compile import (
         detect_space_id_from_kibana_url,
         kibana_url_for_space,
@@ -1201,11 +1254,19 @@ def _upload_all_dashboards(
     print(f"\n  Uploading dashboards to {upload_kibana_url}")
     for dr in results:
         dr.upload_attempted = True
-        stem = Path(dr.yaml_path).stem if dr.yaml_path else (dr.dashboard_title or dr.dashboard_id or "untitled")
+        stem = dr.artifact_stem or (dr.dashboard_title or dr.dashboard_id or "untitled")
 
-        if not dr.yaml_path:
+        if not dr.artifact_stem or dr.native_dashboard is None:
             dr.uploaded = False
-            dr.upload_error = "Upload skipped because no YAML artifact was generated."
+            dr.upload_error = "Upload skipped because no dashboard artifact was generated."
+            print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
+            continue
+        if not use_dashboards_api and dr.artifact_stem not in yaml_paths:
+            dr.uploaded = False
+            dr.upload_error = (
+                "Upload skipped because --legacy-import needs a compiled YAML "
+                "artifact and none was rendered for this dashboard."
+            )
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
         if not use_dashboards_api and not dr.compiled:
@@ -1229,7 +1290,7 @@ def _upload_all_dashboards(
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error[:200]}")
             continue
 
-        out_dir = compiled_dir / Path(dr.yaml_path).stem
+        out_dir = compiled_dir / dr.artifact_stem
         out_dir.mkdir(parents=True, exist_ok=True)
         upload_kwargs: dict[str, Any] = {
             "kibana_url": args.kibana_url,
@@ -1237,12 +1298,13 @@ def _upload_all_dashboards(
             "kibana_api_key": args.kibana_api_key,
             "verify": verify,
             "use_dashboards_api": use_dashboards_api,
+            "artifact_label": dr.artifact_stem,
         }
         if use_dashboards_api and dr.native_dashboard is not None:
             upload_kwargs["native_dashboard"] = dr.native_dashboard
             upload_kwargs["native_dashboard_stats"] = dr.native_dashboard_stats
         upload_result = target_adapter.upload_dashboard(
-            dr.yaml_path,
+            yaml_paths.get(dr.artifact_stem),
             out_dir,
             **upload_kwargs,
         )
@@ -1471,12 +1533,16 @@ def _safe_filename(title: str) -> str:
     return name[:80] or "untitled"
 
 
-def _allocate_yaml_stem(
+def _allocate_artifact_stem(
     title: str,
     dashboard_id: str | None,
     used_stems: set[str],
 ) -> str:
-    """Allocate a unique YAML stem to avoid filename collisions."""
+    """Allocate a unique artifact filename stem to avoid collisions.
+
+    The stem names every artifact for one dashboard
+    (``native/<stem>.native.json``, ``ir/<stem>.ir.json``, ``compiled/<stem>/``).
+    """
     base = _safe_filename(title)
     if base not in used_stems:
         used_stems.add(base)

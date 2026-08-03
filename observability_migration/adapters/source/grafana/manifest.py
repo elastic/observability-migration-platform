@@ -292,7 +292,11 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "uid": getattr(result, "dashboard_uid", ""),
             "source_file": getattr(result, "source_file", ""),
             "folder_title": getattr(result, "folder_title", ""),
-            "yaml_path": getattr(result, "yaml_path", ""),
+            # Deprecated: kept so existing consumers keep resolving "the
+            # artifact for this dashboard". Migration no longer writes YAML, so
+            # this now mirrors ``native_artifact_path``; read that instead.
+            "yaml_path": getattr(result, "native_artifact_path", ""),
+            "artifact_stem": getattr(result, "artifact_stem", ""),
             "compiled_path": getattr(result, "compiled_path", ""),
             "native_artifact_path": getattr(result, "native_artifact_path", ""),
             "ir_artifact_path": getattr(result, "ir_artifact_path", ""),

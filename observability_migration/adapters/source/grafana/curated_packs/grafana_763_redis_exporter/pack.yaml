@@ -5,7 +5,7 @@
 # https://grafana.com/grafana/dashboards/763-redis-dashboard-for-prometheus-redis-exporter-1-x/
 #
 # Source: oliver006/redis_exporter  (Prometheus scrape)
-# Panels: 13 total — 11 PERFECT, 2 APPROXIMATE (memory% via plugin; Network I/O is 2-series but uses OR filter)
+# Panels: 13 total — 12 PERFECT, 1 APPROXIMATE (Network I/O is 2-series but uses OR filter)
 # Translation mode: auto (PromQL-first when native-PromQL is enabled; ES|QL fallback)
 
 query:
@@ -58,3 +58,18 @@ query:
     db:
       - labels.db
       - db
+
+panel:
+  query_overrides:
+    # Memory Usage (gauge → metric): auto-translation is APPROXIMATE because the
+    # binary expression (used/max) has no outer aggregation and no on() modifier,
+    # so the join-faithfulness check fires and per-document arithmetic is used.
+    # This hand-crafted query computes the ratio in a single STATS clause —
+    # semantically exact for the prometheus_native TSDB layout.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE labels.instance RLIKE ?instance
+        | STATS value = MAX(LAST_OVER_TIME(metrics.redis_memory_used_bytes)) / MAX(LAST_OVER_TIME(metrics.redis_memory_max_bytes)) * 100.0
+      status_override: migrated

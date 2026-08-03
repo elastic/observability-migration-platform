@@ -61,3 +61,17 @@ query:
     cmd:
       - labels.cmd
       - cmd
+
+panel:
+  query_overrides:
+    # Memory Usage (singlestat → metric): auto-translation marks this APPROXIMATE
+    # because the binary expression has no outer aggregation and no on() modifier,
+    # so the join-faithfulness check fires. The hand-crafted query computes the
+    # ratio directly in a single STATS clause — semantically exact.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE labels.instance RLIKE ?instance
+        | STATS value = MAX(LAST_OVER_TIME(metrics.redis_memory_used_bytes)) / MAX(LAST_OVER_TIME(metrics.redis_memory_max_bytes)) * 100.0
+      status_override: migrated

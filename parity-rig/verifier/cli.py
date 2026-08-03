@@ -43,7 +43,7 @@ def build_argparser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Path to the per-dashboard obs-migrate output directory "
-             "(contains migration_report.json, yaml/, compiled/).",
+             "(contains migration_report.json, ir/, native/, compiled/).",
     )
     p.add_argument(
         "--kibana-url",
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     migration_dir: Path = args.migration_out
     report_path = migration_dir / "migration_report.json"
-    yaml_dir = migration_dir / "yaml"
+    ir_dir = migration_dir / "ir"
     compiled_dir = migration_dir / "compiled"
 
     if not report_path.exists():
@@ -137,8 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     LOG.info("loading migration report: %s", report_path)
     report = collectors.load_migration_report(report_path)
 
-    LOG.info("scanning yaml dir: %s", yaml_dir)
-    yaml_panels = collectors.load_yaml_panels(yaml_dir) if yaml_dir.exists() else {}
+    LOG.info("scanning ir dir: %s", ir_dir)
+    ir_panels = collectors.load_ir_panels(ir_dir) if ir_dir.exists() else {}
 
     LOG.info("scanning compiled dir: %s", compiled_dir)
     ndjson_panels = _load_compiled_panels(compiled_dir)
@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     for record in collectors.panels_from_migration_report(report):
         if args.es_index and not record.t1_index:
             record.t1_index = args.es_index
-        record.t2_yaml_esql = yaml_panels.get(record.title, "")
+        record.t2_ir_esql = ir_panels.get(record.title, "")
         record.t3_ndjson_esql = ndjson_panels.get(record.title, "")
         if cluster_saved_object:
             record.t4_cluster_esql = cluster_panels.get(record.title, "")
@@ -271,9 +271,6 @@ def _load_compiled_panels(compiled_dir: Path) -> dict[str, str]:
         if not sub.is_dir():
             continue
         candidate = sub / "compiled_dashboards.ndjson"
-        if candidate.exists():
-            return collectors.load_ndjson_panels(candidate)
-        candidate = sub / "yaml.ndjson"
         if candidate.exists():
             return collectors.load_ndjson_panels(candidate)
     return {}

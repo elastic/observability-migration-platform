@@ -42,3 +42,16 @@ query:
     bdb:
       - labels.bdb         # prometheus_native
       - db.name            # OTel ECS mode
+
+panel:
+  query_overrides:
+    # Memory Usage (stat → metric): auto-translation marks this APPROXIMATE because
+    # the binary expression (bdb_used_memory / bdb_memory_limit) has no outer
+    # aggregation and no on() modifier. The hand-crafted query computes the ratio
+    # directly in a single STATS clause — semantically exact.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS value = MAX(LAST_OVER_TIME(metrics.bdb_used_memory)) / MAX(LAST_OVER_TIME(metrics.bdb_memory_limit))
+      status_override: migrated

@@ -36,8 +36,8 @@ class Verdict(str, Enum):
 
 DRIFT_AXES = (
     "T0=T1",  # source -> translator
-    "T1=T2",  # translator -> yaml
-    "T2=T3",  # yaml -> compiled ndjson
+    "T1=T2",  # translator -> IR export (ir/*.ir.json)
+    "T2=T3",  # IR export -> compiled ndjson
     "T3=T4",  # compiled ndjson -> cluster saved object
     "T4=T5",  # cluster saved object -> live _query body
 )
@@ -59,7 +59,7 @@ class PanelRecord:
 
     t0_source_promql: str = ""
     t1_translator_esql: str = ""
-    t2_yaml_esql: str = ""
+    t2_ir_esql: str = ""
     t3_ndjson_esql: str = ""
     t4_cluster_esql: str = ""
     t5_live_query_body: str = ""
@@ -104,7 +104,7 @@ class PanelRecord:
             "tiers": {
                 "t0_source_promql": self.t0_source_promql,
                 "t1_translator_esql": self.t1_translator_esql,
-                "t2_yaml_esql": self.t2_yaml_esql,
+                "t2_ir_esql": self.t2_ir_esql,
                 "t3_ndjson_esql": self.t3_ndjson_esql,
                 "t4_cluster_esql": self.t4_cluster_esql,
                 "t5_live_query_body": self.t5_live_query_body,
@@ -161,7 +161,9 @@ class PanelRecord:
             feasibility=blob.get("feasibility", ""),
             t0_source_promql=tiers.get("t0_source_promql", ""),
             t1_translator_esql=tiers.get("t1_translator_esql", ""),
-            t2_yaml_esql=tiers.get("t2_yaml_esql", ""),
+            # ``t2_yaml_esql`` is the pre-IR key: keep reading it so a report
+            # written before T2 moved to the IR export still round-trips.
+            t2_ir_esql=tiers.get("t2_ir_esql", tiers.get("t2_yaml_esql", "")),
             t3_ndjson_esql=tiers.get("t3_ndjson_esql", ""),
             t4_cluster_esql=tiers.get("t4_cluster_esql", ""),
             t5_live_query_body=tiers.get("t5_live_query_body", ""),
