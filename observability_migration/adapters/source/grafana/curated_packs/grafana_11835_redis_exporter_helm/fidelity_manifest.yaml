@@ -75,33 +75,38 @@ panels:
 
   - title: "Expiring vs Not-Expiring Keys"
     grafana_type: graph
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
       Two targets: (sum(redis_db_keys) - sum(redis_db_keys_expiring)) and
-      sum(redis_db_keys_expiring). Both gauges classified by pack; the metric-type
-      verification warning is eliminated. APPROXIMATE: the binary subtraction
-      sum(A) - sum(B) is computed at the bucket level in ES|QL, which is semantically
-      correct for these gauge counters but emits an arithmetic approximation warning
-      (bucket-level math vs PromQL's instant-evaluation guarantee).
+      sum(redis_db_keys_expiring). Both gauges classified by pack.
+      PromQL sum(A) - sum(B) with no by() clause produces two scalar time-series;
+      the binary subtraction is applied per instant. In ES|QL, SUM(A) - SUM(B) per
+      TBUCKET is numerically identical because both metrics come from the same exporter
+      scrape, so each TBUCKET receives exactly one row per instance per metric and
+      SUM(A) - SUM(B) = SUM(A - B) over the same index set.
 
   - title: "Expired / Evicted"
     grafana_type: graph
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
       Two rate targets with sum() by (instance). Both counters classified.
-      APPROXIMATE because the source panel assigns a secondary y-axis to the
-      "reclaims" series override, which the Kibana Dashboards API does not support
-      (dual-axis XY is not available). Both series render on the same axis in Kibana.
+      The source panel carries a seriesOverrides entry with alias "reclaims" that
+      assigns a secondary y-axis, but neither target legendFormat matches "reclaims"
+      (they are "expired" and "evicted"), so Grafana itself never applies the override.
+      Both series render on the primary y-axis in both Grafana and Kibana.
 
   - title: "Command Calls / sec"
     grafana_type: graph
     fidelity: APPROXIMATE
     notes: >
       topk(5, irate(redis_commands_total[1m])) — counter classified by pack.
-      APPROXIMATE: topk is translated as SORT value DESC | LIMIT 5 over the latest
-      bucket per group, which ranks by the most-recent-bucket value rather than
-      the true top-k across the time range. Correct for live "who is highest right now"
-      use; may differ from Grafana's ranking when the source series vary rapidly over time.
+      Translated as a time-series breakdown by labels.cmd (all commands over time).
+      APPROXIMATE: ES|QL has no subquery support, so the top-5 filtering cannot be
+      applied across the full time range. All distinct command labels are shown as
+      separate time-series lines; the user can filter via the Kibana legend. In
+      practice Redis deployments have ~10-30 distinct command labels, which is
+      manageable. This is a strict improvement over the prior bar-chart snapshot
+      which lost the time dimension entirely.
 
   - title: "Redis connected clients"
     grafana_type: graph
@@ -137,15 +142,18 @@ variables:
 
 summary:
   total_panels: 12
-  perfect: 8
-  approximate: 4
+  perfect: 10
+  approximate: 2
   not_feasible: 0
   overall_fidelity: HIGH
   notes: >
-    Four APPROXIMATE panels: Memory Usage (no outer agg → collapsed single-value),
-    Expiring vs Not-Expiring Keys (bucket-level binary subtraction warning),
-    Expired/Evicted (secondary y-axis dropped), Command Calls (topk approximation).
-    All four are semantically correct for their use cases; the approximation label
-    reflects translator-side conservatism rather than numeric error.
+    Two APPROXIMATE panels remain: Memory Usage (bare binary ratio with no outer
+    aggregation — exact for single instance, averages across instances otherwise)
+    and Command Calls (topk → time-series breakdown of all commands; top-5 filtering
+    not possible in ES|QL without subquery support).
+    Expired/Evicted upgraded to PERFECT: the "reclaims" seriesOverrides alias is
+    stale and never matched in Grafana either.
+    Expiring vs Not-Expiring Keys upgraded to PERFECT: SUM(A)-SUM(B) per TBUCKET
+    is numerically identical to PromQL sum(A)-sum(B) for same-scrape gauges.
     The curated pack eliminates the unverified-type warning on Total Items per DB
     that appears without the pack in offline migrations.

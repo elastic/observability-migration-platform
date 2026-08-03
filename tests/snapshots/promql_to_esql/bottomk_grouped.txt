@@ -1,13 +1,9 @@
 source: bottomk(3, sum by (job) (rate(foo_total[5m])))
 feasibility: feasible
-warning: Translated grouped bottomk() as latest-bucket ES|QL bottom N
+warning: Translated bottomk() as time-series breakdown by service.name; ES|QL has no subquery support so all series are shown (top-3 filtering approximated)
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE foo_total IS NOT NULL
-| STATS _bucket_value = SUM(RATE(foo_total)) BY time_bucket = TBUCKET(5 minute), service.name
+| STATS value = SUM(RATE(foo_total)) BY time_bucket = TBUCKET(5 minute), service.name
 | SORT time_bucket ASC
-| STATS value = LAST(_bucket_value, time_bucket) BY service.name
-| KEEP service.name, value
-| SORT value ASC
-| LIMIT 3

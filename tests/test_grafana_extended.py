@@ -600,7 +600,17 @@ class TestFailureHonesty(unittest.TestCase):
         self.assertIn("histogram_quantile", content, "Original query must be in report")
 
     def test_bottomk_translates_with_ascending_sort(self):
+        # graph/timeseries panels emit a time-series breakdown (no LIMIT, no value sort);
+        # LIMIT+sort only apply in the bar-chart / stat collapse path.
         ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertIn("SORT time_bucket ASC", ctx.esql_query)
+        self.assertNotIn("LIMIT 3", ctx.esql_query)
+        self.assertTrue(any("time-series breakdown" in w for w in ctx.warnings))
+
+    def test_bottomk_barchart_produces_sorted_limited_snapshot(self):
+        # bar-chart panels keep the latest-bucket collapse with ASC sort + LIMIT.
+        ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))", panel_type="barchart")
         self.assertEqual(ctx.feasibility, "feasible")
         self.assertIn("| SORT value ASC", ctx.esql_query)
         self.assertIn("| LIMIT 3", ctx.esql_query)

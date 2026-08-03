@@ -902,9 +902,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
     def test_topk_grouping_template_variable_keeps_stable_alias(self):
+        # Use barchart to test the late-bound alias shape (collapse to top-N list);
+        # the XY/graph path emits a time-series and skips the second STATS BY clause.
         self._enable_late_bound_grouping()
         result = self.translate(
-            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))"
+            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))",
+            panel_type="barchart",
         )
 
         self.assertEqual(result.feasibility, "feasible")
@@ -1973,6 +1976,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("EVAL node_cpu_seconds_total = LEAST(node_cpu_seconds_total, 100)", query)
 
     def test_topk_avg_by_range_fallback_keeps_ranking_shape(self):
+        # graph panels emit a time-series breakdown; bar-chart panels collapse to top-N.
         translated = self.translate(
             'topk(5,(avg by (service_name) ('
             'max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[$interval]) '
@@ -1981,9 +1985,28 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(translated.feasibility, "feasible")
+        # AVG(MAX_OVER_TIME) directly — NOT a range-wide MAX, which reports a stale
+        # peak (PR #234). For XY / graph panels the two-stage _bucket_value pattern
+        # is not needed since there is no per-cmd collapse step.
+        self.assertIn("AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
+        self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
+        # XY path: no LIMIT, no value sort — time-series per service_name.
+        self.assertNotIn("LIMIT 5", translated.esql_query)
+        self.assertIn("SORT time_bucket ASC", translated.esql_query)
+        self.assertTrue(any("time-series breakdown" in w for w in translated.warnings))
+
+    def test_topk_avg_by_range_fallback_barchart_keeps_ranking_shape(self):
+        # bar-chart path: keeps the latest-bucket collapse with LAST + LIMIT.
+        translated = self.translate(
+            'topk(5,(avg by (service_name) ('
+            'max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[$interval]) '
+            'or max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[5m])'
+            ')))',
+            panel_type="barchart",
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
-        # latest-bucket reducer (matches the warning, the docs, and the Datadog
-        # sibling) -- NOT a range-wide MAX, which reports a stale peak (PR #234).
         self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
         self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
         self.assertIn("LIMIT 5", translated.esql_query)

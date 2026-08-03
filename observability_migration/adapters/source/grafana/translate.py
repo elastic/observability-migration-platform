@@ -350,6 +350,37 @@ def _join_is_faithful(frag, resolver, output_group_fields):
     return bool(resolved_enrich) and all(label in out for label in resolved_enrich)
 
 
+def _fully_aggregated_scalar_op(frag):
+    """Whether a binary op has two fully-aggregated scalar operands with no by() clause.
+
+    ``sum(A) - sum(B)`` (no ``by(...)`` on either side) produces a single unlabelled
+    time-series on each side. In PromQL the binary op is applied per instant; in
+    ES|QL ``SUM(A) - SUM(B)`` per TBUCKET is numerically identical when both metrics
+    come from the same TS source at the same scrape interval, because each TBUCKET
+    receives the same set of time-series rows for both metrics. No explicit ``on(...)``
+    key is needed — both sides are already scalars. This is the ``sum(A) op sum(B)``
+    and ``avg(A) op avg(B)`` family; bare ``A op B`` (no outer agg) is NOT covered
+    because per-document values still need per-instance alignment.
+
+    Terminal aggregates only: if an operand wraps an inner binary expression (e.g.
+    ``sum(A * on(k) group_left(l) B)``), the enrichment join changes the semantics
+    and the conservative warning should be kept.
+    """
+    for key in ("left_frag", "right_frag"):
+        operand = frag.extra.get(key)
+        if not isinstance(operand, PromQLFragment):
+            return False
+        if not operand.outer_agg:
+            return False
+        if operand.group_labels:
+            return False
+        # Operand wraps an inner binary expression — enrichment may have been dropped
+        if isinstance(operand.extra.get("inner_frag"), PromQLFragment):
+            return False
+    matching = frag.extra.get("vector_matching") or {}
+    return not matching
+
+
 # Shared building blocks for every template-variable regex below, so the braced
 # (``${var}``) and bracket (``[[var]]``) syntaxes are defined once and cannot
 # drift out of sync between the base matcher and the glued-prefix guardrail.
@@ -2086,10 +2117,14 @@ def binary_expr_family_rule(context):
         # set-union note (issue #167) and is not arithmetic, so skip it.
         # Same-metric ``or`` rewritten as a WHERE OR clause (issue #252) is an
         # exact rewrite too, so skip the arithmetic caveat for it as well.
+        # ``sum(A) op sum(B)`` with no ``by()`` on either side also needs no
+        # caveat: both operands are scalar time-series (one value per instant),
+        # so the same-bucket ES|QL math is numerically identical.
         if (
             not plan.set_or_fill
             and not plan.set_or_where
             and not _join_is_faithful(frag, resolver, output_group_fields)
+            and not _fully_aggregated_scalar_op(frag)
         ):
             _append_unique(
                 context.warnings,
@@ -2109,7 +2144,10 @@ def binary_expr_family_rule(context):
         for warning in spec.warnings:
             _append_unique(context.warnings, warning)
     non_time_groups = [field for field in context.output_group_fields if field != "time_bucket"]
-    if plan.specs and not non_time_groups:
+    # For ``sum(A) op sum(B)`` (both scalars, no by()), having no label groups is
+    # intentional — the source PromQL also produces a single unlabelled time-series
+    # per instant. Don't warn about missing labels that were never there.
+    if plan.specs and not non_time_groups and not _fully_aggregated_scalar_op(frag):
         _append_unique(
             context.warnings,
             "PromQL series labels were not retained; output is bucket-level and may collapse multiple source series",
@@ -2248,6 +2286,35 @@ def topk_family_rule(context):
         return f"translated ungrouped {topk_label} as single-bucket {n_label}"
 
     n_label = "bottom N" if sort_asc else "top N"
+
+    # For time-series XY panels (graph / timeseries), preserve the time dimension
+    # so the chart renders a proper line/area per group label rather than a static
+    # bar chart snapshot.  ES|QL has no subquery support, so the top-N filtering
+    # cannot be applied over the full time range — all series are shown and the
+    # user can apply legend filtering in Kibana.  For all other panel types (stat,
+    # barchart, table …) keep the latest-bucket collapse which gives a ranked
+    # snapshot that fits those display modes.
+    _xy_panel_types = {"graph", "timeseries", "trend"}
+    if context.panel_type in _xy_panel_types:
+        context.output_group_fields = ["time_bucket"] + group_fields
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS value = {stats_expr} BY {bucket}, {', '.join(_expand_late_bound_group_by_terms(group_fields, frag))}",
+                "| SORT time_bucket ASC",
+            ]
+        )
+        context.translation_complete = True
+        _append_unique(
+            context.warnings,
+            f"Translated {topk_label}() as time-series breakdown by {', '.join(group_fields)}; "
+            f"ES|QL has no subquery support so all series are shown (top-{limit} filtering approximated)",
+        )
+        return f"translated grouped {topk_label} as time-series breakdown for XY panel"
+
     context.output_group_fields = group_fields
     context.esql_query = "\n".join(
         [
