@@ -47,3 +47,12 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "ad46c7c61701f7c5ce55bae9daa56fecde0afa30980d2603b5919370e11a5f85"
     description: "Grafana Labs Redis Exporter Quickstart — hit-ratio plugin, renamed fragmentation metric, label map"
+
+  - gnet_id: 11835
+    name: grafana_11835_redis_exporter_helm
+    title_hint: "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)"
+    tags_hint: ["redis", "prometheus"]
+    path: grafana_11835_redis_exporter_helm
+    gnet_revision: 4
+    dashboard_sha256: "bd67264fd0d73f633a67b3b8f9d4e5f2e527c569e0e946e8f511168922b18b96"
+    description: "Redis helm stable/redis-ha (oliver006/redis_exporter) — counter/gauge classification, label map"

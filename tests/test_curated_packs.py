@@ -323,6 +323,7 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         18405: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
         18406: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
         14091: [("instance", "labels.instance"), ("job", "labels.job")],
+        11835: [("instance", "labels.instance"), ("job", "labels.job")],
     }
     for gnet_id, pairs in expected_first.items():
         resolved = resolve_pack_for_dashboard(
@@ -334,3 +335,44 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
             assert candidates[0] == first, (
                 f"{gnet_id}: {label} resolves to {candidates[0]} offline, expected {first}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Pack 11835 — Redis Exporter (helm stable/redis-ha)
+# ---------------------------------------------------------------------------
+
+
+def test_find_11835_by_gnet_id():
+    entry = find_curated_pack(gnet_id=11835, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 11835
+    assert entry["name"] == "grafana_11835_redis_exporter_helm"
+
+
+def test_find_11835_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)",
+        tags=["redis", "prometheus"],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 11835
+
+
+def test_resolve_pack_11835_classifies_all_metrics():
+    dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    # counters
+    assert resolved.metric_kinds.get("redis_commands_processed_total") == "counter"
+    assert resolved.metric_kinds.get("redis_keyspace_hits_total") == "counter"
+    assert resolved.metric_kinds.get("redis_commands_total") == "counter"
+    # gauges
+    assert resolved.metric_kinds.get("redis_memory_used_bytes") == "gauge"
+    assert resolved.metric_kinds.get("redis_db_keys") == "gauge"
+    assert resolved.metric_kinds.get("redis_db_keys_expiring") == "gauge"
+
+
+def test_resolve_pack_11835_stamps_curated_pack_name():
+    dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert getattr(resolved, "_curated_pack_name", "") == "grafana_11835_redis_exporter_helm"

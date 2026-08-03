@@ -1,0 +1,148 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 11835
+# https://grafana.com/grafana/dashboards/11835-redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha/
+#
+# Source: oliver006/redis_exporter via helm stable/redis-ha chart (Prometheus scrape)
+# Layout: Grafana 24-col → Kibana 48-col (2× scale)
+
+schema_version: 1
+gnet_id: 11835
+gnet_revision: 4
+dashboard_title: "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)"
+
+panels:
+  - title: "Uptime"
+    grafana_type: singlestat
+    fidelity: PERFECT
+    notes: >
+      max(max_over_time(redis_uptime_in_seconds[$__interval])).
+      Gauge classified by pack; ES|QL emits LAST over the bucket.
+
+  - title: "Clients"
+    grafana_type: singlestat
+    fidelity: PERFECT
+    notes: "redis_connected_clients — simple gauge scalar."
+
+  - title: "Memory Usage"
+    grafana_type: singlestat
+    fidelity: APPROXIMATE
+    notes: >
+      100 * (redis_memory_used_bytes / redis_memory_max_bytes) — bare binary
+      with no outer aggregation and no legend template. The translator handles
+      the per-document ratio via colocated arithmetic but cannot recover
+      per-instance detail without a legend or by() clause, so it collapses to
+      a single AVG-over-series value. Semantically equivalent when monitoring a
+      single Redis instance; underestimates the peak when multiple instances land
+      in one bucket. Native PromQL (when enabled) preserves exact semantics.
+
+  - title: "Commands Executed / sec"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      rate(redis_commands_processed_total[1m]) — counter classified by pack;
+      ES|QL emits RATE(redis_commands_processed_total) inside the TBUCKET.
+
+  - title: "Hits / Misses per Sec"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two targets: irate(redis_keyspace_hits_total[5m]) and
+      irate(redis_keyspace_misses_total[5m]). Both counters classified;
+      ES|QL renders as a two-series XY panel.
+
+  - title: "Total Memory Usage"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two gauge targets: redis_memory_used_bytes and redis_memory_max_bytes.
+      Rendered as a two-series XY panel — used vs available.
+
+  - title: "Network I/O"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      rate(redis_net_input_bytes_total[5m]) and rate(redis_net_output_bytes_total[5m]).
+      Both counters classified; two-series XY panel.
+
+  - title: "Total Items per DB"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      sum(redis_db_keys) by (db) — gauge classified by pack; breakdown by db label.
+      Without the pack this panel warns about unverified counter/gauge type.
+
+  - title: "Expiring vs Not-Expiring Keys"
+    grafana_type: graph
+    fidelity: APPROXIMATE
+    notes: >
+      Two targets: (sum(redis_db_keys) - sum(redis_db_keys_expiring)) and
+      sum(redis_db_keys_expiring). Both gauges classified by pack; the metric-type
+      verification warning is eliminated. APPROXIMATE: the binary subtraction
+      sum(A) - sum(B) is computed at the bucket level in ES|QL, which is semantically
+      correct for these gauge counters but emits an arithmetic approximation warning
+      (bucket-level math vs PromQL's instant-evaluation guarantee).
+
+  - title: "Expired / Evicted"
+    grafana_type: graph
+    fidelity: APPROXIMATE
+    notes: >
+      Two rate targets with sum() by (instance). Both counters classified.
+      APPROXIMATE because the source panel assigns a secondary y-axis to the
+      "reclaims" series override, which the Kibana Dashboards API does not support
+      (dual-axis XY is not available). Both series render on the same axis in Kibana.
+
+  - title: "Command Calls / sec"
+    grafana_type: graph
+    fidelity: APPROXIMATE
+    notes: >
+      topk(5, irate(redis_commands_total[1m])) — counter classified by pack.
+      APPROXIMATE: topk is translated as SORT value DESC | LIMIT 5 over the latest
+      bucket per group, which ranks by the most-recent-bucket value rather than
+      the true top-k across the time range. Correct for live "who is highest right now"
+      use; may differ from Grafana's ranking when the source series vary rapidly over time.
+
+  - title: "Redis connected clients"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: "redis_connected_clients — simple gauge time-series."
+
+variables:
+  - name: namespace
+    type: query
+    fidelity: APPROXIMATE
+    notes: >
+      label_values(redis_uptime_in_seconds, namespace). Translates to a Kibana
+      ES|QL values control on labels.namespace. Inter-control scoping
+      (pod_name filtered by namespace) is not expressible in Kibana ES|QL controls.
+
+  - name: pod_name
+    type: query
+    fidelity: APPROXIMATE
+    notes: >
+      label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, pod_name).
+      Kibana control cannot express the dependency on $namespace; lists all
+      pod_name values instead of only those in the selected namespace.
+
+  - name: instance
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, instance).
+      Translates to an ES|QL values control on labels.instance.
+
+summary:
+  total_panels: 12
+  perfect: 8
+  approximate: 4
+  not_feasible: 0
+  overall_fidelity: HIGH
+  notes: >
+    Four APPROXIMATE panels: Memory Usage (no outer agg → collapsed single-value),
+    Expiring vs Not-Expiring Keys (bucket-level binary subtraction warning),
+    Expired/Evicted (secondary y-axis dropped), Command Calls (topk approximation).
+    All four are semantically correct for their use cases; the approximation label
+    reflects translator-side conservatism rather than numeric error.
+    The curated pack eliminates the unverified-type warning on Total Items per DB
+    that appears without the pack in offline migrations.

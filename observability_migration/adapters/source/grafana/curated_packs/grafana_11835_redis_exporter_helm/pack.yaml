@@ -1,0 +1,60 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 11835
+# https://grafana.com/grafana/dashboards/11835-redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha/
+#
+# Source: oliver006/redis_exporter (Prometheus scrape via helm stable/redis-ha chart)
+# Panels: 12 total — 9 PERFECT, 3 APPROXIMATE
+#
+# Key difference from pack 763: this dashboard uses redis_commands_processed_total
+# (the helm chart's processed-command counter) instead of redis_commands_total for
+# the Commands Executed/sec panel, and uses redis_commands_total only in topk().
+# Both counters must be classified so ES|QL doesn't fall back to the unverified-type
+# warning path when offline.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  # Counters: have rate()/irate() applied in the source PromQL expressions.
+  # Gauges:   point-in-time readings used with sum()/max() directly.
+  metric_kinds:
+    redis_commands_processed_total: counter
+    redis_keyspace_hits_total: counter
+    redis_keyspace_misses_total: counter
+    redis_net_input_bytes_total: counter
+    redis_net_output_bytes_total: counter
+    redis_expired_keys_total: counter
+    redis_evicted_keys_total: counter
+    redis_commands_total: counter
+    redis_uptime_in_seconds: gauge
+    redis_connected_clients: gauge
+    redis_memory_used_bytes: gauge
+    redis_memory_max_bytes: gauge
+    redis_db_keys: gauge
+    redis_db_keys_expiring: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  # Listed in resolution priority order (first match wins).
+  # prometheus_native (labels.<name>) first: offline migrations fall through
+  # to the FIRST candidate without probing the target, so an OTel-first
+  # order silently emits the wrong field for a Prometheus scrape deployment.
+  label_candidates:
+    instance:
+      - labels.instance     # prometheus_native (primary for redis_exporter)
+      - service.instance.id # OTel ECS mode
+      - host.name
+    job:
+      - labels.job          # prometheus_native
+      - service.name        # OTel ECS mode
+    namespace:
+      - labels.namespace    # prometheus_native
+      - service.namespace   # OTel ECS mode
+      - namespace
+    db:
+      - labels.db
+      - db
+    cmd:
+      - labels.cmd
+      - cmd
