@@ -17,6 +17,7 @@ import yaml
 
 from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
 from observability_migration.adapters.source.datadog.generate import (
+    dashboard_yaml_from_ir,
     generate_dashboard_artifacts,
     generate_dashboard_yaml,
 )
@@ -58,7 +59,14 @@ def _first_fixture() -> str:
 
 
 def _artifacts(dashboard, results):
-    return generate_dashboard_artifacts(
+    """Return ``(yaml_string, native, stats, dashboard_ir)`` for inspection.
+
+    The migration pipeline builds only ``(native, stats, dashboard_ir)`` -- the
+    YAML export stopped being an artifact format, so production no longer pays
+    to serialise it. Tests that inspect the derived document derive it here from
+    the returned IR, exactly the way ``generate_dashboard_yaml`` does.
+    """
+    native, stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         results,
         data_view=OTEL_PROFILE.metric_index,
@@ -67,6 +75,7 @@ def _artifacts(dashboard, results):
         logs_index=OTEL_PROFILE.logs_index,
         field_map=OTEL_PROFILE,
     )
+    return dashboard_yaml_from_ir(dashboard_ir), native, stats, dashboard_ir
 
 
 class TestDatadogNativeDashboardEmission:
@@ -103,7 +112,7 @@ class TestDatadogNativeDashboardEmission:
         assert native_again.to_api_payload() == native.to_api_payload()
 
     def test_generate_dashboard_artifacts_yaml_matches_generate_dashboard_yaml(self) -> None:
-        """The YAML string half of the tuple is unchanged from the plain function."""
+        """The inspection helper's YAML is the export of the artifacts' own IR."""
         dashboard, results = _load(_first_fixture())
         plain_yaml = generate_dashboard_yaml(
             dashboard,
@@ -116,6 +125,34 @@ class TestDatadogNativeDashboardEmission:
         )
         tuple_yaml, _native, _stats, _dashboard_ir = _artifacts(dashboard, results)
         assert plain_yaml == tuple_yaml
+
+    def test_derived_yaml_is_obtainable_on_demand_and_tracks_the_ir(self) -> None:
+        """The pipeline stops building the YAML string; the document is still exact.
+
+        ``generate_dashboard_artifacts`` no longer serialises a YAML string that
+        both production call sites threw away. That is only safe while the
+        document stays derivable from the IR the pipeline *does* return, so
+        assert exactly that: the artifacts tuple carries no string member, and
+        the on-demand export equals the IR's own ``to_yaml_dict``. Without this,
+        the change could rot into an inspection helper that reports a stale
+        document while the uploaded dashboard has moved on.
+        """
+        dashboard, results = _load(_first_fixture())
+        artifacts = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            data_view=OTEL_PROFILE.metric_index,
+            field_map=OTEL_PROFILE,
+        )
+        assert len(artifacts) == 3, "the discarded YAML string must not come back"
+        assert not any(isinstance(item, str) for item in artifacts)
+        native, _stats, dashboard_ir = artifacts
+
+        on_demand = dashboard_yaml_from_ir(dashboard_ir)
+        assert yaml.safe_load(on_demand) == {"dashboards": [dashboard_ir.to_yaml_dict()]}
+        # The document and the uploaded payload are still the same dashboard.
+        bridged_payload, _bridged_stats = build_payload_from_yaml(yaml.safe_load(on_demand))
+        assert native.to_api_payload() == bridged_payload
 
 
 def test_no_emitted_panel_carries_a_single_step_dynamic_palette():
@@ -169,7 +206,7 @@ def test_no_emitted_panel_carries_a_single_step_dynamic_palette():
             translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
             for widget in _widgets(normalized.widgets)
         ]
-        _yaml, native, _stats, _ir = generate_dashboard_artifacts(
+        native, _stats, _ir = generate_dashboard_artifacts(
             normalized, results, field_map=OTEL_PROFILE
         )
         for color in _colors(native.to_api_payload()):

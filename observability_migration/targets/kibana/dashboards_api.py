@@ -218,6 +218,13 @@ class UploadResult:
     # uploaded would upsert *over* the first dashboard and report ``"updated"``.
     # Nothing is sent, and the batch fails, because a loud stop beats a run that
     # claims two dashboards and leaves one.
+    #
+    # A fourth status, ``data_view_unavailable``, never originates here: the
+    # Kibana adapter applies it to the upload *record* when a control's data view
+    # could not be created (see ``adapter._fail_record_on_unavailable_data_view``),
+    # which is knowledge only the layer that ran the ensure has. It reuses this
+    # same discipline -- a status outside ``created``/``updated`` -- rather than a
+    # mechanism of its own.
     status: str = ""
     mapped: int = 0
     unmapped: int = 0

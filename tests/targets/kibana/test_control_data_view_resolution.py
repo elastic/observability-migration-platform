@@ -17,8 +17,11 @@ no-op).
 """
 
 import io
+import json
+import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from observability_migration.core.assets.native_dashboard import (
@@ -220,6 +223,297 @@ class TestAdapterWarnsOperatorVisibly(unittest.TestCase):
         )
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(record["unresolved_data_views"], [])
+
+
+DEFAULT_PATTERNS = ["metrics-prometheus-*", "metrics-*", "logs-*"]
+
+
+def _artifact_dir(tmpdir: str, *control_patterns: str, stem: str = "dash") -> Path:
+    """A dashboard artifact root whose one artifact carries the given controls."""
+    native_dir = Path(tmpdir) / "native"
+    native_dir.mkdir(parents=True, exist_ok=True)
+    native_dir.joinpath(f"{stem}.native.json").write_text(
+        json.dumps(
+            {
+                "kind": "native_dashboard",
+                "version": 1,
+                "dashboard_id": f"obs-migrate-{stem}",
+                "title": stem,
+                "payload": {
+                    "title": stem,
+                    "panels": [
+                        {
+                            "grid": {"x": 0, "y": 0, "w": 24, "h": 8},
+                            "type": "vis",
+                            "config": {"type": "metric"},
+                        }
+                    ],
+                    "pinned_panels": [
+                        {
+                            "type": "options_list_control",
+                            "config": {
+                                "title": f"control-{index}",
+                                "data_view_id": pattern,
+                                "field_name": "labels.instance",
+                            },
+                        }
+                        for index, pattern in enumerate(control_patterns)
+                    ],
+                },
+                "mapping": {
+                    "mapped": 1,
+                    "unmapped": 0,
+                    "sections": 0,
+                    "controls": len(control_patterns),
+                    "reasons": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return Path(tmpdir)
+
+
+class TestBatchUploadEnsuresReferencedPatterns(unittest.TestCase):
+    """``obs-migrate upload`` must ensure what the batch's artifacts reference.
+
+    ``upload_dashboard`` (the migrate pipeline) already passes
+    ``_referenced_data_view_patterns``; the standalone batch path ensured only
+    the fixed defaults, so a reviewed artifact whose control names
+    ``metrics-*.prometheus-*`` had no data view to resolve against and shipped
+    pointing at the raw pattern.
+    """
+
+    def _upload(self, artifact_dir, *, ensure, upload_result=None, out=None, err=None):
+        with mock.patch(
+            "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+            side_effect=ensure,
+        ) as ensure_mock, mock.patch(
+            "observability_migration.targets.kibana.adapter.list_data_views",
+            return_value=LIVE_DATA_VIEWS,
+        ), mock.patch(
+            "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_artifact",
+            return_value=upload_result
+            or api.UploadResult(
+                dashboard="dash", dashboard_id="obs-migrate-dash", status="created", mapped=1,
+            ),
+        ) as upload_mock, redirect_stdout(out or io.StringIO()), redirect_stderr(
+            err or io.StringIO()
+        ):
+            payload = KibanaTargetAdapter().upload(
+                artifact_dir,
+                kibana_url="https://kibana.example",
+                kibana_api_key="secret",
+                space_id="shadow",
+            )
+        return payload, ensure_mock, upload_mock
+
+    def test_a_non_default_pattern_the_batch_references_is_ensured(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*.prometheus-*")
+            _, ensure_mock, _ = self._upload(
+                artifact_dir,
+                ensure=lambda *a, **k: [{"id": "prom-uuid", "title": "metrics-*.prometheus-*"}],
+            )
+
+        ensure_mock.assert_called_once_with(
+            "https://kibana.example",
+            data_view_patterns=[*DEFAULT_PATTERNS, "metrics-*.prometheus-*"],
+            api_key="secret",
+            space_id="shadow",
+            verify=True,
+        )
+
+    def test_one_pattern_shared_by_many_artifacts_is_ensured_once(self):
+        # N artifacts naming the same pattern must not cost N ensure round-trips.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _artifact_dir(tmpdir, "metrics-*.prometheus-*", stem="alpha")
+            _artifact_dir(tmpdir, "metrics-*.prometheus-*", stem="beta")
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*.prometheus-*", stem="gamma")
+            _, ensure_mock, upload_mock = self._upload(
+                artifact_dir,
+                ensure=lambda *a, **k: [{"id": "prom-uuid", "title": "metrics-*.prometheus-*"}],
+            )
+
+        self.assertEqual(upload_mock.call_count, 3)
+        ensure_mock.assert_called_once_with(
+            "https://kibana.example",
+            data_view_patterns=[*DEFAULT_PATTERNS, "metrics-*.prometheus-*"],
+            api_key="secret",
+            space_id="shadow",
+            verify=True,
+        )
+
+    def test_a_defaults_only_batch_is_unchanged_and_silent(self):
+        # The false-positive floor: nothing extra requested, nothing printed.
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*", "logs-*")
+            payload, ensure_mock, _ = self._upload(
+                artifact_dir,
+                ensure=lambda *a, **k: LIVE_DATA_VIEWS,
+                out=out,
+                err=err,
+            )
+
+        ensure_mock.assert_called_once_with(
+            "https://kibana.example",
+            data_view_patterns=None,
+            api_key="secret",
+            space_id="shadow",
+            verify=True,
+        )
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(payload["summary"]["uploaded_ok"], 1)
+        self.assertEqual(payload["records"][0]["status"], "created")
+
+
+class TestBatchUploadResolvesTheControlToARealId(unittest.TestCase):
+    """Ensuring is only worth anything if the control ends up on the real id."""
+
+    @staticmethod
+    def _ensure_only_what_was_asked_for(url, *, data_view_patterns=None, **kwargs):
+        """Behave like Kibana: a data view exists only if it was requested."""
+        assigned = {
+            "metrics-*": "b4f1-uuid",
+            "logs-app": "logs-app",
+            "metrics-prometheus-*": "prom-metricbeat-uuid",
+            "logs-*": "logs-uuid",
+            "metrics-*.prometheus-*": "prom-uuid",
+        }
+        return [
+            {"id": assigned.get(pattern, pattern), "title": pattern}
+            for pattern in (data_view_patterns or DEFAULT_PATTERNS)
+        ]
+
+    def test_the_sent_control_carries_the_created_data_view_id(self):
+        response = mock.Mock(status_code=201)
+        response.json.return_value = {"id": "obs-migrate-dash"}
+        session = mock.Mock()
+        session.put.return_value = response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*.prometheus-*")
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                side_effect=self._ensure_only_what_was_asked_for,
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.list_data_views",
+                return_value=LIVE_DATA_VIEWS,
+            ), mock.patch(
+                "observability_migration.targets.kibana.dashboards_api._session",
+                return_value=session,
+            ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                payload = KibanaTargetAdapter().upload(
+                    artifact_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                )
+
+        sent = json.loads(session.put.call_args.kwargs["data"])
+        self.assertEqual(
+            sent["pinned_panels"][0]["config"]["data_view_id"], "prom-uuid",
+        )
+        self.assertEqual(payload["records"][0]["unresolved_data_views"], [])
+        self.assertTrue(payload["records"][0]["success"])
+
+
+class TestBatchUploadFailsOnAnUncreatableDataView(unittest.TestCase):
+    """A pattern the target refuses is louder than a warning.
+
+    Ensuring is now attempted for every referenced pattern, so a refusal means
+    the data view does not exist and the control bound to it *will* render "An
+    error occurred". That is a 2xx upload that is knowably incomplete -- the
+    ``lossy`` case -- so it never counts toward ``uploaded_ok`` and the run
+    exits non-zero, carrying the target's own reason.
+    """
+
+    @staticmethod
+    def _ensure_refusing(bad_pattern: str):
+        def _ensure(url, *, data_view_patterns=None, **kwargs):
+            patterns = data_view_patterns or DEFAULT_PATTERNS
+            if bad_pattern in patterns:
+                raise RuntimeError(
+                    "400 Client Error: Bad Request for url: "
+                    "https://kibana.example/api/data_views/data_view"
+                )
+            return [dv for dv in LIVE_DATA_VIEWS if dv["title"] in patterns]
+
+        return _ensure
+
+    def test_the_record_fails_and_the_reason_reaches_the_operator(self):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*.prometheus-*")
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                side_effect=self._ensure_refusing("metrics-*.prometheus-*"),
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.list_data_views",
+                return_value=LIVE_DATA_VIEWS,
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_artifact",
+                return_value=api.UploadResult(
+                    dashboard="dash",
+                    dashboard_id="obs-migrate-dash",
+                    status="created",
+                    mapped=1,
+                ),
+            ), redirect_stdout(io.StringIO()), redirect_stderr(err):
+                payload = KibanaTargetAdapter().upload(
+                    artifact_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                )
+
+        record = payload["records"][0]
+        self.assertFalse(record["success"])
+        self.assertEqual(record["status"], "data_view_unavailable")
+        self.assertIn("metrics-*.prometheus-*", record["output"])
+        self.assertIn("400", record["output"])
+        # uploaded_ok < total is what makes ``obs-migrate upload`` exit 1.
+        self.assertEqual(payload["summary"]["uploaded_ok"], 0)
+        self.assertEqual(payload["summary"]["total"], 1)
+        self.assertEqual(
+            list(payload["summary"]["data_views_unavailable"]), ["metrics-*.prometheus-*"],
+        )
+        message = err.getvalue()
+        self.assertIn("metrics-*.prometheus-*", message)
+        self.assertIn("400", message)
+
+    def test_an_unrelated_artifact_in_the_same_batch_still_succeeds(self):
+        # One refused pattern must not cost the operator the other dashboards.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _artifact_dir(tmpdir, "metrics-*.prometheus-*", stem="needs_prom")
+            artifact_dir = _artifact_dir(tmpdir, "metrics-*", stem="plain")
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                side_effect=self._ensure_refusing("metrics-*.prometheus-*"),
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.list_data_views",
+                return_value=LIVE_DATA_VIEWS,
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_artifact",
+                side_effect=lambda artifact, *a, **k: api.UploadResult(
+                    dashboard=str(artifact.get("title")),
+                    dashboard_id=str(artifact.get("dashboard_id")),
+                    status="created",
+                    mapped=1,
+                ),
+            ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                payload = KibanaTargetAdapter().upload(
+                    artifact_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                )
+
+        by_artifact = {item["artifact"]: item for item in payload["records"]}
+        self.assertTrue(by_artifact["plain.native.json"]["success"])
+        self.assertFalse(by_artifact["needs_prom.native.json"]["success"])
+        # The defaults were still ensured, so the plain dashboard resolves.
+        self.assertEqual(payload["summary"]["uploaded_ok"], 1)
+        self.assertEqual(payload["summary"]["total"], 2)
 
 
 if __name__ == "__main__":

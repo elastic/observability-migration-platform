@@ -142,24 +142,34 @@ def _report_unresolved_data_views(
         )
 
 
-def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
-    """Index patterns the payload references as a data view, in first-seen order.
+# The data views every migration output is assumed to need, whatever the
+# payload happens to reference. Kept as the floor rather than replaced by the
+# referenced set so an upload of a dashboard with no controls still leaves the
+# space usable, exactly as before.
+_DEFAULT_DATA_VIEW_PATTERNS = ("metrics-prometheus-*", "metrics-*", "logs-*")
 
-    ``_ensure_default_data_views`` only ensures a fixed default list
-    (metrics-prometheus-*, metrics-*, logs-*). A control pointing at anything
-    else -- e.g. the Datadog prometheus_native profile's
-    ``metrics-*.prometheus-*`` -- therefore had no data view to resolve against,
-    so ``dashboards_api._resolve_pinned_panel_data_view_ids`` left the raw
-    pattern in ``data_view_id`` and Kibana rendered the control as "An error
-    occurred". Ensuring exactly what the payload asks for makes the lookup
-    complete by construction.
+
+def _extra_data_view_patterns(extra_patterns: list[str] | None) -> list[str]:
+    """The referenced patterns the defaults do not already cover, deduped."""
+    return [
+        pattern
+        for pattern in dict.fromkeys(extra_patterns or ())
+        if pattern and pattern not in _DEFAULT_DATA_VIEW_PATTERNS
+    ]
+
+
+def _merged_data_view_patterns(extras: list[str]) -> list[str]:
+    """The defaults first, then anything extra the payload asked for."""
+    return list(dict.fromkeys([*_DEFAULT_DATA_VIEW_PATTERNS, *extras]))
+
+
+def _payload_data_view_patterns(payload: Any) -> list[str]:
+    """Every ``data_view``/``data_view_id`` value in a typed API payload.
+
+    In first-seen order, deduped. Shared by the two upload entry points so the
+    in-memory pipeline payload and the persisted review artifact are read the
+    same way.
     """
-    if native_dashboard is None:
-        return []
-    try:
-        payload = native_dashboard.to_api_payload()
-    except Exception:
-        return []
     found: list[str] = []
 
     def _walk(node: Any) -> None:
@@ -181,6 +191,119 @@ def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
     return found
 
 
+def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
+    """Index patterns the payload references as a data view, in first-seen order.
+
+    ``_ensure_default_data_views`` only ensures a fixed default list
+    (metrics-prometheus-*, metrics-*, logs-*). A control pointing at anything
+    else -- e.g. the Datadog prometheus_native profile's
+    ``metrics-*.prometheus-*`` -- therefore had no data view to resolve against,
+    so ``dashboards_api._resolve_pinned_panel_data_view_ids`` left the raw
+    pattern in ``data_view_id`` and Kibana rendered the control as "An error
+    occurred". Ensuring exactly what the payload asks for makes the lookup
+    complete by construction.
+    """
+    if native_dashboard is None:
+        return []
+    try:
+        payload = native_dashboard.to_api_payload()
+    except Exception:
+        return []
+    return _payload_data_view_patterns(payload)
+
+
+def _artifact_data_view_patterns(artifact_file: Path) -> list[str]:
+    """The data view patterns one persisted ``*.native.json`` references.
+
+    The batch upload path (:meth:`KibanaTargetAdapter.upload`) sends reviewed
+    artifacts from disk rather than an in-memory ``NativeDashboard``, so it
+    needs the artifact-envelope counterpart of
+    :func:`_referenced_data_view_patterns`. A file that cannot be read or parsed
+    contributes nothing: ``_native_artifact_upload_file`` reads it again and
+    reports the same corruption as a per-record rejection, which is where that
+    failure belongs -- collecting patterns must not be the thing that decides an
+    artifact is broken.
+    """
+    try:
+        artifact = json.loads(Path(artifact_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(artifact, dict):
+        return []
+    return _payload_data_view_patterns(artifact.get("payload"))
+
+
+def _batch_data_view_patterns(
+    artifact_files: list[Path],
+) -> tuple[dict[Path, list[str]], list[str]]:
+    """Per-artifact and batch-wide data view patterns for one upload.
+
+    Returned together because both are needed and each artifact should be read
+    once: the union drives a *single* ensure round-trip for the whole batch (13
+    artifacts naming ``metrics-*`` must not ensure it 13 times), while the
+    per-artifact lists are what attributes an ensure failure back to the
+    dashboards it actually breaks.
+    """
+    per_artifact = {
+        artifact_file: _artifact_data_view_patterns(artifact_file)
+        for artifact_file in artifact_files
+    }
+    batch: list[str] = []
+    for patterns in per_artifact.values():
+        for pattern in patterns:
+            if pattern not in batch:
+                batch.append(pattern)
+    return per_artifact, batch
+
+
+def _fail_record_on_unavailable_data_view(
+    record: dict[str, Any],
+    referenced_patterns: list[str],
+    unavailable: dict[str, str],
+) -> None:
+    """Downgrade an otherwise-successful upload whose data view could not exist.
+
+    Ensuring is attempted for every pattern the payload references, so a
+    refusal (bad pattern, missing privilege, target error) means the data view
+    is *not* there and the control bound to it will render "An error occurred".
+    That is a 2xx upload that is knowably incomplete, which is exactly the
+    ``lossy`` case: only ``created``/``updated`` count as success, so the record
+    stops counting toward ``uploaded_ok`` and the run exits non-zero. No new
+    mechanism -- the same status/``success`` path ``lossy`` and ``duplicate_id``
+    already use, with the target's own reason carried in ``output`` so it
+    reaches both the console and the JSON upload record.
+
+    Only a record that currently reports success is downgraded: a rejection or a
+    panel loss is the more specific failure and keeps its status.
+
+    The console line names the artifact and the pattern but not the target's
+    reason: ``_ensure_data_views_for_upload`` already printed that once, and a
+    batch where 13 artifacts share one refused pattern would otherwise repeat a
+    multi-line HTTP error 13 times. The reason still travels per record in
+    ``output``, which is what the CLI prints on the ``[FAIL]`` line and what the
+    JSON upload record keeps.
+    """
+    if not unavailable or not record.get("success"):
+        return
+    blocking = [pattern for pattern in referenced_patterns if pattern in unavailable]
+    if not blocking:
+        return
+    detail = "; ".join(f"'{pattern}': {unavailable[pattern][:300]}" for pattern in blocking)
+    record["status"] = "data_view_unavailable"
+    record["success"] = False
+    record["output"] = (
+        f"{record.get('output') or '(untitled)'} — data view {detail}; "
+        "the control(s) bound to it will render an error in Kibana"
+    )
+    named = ", ".join(f"'{pattern}'" for pattern in blocking)
+    print(
+        f"    ✗ {record.get('artifact') or '(native payload)'} uploaded, but the "
+        f"data view its control needs ({named}) could not be created, so that "
+        "control will render an error in Kibana.",
+        file=sys.stderr,
+    )
+
+
 @target_registry.register
 class KibanaTargetAdapter(TargetAdapter):
     name = "kibana"
@@ -198,15 +321,14 @@ class KibanaTargetAdapter(TargetAdapter):
 
         ``extra_patterns`` carries the patterns the payload actually references,
         on top of the defaults, so every ``data_view``/``data_view_id`` in the
-        payload has something to resolve to.
+        payload has something to resolve to. A referenced pattern the defaults
+        already cover adds nothing, so the request stays byte-identical to the
+        default-only call rather than re-stating the same three patterns --
+        which is what keeps a payload that only names ``metrics-*`` off this
+        code path entirely.
         """
-        patterns = None
-        if extra_patterns:
-            patterns = list(
-                dict.fromkeys(
-                    ["metrics-prometheus-*", "metrics-*", "logs-*", *extra_patterns]
-                )
-            )
+        extras = _extra_data_view_patterns(extra_patterns)
+        patterns = _merged_data_view_patterns(extras) if extras else None
         return ensure_migration_data_views(
             kibana_url,
             data_view_patterns=patterns,
@@ -214,6 +336,66 @@ class KibanaTargetAdapter(TargetAdapter):
             space_id=space_id,
             verify=verify,
         )
+
+    def _ensure_data_views_for_upload(
+        self,
+        kibana_url: str,
+        *,
+        api_key: str = "",
+        space_id: str = "",
+        verify: bool | str = True,
+        extra_patterns: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Ensure the upload's data views, attributing any refusal to a pattern.
+
+        Returns ``(data_views, unavailable)`` where ``unavailable`` maps a
+        pattern that could not be ensured to the target's reason. One refused
+        pattern must not cost the operator every *other* dashboard in the batch,
+        and an exception escaping here would do exactly that -- before any
+        artifact was sent, with a traceback instead of a reason.
+
+        The happy path is one call with the whole list, unchanged: a batch that
+        needs nothing beyond the defaults issues precisely the request it always
+        did. Only after a failure is the list retried pattern by pattern, to
+        find out *which* pattern the target refused. Re-ensuring the patterns
+        that already succeeded is free -- ``ensure_data_view`` returns an
+        existing data view rather than recreating it -- and those extra requests
+        only ever happen on a run that is already failing.
+        """
+        try:
+            return (
+                self._ensure_default_data_views(
+                    kibana_url,
+                    api_key=api_key,
+                    space_id=space_id,
+                    verify=verify,
+                    extra_patterns=extra_patterns,
+                ),
+                {},
+            )
+        except Exception:
+            pass
+        data_views: list[dict[str, Any]] = []
+        unavailable: dict[str, str] = {}
+        for pattern in _merged_data_view_patterns(_extra_data_view_patterns(extra_patterns)):
+            try:
+                data_views.extend(
+                    ensure_migration_data_views(
+                        kibana_url,
+                        data_view_patterns=[pattern],
+                        api_key=api_key,
+                        space_id=space_id,
+                        verify=verify,
+                    )
+                )
+            except Exception as exc:
+                unavailable[pattern] = str(exc) or exc.__class__.__name__
+        for pattern, reason in unavailable.items():
+            print(
+                f"    warning: could not ensure data view '{pattern}': {reason[:300]}",
+                file=sys.stderr,
+            )
+        return data_views, unavailable
 
     def _native_upload_file(
         self,
@@ -422,6 +604,13 @@ class KibanaTargetAdapter(TargetAdapter):
         Native Dashboard-as-Code artifacts are the only upload input: they are
         what ``obs-migrate migrate`` writes and what a reviewer inspects, and
         they are sent to the typed Kibana Dashboards API byte-for-byte.
+
+        The data views the batch's controls reference are ensured before the
+        first artifact is sent, from the union of what those artifacts actually
+        ask for -- not a fixed default list. A reviewed artifact naming
+        ``metrics-*.prometheus-*`` (the Datadog ``prometheus_native`` profile)
+        otherwise had nothing to resolve against, so its control shipped
+        carrying the raw pattern and Kibana rendered it as "An error occurred".
         """
         artifact_dir = Path(artifact_dir)
         kibana_url = str(kwargs.get("kibana_url", "") or "")
@@ -444,11 +633,13 @@ class KibanaTargetAdapter(TargetAdapter):
                 "records": [],
             }
 
-        data_views = self._ensure_default_data_views(
+        patterns_by_artifact, batch_patterns = _batch_data_view_patterns(native_files)
+        data_views, unavailable = self._ensure_data_views_for_upload(
             kibana_url,
             api_key=kibana_api_key,
             space_id=space_id,
             verify=verify,
+            extra_patterns=batch_patterns,
         )
         data_view_ids = _data_view_id_lookup(data_views)
         data_view_inventory = _data_view_inventory(data_views)
@@ -456,8 +647,9 @@ class KibanaTargetAdapter(TargetAdapter):
         # ids are the upsert key, and two artifacts reaching one id would leave
         # Kibana holding only the last while both records said OK.
         seen_dashboard_ids: set[str] = set()
-        records = [
-            self._native_artifact_upload_file(
+        records = []
+        for artifact_file in native_files:
+            record = self._native_artifact_upload_file(
                 artifact_file,
                 kibana_url=kibana_url,
                 space_id=space_id,
@@ -469,8 +661,10 @@ class KibanaTargetAdapter(TargetAdapter):
                 data_view_inventory=data_view_inventory,
                 seen_dashboard_ids=seen_dashboard_ids,
             )
-            for artifact_file in native_files
-        ]
+            _fail_record_on_unavailable_data_view(
+                record, patterns_by_artifact.get(artifact_file, []), unavailable,
+            )
+            records.append(record)
         summary = {
             "uploaded_ok": sum(1 for item in records if item["success"]),
             "total": len(records),
@@ -479,6 +673,10 @@ class KibanaTargetAdapter(TargetAdapter):
             "artifact_format": "native",
             "panels_dropped": _records_panels_dropped(records),
         }
+        if unavailable:
+            # Only present when something was refused, so the clean path's
+            # summary is byte-identical to what it has always been.
+            summary["data_views_unavailable"] = dict(unavailable)
         return {"summary": summary, "records": records}
 
     def upload_dashboard(
@@ -503,12 +701,13 @@ class KibanaTargetAdapter(TargetAdapter):
         """
         if native_dashboard is None:
             raise ValueError("upload_dashboard requires a native_dashboard payload")
-        data_views = self._ensure_default_data_views(
+        referenced_patterns = _referenced_data_view_patterns(native_dashboard)
+        data_views, unavailable = self._ensure_data_views_for_upload(
             kibana_url,
             api_key=kibana_api_key,
             space_id=space_id,
             verify=verify,
-            extra_patterns=_referenced_data_view_patterns(native_dashboard),
+            extra_patterns=referenced_patterns,
         )
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
@@ -525,6 +724,7 @@ class KibanaTargetAdapter(TargetAdapter):
             artifact_label=artifact_label,
             seen_dashboard_ids=seen_dashboard_ids,
         )
+        _fail_record_on_unavailable_data_view(record, referenced_patterns, unavailable)
         return {
             "success": record["success"],
             "output": record["output"],

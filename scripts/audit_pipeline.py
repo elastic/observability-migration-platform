@@ -296,6 +296,7 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
 def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardAudit:
     from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
     from observability_migration.adapters.source.datadog.generate import (
+        dashboard_yaml_from_ir,
         generate_dashboard_artifacts,
     )
     from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
@@ -398,13 +399,16 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
     # calls internally, and it also hands back the ``DashboardIR`` — the only
     # place Datadog's controls exist. Calling the YAML wrapper threw that IR
     # away, so this branch reported ``controls = 0`` for every dashboard even
-    # when the source declared template variables.
+    # when the source declared template variables. The trace doc renders the
+    # YAML export too, so derive it from that same IR (the migration run itself
+    # no longer builds it).
     controls: list[dict] = []
     try:
-        yaml_str, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard, panel_results, data_view=data_view,
             field_map=field_map,
         )
+        yaml_str = dashboard_yaml_from_ir(dashboard_ir)
         controls = _controls_from_dashboard_ir(dashboard_ir)
     except Exception as exc:
         yaml_str = f"# YAML generation failed: {exc}"

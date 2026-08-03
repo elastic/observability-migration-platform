@@ -356,11 +356,11 @@ def _run_dashboard_pipeline(
             dashboard_id=dashboard.id,
             used_stems=used_artifact_stems,
         )
-        # ``dashboard_yaml`` stays in memory: it is the derived kb-dashboard
-        # document that the structural equivalence guards cross-check the native
-        # payload against. The run's artifacts are native/ + ir/; no YAML is
-        # written (see docs/architecture/asset-model.md).
-        _dashboard_yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+        # The run's artifacts are native/ + ir/; no dashboard YAML is written
+        # (see docs/architecture/asset-model.md), so none is built either --
+        # the derived document is available on demand from the IR via
+        # ``generate.dashboard_yaml_from_ir``.
+        native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             panel_results,
             data_view=field_map.metric_index,
@@ -945,10 +945,10 @@ def _rewrite_dashboard_artifacts(
 ) -> None:
     """Regenerate a dashboard's artifacts after validation changed its panels.
 
-    The regenerated YAML string stays in memory (the run writes native/ + ir/);
-    only the IR and the native payload are stored back on ``result``.
+    The run writes native/ + ir/, so only the IR and the native payload are
+    regenerated and stored back on ``result``.
     """
-    _yaml_str, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+    native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         result.panel_results,
         data_view=field_map.metric_index,
@@ -1148,10 +1148,12 @@ def _ensure_data_views(
         for dv in created:
             print(f"    OK: {dv.get('title', '???')} (id={dv.get('id', '???')})")
         # Returned rather than only printed so a caller can correlate what was
-        # created. NOTE: the upload does not consume this yet -- it recomputes
-        # data views itself via KibanaTargetAdapter._ensure_default_data_views,
-        # which is why a migrated options_list_control can still carry the raw
-        # index pattern as its data_view_id. Tracked as an open gap.
+        # created. The upload no longer depends on this: both entry points ensure
+        # the patterns their payload actually references
+        # (KibanaTargetAdapter._ensure_data_views_for_upload), so an
+        # options_list_control resolves to a real data view id whether or not
+        # --ensure-data-views ran. This stays as the explicit, operator-visible
+        # way to pre-create the profile's indices.
         return list(created)
     except Exception as exc:
         print(f"    WARNING: data view creation failed: {exc}")

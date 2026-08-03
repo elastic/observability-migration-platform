@@ -147,6 +147,26 @@ saved-object id, and a data view whose title is its own id. Before warning, the
 adapter re-checks against every data view in the space, so a data view the
 operator created but this upload had no reason to ensure is not reported.
 
+Both upload entry points ensure the patterns their payload actually references,
+on top of the `metrics-prometheus-*` / `metrics-*` / `logs-*` floor:
+`upload_dashboard` (the migrate pipeline) from the in-memory payload, and
+`upload` (`obs-migrate upload --artifact-dir`) from the union across the whole
+batch of `native/*.native.json` — one ensure round-trip for the batch, not one
+per artifact. A batch that references nothing beyond the defaults issues exactly
+the request it always did. Without this, a reviewed artifact naming
+`metrics-*.prometheus-*` (the Datadog `prometheus_native` profile) had no data
+view to resolve against and shipped carrying the raw pattern.
+
+If a referenced pattern cannot be ensured — a bad pattern, a missing privilege,
+any target error — the pattern is retried on its own so the failure is
+attributed to it rather than costing the batch its other data views, the
+target's reason is printed once, and every artifact that references that pattern
+is reported with status `data_view_unavailable`: not `uploaded_ok`, exit `1`, the
+reason carried in the upload record's `output` and in the summary's
+`data_views_unavailable`. Same discipline as `lossy` — the upload happened, the
+result is knowably incomplete, and a run that shipped a control which renders an
+error does not get to exit `0`.
+
 In short: `DashboardIR` is the source of truth, `native/*.native.json` is the
 artifact, and the typed Dashboards API is the only deployment contract. The
 YAML, compile, and saved-object import surfaces no longer exist.

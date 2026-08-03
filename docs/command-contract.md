@@ -1207,6 +1207,26 @@ the dashboard uploads and its panels work; that one control does not. A value
 that is already a real saved-object id, or a data view whose title is its own id,
 is a correct fallback and is not reported.
 
+Both `obs-migrate upload` and `migrate --upload` create the data views their
+payload references before sending anything, on top of the
+`metrics-prometheus-*` / `metrics-*` / `logs-*` floor — so a control on a
+non-default pattern such as the Datadog `prometheus_native` profile's
+`metrics-*.prometheus-*` resolves without `--ensure-data-views`.
+`obs-migrate upload` collects the patterns across the whole `--artifact-dir`
+batch and ensures them in one round-trip; a batch that references only the
+default patterns issues exactly the requests it always did.
+
+**A data view that cannot be created is a failure, not a warning:** if the
+target refuses a referenced pattern (bad pattern, missing privilege, any error),
+the reason is printed once on stderr (`warning: could not ensure data view
+'<pattern>': <reason>`) and every artifact referencing that pattern is reported
+with status `data_view_unavailable`. Like `lossy`, it never counts toward
+`uploaded_ok`, so `obs-migrate upload` and `migrate --upload` exit `1`; the
+reason travels in the upload record's `output` and in the upload summary's
+`data_views_unavailable`. The dashboard itself *was* uploaded — the failure says
+its control will render an error until that data view exists. Other artifacts in
+the same batch, and the other patterns, are unaffected.
+
 **Re-upload conflict:** The native `PUT /api/dashboards/{id}` returns `409
 Conflict` if a saved object with the same ID already exists in a *different*
 space — including `[DELETED]` placeholder objects left by `obs-migrate cluster

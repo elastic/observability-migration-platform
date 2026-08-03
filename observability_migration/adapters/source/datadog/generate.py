@@ -298,6 +298,25 @@ def _build_dashboard_yaml_doc(
     return doc
 
 
+def dashboard_yaml_from_ir(dashboard_ir: DashboardIR) -> str:
+    """Serialise a :class:`DashboardIR` to its kb-dashboard YAML export.
+
+    The single place that knows the dump options for the derived document, so
+    every caller that wants to *read* the export (inspection helpers, the audit
+    trace generator, tests) gets byte-identical output.
+
+    This is deliberately *not* on the migration path: the run's artifacts are
+    ``native/`` + ``ir/`` (see ``docs/architecture/asset-model.md``), so the
+    string is built only where something actually consumes it.
+    """
+    return yaml.dump(
+        {"dashboards": [dashboard_ir.to_yaml_dict()]},
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+    )
+
+
 def generate_dashboard_yaml(
     dashboard: NormalizedDashboard,
     results: list[TranslationResult],
@@ -312,9 +331,12 @@ def generate_dashboard_yaml(
 
     IR-first Phase 2: the string is a *derived export* of the semantic
     :class:`DashboardIR` (see :func:`generate_dashboard_artifacts`), not an
-    independent rendering of the source widgets.
+    independent rendering of the source widgets. It is an inspection helper --
+    the migration run writes ``native/`` + ``ir/`` and never this string -- so
+    it derives the document on demand rather than making every migrated
+    dashboard pay for a serialisation nobody reads.
     """
-    _yaml_string, _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+    _native, _stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         results,
         data_view,
@@ -323,7 +345,7 @@ def generate_dashboard_yaml(
         logs_index=logs_index,
         field_map=field_map,
     )
-    return _yaml_string
+    return dashboard_yaml_from_ir(dashboard_ir)
 
 
 def generate_dashboard_artifacts(
@@ -336,22 +358,25 @@ def generate_dashboard_artifacts(
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
     id_disambiguator: str = "",
-) -> tuple[str, NativeDashboard, dict[str, Any], DashboardIR]:
-    """Generate YAML, NativeDashboard, and the semantic DashboardIR.
+) -> tuple[NativeDashboard, dict[str, Any], DashboardIR]:
+    """Generate the NativeDashboard and the semantic DashboardIR.
 
     IR-first Phase 2 (mirrors Grafana's ``translate_dashboard``): the
     per-widget translators still assemble a kb-dashboard-core dict (the
     expensive, well-tested part of the pipeline), then that dict is
-    converted to a :class:`DashboardIR` *before* the native mapping and
-    the YAML dump. From that point on the dict is no longer the source of
-    truth -- both the typed Dashboards API payload
-    (``native_dashboard_from_ir``) and the on-disk YAML
+    converted to a :class:`DashboardIR` *before* the native mapping. From
+    that point on the dict is no longer the source of truth -- both the typed
+    Dashboards API payload (``native_dashboard_from_ir``) and the YAML export
     (``DashboardIR.to_yaml_dict``) are derived from the same IR, so they
     cannot drift from each other.
 
-    Returns ``(yaml_string, native_dashboard, native_stats, dashboard_ir)``
+    Returns ``(native_dashboard, native_stats, dashboard_ir)``
     where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
     ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
+
+    No YAML string is returned: dashboard YAML stopped being an artifact
+    format, so anything that still wants to read the derived document asks
+    for it explicitly via :func:`dashboard_yaml_from_ir`.
 
     ``id_disambiguator`` comes from the run's artifact-stem allocation and is
     non-empty only when another dashboard in the run has the same title; it
@@ -398,12 +423,10 @@ def generate_dashboard_artifacts(
             for value in template_var.available_values
             if str(value)
         ]
-    exported_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
-    yaml_string = yaml.dump(exported_doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
     native_dashboard, counts = native_dashboard_from_ir(dashboard_ir)
     counts_dict, reasons = counts.as_dicts()
     stats: dict[str, Any] = {**counts_dict, "reasons": reasons}
-    return yaml_string, native_dashboard, stats, dashboard_ir
+    return native_dashboard, stats, dashboard_ir
 
 
 def _iter_leaf_panels(panels: list[dict[str, Any]]):

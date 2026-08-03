@@ -47,6 +47,7 @@ from observability_migration.adapters.source.datadog.field_map import (
     load_profile,
 )
 from observability_migration.adapters.source.datadog.generate import (
+    dashboard_yaml_from_ir,
     generate_dashboard_artifacts,
     generate_dashboard_yaml,
 )
@@ -3921,11 +3922,12 @@ class TestFieldMap(unittest.TestCase):
             ],
         )
 
-        yaml_string, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             [],
             field_map=OTEL_PROFILE,
         )
+        yaml_string = dashboard_yaml_from_ir(dashboard_ir)
 
         # Remapped env → deployment.environment drops Datadog default "prod"
         # as a preselected filter (would empty panels against OTel values).
@@ -3990,7 +3992,7 @@ class TestFieldMap(unittest.TestCase):
             for widget in dashboard.widgets
         ]
 
-        _yaml, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             results,
             field_map=OTEL_PROFILE,
@@ -4838,7 +4840,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                 datadog_cli,
                 "generate_dashboard_artifacts",
                 return_value=(
-                    "dashboard: current\n",
                     NativeDashboard(title="Current Dashboard"),
                     {},
                     DashboardIR(title="Current Dashboard", uid="current-id"),
@@ -5579,7 +5580,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         if plan.backend == "lens":
             plan.backend = "esql"
         panel_result = translate_widget(widget, plan, field_map)
-        _yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+        native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             [panel_result],
             data_view=field_map.metric_index,
@@ -5644,7 +5645,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             plan.backend = "esql"
         panel_result = translate_widget(widget, plan, field_map)
         fixed_query = "FROM metrics-* | STATS AVG(system_cpu_user) | LIMIT 10"
-        _yaml, native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+        native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             [panel_result],
             data_view=field_map.metric_index,
