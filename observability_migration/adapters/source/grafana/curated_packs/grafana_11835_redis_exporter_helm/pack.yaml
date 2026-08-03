@@ -55,6 +55,9 @@ query:
     db:
       - labels.db
       - db
+    pod:
+      - labels.pod       # prometheus_native (helm chart scrapes use {pod=...})
+      - k8s.pod.name     # OTel ECS
     cmd:
       - labels.cmd
       - cmd

@@ -124,6 +124,9 @@ variables:
       label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, pod_name).
       Kibana control cannot express the dependency on $namespace; lists all
       pod_name values instead of only those in the selected namespace.
+      The pack adds labels.pod as the prometheus_native candidate (OTel: k8s.pod.name)
+      so the control returns real values in prometheus_native deployments.
+      No panel query filters on ?pod_name, so this is cosmetic-only.
 
   - name: instance
     type: query
