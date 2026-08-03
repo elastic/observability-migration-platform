@@ -2163,3 +2163,208 @@ def test_section_panel_cap_records_drop_reason_without_inflating_mapped():
     assert counts["mapped"] == 999
     assert reasons.get("dropped_over_section_panel_cap") == 50
     assert reasons.get("dropped_over_total_item_cap") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Silent panel loss on an HTTP 200 upload
+# --------------------------------------------------------------------------- #
+#
+# ``PUT /api/dashboards/{id}`` returns 200 even when Kibana dropped panels it
+# could not transform, and the PUT body carries no ``warnings``. The accepted
+# ``data.panels`` *does* reflect the drop, so sent-vs-accepted leaf counting
+# catches the loss from the PUT alone. Anything less reports a clean success on
+# a dashboard that is missing panels.
+
+def _api_leaf(title: str, x: int = 0, y: int = 0, w: int = 12, h: int = 6) -> dict:
+    return {
+        "grid": {"x": x, "y": y, "w": w, "h": h},
+        "type": "vis",
+        "config": {"title": title},
+    }
+
+
+def _dashboards_session(put_response, get_response=None):
+    session = mock.Mock()
+    session.put.return_value = put_response
+    if get_response is not None:
+        session.get.return_value = get_response
+    return session
+
+
+def _put_200(data: dict, dashboard_id: str = "d1") -> mock.Mock:
+    response = mock.Mock(status_code=200)
+    response.json.return_value = {"id": dashboard_id, "data": data, "meta": {}}
+    return response
+
+
+def _native_dashboard(items) -> NativeDashboard:
+    return NativeDashboard(title="Loss Test", dashboard_id="d1", items=items)
+
+
+def _panel(title: str, x: int = 0, y: int = 0, w: int = 12, h: int = 6) -> NativePanel:
+    return NativePanel(grid=NativeGrid(x=x, y=y, w=w, h=h), type="vis", config={"title": title})
+
+
+def test_lossy_200_names_the_dropped_panel_and_is_not_a_clean_success():
+    dashboard = _native_dashboard([_panel("Kept", x=0), _panel("Dropped Metric", x=12)])
+    accepted = {"title": "Loss Test", "panels": [_api_leaf("Kept", x=0)]}
+    session = _dashboards_session(_put_200(accepted))
+    warnings_response = mock.Mock(status_code=200)
+    warnings_response.json.return_value = {
+        "id": "d1",
+        "data": accepted,
+        "meta": {},
+        "warnings": [
+            {
+                "type": "dropped_panel",
+                "panel_type": "vis",
+                "panel_config": {"title": "Dropped Metric"},
+                "panel_references": [],
+                "message": "Unable to transform panel config. Error: [color]: single-step palette",
+            }
+        ],
+    }
+    session.get.return_value = warnings_response
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy", f"a 200 that dropped a panel must not report a clean success: {result.status}"
+    assert result.panels_sent == 2
+    assert result.panels_accepted == 1
+    assert [d.title for d in result.dropped_panels] == ["Dropped Metric"]
+    assert "single-step palette" in result.dropped_panels[0].reason
+    assert "Dropped Metric" in result.message
+
+
+def test_intact_200_stays_clean_with_no_false_positive():
+    dashboard = _native_dashboard([_panel("A", x=0), _panel("B", x=12)])
+    accepted = {"title": "Loss Test", "panels": [_api_leaf("A", x=0), _api_leaf("B", x=12)]}
+    session = _dashboards_session(_put_200(accepted))
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_panels == []
+    assert result.panels_sent == result.panels_accepted == 2
+    session.get.assert_not_called()
+
+
+def test_section_nested_drop_is_detected():
+    section = NativeSection(
+        title="Collapsed",
+        collapsed=True,
+        panels=[_panel("Inner Kept", x=0), _panel("Inner Dropped", x=12)],
+        grid=NativeGrid(y=0),
+    )
+    dashboard = _native_dashboard([section])
+    accepted = {
+        "title": "Loss Test",
+        "panels": [
+            {
+                "grid": {"y": 0},
+                "title": "Collapsed",
+                "collapsed": True,
+                "panels": [_api_leaf("Inner Kept", x=0)],
+            }
+        ],
+    }
+    session = _dashboards_session(_put_200(accepted))
+    session.get.return_value = mock.Mock(status_code=404, json=mock.Mock(return_value={}))
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.panels_sent == 2
+    assert result.panels_accepted == 1
+    assert [d.title for d in result.dropped_panels] == ["Inner Dropped"]
+
+
+def test_response_without_data_is_unverifiable_and_stays_clean():
+    # Older/stubbed responses echo only ``{"id": ...}``. Absent evidence is not
+    # evidence of loss -- treating it as lossy would fail every such upload.
+    dashboard = _native_dashboard([_panel("A")])
+    response = mock.Mock(status_code=200)
+    response.json.return_value = {"id": "d1"}
+    session = _dashboards_session(response)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_panels == []
+
+
+def test_lossy_upload_does_not_fall_back_to_the_legacy_compiler():
+    # A lossy PUT already wrote a partial dashboard. Re-importing it through the
+    # deprecated compiler would hide the loss behind a second, different code
+    # path -- matching how a 409 conflict is deliberately terminal.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yaml_path = Path(tmpdir) / "dash.yaml"
+        yaml_path.write_text(
+            "dashboards:\n"
+            "- name: Lossy\n"
+            "  panels:\n"
+            "  - title: Kept\n"
+            "    size: {w: 12, h: 6}\n"
+            "    position: {x: 0, y: 0}\n"
+            "    esql:\n"
+            "      type: metric\n"
+            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
+            "      primary: {field: count}\n"
+            "  - title: Dropped\n"
+            "    size: {w: 12, h: 6}\n"
+            "    position: {x: 12, y: 0}\n"
+            "    esql:\n"
+            "      type: metric\n"
+            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
+            "      primary: {field: count}\n",
+            encoding="utf-8",
+        )
+        accepted = {"title": "Lossy", "panels": [_api_leaf("Kept", x=0)]}
+        session = _dashboards_session(_put_200(accepted, dashboard_id="lossy"))
+        session.get.return_value = mock.Mock(status_code=500, json=mock.Mock(return_value={}))
+        fallback = mock.Mock()
+
+        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+            results = api.upload_yaml_files(
+                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
+            )
+
+    assert results[0].status == "lossy"
+    assert [d.title for d in results[0].dropped_panels] == ["Dropped"]
+    fallback.assert_not_called()
+
+
+def test_dropped_panel_explanation_get_is_only_issued_on_a_mismatch():
+    # The follow-up GET buys Kibana's own validation error, so it is paid only
+    # when the count comparison already proved something was dropped.
+    dashboard = _native_dashboard([_panel("A", x=0), _panel("B", x=12)])
+    intact = {"title": "Loss Test", "panels": [_api_leaf("A", x=0), _api_leaf("B", x=12)]}
+    session = _dashboards_session(_put_200(intact))
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+    session.get.assert_not_called()
+
+    lossy = {"title": "Loss Test", "panels": [_api_leaf("A", x=0)]}
+    session = _dashboards_session(_put_200(lossy))
+    session.get.return_value = mock.Mock(status_code=200, json=mock.Mock(return_value={"warnings": []}))
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+    session.get.assert_called_once()
+
+
+def test_dropped_panel_detection_survives_a_failed_explanation_get():
+    dashboard = _native_dashboard([_panel("A", x=0), _panel("B", x=12)])
+    accepted = {"title": "Loss Test", "panels": [_api_leaf("A", x=0)]}
+    session = _dashboards_session(_put_200(accepted))
+    session.get.side_effect = requests.exceptions.ConnectionError("boom")
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert [d.title for d in result.dropped_panels] == ["B"]
+    assert result.dropped_panels[0].reason == ""

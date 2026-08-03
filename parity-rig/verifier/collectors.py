@@ -51,9 +51,12 @@ def panels_from_migration_report(report: dict[str, Any]) -> Iterable[PanelRecord
 
         { "dashboards": [ { "uid": ..., "title": ..., "panels": [...] }, ... ] }
 
-    Panels live at ``dashboards[*].panels[*]``; both the source PromQL
-    (``query_ir.source_expression``) and the translator output
-    (``esql``) are direct fields on each panel object.
+    Panels live at ``dashboards[*].panels[*]``; both the source expression
+    (``query_ir.source_expression``) and the translator output are direct
+    fields on each panel object. The two source adapters spell the
+    translator-output key differently -- Grafana writes ``esql``, Datadog
+    writes ``esql_query`` -- so :func:`_record_from_report_panel` reads
+    both.
     """
     for dashboard in report.get("dashboards", []):
         dash_uid = dashboard.get("uid", "")
@@ -75,14 +78,21 @@ def _record_from_report_panel(
         or qir.get("clean_expression")
         or ""
     )
-    esql = (panel.get("esql") or "").strip()
+    # Grafana's report key is ``esql``; Datadog's is ``esql_query``. Reading
+    # only ``esql`` left T1 empty for every Datadog panel, and
+    # ``compare_panel_record`` short-circuits an empty T1 to SKIP -- so a
+    # Datadog run verified as "all SKIP, 0 drift on every axis" no matter
+    # what the translator had emitted. Vacuously green is worse than red.
+    esql = (panel.get("esql") or panel.get("esql_query") or "").strip()
     is_native = esql.lstrip().upper().startswith("PROMQL")
     return PanelRecord(
-        panel_id=str(panel.get("source_panel_id") or f"panel-{idx}"),
+        panel_id=str(panel.get("source_panel_id") or panel.get("widget_id") or f"panel-{idx}"),
         title=panel.get("title", "") or f"(untitled-{idx})",
         dashboard_uid=dash_uid,
         dashboard_title=dash_title,
-        grafana_type=panel.get("grafana_type", ""),
+        # ``grafana_type`` is the record's source-panel-type slot; Datadog
+        # reports the same thing as ``dd_widget_type``.
+        grafana_type=panel.get("grafana_type") or panel.get("dd_widget_type") or "",
         kibana_type=panel.get("kibana_type", ""),
         status=panel.get("status", ""),
         feasibility=(panel.get("readiness") or "").lower() or panel.get("status", ""),
@@ -139,8 +149,72 @@ def load_ir_panels(ir_dir: Path) -> dict[str, str]:
     (``DashboardIR.to_yaml_dict``), never the other way around -- so T2
     means the same thing it always did while sourcing it from the artifact
     that survives.
+
+    This is the *flat* view: every dashboard in ``ir_dir`` is folded into
+    one title-keyed dict, so panels sharing a title across dashboards
+    collide. Safe only for a single-dashboard directory. The verifier uses
+    :func:`load_ir_panels_by_dashboard` instead -- see its docstring for
+    what the collision costs.
     """
     out: dict[str, str] = {}
+    for _key, panels in _iter_ir_dashboards(ir_dir):
+        out.update(panels)
+    return out
+
+
+def load_ir_panels_by_dashboard(ir_dir: Path) -> dict[str, dict[str, str]]:
+    """Return ``{dashboard_key: {panel_title: esql_query}}`` for ``ir_dir``.
+
+    :func:`load_ir_panels` flattens every dashboard into one title-keyed
+    dict. That is only correct for a single-dashboard directory, which is
+    what ``--migration-out`` documents -- but ``grafana-migrate
+    --input-dir`` / ``datadog-migrate --input-dir`` write every dashboard
+    of a run into one ``ir/``, and pointing the verifier at that is the
+    obvious thing to do. Panels sharing a title across dashboards then
+    collide: last writer wins (``sorted()`` order), and every earlier
+    dashboard's panel silently inherits a *different dashboard's* query.
+
+    That does not merely lose data, it fabricates findings. On the in-repo
+    15-dashboard Datadog corpus both of the T1=T2 "drift" findings were
+    artifacts of this collision -- the Kafka dashboard's ``Error Logs``
+    panel was compared against the Redis dashboard's ``Error Logs`` query.
+    And on a 300-dashboard output it collapses 7135 IR panels down to 497
+    keys, which is where the bogus "T2 = 497" figure came from.
+
+    Each dashboard is registered under both its ``uid`` and its ``title``:
+    Grafana's ``migration_report.json`` carries a dashboard uid, Datadog's
+    carries only a title, so the caller tries uid first and falls back to
+    title. A key claimed by two *different* dashboards is dropped rather
+    than resolved arbitrarily, so an artifact set with no usable dashboard
+    identity yields an empty T2 -- visible as drift plus a note -- instead
+    of a confidently wrong one.
+    """
+    scoped: dict[str, dict[str, str]] = {}
+    owner: dict[str, int] = {}
+    ambiguous: set[str] = set()
+    for idx, (keys, panels) in enumerate(_iter_ir_dashboards(ir_dir, with_keys=True)):
+        for key in keys:
+            if owner.get(key, idx) != idx:
+                ambiguous.add(key)
+                continue
+            owner[key] = idx
+            scoped[key] = panels
+    for key in ambiguous:
+        scoped.pop(key, None)
+        LOG.warning(
+            "IR dashboard key %r is claimed by more than one artifact in %s; "
+            "T2 will be reported as unavailable for it rather than guessed",
+            key, ir_dir,
+        )
+    return scoped
+
+
+def _iter_ir_dashboards(ir_dir: Path, *, with_keys: bool = False):
+    """Yield ``(key_or_keys, {panel_title: esql})`` per IR artifact.
+
+    Shared by the flat and dashboard-scoped readers so both agree on how an
+    artifact is parsed and which panels count as leaves.
+    """
     for ir_path in sorted(ir_dir.glob("*.ir.json")):
         try:
             artifact = json.loads(ir_path.read_text())
@@ -150,9 +224,26 @@ def load_ir_panels(ir_dir: Path) -> dict[str, str]:
         dashboard_ir = (artifact or {}).get("dashboard_ir")
         if not isinstance(dashboard_ir, dict):
             continue
-        for panel in _iter_ir_panels(dashboard_ir.get("panels") or []):
-            out[panel["title"]] = panel.get("esql_query", "")
-    return out
+        panels = {
+            panel["title"]: panel.get("esql_query", "")
+            for panel in _iter_ir_panels(dashboard_ir.get("panels") or [])
+        }
+        if not with_keys:
+            yield ir_path.name, panels
+            continue
+        keys = [
+            key
+            for key in (
+                str(dashboard_ir.get("uid") or ""),
+                str(dashboard_ir.get("title") or ""),
+            )
+            if key
+        ]
+        # An artifact with neither uid nor title is registered under the empty
+        # key: unjoinable by name, but still reachable by the caller's
+        # single-dashboard fallback (and still collision-detected if a second
+        # nameless artifact shows up).
+        yield keys or [""], panels
 
 
 def _iter_ir_panels(panels: list[dict[str, Any]]) -> Iterable[dict[str, str]]:
@@ -204,10 +295,45 @@ def load_ndjson_panels(ndjson_path: Path) -> dict[str, str]:
 
     ``panelsJSON`` decodes to ``[{embeddableConfig: {attributes:
     {state: {query: {esql: "..."}}}}, ...}, ...]``.
+
+    This is the *flat* view. One NDJSON can hold several dashboard saved
+    objects, and folding them together collides panels that share a title
+    -- see :func:`load_ir_panels_by_dashboard`. Use
+    :func:`load_ndjson_panels_by_dashboard` when more than one dashboard
+    may be present.
     """
-    if not ndjson_path.exists():
-        return {}
     out: dict[str, str] = {}
+    for _title, panels in _iter_ndjson_dashboards(ndjson_path):
+        out.update(panels)
+    return out
+
+
+def load_ndjson_panels_by_dashboard(ndjson_path: Path) -> dict[str, dict[str, str]]:
+    """Return ``{dashboard_title: {panel_title: esql_query}}`` for one NDJSON.
+
+    The compiled saved object carries the dashboard's own
+    ``attributes.title``, which is the key the panel records can be joined
+    on. Two saved objects sharing a title are dropped rather than merged,
+    for the reason given in :func:`load_ir_panels_by_dashboard`. A saved
+    object with no title lands under the empty key -- unjoinable by name,
+    but still reachable by the caller's single-dashboard fallback.
+    """
+    scoped: dict[str, dict[str, str]] = {}
+    ambiguous: set[str] = set()
+    for title, panels in _iter_ndjson_dashboards(ndjson_path):
+        if title in scoped:
+            ambiguous.add(title)
+            continue
+        scoped[title] = panels
+    for title in ambiguous:
+        scoped.pop(title, None)
+    return scoped
+
+
+def _iter_ndjson_dashboards(ndjson_path: Path):
+    """Yield ``(dashboard_title, {panel_title: esql})`` per saved object."""
+    if not ndjson_path.exists():
+        return
     for line in ndjson_path.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -218,18 +344,20 @@ def load_ndjson_panels(ndjson_path: Path) -> dict[str, str]:
             continue
         if obj.get("type") != "dashboard":
             continue
-        panels_blob = (obj.get("attributes") or {}).get("panelsJSON")
+        attributes = obj.get("attributes") or {}
+        panels_blob = attributes.get("panelsJSON")
         if not panels_blob:
             continue
         try:
             panels = json.loads(panels_blob)
         except json.JSONDecodeError:
             continue
+        out: dict[str, str] = {}
         for panel in panels:
             title, esql = _extract_panel_title_and_esql(panel)
             if title:
                 out[title] = esql
-    return out
+        yield str(attributes.get("title") or ""), out
 
 
 def _extract_panel_title_and_esql(panel: dict[str, Any]) -> tuple[str, str]:
@@ -398,8 +526,10 @@ __all__ = [
     "cluster_dashboard_panels",
     "fetch_cluster_dashboard",
     "load_ir_panels",
+    "load_ir_panels_by_dashboard",
     "load_migration_report",
     "load_ndjson_panels",
+    "load_ndjson_panels_by_dashboard",
     "panels_from_migration_report",
     "run_cluster_query",
 ]

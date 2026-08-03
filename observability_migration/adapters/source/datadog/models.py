@@ -484,6 +484,9 @@ class DashboardResult:
     uploaded: bool | None = None
     upload_error: str = ""
     upload_warnings: list[str] = field(default_factory=list)
+    # Leaf panels Kibana silently dropped while accepting the upload with an
+    # HTTP 200 (``{"title", "reason", "section", "grid"}`` each).
+    upload_dropped_panels: list[dict[str, Any]] = field(default_factory=list)
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     kibana_saved_object_id: str = ""
@@ -540,12 +543,17 @@ class DashboardResult:
                 "status": "pass" if not self.layout_error else "fail",
                 "error": self.layout_error or "",
             }
-        upload_status = {"status": "not_run", "error": "", "warnings": []}
+        upload_status: dict[str, Any] = {
+            "status": "not_run", "error": "", "warnings": [], "dropped_panels": [],
+        }
         if self.upload_attempted or self.upload_error:
             upload_status = {
                 "status": "pass" if self.uploaded and not self.upload_error else "fail",
                 "error": self.upload_error or "",
                 "warnings": list(self.upload_warnings or []),
+                # Panels Kibana dropped behind an HTTP 200 upload, so the
+                # manifest/CI can see which panels a "successful" upload lost.
+                "dropped_panels": list(self.upload_dropped_panels or []),
             }
         smoke_status = {"status": "not_run", "error": ""}
         if self.smoke_attempted or self.smoke_error:

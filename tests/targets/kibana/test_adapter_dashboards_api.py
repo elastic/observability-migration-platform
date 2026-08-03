@@ -15,7 +15,7 @@ from unittest import mock
 
 from observability_migration.core.assets.native_dashboard import NativeDashboard, NativeGrid, NativePanel
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
-from observability_migration.targets.kibana.dashboards_api import UploadResult
+from observability_migration.targets.kibana.dashboards_api import DroppedPanel, UploadResult
 
 _LEGACY_RECORD_KEYS = {"yaml_file", "success", "output", "space_id", "kibana_url"}
 _LEGACY_SUMMARY_KEYS = {"uploaded_ok", "total", "space_id", "kibana_url"}
@@ -244,6 +244,143 @@ class TestNativeApiPath(unittest.TestCase):
         self.assertFalse(record["success"])
         self.assertEqual(payload["summary"]["fallbacks"], 0)
 
+    def test_lossy_result_is_not_a_success_and_names_the_dropped_panel(self):
+        # HTTP 200 with panels missing. The record must fail (a partial write
+        # that reports success is never investigated), carry the per-panel
+        # detail, and skip the deprecated compiler fallback -- the dashboard is
+        # already written, so re-importing it would only hide the loss.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = _yaml_dir_with_one_dashboard(tmpdir)
+
+            def fake_api(yaml_paths, kibana_url, *, fallback=None, **kwargs):
+                return [
+                    UploadResult(
+                        dashboard="Dash",
+                        dashboard_id="d1",
+                        status="lossy",
+                        http_status=200,
+                        mapped=2,
+                        message="Kibana accepted the upload but kept only 1 of 2 panel(s)",
+                        panels_sent=2,
+                        panels_accepted=1,
+                        dropped_panels=[
+                            DroppedPanel(
+                                title="Memory usage",
+                                reason="Unable to transform panel config. Error: [color]",
+                                section="Overview",
+                                grid={"x": 12, "y": 0, "w": 12, "h": 6},
+                            )
+                        ],
+                    )
+                ]
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.upload_yaml",
+                return_value=(True, "legacy import ok"),
+            ) as legacy, mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_yaml_files",
+                side_effect=fake_api,
+            ):
+                payload = KibanaTargetAdapter().upload(
+                    yaml_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    use_dashboards_api=True,
+                )
+
+        legacy.assert_not_called()
+        record = payload["records"][0]
+        self.assertEqual(record["status"], "lossy")
+        self.assertFalse(record["success"])
+        self.assertFalse(record["fallback_used"])
+        self.assertEqual(record["panels_sent"], 2)
+        self.assertEqual(record["panels_accepted"], 1)
+        self.assertEqual([d["title"] for d in record["dropped_panels"]], ["Memory usage"])
+        self.assertIn("kept only 1 of 2", record["output"])
+        self.assertEqual(payload["summary"]["uploaded_ok"], 0)
+        self.assertEqual(payload["summary"]["panels_dropped"], 1)
+
+    def test_intact_upload_reports_no_dropped_panels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = _yaml_dir_with_one_dashboard(tmpdir)
+
+            def fake_api(yaml_paths, kibana_url, *, fallback=None, **kwargs):
+                return [
+                    UploadResult(
+                        dashboard="Dash",
+                        dashboard_id="d1",
+                        status="updated",
+                        http_status=200,
+                        mapped=2,
+                        panels_sent=2,
+                        panels_accepted=2,
+                    )
+                ]
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.upload_yaml",
+                return_value=(True, "legacy import ok"),
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_yaml_files",
+                side_effect=fake_api,
+            ):
+                payload = KibanaTargetAdapter().upload(
+                    yaml_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    use_dashboards_api=True,
+                )
+
+        record = payload["records"][0]
+        self.assertTrue(record["success"])
+        self.assertEqual(record["dropped_panels"], [])
+        self.assertEqual(payload["summary"]["panels_dropped"], 0)
+
+    def test_lossy_outranks_other_statuses_in_a_multi_dashboard_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = _yaml_dir_with_two_dashboards(tmpdir)
+
+            def fake_api(yaml_paths, kibana_url, *, fallback=None, **kwargs):
+                return [
+                    UploadResult(dashboard="Good", status="created", mapped=1),
+                    UploadResult(
+                        dashboard="Bad",
+                        status="lossy",
+                        mapped=1,
+                        panels_sent=1,
+                        panels_accepted=0,
+                        dropped_panels=[DroppedPanel(title="Gone")],
+                    ),
+                ]
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.upload_yaml",
+                return_value=(True, "legacy import ok"),
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_yaml_files",
+                side_effect=fake_api,
+            ):
+                payload = KibanaTargetAdapter().upload(
+                    yaml_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    use_dashboards_api=True,
+                )
+
+        record = payload["records"][0]
+        self.assertEqual(record["status"], "lossy")
+        self.assertFalse(record["success"])
+        self.assertEqual([d["title"] for d in record["dropped_panels"]], ["Gone"])
+
     def test_rejected_dashboard_fallback_splits_multi_dashboard_yaml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_dir = _yaml_dir_with_two_dashboards(tmpdir)
@@ -349,6 +486,11 @@ class TestNativeApiPath(unittest.TestCase):
                 "fallback_used",
                 "fallback_count",
                 "dashboard_ids",
+                # Silent-panel-loss evidence: leaves sent vs leaves Kibana kept,
+                # plus the per-panel detail for the ones it dropped.
+                "panels_sent",
+                "panels_accepted",
+                "dropped_panels",
             },
         )
 

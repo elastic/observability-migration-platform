@@ -6,8 +6,8 @@ A 5-tier verification framework for migrated Grafana → Kibana dashboards. For 
 
 | Tier | Source | Purpose |
 | --- | --- | --- |
-| **T0** | `migration_report.json:panels[*].promql` | the original Grafana panel as authored |
-| **T1** | `migration_report.json:panels[*].esql` | what obs-migrate emitted |
+| **T0** | `migration_report.json:panels[*].promql` (else `query_ir.source_expression`) | the original source panel as authored |
+| **T1** | `migration_report.json:panels[*].esql` (Datadog: `esql_query`) | what obs-migrate emitted |
 | **T2** | `<output>/ir/<dash>.ir.json` | the migration's semantic `DashboardIR` export, as emitted (`visual.presentation.config.query`) |
 | **T3** | `<output>/compiled/<dash>/compiled_dashboards.ndjson` | the kb-dashboard-cli output, ready for upload |
 | **T4** | `GET /api/saved_objects/dashboard/<id>` (or HAR walker fallback) | what Kibana stores as the saved object |
@@ -79,6 +79,28 @@ The comparator uses a canonical form (stripped + collapsed whitespace) for the p
 - **Composite-legend splice** (T1 → T2): the panel emitter adds `EVAL legend = CONCAT(...)` plus an extended `KEEP` clause that the translator's bare `migration_report.json:esql` does not have, before the query lands in the IR export. Working as designed; not flagged.
 
 To add another known transform, edit `_KNOWN_T1_T2_RIGHT_ONLY_PATTERNS` in `compare.py` with a short comment explaining the source of the transform.
+
+## Multi-dashboard output directories
+
+`--migration-out` is normally a single dashboard's output directory, but
+`grafana-migrate --input-dir` / `datadog-migrate --input-dir` write every
+dashboard of a run into one `ir/` (and one `compiled/`), and pointing the
+verifier at that is supported.
+
+The local tiers are therefore joined **per dashboard** (on the report's
+dashboard `uid`, else its `title`), not by panel title alone. Panel titles
+repeat across dashboards constantly — `Error Logs`, `CPU Usage`, `Uptime` —
+and a title-only join hands one dashboard's panel a *different* dashboard's
+query. That does not just lose data, it invents findings: on the in-repo
+15-dashboard Datadog corpus both T1=T2 "drift" findings were the Kafka
+dashboard's panels being compared against Redis's and RabbitMQ's queries.
+
+When a record's dashboard cannot be matched to any artifact (e.g. an output
+set where several dashboards share one title and carry no uid), the tier is
+reported as **unavailable** — empty, with a note on the record — rather than
+filled from a neighbouring dashboard. A single-dashboard artifact set is
+still joined without needing a key match, since there is nothing to confuse
+it with.
 
 ## Limitations
 

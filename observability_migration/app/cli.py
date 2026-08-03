@@ -1497,6 +1497,18 @@ def _run_upload(args: Any) -> None:
         print(f"  [{status}] {item['yaml_file']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
+        # An HTTP 200 that dropped panels is reported as a failure, not a
+        # warning: the dashboard exists, looks uploaded, and is incomplete.
+        # Naming the panels here is what lets the operator act on it.
+        for dropped in item.get("dropped_panels") or []:
+            where = f" [section {dropped.get('section')}]" if dropped.get("section") else ""
+            # Kibana's validation errors run to thousands of characters; the
+            # console gets a readable head, the JSON report keeps the rest.
+            reason = f": {str(dropped.get('reason') or '')[:300]}" if dropped.get("reason") else ""
+            print(
+                f"         DROPPED PANEL {dropped.get('title') or '(untitled)'}{where}{reason}",
+                file=sys.stderr,
+            )
         dropped_filters = item.get("unmapped_reasons", {}).get(
             "dropped_unsupported_dashboard_filter", 0
         )
@@ -1506,7 +1518,18 @@ def _run_upload(args: Any) -> None:
                 "filter(s); affected panels may query a broader dataset than the source",
                 file=sys.stderr,
             )
-    if upload_payload["summary"]["uploaded_ok"] < upload_payload["summary"]["total"]:
+    panels_dropped = int(upload_payload["summary"].get("panels_dropped", 0) or 0)
+    if panels_dropped:
+        print(
+            f"\n{panels_dropped} panel(s) were silently dropped by Kibana on an "
+            "HTTP 200 upload; the affected dashboards are incomplete. Fix the "
+            "panels listed above and re-upload.",
+            file=sys.stderr,
+        )
+    # A lossy upload never counts toward ``uploaded_ok``, so it already fails
+    # here; ``panels_dropped`` is a second, independent guard in case a record
+    # ever reports success alongside dropped panels.
+    if upload_payload["summary"]["uploaded_ok"] < upload_payload["summary"]["total"] or panels_dropped:
         sys.exit(1)
 
 

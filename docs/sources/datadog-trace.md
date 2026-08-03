@@ -634,6 +634,13 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (1)</summary>
+
+- `host` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (2)</summary>
 
 - `$host` → tag: `host`, default: `*`
@@ -1096,6 +1103,16 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (4)</summary>
+
+- `endpoint` (type: `options`)
+- `host` (type: `options`)
+- `task` (type: `options`)
+- `worker` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (4)</summary>
 
 - `$endpoint` → tag: `endpoint`, default: `*`
@@ -1550,6 +1567,15 @@ FROM metrics-*
 **Semantic losses:** Template variable '$host' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (3)</summary>
+
+- `host` (type: `options`)
+- `consul_service_id` (type: `options`)
+- `consul_datacenter` (type: `options`)
 
 </details>
 
@@ -2695,6 +2721,15 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (3)</summary>
+
+- `frontend` (type: `options`)
+- `backend` (type: `options`)
+- `release` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (3)</summary>
 
 - `$frontend` → tag: `haproxy_service`, default: `*`
@@ -3229,6 +3264,15 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (3)</summary>
+
+- `env` (type: `options`)
+- `consumer_group` (type: `options`)
+- `topic` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (3)</summary>
 
 - `$env` → tag: `env`, default: `*`
@@ -3754,6 +3798,21 @@ FROM metrics-*
 - Reasons: group/container widget
 
 **Verdict:** EXPECTED_LIMITATION
+
+</details>
+
+<details>
+<summary>Controls / Variables (9)</summary>
+
+- `cluster` (type: `options`)
+- `namespace` (type: `options`)
+- `deployment` (type: `options`)
+- `daemonset` (type: `options`)
+- `statefulset` (type: `options`)
+- `replicaset` (type: `options`)
+- `service` (type: `options`)
+- `node` (type: `options`)
+- `label` (type: `options`)
 
 </details>
 
@@ -4294,6 +4353,13 @@ FROM metrics-*
 **Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (1)</summary>
+
+- `replset_name` (type: `options`)
 
 </details>
 
@@ -5197,6 +5263,13 @@ FROM logs-*
 - Output groups: `@timestamp`
 
 **Verdict:** CORRECT
+
+</details>
+
+<details>
+<summary>Controls / Variables (1)</summary>
+
+- `Host` (type: `options`)
 
 </details>
 
@@ -6155,6 +6228,15 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (3)</summary>
+
+- `node_name` (type: `options`)
+- `queue` (type: `options`)
+- `rabbitmq_conn_state` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (3)</summary>
 
 - `$node_name` → tag: `rabbitmq_node`, default: `*`
@@ -6696,6 +6778,14 @@ FROM metrics-*
 **Semantic losses:** Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana; Template variable '$host' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana
 
 **Verdict:** MINOR_ISSUE
+
+</details>
+
+<details>
+<summary>Controls / Variables (2)</summary>
+
+- `host` (type: `options`)
+- `key` (type: `options`)
 
 </details>
 
@@ -7328,6 +7418,13 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (1)</summary>
+
+- `instance` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (1)</summary>
 
 - `$instance` → tag: `instance`, default: `*`
@@ -7758,6 +7855,14 @@ FROM metrics-*
 </details>
 
 <details>
+<summary>Controls / Variables (2)</summary>
+
+- `host` (type: `options`)
+- `env` (type: `options`)
+
+</details>
+
+<details>
 <summary>Template Variables (2)</summary>
 
 - `$host` → tag: `host`, default: `*`
@@ -7813,4 +7918,4 @@ Every panel marked `not_feasible` in the trace run (5 total):
 
 ---
 
-*Last generated: 2026-08-03 17:23 UTC*
+*Last generated: 2026-08-03 18:53 UTC*

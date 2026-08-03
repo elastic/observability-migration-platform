@@ -1313,12 +1313,21 @@ def _upload_all_dashboards(
         dr.upload_warnings = upload_warnings_from_reasons(
             upload_result.get("unmapped_reasons", {})
         )
+        dr.upload_dropped_panels = list(upload_result.get("dropped_panels") or [])
         dr.uploaded_space = upload_space or target_space
         dr.uploaded_kibana_url = upload_result["kibana_url"]
         if upload_result["success"]:
             print(f"    Uploaded: {stem}")
         else:
             print(f"    UPLOAD FAILED: {stem}: {dr.upload_error[:200]}")
+        # Named per panel, not just counted: an HTTP 200 upload that dropped
+        # panels is invisible unless the report says which ones.
+        for dropped in dr.upload_dropped_panels:
+            reason = f": {str(dropped.get('reason') or '')[:300]}" if dropped.get("reason") else ""
+            print(
+                f"    DROPPED PANEL {dropped.get('title') or '(untitled)'}{reason}",
+                file=sys.stderr,
+            )
         for warning in dr.upload_warnings:
             print(f"    warning: {warning}", file=sys.stderr)
 

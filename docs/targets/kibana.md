@@ -104,6 +104,16 @@ from (pass `--artifact-format yaml` explicitly for that fallback). Pass
 `--legacy-import` to force the legacy compile+import path for every
 dashboard; it always requires YAML (it forces `--artifact-format yaml`).
 
+An accepted (2xx) upload is not automatically a clean one: Kibana drops panels it
+cannot transform and still answers `200`, with no `warnings` key on the PUT body.
+`_record_panel_loss` therefore compares the leaf panels sent against the ones the
+response echoes in `data.panels` and downgrades the result to status `lossy` when
+fewer came back, then issues a single follow-up `GET /api/dashboards/{id}` — only on
+a detected mismatch — to attach Kibana's own `warnings[].message` to each dropped
+panel. `lossy` is a failure (it never counts as `uploaded_ok`) and, like `conflict`,
+is terminal rather than routed to the legacy fallback. See
+`docs/command-contract.md` for the operator-facing contract.
+
 In short: native IR is the new source of truth for dashboard upload. The YAML,
 compile, and saved-object import surfaces are compatibility paths for review,
 linting, legacy automation, and explicit fallback workflows; they are not the

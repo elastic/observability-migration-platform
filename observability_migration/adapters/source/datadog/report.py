@@ -256,6 +256,11 @@ def print_report(results: list[DashboardResult]) -> None:
             print(f"    Upload: {upload_status}")
             if dr.upload_error:
                 print(f"    UPLOAD ERROR: {dr.upload_error}")
+            for dropped in dr.upload_dropped_panels or []:
+                reason = f": {str(dropped.get('reason') or '')[:300]}" if dropped.get("reason") else ""
+                print(
+                    f"    UPLOAD DROPPED PANEL: {dropped.get('title') or '(untitled)'}{reason}"
+                )
         if dr.smoke_attempted:
             print(f"    Smoke: {dr.smoke_status}")
             if dr.smoke_error:
@@ -394,6 +399,7 @@ def save_detailed_report(
                 "attempted": dr.upload_attempted,
                 "uploaded": dr.uploaded,
                 "error": dr.upload_error,
+                "dropped_panels": list(dr.upload_dropped_panels or []),
                 "space": dr.uploaded_space,
                 "kibana_url": dr.uploaded_kibana_url,
                 "saved_object_id": dr.kibana_saved_object_id,

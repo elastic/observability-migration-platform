@@ -138,7 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     report = collectors.load_migration_report(report_path)
 
     LOG.info("scanning ir dir: %s", ir_dir)
-    ir_panels = collectors.load_ir_panels(ir_dir) if ir_dir.exists() else {}
+    # Scoped per dashboard, not flattened by panel title: one output dir can
+    # hold every dashboard of a run, and titles repeat across dashboards.
+    ir_panels = (
+        collectors.load_ir_panels_by_dashboard(ir_dir) if ir_dir.exists() else {}
+    )
 
     LOG.info("scanning compiled dir: %s", compiled_dir)
     ndjson_panels = _load_compiled_panels(compiled_dir)
@@ -168,8 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     for record in collectors.panels_from_migration_report(report):
         if args.es_index and not record.t1_index:
             record.t1_index = args.es_index
-        record.t2_ir_esql = ir_panels.get(record.title, "")
-        record.t3_ndjson_esql = ndjson_panels.get(record.title, "")
+        record.t2_ir_esql = _scoped_panel_query(ir_panels, record, "T2", "IR export")
+        record.t3_ndjson_esql = _scoped_panel_query(
+            ndjson_panels, record, "T3", "compiled NDJSON"
+        )
         if cluster_saved_object:
             record.t4_cluster_esql = cluster_panels.get(record.title, "")
             record.t4_saved_object_id = cluster_saved_object.get("id", "")
@@ -264,16 +270,64 @@ def _scope_report_to_panels(
     return scoped
 
 
-def _load_compiled_panels(compiled_dir: Path) -> dict[str, str]:
+def _scoped_panel_query(
+    index: dict[str, dict[str, str]],
+    record: PanelRecord,
+    tier: str,
+    artifact_label: str,
+) -> str:
+    """Return *record*'s query for a dashboard-scoped tier index.
+
+    The index is keyed by dashboard (uid and/or title) rather than by panel
+    title alone. Looking a panel up by title across every dashboard of a run
+    silently hands one dashboard's panel another dashboard's query whenever
+    the titles match -- which on real corpora is common ("CPU Usage",
+    "Error Logs", "Uptime") and turns the drift axes into noise in both
+    directions.
+
+    An empty index means the artifacts simply are not there (e.g. a run made
+    with ``--no-compile``); that is already reported as ``NOT_UPLOADED`` and
+    needs no note. An index that exists but has no entry for this record's
+    dashboard is different: the tier is genuinely unresolvable, so say so
+    rather than substituting a neighbour's query.
+    """
+    if not index:
+        return ""
+    for key in (record.dashboard_uid, record.dashboard_title):
+        if key and key in index:
+            return index[key].get(record.title, "")
+    if len(index) == 1:
+        # One dashboard in the artifact set: there is nothing to confuse it
+        # with, and ``--migration-out`` documents exactly this shape. Keeps
+        # artifacts that carry no dashboard title joinable.
+        return next(iter(index.values())).get(record.title, "")
+    record.notes.append(
+        f"{tier} unavailable: no {artifact_label} artifact could be matched to "
+        f"dashboard (uid={record.dashboard_uid!r}, title={record.dashboard_title!r}); "
+        "panel titles are not unique across dashboards, so it was not guessed"
+    )
+    return ""
+
+
+def _load_compiled_panels(compiled_dir: Path) -> dict[str, dict[str, str]]:
+    """Return ``{dashboard_title: {panel_title: esql}}`` across every compiled dir.
+
+    This used to ``return`` on the first ``compiled/<slug>/`` subdirectory it
+    found, so in a multi-dashboard run every panel's T3 came from whichever
+    dashboard sorted first. Read them all and keep them scoped instead.
+    """
+    merged: dict[str, dict[str, str]] = {}
     if not compiled_dir.exists():
-        return {}
+        return merged
     for sub in sorted(compiled_dir.iterdir()):
         if not sub.is_dir():
             continue
         candidate = sub / "compiled_dashboards.ndjson"
-        if candidate.exists():
-            return collectors.load_ndjson_panels(candidate)
-    return {}
+        if not candidate.exists():
+            continue
+        for title, panels in collectors.load_ndjson_panels_by_dashboard(candidate).items():
+            merged.setdefault(title, panels)
+    return merged
 
 
 def _render_console_summary(payload: dict) -> str:

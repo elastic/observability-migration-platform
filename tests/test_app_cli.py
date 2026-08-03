@@ -874,6 +874,91 @@ class TestUnifiedCliRouting(unittest.TestCase):
         self.assertNotIn("a .yaml file,", error_text)
         self.assertNotIn("migration_output/yaml", error_text)
 
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_exits_nonzero_and_names_silently_dropped_panels(self, mock_get):
+        # Kibana returned HTTP 200 but kept fewer panels than were sent. The
+        # command must fail (a silent partial write that exits 0 is never
+        # investigated) and name the panel so the operator can fix it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir)
+            (yaml_dir / "dash.yaml").write_text("dashboards: []", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 0, "total": 1, "fallbacks": 0, "panels_dropped": 1},
+                "records": [
+                    {
+                        "yaml_file": "dash.yaml",
+                        "success": False,
+                        "output": "Dash: lossy",
+                        "status": "lossy",
+                        "fallback_used": False,
+                        "panels_sent": 6,
+                        "panels_accepted": 5,
+                        "dropped_panels": [
+                            {
+                                "title": "Memory usage",
+                                "reason": "Unable to transform panel config. Error: [color]",
+                                "section": "Overview",
+                                "grid": {"x": 12, "y": 0, "w": 12, "h": 6},
+                            }
+                        ],
+                    }
+                ],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            parser = app_cli._build_parser()
+            args = parser.parse_args(
+                ["upload", "--yaml-dir", str(yaml_dir), "--kibana-url", "https://kibana.example"]
+            )
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(stderr):
+                app_cli._run_upload(args)
+
+        self.assertEqual(ctx.exception.code, 1)
+        error_text = " ".join(stderr.getvalue().split())
+        self.assertIn("DROPPED PANEL Memory usage", error_text)
+        self.assertIn("[section Overview]", error_text)
+        self.assertIn("Unable to transform panel config", error_text)
+        self.assertIn("silently dropped by Kibana", error_text)
+
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_stays_silent_and_exits_zero_when_no_panels_dropped(self, mock_get):
+        # No false positive: a clean upload must not print a data-loss warning
+        # or fail, or the check would be turned off.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_dir = Path(tmpdir)
+            (yaml_dir / "dash.yaml").write_text("dashboards: []", encoding="utf-8")
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1, "fallbacks": 0, "panels_dropped": 0},
+                "records": [
+                    {
+                        "yaml_file": "dash.yaml",
+                        "success": True,
+                        "output": "Dash: updated",
+                        "status": "updated",
+                        "fallback_used": False,
+                        "panels_sent": 6,
+                        "panels_accepted": 6,
+                        "dropped_panels": [],
+                    }
+                ],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+
+            parser = app_cli._build_parser()
+            args = parser.parse_args(
+                ["upload", "--yaml-dir", str(yaml_dir), "--kibana-url", "https://kibana.example"]
+            )
+            stderr = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                app_cli._run_upload(args)
+
+        self.assertNotIn("DROPPED PANEL", stderr.getvalue())
+        self.assertNotIn("silently dropped", stderr.getvalue())
+
     # -- --artifact-dir / --artifact-format (native review artifacts) --------
 
     def test_artifact_dir_and_yaml_dir_are_mutually_exclusive(self):

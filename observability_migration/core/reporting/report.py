@@ -74,6 +74,10 @@ class MigrationResult:
     uploaded: bool | None = None
     upload_error: str = ""
     upload_warnings: list = field(default_factory=list)
+    # Leaf panels Kibana silently dropped while accepting the upload with an
+    # HTTP 200 (``{"title", "reason", "section", "grid"}`` each). Non-empty means
+    # the uploaded dashboard is missing panels even though nothing failed.
+    upload_dropped_panels: list = field(default_factory=list)
     kibana_saved_object_id: str = ""
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
@@ -281,12 +285,16 @@ def _stage_summary(completed, error):
 
 
 def build_runtime_summary(result):
-    upload_status = {"status": "not_run", "error": "", "warnings": []}
+    upload_status = {"status": "not_run", "error": "", "warnings": [], "dropped_panels": []}
     if getattr(result, "upload_attempted", False) or getattr(result, "upload_error", ""):
         upload_status = {
             "status": "pass" if getattr(result, "uploaded", False) and not getattr(result, "upload_error", "") else "fail",
             "error": getattr(result, "upload_error", "") or "",
             "warnings": list(getattr(result, "upload_warnings", []) or []),
+            # Panels Kibana dropped behind an HTTP 200. These ride in the
+            # runtime summary (not just the log) so the manifest and any CI gate
+            # reading it can see *which* panels a "successful" upload lost.
+            "dropped_panels": list(getattr(result, "upload_dropped_panels", []) or []),
         }
     return {
         "yaml_lint": _stage_summary(getattr(result, "yaml_linted", None), getattr(result, "yaml_lint_error", "")),
@@ -297,6 +305,42 @@ def build_runtime_summary(result):
         "layout": _stage_summary(getattr(result, "layout_validated", None), getattr(result, "layout_error", "")),
         "upload": upload_status,
     }
+
+
+def upload_panel_loss_rows(results):
+    """``(dashboard_title, dropped_panel)`` for every panel lost on upload."""
+    return [
+        (getattr(result, "dashboard_title", ""), dropped)
+        for result in results
+        for dropped in (getattr(result, "upload_dropped_panels", None) or [])
+        if isinstance(dropped, dict)
+    ]
+
+
+def print_upload_panel_loss(results):
+    """Report panels Kibana dropped while returning HTTP 200 on the upload.
+
+    This is a data-loss section, not a warning list: the dashboards below were
+    reported as uploaded and are missing panels. Printed even though the same
+    dashboards already count as upload failures, because the count alone never
+    says *which* panels vanished.
+    """
+    rows = upload_panel_loss_rows(results)
+    if not rows:
+        return
+    print("UPLOAD DATA LOSS (Kibana returned HTTP 200 but dropped panels):")
+    for dashboard_title, dropped in rows:
+        title = dropped.get("title") or "(untitled)"
+        section = f" [section {dropped.get('section')}]" if dropped.get("section") else ""
+        print(f"  ✗ {dashboard_title}: {title}{section}")
+        reason = str(dropped.get("reason") or "")
+        if reason:
+            print(f"      {reason[:300]}")
+    print(
+        f"  {len(rows)} panel(s) are missing from the uploaded dashboard(s). "
+        "Fix the panel(s) and re-upload."
+    )
+    print()
 
 
 def _row_count(result):
@@ -460,6 +504,7 @@ def print_report(results, compile_results, field_discovery=None):
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
+    print_upload_panel_loss(results)
 
     print("─" * 70)
     # ``Skip`` and ``Rows`` columns make the per-dashboard totals add up
@@ -570,6 +615,9 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "compiled_ok": sum(1 for _, ok, _ in compile_results if ok),
             "uploaded_ok": sum(1 for r in results if r.uploaded),
             "upload_attempted": sum(1 for r in results if r.upload_attempted),
+            # Leaf panels Kibana dropped behind an HTTP 200 upload. Any non-zero
+            # value means at least one "uploaded" dashboard is incomplete.
+            "upload_panels_dropped": len(upload_panel_loss_rows(results)),
             "yaml_lint_ok": sum(1 for r in results if build_runtime_summary(r)["yaml_lint"]["status"] == "pass"),
             "layout_ok": sum(1 for r in results if build_runtime_summary(r)["layout"]["status"] == "pass"),
             "total_alerts": sum(len(getattr(r, "alert_results", [])) for r in results),

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,15 @@ def _iter_leaf_panels(panels: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             leaf_panels.append(panel)
     return leaf_panels
+
+
+def _records_panels_dropped(records: list[dict[str, Any]]) -> int:
+    """Total leaf panels Kibana silently dropped across a batch of uploads.
+
+    A non-zero value means at least one dashboard was written incomplete behind
+    an HTTP 200, so it belongs in the upload summary next to ``uploaded_ok``.
+    """
+    return sum(len(item.get("dropped_panels") or []) for item in records)
 
 
 def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
@@ -435,6 +445,25 @@ class KibanaTargetAdapter(TargetAdapter):
                     "not falling back to the deprecated compiler. "
                     "Re-run with --legacy-import to use it explicitly."
                 )
+            elif results[0].status == "lossy":
+                # HTTP 200 with panels missing. Say so loudly: this is the
+                # failure mode nobody investigates, because everything else
+                # about the run looks green.
+                print(
+                    f"    ✗ Kibana accepted {label} but silently dropped "
+                    f"{results[0].dropped_panel_count} of {results[0].panels_sent} "
+                    "panel(s); the uploaded dashboard is incomplete.",
+                    file=sys.stderr,
+                )
+                for dropped in results[0].dropped_panels:
+                    # Kibana's validation errors run to thousands of characters;
+                    # the console gets a readable head, the JSON report the rest.
+                    detail = f": {dropped.reason[:300]}" if dropped.reason else ""
+                    where = f" [section {dropped.section}]" if dropped.section else ""
+                    print(
+                        f"        - {dropped.title or '(untitled)'}{where}{detail}",
+                        file=sys.stderr,
+                    )
         elif yaml_file is None:
             raise ValueError(
                 "_native_upload_file needs either a native_dashboard payload or a YAML file"
@@ -465,8 +494,12 @@ class KibanaTargetAdapter(TargetAdapter):
             status = results[0].status
         elif results:
             statuses = {r.status for r in results}
+            # "lossy" outranks the others: a rejected or empty dashboard is
+            # visibly absent, while a silent partial write is the one an
+            # operator would otherwise never look at, so it wins the label.
             status = (
-                "rejected" if "rejected" in statuses
+                "lossy" if "lossy" in statuses
+                else "rejected" if "rejected" in statuses
                 else "conflict" if "conflict" in statuses
                 else "empty" if "empty" in statuses
                 else "created" if "created" in statuses
@@ -475,6 +508,9 @@ class KibanaTargetAdapter(TargetAdapter):
         else:
             status = "empty"
         dashboard_ids = [r.dashboard_id for r in results if r.dashboard_id]
+        dropped_panels = [
+            dropped.to_dict() for r in results for dropped in (r.dropped_panels or [])
+        ]
 
         if fallback_state["used"]:
             success = bool(fallback_state["success"])
@@ -482,7 +518,12 @@ class KibanaTargetAdapter(TargetAdapter):
         else:
             success = bool(results) and all(r.status in {"created", "updated"} for r in results)
             output = "; ".join(
-                f"{r.dashboard or '(untitled)'}: {r.status}" for r in results
+                f"{r.dashboard or '(untitled)'}: {r.status}"
+                # A "lossy" status alone reads like a shrug; the message names
+                # the panels the operator lost, so it travels with it into
+                # ``upload_error`` and the migration report.
+                + (f" — {r.message}" if r.status == "lossy" and r.message else "")
+                for r in results
             ) or "no dashboards mapped"
 
         return {
@@ -498,6 +539,9 @@ class KibanaTargetAdapter(TargetAdapter):
             "fallback_used": bool(fallback_state["used"]),
             "fallback_count": int(fallback_state["count"]),
             "dashboard_ids": dashboard_ids,
+            "panels_sent": sum(r.panels_sent for r in results),
+            "panels_accepted": sum(r.panels_accepted for r in results),
+            "dropped_panels": dropped_panels,
         }
 
     def _native_artifact_upload_file(
@@ -536,6 +580,9 @@ class KibanaTargetAdapter(TargetAdapter):
                 "fallback_used": False,
                 "fallback_count": 0,
                 "dashboard_ids": [],
+                "panels_sent": 0,
+                "panels_accepted": 0,
+                "dropped_panels": [],
             }
         result = dashboards_api.upload_native_artifact(
             artifact,
@@ -560,6 +607,9 @@ class KibanaTargetAdapter(TargetAdapter):
             "fallback_used": False,
             "fallback_count": 0,
             "dashboard_ids": [result.dashboard_id] if result.dashboard_id else [],
+            "panels_sent": result.panels_sent,
+            "panels_accepted": result.panels_accepted,
+            "dropped_panels": [dropped.to_dict() for dropped in (result.dropped_panels or [])],
         }
 
     def upload(self, compiled_dir: Path, **kwargs: Any) -> dict[str, Any]:
@@ -639,6 +689,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 "space_id": space_id or target_space,
                 "kibana_url": upload_kibana_url,
                 "artifact_format": "native",
+                "panels_dropped": _records_panels_dropped(records),
             }
             return {"summary": summary, "records": records}
 
@@ -696,6 +747,7 @@ class KibanaTargetAdapter(TargetAdapter):
         }
         if use_dashboards_api:
             summary["fallbacks"] = sum(int(item.get("fallback_count", 0)) for item in records)
+            summary["panels_dropped"] = _records_panels_dropped(records)
         return {
             "summary": summary,
             "records": records,
@@ -763,6 +815,9 @@ class KibanaTargetAdapter(TargetAdapter):
                 "unmapped_reasons": record.get("unmapped_reasons", {}),
                 "fallback_used": record["fallback_used"],
                 "dashboard_ids": record["dashboard_ids"],
+                "panels_sent": record.get("panels_sent", 0),
+                "panels_accepted": record.get("panels_accepted", 0),
+                "dropped_panels": record.get("dropped_panels", []),
             }
         upload_yaml_path = self._prepare_upload_yaml(
             Path(yaml_path),

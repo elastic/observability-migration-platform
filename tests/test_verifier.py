@@ -93,9 +93,48 @@ def test_load_compiled_panels_reads_compiled_dashboards_ndjson(tmp_path) -> None
         json.dumps({"type": "dashboard", "attributes": {"panelsJSON": panels_json}})
         + "\n"
     )
+    # The index is keyed by dashboard, then panel title. This saved object
+    # carries no ``attributes.title``, so it lands under the empty key and
+    # stays reachable through the single-dashboard fallback.
     assert verifier_cli._load_compiled_panels(tmp_path) == {
-        "A": "FROM metrics-* | LIMIT 1"
+        "": {"A": "FROM metrics-* | LIMIT 1"}
     }
+
+
+def test_load_compiled_panels_reads_every_compiled_dashboard(tmp_path) -> None:
+    """T3 must not come from whichever dashboard happens to sort first.
+
+    ``_load_compiled_panels`` used to ``return`` on the first
+    ``compiled/<slug>/`` subdirectory it found, so in a multi-dashboard run
+    every panel's T3 was read out of one arbitrary dashboard.
+    """
+    def _write(slug: str, dashboard_title: str, esql: str) -> None:
+        sub = tmp_path / slug
+        sub.mkdir(parents=True)
+        panels_json = json.dumps([
+            {
+                "panelIndex": "1",
+                "type": "lens",
+                "embeddableConfig": {
+                    "attributes": {"title": "Error Logs", "state": {"query": {"esql": esql}}}
+                },
+            }
+        ])
+        (sub / "compiled_dashboards.ndjson").write_text(
+            json.dumps({
+                "type": "dashboard",
+                "attributes": {"title": dashboard_title, "panelsJSON": panels_json},
+            })
+            + "\n"
+        )
+
+    _write("aaa_kafka", "Kafka", "FROM logs-* | WHERE service.name == \"kafka\"")
+    _write("zzz_redis", "Redis", "FROM logs-* | WHERE service.name == \"redis\"")
+
+    index = verifier_cli._load_compiled_panels(tmp_path)
+
+    assert sorted(index) == ["Kafka", "Redis"]
+    assert index["Redis"]["Error Logs"] == 'FROM logs-* | WHERE service.name == "redis"'
 
 
 def test_load_compiled_panels_ignores_legacy_yaml_ndjson(tmp_path) -> None:
@@ -192,6 +231,40 @@ class TestMigrationReportCollector:
         records = list(collectors.panels_from_migration_report(report))
         assert records[0].t0_source_promql == 'node_load1{instance=~".*"}'
 
+    def test_datadog_report_key_is_read_for_t1(self):
+        """Datadog writes ``esql_query``; Grafana writes ``esql``.
+
+        Reading only ``esql`` left T1 empty for every Datadog panel, and
+        ``compare_panel_record`` short-circuits an empty T1 to SKIP -- so a
+        Datadog run verified as "all SKIP, zero drift on every axis"
+        regardless of what the translator emitted.
+        """
+        report = _build_migration_report(
+            [
+                {
+                    "widget_id": "8013519185925578",
+                    "title": "Redis commands",
+                    "status": "ok",
+                    "dd_widget_type": "timeseries",
+                    "kibana_type": "lens",
+                    "esql_query": "TS metrics-* | STATS x = AVG(RATE(redis.net.commands))",
+                    "query_ir": {"source_expression": "avg:redis.net.commands{*}"},
+                }
+            ]
+        )
+
+        records = list(collectors.panels_from_migration_report(report))
+
+        assert len(records) == 1
+        r = records[0]
+        assert r.t1_translator_esql.startswith("TS metrics-*")
+        assert r.t1_index == "metrics-*"
+        assert r.t0_source_promql == "avg:redis.net.commands{*}"
+        # The record's source-panel-type slot is filled from the Datadog key.
+        assert r.grafana_type == "timeseries"
+        assert r.panel_id == "8013519185925578"
+        assert compare.compare_panel_record(r) is not Verdict.SKIP
+
     def test_native_promql_detection(self):
         report = _build_migration_report(
             [
@@ -286,6 +359,110 @@ class TestIrCollector:
 
     def test_load_ir_panels_returns_empty_when_no_artifacts(self, tmp_path):
         assert collectors.load_ir_panels(tmp_path / "ir") == {}
+
+
+class TestIrCollectorDashboardScoping:
+    """T2 must be joined per dashboard, never by panel title alone.
+
+    ``load_ir_panels`` folds every dashboard in the directory into one
+    title-keyed dict. A multi-dashboard run (what ``--input-dir`` produces)
+    then silently gives one dashboard's panel another dashboard's query
+    whenever the titles match, which fabricates T1=T2 drift findings.
+    """
+
+    def _two_dashboards_sharing_a_panel_title(self, tmp_path):
+        for stem, name, esql in (
+            ("kafka", "Kafka", 'FROM logs-* | WHERE service.name == "kafka"'),
+            ("redis", "Redis", 'FROM logs-* | WHERE service.name == "redis"'),
+        ):
+            write_dashboard_ir_artifact(
+                tmp_path,
+                {
+                    "name": name,
+                    "panels": [{"title": "Error Logs", "esql": {"query": esql}}],
+                },
+                stem=stem,
+            )
+        return tmp_path / "ir"
+
+    def test_flat_reader_collapses_shared_titles(self, tmp_path):
+        """Documents the collapse the scoped reader exists to avoid."""
+        ir_dir = self._two_dashboards_sharing_a_panel_title(tmp_path)
+
+        flat = collectors.load_ir_panels(ir_dir)
+
+        assert list(flat) == ["Error Logs"]
+        # Last writer wins by sorted filename: Kafka's query is simply gone.
+        assert "redis" in flat["Error Logs"]
+
+    def test_scoped_reader_keeps_each_dashboard_separate(self, tmp_path):
+        ir_dir = self._two_dashboards_sharing_a_panel_title(tmp_path)
+
+        scoped = collectors.load_ir_panels_by_dashboard(ir_dir)
+
+        assert scoped["Kafka"]["Error Logs"] == 'FROM logs-* | WHERE service.name == "kafka"'
+        assert scoped["Redis"]["Error Logs"] == 'FROM logs-* | WHERE service.name == "redis"'
+
+    def test_scoped_reader_drops_keys_two_dashboards_claim(self, tmp_path):
+        """A duplicated dashboard title is unjoinable, so refuse to guess."""
+        for stem in ("copy_a", "copy_b"):
+            write_dashboard_ir_artifact(
+                tmp_path,
+                {
+                    "name": "Same Title",
+                    "panels": [{"title": "P", "esql": {"query": f"FROM {stem}"}}],
+                },
+                stem=stem,
+            )
+
+        scoped = collectors.load_ir_panels_by_dashboard(tmp_path / "ir")
+
+        assert "Same Title" not in scoped
+
+    def test_scoped_reader_returns_empty_when_no_artifacts(self, tmp_path):
+        assert collectors.load_ir_panels_by_dashboard(tmp_path / "ir") == {}
+
+
+class TestScopedTierLookup:
+    """``_scoped_panel_query`` resolves a tier within the record's dashboard."""
+
+    def test_prefers_the_records_own_dashboard(self):
+        index = {
+            "Kafka": {"Error Logs": "kafka-query"},
+            "Redis": {"Error Logs": "redis-query"},
+        }
+        record = _make_record(title="Error Logs", dashboard_title="Kafka", dashboard_uid="")
+
+        assert verifier_cli._scoped_panel_query(index, record, "T2", "IR export") == "kafka-query"
+        assert record.notes == []
+
+    def test_matches_on_uid_when_present(self):
+        index = {"dash-uid-1": {"P": "by-uid"}, "Other": {"P": "by-title"}}
+        record = _make_record(title="P", dashboard_uid="dash-uid-1", dashboard_title="Other")
+
+        assert verifier_cli._scoped_panel_query(index, record, "T2", "IR export") == "by-uid"
+
+    def test_single_dashboard_index_needs_no_key_match(self):
+        """The documented per-dashboard shape stays joinable without a title."""
+        index = {"": {"P": "only-dashboard"}}
+        record = _make_record(title="P", dashboard_title="Whatever", dashboard_uid="uid")
+
+        assert verifier_cli._scoped_panel_query(index, record, "T3", "compiled NDJSON") == "only-dashboard"
+        assert record.notes == []
+
+    def test_unresolvable_dashboard_reports_rather_than_guesses(self):
+        index = {"Kafka": {"P": "kafka"}, "Redis": {"P": "redis"}}
+        record = _make_record(title="P", dashboard_title="Postgres", dashboard_uid="")
+
+        assert verifier_cli._scoped_panel_query(index, record, "T2", "IR export") == ""
+        assert any("T2 unavailable" in note for note in record.notes)
+
+    def test_absent_artifacts_are_silent(self):
+        """No artifacts at all is already reported as NOT_UPLOADED."""
+        record = _make_record(title="P", dashboard_title="Postgres")
+
+        assert verifier_cli._scoped_panel_query({}, record, "T3", "compiled NDJSON") == ""
+        assert record.notes == []
 
 
 # --------------------------------------------------------------------- #

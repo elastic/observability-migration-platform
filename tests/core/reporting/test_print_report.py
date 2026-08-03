@@ -35,6 +35,7 @@ from contextlib import redirect_stdout
 from observability_migration.core.reporting.report import (
     MigrationResult,
     PanelResult,
+    build_runtime_summary,
     print_report,
 )
 
@@ -302,6 +303,59 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
         # Back-compat: callers that don't pass field_discovery print no warning.
         out = self._run(None)
         self.assertNotIn("may render empty", out)
+
+
+class UploadPanelLossReportingTests(unittest.TestCase):
+    """Panels Kibana dropped behind an HTTP 200 must reach the operator report.
+
+    A count of failed uploads is not enough: nothing in it says *which* panels
+    the "successful" dashboards are missing.
+    """
+
+    @staticmethod
+    def _uploaded_result(dropped: list[dict] | None) -> MigrationResult:
+        result = _argocd_fixture()
+        result.upload_attempted = True
+        result.uploaded = not dropped
+        result.upload_error = "Dash: lossy" if dropped else ""
+        result.upload_dropped_panels = list(dropped or [])
+        return result
+
+    def test_dropped_panels_are_named_in_the_migration_report(self):
+        output = _capture_report(
+            self._uploaded_result(
+                [
+                    {
+                        "title": "Memory usage",
+                        "reason": "Unable to transform panel config. Error: [color]",
+                        "section": "Overview",
+                        "grid": {"x": 12, "y": 0, "w": 12, "h": 6},
+                    }
+                ]
+            )
+        )
+        self.assertIn("UPLOAD DATA LOSS", output)
+        self.assertIn("ArgoCD: Memory usage [section Overview]", output)
+        self.assertIn("Unable to transform panel config", output)
+        self.assertIn("1 panel(s) are missing from the uploaded dashboard(s)", output)
+        # A lossy upload never counts as uploaded.
+        self.assertIn("Upload results:      0/1", output)
+
+    def test_clean_upload_prints_no_data_loss_section(self):
+        output = _capture_report(self._uploaded_result(None))
+        self.assertNotIn("UPLOAD DATA LOSS", output)
+        self.assertIn("Upload results:      1/1", output)
+
+    def test_runtime_summary_carries_the_dropped_panels(self):
+        dropped = [{"title": "Memory usage", "reason": "boom", "section": "", "grid": {}}]
+        summary = build_runtime_summary(self._uploaded_result(dropped))
+        self.assertEqual(summary["upload"]["status"], "fail")
+        self.assertEqual(summary["upload"]["dropped_panels"], dropped)
+
+    def test_runtime_summary_dropped_panels_is_empty_on_a_clean_upload(self):
+        summary = build_runtime_summary(self._uploaded_result(None))
+        self.assertEqual(summary["upload"]["status"], "pass")
+        self.assertEqual(summary["upload"]["dropped_panels"], [])
 
 
 if __name__ == "__main__":

@@ -162,5 +162,101 @@ class GrafanaAuditControlsTests(unittest.TestCase):
         self.assertIn("instance", names)
 
 
+class DatadogAuditControlsTests(unittest.TestCase):
+    """The Datadog branch reports controls from the same IR Grafana reads.
+
+    It used to call ``generate_dashboard_yaml``, which discards the
+    ``DashboardIR`` it builds internally, so every Datadog dashboard was
+    audited as ``controls = 0`` — including dashboards whose template
+    variables the translator had turned into real Kibana controls.
+    """
+
+    def _dashboard_with_template_variables(self) -> dict:
+        return {
+            "id": "controls-audit-dd-1",
+            "title": "Datadog Controls Audit",
+            "layout_type": "ordered",
+            "template_variables": [
+                {
+                    "name": "host",
+                    "tag": "host",
+                    "prefix": "host",
+                    "default": "*",
+                    "defaults": ["*"],
+                    "available_values": ["web-1", "web-2"],
+                },
+                # No tag/prefix and unresolvable by name: dropped on purpose,
+                # so the count is "controls the translator could build", not
+                # "template variables declared".
+                {"name": "scope", "default": "*"},
+            ],
+            "widgets": [
+                {
+                    "id": 1,
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "CPU",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "query1",
+                                        "query": "avg:system.cpu.user{$host} by {host}",
+                                    }
+                                ],
+                                "formulas": [{"formula": "query1"}],
+                                "response_format": "timeseries",
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "w": 4, "h": 2},
+                }
+            ],
+        }
+
+    def test_datadog_audit_reports_translated_controls(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_template_variables()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_datadog_dashboard(source, "metrics-otel-default")
+
+        self.assertEqual(len(audit.template_variables), 2)
+        self.assertEqual(
+            len(audit.controls),
+            1,
+            f"expected the resolvable template variable to be audited: {audit.controls}",
+        )
+        control = audit.controls[0]
+        self.assertEqual(control.get("variable_name"), "host")
+        self.assertEqual(control.get("variable_type"), "datadog_template")
+        self.assertEqual(control.get("available_options"), ["web-1", "web-2"])
+        # The trace docs render ``label`` + ``type``; both must survive.
+        self.assertEqual(control.get("label"), "host")
+        self.assertEqual(control.get("type"), "options")
+
+    def test_datadog_audit_still_emits_yaml(self):
+        """The switch to ``generate_dashboard_artifacts`` keeps the YAML view."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_template_variables()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_datadog_dashboard(source, "metrics-otel-default")
+
+        self.assertIn("dashboards:", audit.yaml_content)
+        self.assertNotIn("YAML generation failed", audit.yaml_content)
+
+
 if __name__ == "__main__":
     unittest.main()

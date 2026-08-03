@@ -129,6 +129,36 @@ def _safe_ir_dict(ir_obj: Any) -> dict:
     return {}
 
 
+def _controls_from_dashboard_ir(dashboard_ir: Any) -> list[dict]:
+    """Return the audit's view of a translated dashboard's controls.
+
+    Both source branches read controls off the in-memory ``DashboardIR``.
+    Neither re-parses emitted YAML off disk: that reported ``controls = []``
+    whenever the artifact was absent or unreadable, so a dashboard with
+    template variables looked like a dashboard with none.
+
+    ``ControlIR.to_yaml_control`` replays the translator's own control dict
+    verbatim when one exists (``source_extension``) — that is what the trace
+    docs render. Datadog annotates ``variable_name`` / ``variable_type`` /
+    ``available_options`` onto the ``ControlIR`` *after* that dict was built
+    (``datadog/generate.py::generate_dashboard_artifacts``), so they are
+    absent from it; overlay them here so a control reports the same identity
+    whichever source produced it.
+    """
+    controls: list[dict] = []
+    for control in (getattr(dashboard_ir, "controls", None) or []):
+        entry = control.to_yaml_control()
+        for key in ("variable_name", "variable_type"):
+            value = str(getattr(control, key, "") or "")
+            if value and not entry.get(key):
+                entry[key] = value
+        options = [str(opt) for opt in (getattr(control, "available_options", None) or [])]
+        if options and not entry.get("available_options"):
+            entry["available_options"] = options
+        controls.append(entry)
+    return controls
+
+
 def _build_dd_query_ir(result: Any) -> dict:
     """Build a lightweight query IR from a Datadog TranslationResult."""
     query = str(getattr(result, "esql_query", "") or "")
@@ -244,11 +274,7 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
     # Controls come straight from the translated ``DashboardIR``. This used
     # to re-parse the emitted dashboard YAML off disk, which silently
     # reported ``controls = []`` whenever the YAML was absent or unreadable.
-    dashboard_ir = getattr(result, "dashboard_ir", None)
-    controls = [
-        control.to_yaml_control()
-        for control in (getattr(dashboard_ir, "controls", None) or [])
-    ]
+    controls = _controls_from_dashboard_ir(getattr(result, "dashboard_ir", None))
 
     return DashboardAudit(
         source="grafana",
@@ -269,7 +295,9 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
 
 def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardAudit:
     from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-    from observability_migration.adapters.source.datadog.generate import generate_dashboard_yaml
+    from observability_migration.adapters.source.datadog.generate import (
+        generate_dashboard_artifacts,
+    )
     from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
     from observability_migration.adapters.source.datadog.planner import plan_widget
     from observability_migration.adapters.source.datadog.translate import translate_widget
@@ -366,11 +394,18 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
     for widget in dashboard.widgets:
         process_widget(widget)
 
+    # ``generate_dashboard_artifacts`` is what ``generate_dashboard_yaml``
+    # calls internally, and it also hands back the ``DashboardIR`` — the only
+    # place Datadog's controls exist. Calling the YAML wrapper threw that IR
+    # away, so this branch reported ``controls = 0`` for every dashboard even
+    # when the source declared template variables.
+    controls: list[dict] = []
     try:
-        yaml_str = generate_dashboard_yaml(
+        yaml_str, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard, panel_results, data_view=data_view,
             field_map=field_map,
         )
+        controls = _controls_from_dashboard_ir(dashboard_ir)
     except Exception as exc:
         yaml_str = f"# YAML generation failed: {exc}"
 
@@ -401,6 +436,7 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         status_counts=status_counts,
         panels=panels_audit,
         yaml_content=yaml_str,
+        controls=controls,
         template_variables=tpl_vars,
     )
 

@@ -1169,6 +1169,31 @@ in new scripts. Pointing `--artifact-dir`/`--yaml-dir` at
 `migration_output/dashboards` (which contains `native/`/`ir/`
 subdirectories) also works.
 
+**Silently dropped panels (`lossy`):** `PUT /api/dashboards/{id}` answers `200`/`201`
+even when Kibana could not transform some of the panels it was sent — those panels
+are simply absent from the saved object, and the PUT body carries no `warnings` key
+to say so. Every accepted upload therefore counts the leaf panels it sent against
+the ones the response echoes back in `data.panels` (recursing one level into
+sections). When fewer came back, the upload is reported with status `lossy`:
+
+- `lossy` is a **failure**, not a warning. It never counts toward `uploaded_ok`,
+  so `obs-migrate upload` exits `1` and the per-dashboard `runtime_summary.upload.status`
+  in `migration_manifest.json` is `fail`. A silent partial write is worse than an
+  outright rejection precisely because it looks successful.
+- It is **not** routed to the `--legacy-import` fallback. The PUT already wrote a
+  partial dashboard, and re-importing through the deprecated compiler would hide the
+  loss behind a second, different code path (the same reasoning as `409 conflict`).
+- The dropped panels are named, not just counted. On a detected mismatch — and only
+  then — one follow-up `GET /api/dashboards/{id}` retrieves Kibana's own
+  `warnings[].message` ("Unable to transform panel config. Error: …") so the operator
+  gets the actual validation error. Detection never depends on that GET succeeding.
+- Per-panel detail (`title`, `reason`, `section`, `grid`) is reported on stderr by
+  `obs-migrate upload` and `obs-migrate migrate --upload`, in the console migration
+  report's `UPLOAD DATA LOSS` section, and in the JSON artifacts:
+  `migration_report.json` → `summary.upload_panels_dropped` plus
+  `runtime_summary.upload.dropped_panels` per dashboard. The `obs-migrate upload`
+  summary additionally reports `panels_dropped` across the batch.
+
 **Re-upload conflict:** The native `PUT /api/dashboards/{id}` returns `409 Conflict` if a saved object with the same ID already exists — including `[DELETED]` placeholder objects left by `obs-migrate cluster delete-dashboards`. Pass `--legacy-import` to force the `_import?overwrite=true` path, which overwrites any existing saved object:
 
 ```bash
@@ -1563,10 +1588,11 @@ are warnings, not failures).
 ### Verify Panels (5-tier panel verifier)
 
 `obs-migrate verify-panels` is the repo-oriented 5-tier panel verifier wrapper
-(source PromQL → translator → YAML → NDJSON → cluster → live `_query`). It
+(source query → translator → IR export → NDJSON → cluster → live `_query`). It
 delegates to verifier code that only exists in a repo checkout, so it is
 intended for development / CI, not as a substitute for `obs-migrate verify` on
-an installed wheel.
+an installed wheel. Both sources are covered: the translator tier reads
+Grafana's `esql` and Datadog's `esql_query` from `migration_report.json`.
 
 ```bash
 obs-migrate verify-panels \
@@ -1581,6 +1607,13 @@ obs-migrate verify-panels \
 `--migration-out` and `--output` are required. T4/T5 (cluster + live query)
 need `--kibana-url`, `--es-url`, `--api-key`, and `--dashboard-id`. This
 wrapper does **not** expose `--ca-cert` / `--insecure` today.
+
+`--migration-out` may hold one dashboard or a whole run's worth. The local
+tiers are joined per dashboard (report `uid`, else `title`), never by panel
+title alone — titles repeat across dashboards, and a title-only join compares
+one dashboard's panel against another's. When a dashboard cannot be matched to
+an artifact, that tier is reported empty with a note on the panel record
+instead of being filled from a neighbouring dashboard.
 
 ### Verify Visual (pixel-diff Grafana vs Kibana)
 

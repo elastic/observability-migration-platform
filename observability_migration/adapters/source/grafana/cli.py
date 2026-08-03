@@ -2746,6 +2746,9 @@ def main(argv: list[str] | None = None):
                 result.upload_warnings = upload_warnings_from_reasons(
                     upload_result.get("unmapped_reasons", {})
                 )
+                result.upload_dropped_panels = list(
+                    upload_result.get("dropped_panels") or []
+                )
                 result.uploaded_space = upload_space or target_space
                 result.uploaded_kibana_url = upload_result.get("kibana_url", upload_kibana_url)
                 icon = "✓" if ok else "✗"
@@ -2753,6 +2756,14 @@ def main(argv: list[str] | None = None):
                 if not ok:
                     for line in output.strip().splitlines()[:10]:
                         print(f"    {line}")
+                # Named per panel, not just counted: an HTTP 200 upload that
+                # dropped panels is invisible unless the report says which ones.
+                for dropped in result.upload_dropped_panels:
+                    reason = f": {str(dropped.get('reason') or '')[:300]}" if dropped.get("reason") else ""
+                    print(
+                        f"    DROPPED PANEL {dropped.get('title') or '(untitled)'}{reason}",
+                        file=sys.stderr,
+                    )
                 for warning in result.upload_warnings:
                     print(f"    warning: {warning}", file=sys.stderr)
 

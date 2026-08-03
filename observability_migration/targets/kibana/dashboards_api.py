@@ -142,15 +142,60 @@ class PanelMapping:
 
 
 @dataclass
+class DroppedPanel:
+    """One leaf panel Kibana accepted the upload without.
+
+    ``reason`` is Kibana's own ``warnings[].message`` when the follow-up GET
+    could supply it, and ``""`` when it could not -- detection never depends on
+    that second request succeeding.
+    """
+
+    title: str = ""
+    reason: str = ""
+    section: str = ""
+    grid: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "reason": self.reason,
+            "section": self.section,
+            "grid": dict(self.grid),
+        }
+
+
+@dataclass
 class UploadResult:
     dashboard: str
     dashboard_id: str = ""
-    status: str = ""  # created | updated | conflict | rejected | empty
+    # created | updated | conflict | rejected | empty | lossy
+    #
+    # ``lossy`` is a 2xx upload that Kibana accepted *without* some of the leaf
+    # panels that were sent (see :func:`_record_panel_loss`). It is a failure,
+    # not a warning: a silent partial write looks like a clean success, so
+    # nobody investigates it. Only ``created``/``updated`` count as success
+    # downstream, which makes ``lossy`` fail the upload exit code, the
+    # per-dashboard runtime summary, and the manifest's ``uploaded_ok``.
+    status: str = ""
     mapped: int = 0
     unmapped: int = 0
     http_status: int = 0
     message: str = ""
     unmapped_reasons: dict[str, int] = field(default_factory=dict)
+    # Sent-vs-accepted leaf panel counts for a 2xx upload. Both stay 0 when the
+    # response carried no ``data.panels`` to compare against (unverifiable).
+    panels_sent: int = 0
+    panels_accepted: int = 0
+    dropped_panels: list[DroppedPanel] = field(default_factory=list)
+
+    @property
+    def dropped_panel_count(self) -> int:
+        """How many leaf panels the upload lost, from the counts themselves.
+
+        Kept independent of ``len(dropped_panels)`` so a loss is still reported
+        when the per-panel identification cannot name every casualty.
+        """
+        return max(self.panels_sent - self.panels_accepted, 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -2075,9 +2120,15 @@ def upload_report(
         if 200 <= response.status_code < 300:
             res.status = "created"
             try:
-                res.dashboard_id = str(response.json().get("id") or "")
+                body = response.json()
             except ValueError:
-                pass
+                body = None
+            if isinstance(body, dict):
+                res.dashboard_id = str(body.get("id") or "")
+            # A 2xx POST can also drop panels it could not transform.
+            _audit_accepted_panels(
+                res, payload, body, session=session, base=base, timeout=timeout,
+            )
         else:
             res.status = "rejected"
             try:
@@ -2091,7 +2142,200 @@ def upload_report(
     return results
 
 
-def _classify_response(res: UploadResult, response: requests.Response) -> None:
+# --------------------------------------------------------------------------- #
+# Silent panel loss on an accepted (2xx) upload
+# --------------------------------------------------------------------------- #
+#
+# ``PUT /api/dashboards/{id}`` answers 200 even when Kibana could not transform
+# some of the panels it was given: those panels are simply absent from the saved
+# object. The PUT body carries no ``warnings`` key at all (only ``id``/``data``/
+# ``meta``), so nothing in the response *says* a panel was lost -- but the
+# echoed ``data.panels`` already reflects the drop. Counting leaves sent against
+# leaves echoed therefore detects the loss from the PUT alone, with no extra
+# request, for any panel type. Verified live on 9.x: a metric panel with a
+# single-step dynamic colour palette is dropped this way.
+
+
+def _leaf_panel_descriptors(panels: Any) -> list[DroppedPanel]:
+    """Flatten an API ``panels`` list into one descriptor per leaf panel.
+
+    Top-level entries are either leaves (they carry a ``type``) or sections
+    (no ``type``, their leaves nested under ``panels``), so leaves are collected
+    one level deep. Grid coordinates restart inside every section, which makes
+    ``(x, y, w, h)`` unique only *within* a container -- the section title (or
+    its ordinal, when untitled) is part of the identity so two same-sized panels
+    at the same position in different sections do not alias.
+    """
+    out: list[DroppedPanel] = []
+    for index, item in enumerate(panels or []):
+        if not isinstance(item, dict):
+            continue
+        if "type" in item:
+            out.append(_leaf_descriptor(item, section=""))
+            continue
+        nested = item.get("panels")
+        if not isinstance(nested, list):
+            continue
+        section = str(item.get("title") or "") or f"#{index}"
+        for sub in nested:
+            if isinstance(sub, dict):
+                out.append(_leaf_descriptor(sub, section=section))
+    return out
+
+
+def _leaf_descriptor(panel: dict[str, Any], *, section: str) -> DroppedPanel:
+    config = panel.get("config")
+    config = config if isinstance(config, dict) else {}
+    raw_grid = panel.get("grid")
+    raw_grid = raw_grid if isinstance(raw_grid, dict) else {}
+    grid: dict[str, int] = {}
+    for axis in ("x", "y", "w", "h"):
+        try:
+            grid[axis] = int(raw_grid.get(axis) or 0)
+        except (TypeError, ValueError):
+            grid[axis] = 0
+    return DroppedPanel(title=str(config.get("title") or ""), section=section, grid=grid)
+
+
+def _descriptor_key(descriptor: DroppedPanel) -> tuple[str, str, int, int, int, int]:
+    grid = descriptor.grid
+    return (
+        descriptor.section,
+        descriptor.title,
+        grid.get("x", 0),
+        grid.get("y", 0),
+        grid.get("w", 0),
+        grid.get("h", 0),
+    )
+
+
+def _record_panel_loss(res: UploadResult, payload: dict[str, Any], body: Any) -> None:
+    """Flag a 2xx upload as ``"lossy"`` when Kibana kept fewer leaves than sent.
+
+    The authoritative signal is the count: ``panels_accepted < panels_sent`` is
+    data loss regardless of whether every casualty can be named. Identification
+    is best-effort on top of that -- surviving panels keep their grid, so the
+    multiset difference of ``(section, title, x, y, w, h)`` keys names the
+    dropped panels for the operator.
+
+    A response that echoes no ``data.panels`` is *unverifiable*, not lossy: the
+    check stays silent rather than failing every upload on absent evidence.
+    """
+    if not isinstance(body, dict):
+        return
+    data = body.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("panels"), list):
+        return
+    sent = _leaf_panel_descriptors(payload.get("panels"))
+    accepted = _leaf_panel_descriptors(data.get("panels"))
+    res.panels_sent = len(sent)
+    res.panels_accepted = len(accepted)
+    if res.panels_accepted >= res.panels_sent:
+        return
+
+    remaining: dict[tuple[str, str, int, int, int, int], int] = {}
+    for descriptor in accepted:
+        key = _descriptor_key(descriptor)
+        remaining[key] = remaining.get(key, 0) + 1
+    dropped: list[DroppedPanel] = []
+    for descriptor in sent:
+        key = _descriptor_key(descriptor)
+        if remaining.get(key):
+            remaining[key] -= 1
+            continue
+        dropped.append(descriptor)
+    res.dropped_panels = dropped
+    res.status = "lossy"
+    res.message = _panel_loss_message(res)
+
+
+def _panel_loss_message(res: UploadResult) -> str:
+    named = ", ".join(
+        f"{item.title or '(untitled)'}"
+        + (f" [in section {item.section}]" if item.section else "")
+        + (f": {item.reason}" if item.reason else "")
+        for item in res.dropped_panels
+    )
+    detail = f" Dropped: {named}." if named else ""
+    return (
+        f"Kibana accepted the upload but kept only {res.panels_accepted} of "
+        f"{res.panels_sent} panel(s); {res.dropped_panel_count} panel(s) were "
+        f"silently dropped.{detail}"
+    )[:2000]
+
+
+def _explain_dropped_panels(
+    res: UploadResult,
+    session: requests.Session,
+    base: str,
+    *,
+    timeout: int,
+) -> None:
+    """Attach Kibana's own ``warnings[].message`` to the dropped panels.
+
+    Costs one ``GET /api/dashboards/{id}``, and is issued *only* after a count
+    mismatch has already been established. The PUT response omits ``warnings``
+    entirely, so this GET is the only way to turn "a panel vanished" into
+    Kibana's actual validation error ("Unable to transform panel config.
+    Error: ..."), which is what an operator needs to fix the panel. Paying it on
+    every upload would tax the overwhelmingly common clean path for nothing, and
+    the loss is already proven without it -- so any failure here is swallowed
+    and the reasons simply stay empty.
+    """
+    if not res.dashboard_id:
+        return
+    try:
+        response = session.get(f"{base}/api/dashboards/{res.dashboard_id}", timeout=timeout)
+        if not 200 <= response.status_code < 300:
+            return
+        body = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return
+    if not isinstance(body, dict):
+        return
+    reasons_by_title: dict[str, str] = {}
+    for warning in body.get("warnings") or []:
+        if not isinstance(warning, dict):
+            continue
+        message = str(warning.get("message") or "")
+        if not message:
+            continue
+        panel_config = warning.get("panel_config")
+        panel_config = panel_config if isinstance(panel_config, dict) else {}
+        reasons_by_title.setdefault(str(panel_config.get("title") or ""), message)
+    if not reasons_by_title:
+        return
+    for descriptor in res.dropped_panels:
+        descriptor.reason = reasons_by_title.get(descriptor.title, "")
+    res.message = _panel_loss_message(res)
+
+
+def _audit_accepted_panels(
+    res: UploadResult,
+    payload: dict[str, Any] | None,
+    body: Any,
+    *,
+    session: requests.Session | None = None,
+    base: str = "",
+    timeout: int = 60,
+) -> None:
+    """Detect, then (only on a detected loss) explain, silently dropped panels."""
+    if payload is None:
+        return
+    _record_panel_loss(res, payload, body)
+    if res.status == "lossy" and session is not None and base:
+        _explain_dropped_panels(res, session, base, timeout=timeout)
+
+
+def _classify_response(
+    res: UploadResult,
+    response: requests.Response,
+    *,
+    payload: dict[str, Any] | None = None,
+    session: requests.Session | None = None,
+    base: str = "",
+    timeout: int = 60,
+) -> None:
     """Fill an ``UploadResult`` from a ``PUT /api/dashboards/{id}`` response.
 
     A 409 is classified as ``"conflict"`` rather than ``"rejected"``. Dashboards
@@ -2102,14 +2346,23 @@ def _classify_response(res: UploadResult, response: requests.Response) -> None:
     legacy ``kb-dashboard-cli`` ``_import`` fallback cannot fix it (and would
     only re-introduce the compiler dependency the native path removes). Callers
     treat ``"conflict"`` as a terminal, actionable failure and skip the fallback.
+
+    A 2xx is *not* automatically a clean success. When ``payload`` is supplied,
+    the leaf panels it sent are compared against the ones the response echoes
+    back, and an upload Kibana accepted without some of them is downgraded to
+    ``"lossy"`` (see :func:`_record_panel_loss`). ``session``/``base`` enable the
+    single follow-up GET that recovers Kibana's explanation for the drop.
     """
     res.http_status = response.status_code
     if 200 <= response.status_code < 300:
         res.status = "created" if response.status_code == 201 else "updated"
         try:
-            res.dashboard_id = str(response.json().get("id") or "")
+            body = response.json()
         except ValueError:
-            pass
+            return
+        if isinstance(body, dict):
+            res.dashboard_id = str(body.get("id") or "")
+        _audit_accepted_panels(res, payload, body, session=session, base=base, timeout=timeout)
     else:
         res.status = "conflict" if response.status_code == 409 else "rejected"
         try:
@@ -2240,7 +2493,9 @@ def _upload_native_api_payload(
         res.status = "rejected"
         res.message = error[:2000]
         return res
-    _classify_response(res, response)
+    _classify_response(
+        res, response, payload=payload, session=session, base=base, timeout=timeout,
+    )
     return res
 
 
@@ -2453,7 +2708,13 @@ def upload_yaml_files(
                 res.status = "rejected"
                 res.message = error[:2000]
             else:
-                _classify_response(res, response)
+                _classify_response(
+                    res, response, payload=payload, session=session, base=base, timeout=timeout,
+                )
+            # A "lossy" upload is deliberately *not* routed to the fallback: the
+            # PUT already wrote a partial dashboard, and re-importing it through
+            # the deprecated compiler would hide the loss behind a second,
+            # different code path (same reasoning as a 409 "conflict").
             if res.status == "rejected" and fallback is not None:
                 fallback(path, dashboard)
             results.append(res)
@@ -2477,6 +2738,7 @@ def delete_dashboard(
 
 
 __all__ = [
+    "DroppedPanel",
     "PanelMapping",
     "UploadResult",
     "build_dashboard_payload",
