@@ -499,12 +499,13 @@ class TestSafeDisplayMetadata:
             }
         )
 
+        # No ``color``: Kibana stores none for a data_table metric whatever
+        # shape is sent, so neither mapper emits one.
         assert cfg["metrics"] == [
             {
                 "column": "requests",
                 "label": "Requests",
                 "format": {"type": "number", "decimals": 0},
-                "color": {"type": "auto"},
                 "alignment": "right",
                 "apply_color_to": "background",
                 "summary": {"type": "sum", "label": "Total"},

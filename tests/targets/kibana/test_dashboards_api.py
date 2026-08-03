@@ -428,6 +428,65 @@ def test_xy_builder_accepts_yaml_schema_appearance_axes():
     }
 
 
+# --------------------------------------------------------------------------- #
+# Axis payload hygiene: Kibana discards an inert y2 axis and an empty axis
+# title text, so neither is emitted.
+# --------------------------------------------------------------------------- #
+
+def test_xy_omits_inert_y2_axis_when_no_series_uses_the_right_axis():
+    """``y2: {"title": {"visible": false}}`` with no right-axis series is noise.
+
+    Datadog XY widgets always declare all three axes with a hidden title; the
+    second one configures an axis nothing is plotted on, and Kibana drops it.
+    """
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "value"}],
+        "appearance": {
+            "x_axis": {"title": False},
+            "y_left_axis": {"title": False},
+            "y_right_axis": {"title": False},
+        },
+    })["config"]
+    assert "y2" not in cfg["axis"], cfg["axis"]
+    # The axes that do carry a plotted series keep their hidden-title request.
+    assert cfg["axis"]["y"] == {"title": {"visible": False}}
+    assert cfg["axis"]["x"] == {"title": {"visible": False}}
+
+
+def test_xy_keeps_inert_y2_axis_when_a_series_uses_the_right_axis():
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "value"}, {"field": "latency", "axis": "right"}],
+        "appearance": {
+            "y_left_axis": {"title": False},
+            "y_right_axis": {"title": False},
+        },
+    })["config"]
+    assert cfg["axis"]["y2"] == {"title": {"visible": False}}
+
+
+def test_xy_hidden_y_axis_title_omits_empty_text():
+    """Two left-axis series hide the y title; an empty ``text`` conveys nothing."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "hits"}, {"field": "misses"}],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"visible": False}
+
+
+def test_api_axis_title_drops_empty_text():
+    assert api._api_axis_title({"text": "", "visible": False}) == {"visible": False}
+    assert api._api_axis_title({"text": ""}) is None
+    assert api._api_axis_title({"text": "Bytes"}) == {"text": "Bytes"}
+
+
 def test_metric_builder_preserves_secondary_breakdown_and_styling():
     cfg = _map({
         "type": "metric",
@@ -2010,11 +2069,59 @@ def test_metric_primary_drops_categorical_keeps_dynamic():
     assert cfg2["metrics"][0]["color"] == _DYNAMIC
 
 
-def test_datatable_metric_drops_static_keeps_dynamic():
-    cfg = _map({"type": "datatable", "query": "FROM m", "metrics": [{"field": "v", "color": _STATIC}]})["config"]
-    assert "color" not in cfg["metrics"][0]
-    cfg2 = _map({"type": "datatable", "query": "FROM m", "metrics": [{"field": "v", "color": _DYNAMIC}]})["config"]
-    assert cfg2["metrics"][0]["color"] == _DYNAMIC
+# --------------------------------------------------------------------------- #
+# data_table metric colour: Kibana stores none of the shapes we can send, so
+# the colour must not be emitted -- and the resulting fidelity loss must be
+# recorded rather than silently dropped.
+# --------------------------------------------------------------------------- #
+
+def test_datatable_metric_color_is_never_emitted():
+    """No colour shape survives a data_table metric, so none is sent.
+
+    Probed live on 9.5 with a throwaway dashboard: ``dynamic`` (3-step) 200 but
+    stored as ``color: null``; ``dynamic`` + ``apply_to`` 400; ``dynamic`` with
+    ``range: percentage`` 200 but not persisted; ``static`` 400; ``auto`` 200 but
+    not persisted.
+    """
+    for shape in (_DYNAMIC, _STATIC, _CATEGORICAL, {"type": "auto"}):
+        cfg = _map({"type": "datatable", "query": "FROM m",
+                    "metrics": [{"field": "v", "color": shape}]})["config"]
+        assert "color" not in cfg["metrics"][0], shape
+
+
+def test_datatable_metric_color_drop_is_recorded_as_a_semantic_loss():
+    result = api.map_yaml_panel(
+        _leaf({"type": "datatable", "query": "FROM m",
+               "metrics": [{"field": "v", "color": _DYNAMIC},
+                           {"field": "w", "color": _DYNAMIC}]})
+    )
+    assert result.api_panel is not None
+    assert result.losses == [api.DROPPED_DATATABLE_COLOR_REASON] * 2
+
+
+def test_datatable_color_loss_reaches_the_native_mapping_reason_channel():
+    dashboard = {
+        "name": "D",
+        "panels": [_leaf({"type": "datatable", "query": "FROM m",
+                          "metrics": [{"field": "v", "color": _DYNAMIC}]})],
+    }
+    _native, counts = api.native_dashboard_from_yaml(dashboard)
+    # The panel still maps -- the loss is a fidelity gap, not a drop.
+    assert counts.mapped == 1
+    assert counts.unmapped == 0
+    assert counts.reasons.get(api.DROPPED_DATATABLE_COLOR_REASON) == 1
+
+
+def test_datatable_color_loss_is_surfaced_as_an_upload_warning():
+    warnings = api.upload_warnings_from_reasons({api.DROPPED_DATATABLE_COLOR_REASON: 4})
+    assert any("4" in w and "data_table" in w for w in warnings), warnings
+
+
+def test_datatable_metric_without_source_color_records_no_loss():
+    result = api.map_yaml_panel(
+        _leaf({"type": "datatable", "query": "FROM m", "metrics": [{"field": "v"}]})
+    )
+    assert result.losses == []
 
 
 def test_partition_group_drops_auto_color_keeps_mapping():

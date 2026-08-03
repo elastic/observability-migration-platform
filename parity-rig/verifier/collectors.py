@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -278,7 +279,228 @@ def _iter_ir_panels(panels: list[dict[str, Any]]) -> Iterable[dict[str, str]]:
 
 
 # --------------------------------------------------------------------- #
-# T3  — compiled NDJSON (kb-dashboard-cli output)
+# T3  — the dashboard as Kibana stored it (GET /api/dashboards/{id})
+#
+# The original T3 source was ``compiled/<slug>/compiled_dashboards.ndjson``,
+# which only exists when ``--compile`` ran the deprecated kb-dashboard-cli YAML
+# compiler. With YAML on the way out that file is usually absent, and an absent
+# T3 does not merely lose a tier: every panel reads as "T2 mutated into
+# nothing" and gets a NOT_UPLOADED verdict it was never checked for (measured:
+# 251 of 415 panels on a Datadog artifact set with no ``compiled/`` dir).
+#
+# The typed Dashboards API supersedes it outright. ``GET /api/dashboards/{id}``
+# returns ``{id, data, meta, warnings}`` where ``data.panels`` is the panel tree
+# Kibana actually saved -- the real uploaded state rather than a compiler
+# artifact -- and every panel (sections included) carries Kibana's own UUID in
+# ``id``. Panels nest exactly one level: sections hold leaves.
+# --------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class StoredPanel:
+    """One leaf panel of a dashboard as Kibana stored it.
+
+    ``panel_id`` is Kibana's own UUID for the panel, which is what the render
+    audit and visual-regression harnesses address panels by. The IR's
+    ``panel_id`` is a *migration* id and is not interchangeable with it, so this
+    is the only place it can come from.
+    """
+
+    title: str
+    esql: str = ""
+    panel_id: str = ""
+    panel_type: str = ""
+    section: str = ""
+    dashboard_id: str = ""
+
+
+def _stored_panel_query(node: Any) -> str:
+    """The first ES|QL query in a stored panel config.
+
+    Where the query lives depends on the chart family. Single-series charts
+    (``metric``/``data_table``/``gauge``/``pie``/``heatmap``/...) carry
+    ``config.data_source.query``, but an ``xy`` panel has no ``data_source`` at
+    the config root at all -- it keeps one per layer under
+    ``config.layers[*].data_source``. Measured live on Kibana 9.5: reading only
+    the config root found a query for 98 of 353 stored panels, and every xy panel
+    then read as "T2 mutated into nothing".
+
+    So walk the config, preferring a ``data_source`` at the current level before
+    descending. The first query found is the primary layer's, which is the one
+    ``migration_report.json`` and the IR export record, making it the right
+    comparison target for T1/T2.
+    """
+    if isinstance(node, dict):
+        data_source = node.get("data_source")
+        if isinstance(data_source, dict):
+            query = data_source.get("query")
+            if isinstance(query, str) and query.strip():
+                return query.strip()
+        for key, value in node.items():
+            if key == "data_source":
+                continue
+            if found := _stored_panel_query(value):
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            if found := _stored_panel_query(item):
+                return found
+    return ""
+
+
+def _stored_panel(raw: dict[str, Any], *, section: str, dashboard_id: str) -> StoredPanel:
+    config = raw.get("config") if isinstance(raw.get("config"), dict) else {}
+    return StoredPanel(
+        title=str(config.get("title") or ""),
+        esql=_stored_panel_query(config),
+        panel_id=str(raw.get("id") or ""),
+        panel_type=str(raw.get("type") or ""),
+        section=section,
+        dashboard_id=dashboard_id,
+    )
+
+
+def stored_panels_from_api_payload(
+    payload: dict[str, Any],
+) -> tuple[list[str], dict[str, StoredPanel]]:
+    """Return ``(dashboard_keys, {panel_title: StoredPanel})`` for one GET body.
+
+    The keys are the dashboard's id and its stored title, in that order, so a
+    caller can join on whichever identity its records carry (Grafana's
+    ``migration_report.json`` has a dashboard uid, Datadog's has only a title).
+
+    Only leaves are returned. A section is an entry with a nested ``panels``
+    list and no ``type``; its title scopes the leaves inside it.
+    """
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    dashboard_id = str(payload.get("id") or "")
+    keys = [key for key in (dashboard_id, str(data.get("title") or "")) if key]
+    panels: dict[str, StoredPanel] = {}
+    for item in data.get("panels") or []:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("panels")
+        if isinstance(nested, list):
+            section = str(item.get("title") or "")
+            for leaf in nested:
+                if isinstance(leaf, dict):
+                    stored = _stored_panel(leaf, section=section, dashboard_id=dashboard_id)
+                    if stored.title:
+                        panels[stored.title] = stored
+            continue
+        stored = _stored_panel(item, section="", dashboard_id=dashboard_id)
+        if stored.title:
+            panels[stored.title] = stored
+    return keys, panels
+
+
+def stored_panels_by_dashboard(
+    payloads: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, StoredPanel]]:
+    """Return ``{dashboard_key: {panel_title: StoredPanel}}`` across payloads.
+
+    Dashboard-scoped rather than flattened by panel title, for the reason spelled
+    out in :func:`load_ir_panels_by_dashboard`: titles repeat across dashboards
+    ("CPU Usage", "Error Logs"), and a global title index hands one dashboard's
+    panel another dashboard's query, fabricating drift findings in both
+    directions. A key two *different* dashboards claim is dropped rather than
+    resolved arbitrarily, so the tier reads as unavailable-with-a-note instead
+    of confidently wrong.
+    """
+    scoped: dict[str, dict[str, StoredPanel]] = {}
+    owner: dict[str, int] = {}
+    ambiguous: set[str] = set()
+    for idx, payload in enumerate(payloads):
+        keys, panels = stored_panels_from_api_payload(payload)
+        for key in keys:
+            if owner.get(key, idx) != idx:
+                ambiguous.add(key)
+                continue
+            owner[key] = idx
+            scoped[key] = panels
+    for key in ambiguous:
+        scoped.pop(key, None)
+        LOG.warning(
+            "stored dashboard key %r is claimed by more than one dashboard; "
+            "T3 will be reported as unavailable for it rather than guessed",
+            key,
+        )
+    return scoped
+
+
+def load_native_dashboard_index(native_dir: Path) -> list[dict[str, str]]:
+    """Return ``[{"title", "dashboard_id"}]`` for a run's ``native/`` artifacts.
+
+    ``native/index.json`` is written once per migration run and already carries
+    the deterministic dashboard id (``obs-migrate-<title-slug>``) each dashboard
+    was (or would be) uploaded under, so the verifier does not have to re-derive
+    a slug. Falls back to reading the per-dashboard ``*.native.json`` envelopes
+    when the index is missing, since both carry ``dashboard_id``/``title``.
+    """
+    if not native_dir.exists():
+        return []
+    index_path = native_dir / "index.json"
+    entries: list[dict[str, str]] = []
+    if index_path.exists():
+        try:
+            blob = json.loads(index_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.warning("failed to parse %s: %s", index_path, exc)
+            blob = {}
+        for item in (blob or {}).get("dashboards") or []:
+            if not isinstance(item, dict):
+                continue
+            dashboard_id = str(item.get("dashboard_id") or "")
+            if dashboard_id:
+                entries.append(
+                    {"title": str(item.get("title") or ""), "dashboard_id": dashboard_id}
+                )
+        if entries:
+            return entries
+    for artifact in sorted(native_dir.glob("*.native.json")):
+        try:
+            blob = json.loads(artifact.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.warning("failed to parse %s: %s", artifact, exc)
+            continue
+        dashboard_id = str((blob or {}).get("dashboard_id") or "")
+        if dashboard_id:
+            entries.append(
+                {"title": str((blob or {}).get("title") or ""), "dashboard_id": dashboard_id}
+            )
+    return entries
+
+
+def fetch_stored_dashboard(
+    kibana_url: str,
+    api_key: str,
+    dashboard_id: str,
+    space: str = "default",
+) -> dict[str, Any]:
+    """``GET /api/dashboards/{id}`` — the dashboard as Kibana stored it.
+
+    Returns ``{}`` for a 404 so a dashboard that was never uploaded reads as
+    "not there" rather than aborting the whole run.
+    """
+    base = kibana_url.rstrip("/")
+    if space and space != "default":
+        base = f"{base}/s/{space}"
+    headers = _auth_headers(api_key, {"kbn-xsrf": "verifier"})
+    r = requests.get(
+        f"{base}/api/dashboards/{dashboard_id}", headers=headers, timeout=_REQUEST_TIMEOUT
+    )
+    if r.status_code == 404:
+        return {}
+    r.raise_for_status()
+    body = r.json()
+    return body if isinstance(body, dict) else {}
+
+
+# --------------------------------------------------------------------- #
+# T3 (legacy)  — compiled NDJSON (kb-dashboard-cli output)
+#
+# Kept working while ``compiled/`` still exists in some runs; the API source
+# above is preferred whenever a Kibana URL is available.
 # --------------------------------------------------------------------- #
 
 
@@ -522,14 +744,19 @@ def annotate_record_with_live_response(
 
 
 __all__ = [
+    "StoredPanel",
     "annotate_record_with_live_response",
     "cluster_dashboard_panels",
     "fetch_cluster_dashboard",
+    "fetch_stored_dashboard",
     "load_ir_panels",
     "load_ir_panels_by_dashboard",
     "load_migration_report",
+    "load_native_dashboard_index",
     "load_ndjson_panels",
     "load_ndjson_panels_by_dashboard",
     "panels_from_migration_report",
     "run_cluster_query",
+    "stored_panels_by_dashboard",
+    "stored_panels_from_api_payload",
 ]

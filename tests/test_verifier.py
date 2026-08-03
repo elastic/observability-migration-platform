@@ -528,6 +528,342 @@ class TestNdjsonCollector:
 
 
 # --------------------------------------------------------------------- #
+# T3 — the dashboard as Kibana stored it (GET /api/dashboards/{id})
+# --------------------------------------------------------------------- #
+
+
+def _api_payload(
+    dashboard_id: str = "obs-migrate-my-dashboard",
+    title: str = "My Dashboard",
+) -> dict[str, Any]:
+    """One ``GET /api/dashboards/{id}`` body, shaped as Kibana 9.5 returns it."""
+    return {
+        "id": dashboard_id,
+        "data": {
+            "title": title,
+            "panels": [
+                {
+                    "grid": {"x": 0, "y": 0, "w": 24, "h": 8},
+                    "id": "7460393d-19f5-4be1-a065-6a4bf584df88",
+                    "type": "vis",
+                    "config": {
+                        "title": "My Panel",
+                        "type": "xy",
+                        "data_source": {"type": "esql", "query": "FROM metrics-*"},
+                    },
+                },
+                {
+                    "grid": {"y": 1},
+                    "id": "5b0a0e1f-0000-4000-8000-000000000001",
+                    "title": "A Section",
+                    "collapsed": False,
+                    "panels": [
+                        {
+                            "grid": {"x": 0, "y": 0, "w": 12, "h": 8},
+                            "id": "c0ffee00-1111-4222-8333-444444444444",
+                            "type": "vis",
+                            "config": {
+                                "title": "Nested Panel",
+                                "type": "metric",
+                                "data_source": {"type": "esql", "query": "TS metrics-*"},
+                            },
+                        },
+                        {
+                            "grid": {"x": 12, "y": 0, "w": 12, "h": 8},
+                            "id": "deadbeef-2222-4333-8444-555555555555",
+                            "type": "markdown",
+                            "config": {"title": "Notes", "content": "hi"},
+                        },
+                    ],
+                },
+            ],
+        },
+        "meta": {},
+        "warnings": [],
+    }
+
+
+class TestStoredDashboardCollector:
+    def test_panels_are_keyed_by_title_with_esql_and_kibana_uuid(self):
+        keys, panels = collectors.stored_panels_from_api_payload(_api_payload())
+        assert keys == ["obs-migrate-my-dashboard", "My Dashboard"]
+        assert panels["My Panel"].esql == "FROM metrics-*"
+        assert panels["My Panel"].panel_id == "7460393d-19f5-4be1-a065-6a4bf584df88"
+        assert panels["My Panel"].panel_type == "vis"
+        assert panels["My Panel"].section == ""
+
+    def test_section_leaves_are_flattened_and_keep_their_own_uuid(self):
+        _keys, panels = collectors.stored_panels_from_api_payload(_api_payload())
+        assert panels["Nested Panel"].esql == "TS metrics-*"
+        assert panels["Nested Panel"].panel_id == "c0ffee00-1111-4222-8333-444444444444"
+        assert panels["Nested Panel"].section == "A Section"
+
+    def test_non_vis_panels_have_no_esql_but_still_carry_a_uuid(self):
+        _keys, panels = collectors.stored_panels_from_api_payload(_api_payload())
+        assert panels["Notes"].esql == ""
+        assert panels["Notes"].panel_id == "deadbeef-2222-4333-8444-555555555555"
+
+    def test_xy_panels_carry_their_query_per_layer_not_at_the_config_root(self):
+        """An ``xy`` panel has no ``config.data_source``; each layer has one.
+
+        Measured live on Kibana 9.5: reading only the config root found a query
+        for 98 of 353 stored panels, because every xy panel keeps its
+        ``data_source`` inside ``config.layers[*]``.
+        """
+        payload = {
+            "id": "d",
+            "data": {
+                "title": "D",
+                "panels": [{
+                    "grid": {"x": 0, "y": 0, "w": 24, "h": 8},
+                    "id": "aaaaaaaa-1111-4222-8333-444444444444",
+                    "type": "vis",
+                    "config": {
+                        "title": "Rate of requests",
+                        "type": "xy",
+                        "layers": [
+                            {"type": "line",
+                             "data_source": {"type": "esql", "query": "FROM metrics-* | STATS a"}},
+                            {"type": "line",
+                             "data_source": {"type": "esql", "query": "FROM metrics-* | STATS b"}},
+                        ],
+                    },
+                }],
+            },
+        }
+        _keys, panels = collectors.stored_panels_from_api_payload(payload)
+        assert panels["Rate of requests"].esql == "FROM metrics-* | STATS a"
+
+    def test_root_data_source_wins_over_a_nested_one(self):
+        payload = {
+            "id": "d",
+            "data": {"title": "D", "panels": [{
+                "id": "x", "type": "vis", "grid": {},
+                "config": {
+                    "title": "P",
+                    "data_source": {"type": "esql", "query": "FROM root"},
+                    "layers": [{"data_source": {"type": "esql", "query": "FROM layer"}}],
+                },
+            }]},
+        }
+        _keys, panels = collectors.stored_panels_from_api_payload(payload)
+        assert panels["P"].esql == "FROM root"
+
+    def test_scoped_index_registers_each_dashboard_under_id_and_title(self):
+        index = collectors.stored_panels_by_dashboard(
+            [_api_payload(), _api_payload("obs-migrate-other", "Other Dashboard")]
+        )
+        assert index["My Dashboard"]["My Panel"].esql == "FROM metrics-*"
+        assert index["obs-migrate-my-dashboard"]["My Panel"].esql == "FROM metrics-*"
+        assert "Other Dashboard" in index
+
+    def test_a_key_two_dashboards_claim_is_dropped_not_guessed(self):
+        index = collectors.stored_panels_by_dashboard(
+            [_api_payload("id-a", "Same Title"), _api_payload("id-b", "Same Title")]
+        )
+        assert "Same Title" not in index
+        assert "id-a" in index and "id-b" in index
+
+
+class TestStoredDashboardIndexLookup:
+    def test_scoped_lookup_returns_the_stored_panel(self):
+        index = collectors.stored_panels_by_dashboard([_api_payload()])
+        record = _make_record(title="My Panel", dashboard_title="My Dashboard")
+        stored = verifier_cli._scoped_stored_panel(index, record)
+        assert stored is not None
+        assert stored.panel_id == "7460393d-19f5-4be1-a065-6a4bf584df88"
+
+    def test_unmatchable_dashboard_notes_rather_than_guesses(self):
+        index = collectors.stored_panels_by_dashboard(
+            [_api_payload("id-a", "A"), _api_payload("id-b", "B")]
+        )
+        record = _make_record(title="My Panel", dashboard_title="Nowhere")
+        assert verifier_cli._scoped_stored_panel(index, record) is None
+        assert any("T3 unavailable" in note for note in record.notes)
+
+
+class TestT3SourceSelection:
+    """The API-backed source is additive and preferred; NDJSON still works."""
+
+    def _artifacts(self, tmp_path, *, with_compiled: bool) -> Path:
+        out = tmp_path / "dashboards"
+        (out / "native").mkdir(parents=True)
+        (out / "native" / "index.json").write_text(json.dumps({
+            "kind": "native_dashboard_index",
+            "version": 1,
+            "dashboards": [{
+                "stem": "my_dashboard",
+                "title": "My Dashboard",
+                "dashboard_id": "obs-migrate-my-dashboard",
+                "native_path": "native/my_dashboard.native.json",
+                "ir_path": "ir/my_dashboard.ir.json",
+            }],
+        }))
+        if with_compiled:
+            compiled = out / "compiled" / "my_dashboard"
+            compiled.mkdir(parents=True)
+            (compiled / "compiled_dashboards.ndjson").write_text(json.dumps({
+                "type": "dashboard",
+                "attributes": {
+                    "title": "My Dashboard",
+                    "panelsJSON": json.dumps([{
+                        "embeddableConfig": {
+                            "attributes": {
+                                "title": "My Panel",
+                                "state": {"query": {"esql": "FROM compiled-*"}},
+                            }
+                        }
+                    }]),
+                },
+            }))
+        return out
+
+    def test_dashboards_api_is_used_when_a_kibana_url_is_supplied(self, tmp_path):
+        out = self._artifacts(tmp_path, with_compiled=True)
+        index, reason = verifier_cli._load_stored_panels(
+            out,
+            kibana_url="http://kibana:5601",
+            api_key="",
+            space="default",
+            fetch=lambda *_a, **_k: _api_payload(),
+        )
+        assert reason == ""
+        assert index["My Dashboard"]["My Panel"].esql == "FROM metrics-*"
+
+    def test_no_kibana_url_reports_t3_unavailable_with_a_reason(self, tmp_path):
+        out = self._artifacts(tmp_path, with_compiled=False)
+        index, reason = verifier_cli._load_stored_panels(
+            out, kibana_url="", api_key="", space="default",
+            fetch=lambda *_a, **_k: _api_payload(),
+        )
+        assert index == {}
+        assert "T3 unavailable" in reason
+        assert "--kibana-url" in reason
+
+    def test_compiled_ndjson_still_fills_t3_when_no_kibana_url(self, tmp_path):
+        out = self._artifacts(tmp_path, with_compiled=True)
+        records = verifier_cli._collect_records(
+            _build_migration_report([
+                {"title": "My Panel", "esql_query": "FROM metrics-*",
+                 "query_ir": {"source_expression": "up"}},
+            ]),
+            out,
+            kibana_url="",
+            api_key="",
+            space="default",
+            es_index="",
+            es_url="",
+            limit=0,
+            cluster_saved_object={},
+            cluster_panels={},
+            dashboard_id="",
+            fetch_stored=lambda *_a, **_k: _api_payload(),
+        )
+        assert records[0].t3_ndjson_esql == "FROM compiled-*"
+        assert records[0].t3_source == "compiled_ndjson"
+
+    def test_dashboards_api_t3_carries_the_real_kibana_panel_uuid(self, tmp_path):
+        out = self._artifacts(tmp_path, with_compiled=False)
+        records = verifier_cli._collect_records(
+            _build_migration_report([
+                {"title": "My Panel", "esql_query": "FROM metrics-*",
+                 "query_ir": {"source_expression": "up"}},
+            ]),
+            out,
+            kibana_url="http://kibana:5601",
+            api_key="",
+            space="default",
+            es_index="",
+            es_url="",
+            limit=0,
+            cluster_saved_object={},
+            cluster_panels={},
+            dashboard_id="",
+            fetch_stored=lambda *_a, **_k: _api_payload(),
+        )
+        assert records[0].t3_source == "dashboards_api"
+        assert records[0].t3_ndjson_esql == "FROM metrics-*"
+        assert records[0].t3_panel_id == "7460393d-19f5-4be1-a065-6a4bf584df88"
+        assert records[0].t3_dashboard_id == "obs-migrate-my-dashboard"
+
+
+class TestT3UnavailableDegradesHonestly:
+    def test_unavailable_t3_is_not_phantom_drift(self):
+        esql = "FROM metrics-* | LIMIT 1"
+        record = _make_record(
+            t1_translator_esql=esql,
+            t2_ir_esql=esql,
+            t3_ndjson_esql="",
+            t3_unavailable_reason="T3 unavailable: no --kibana-url supplied",
+        )
+        compare.compare_panel_record(record)
+        assert "T2=T3" not in record.drift_axes, record.drift_details
+
+    def test_unavailable_t3_is_not_reported_as_not_uploaded(self):
+        esql = "FROM metrics-* | LIMIT 1"
+        record = _make_record(
+            t1_translator_esql=esql,
+            t2_ir_esql=esql,
+            t3_ndjson_esql="",
+            t3_unavailable_reason="T3 unavailable: no --kibana-url supplied",
+        )
+        verdict = compare.compare_panel_record(record)
+        assert verdict == Verdict.SKIP
+        assert verdict != Verdict.NOT_UPLOADED
+
+    def test_real_t1_t2_drift_still_wins_over_an_unavailable_t3(self):
+        record = _make_record(
+            t1_translator_esql="FROM metrics-* | LIMIT 1",
+            t2_ir_esql="FROM other-* | LIMIT 1",
+            t3_unavailable_reason="T3 unavailable: no --kibana-url supplied",
+        )
+        assert compare.compare_panel_record(record) == Verdict.DRIFT
+
+    def test_uncollected_t4_is_not_drift_against_a_populated_t3(self):
+        """Populating T3 must not turn an uncollected T4 into 94 findings.
+
+        Same rule as T3: an axis whose right-hand tier was never fetched has not
+        been shown to differ. Before this guard, sourcing T3 from the Dashboards
+        API made every panel with a stored query report ``T3=T4`` drift purely
+        because no cluster saved object had been requested.
+        """
+        esql = "FROM metrics-* | LIMIT 1"
+        record = _make_record(
+            t1_translator_esql=esql,
+            t2_ir_esql=esql,
+            t3_ndjson_esql=esql,
+            t3_source="dashboards_api",
+            t4_unavailable_reason="T4 unavailable: no cluster saved object requested",
+        )
+        verdict = compare.compare_panel_record(record)
+        assert "T3=T4" not in record.drift_axes, record.drift_details
+        assert verdict == Verdict.PASS
+
+    def test_a_consulted_but_empty_t3_is_still_not_uploaded(self):
+        esql = "FROM metrics-* | LIMIT 1"
+        record = _make_record(
+            t1_translator_esql=esql,
+            t2_ir_esql=esql,
+            t3_ndjson_esql="",
+            t3_source="dashboards_api",
+        )
+        assert compare.compare_panel_record(record) == Verdict.NOT_UPLOADED
+
+
+def test_panel_record_roundtrips_stored_dashboard_fields() -> None:
+    record = _make_record(
+        t3_source="dashboards_api",
+        t3_dashboard_id="obs-migrate-my-dashboard",
+        t3_panel_id="7460393d-19f5-4be1-a065-6a4bf584df88",
+        t3_unavailable_reason="",
+    )
+    restored = PanelRecord.from_jsonable(json.loads(json.dumps(record.to_jsonable())))
+    assert restored.t3_source == "dashboards_api"
+    assert restored.t3_dashboard_id == "obs-migrate-my-dashboard"
+    assert restored.t3_panel_id == "7460393d-19f5-4be1-a065-6a4bf584df88"
+
+
+# --------------------------------------------------------------------- #
 # Collectors — live query auto-params
 # --------------------------------------------------------------------- #
 

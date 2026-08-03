@@ -1588,11 +1588,12 @@ are warnings, not failures).
 ### Verify Panels (5-tier panel verifier)
 
 `obs-migrate verify-panels` is the repo-oriented 5-tier panel verifier wrapper
-(source query → translator → IR export → NDJSON → cluster → live `_query`). It
-delegates to verifier code that only exists in a repo checkout, so it is
-intended for development / CI, not as a substitute for `obs-migrate verify` on
-an installed wheel. Both sources are covered: the translator tier reads
-Grafana's `esql` and Datadog's `esql_query` from `migration_report.json`.
+(source query → translator → IR export → dashboard as stored in Kibana →
+cluster saved object → live `_query`). It delegates to verifier code that only
+exists in a repo checkout, so it is intended for development / CI, not as a
+substitute for `obs-migrate verify` on an installed wheel. Both sources are
+covered: the translator tier reads Grafana's `esql` and Datadog's `esql_query`
+from `migration_report.json`.
 
 ```bash
 obs-migrate verify-panels \
@@ -1604,12 +1605,36 @@ obs-migrate verify-panels \
   --dashboard-id "<uploaded-dashboard-id>"
 ```
 
-`--migration-out` and `--output` are required. T4/T5 (cluster + live query)
-need `--kibana-url`, `--es-url`, `--api-key`, and `--dashboard-id`. This
-wrapper does **not** expose `--ca-cert` / `--insecure` today.
+`--migration-out` and `--output` are required. T3 (the stored dashboard) needs
+`--kibana-url`; T4/T5 (cluster + live query) additionally need `--es-url`,
+`--api-key`, and `--dashboard-id`. This wrapper does **not** expose
+`--ca-cert` / `--insecure` today.
 
-`--migration-out` may hold one dashboard or a whole run's worth. The local
-tiers are joined per dashboard (report `uid`, else `title`), never by panel
+**T3 comes from the Dashboards API.** With `--kibana-url`, T3 is read from
+`GET /api/dashboards/{id}` for every dashboard the run wrote a `native/`
+artifact for — the dashboard as Kibana actually stored it, rather than a
+compiler artifact. The ids are deterministic (`obs-migrate-<title-slug>`) and
+already recorded in `native/index.json`, so none has to be guessed. Panel
+records then also carry Kibana's own panel UUID (`stored.panel_id`), which is
+what the render audit and visual-regression harnesses address panels by; the
+IR's `panel_id` is a *migration* id and cannot substitute for it. The legacy
+`compiled/<slug>/compiled_dashboards.ndjson` reader still fills T3 when no
+`--kibana-url` is supplied and a `compiled/` dir exists.
+
+**Absent tiers are reported, not inferred.** Without `--kibana-url` and without
+`compiled/`, T3 is reported unavailable with a reason on every panel record;
+the `T2=T3` / `T3=T4` axes are skipped rather than reporting one "right side
+empty" finding per panel, and the panel is *not* labelled `NOT_UPLOADED` —
+that verdict is reserved for a panel genuinely missing from a dashboard that
+*was* read back. The same rule applies to T4 when no cluster saved object was
+requested. Every report carries a `tier_population` block (also printed in the
+console and Markdown summaries) giving the per-tier panel count, T3's
+provenance, and how many records carry a real Kibana UUID — read it alongside
+the verdict counts, because a verdict distribution alone cannot distinguish
+"checked and agreed" from "never checked".
+
+`--migration-out` may hold one dashboard or a whole run's worth. Every tier is
+joined per dashboard (report `uid`, else `title`), never by panel
 title alone — titles repeat across dashboards, and a title-only join compares
 one dashboard's panel against another's. When a dashboard cannot be matched to
 an artifact, that tier is reported empty with a note on the panel record

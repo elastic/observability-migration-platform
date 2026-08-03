@@ -37,8 +37,8 @@ class Verdict(str, Enum):
 DRIFT_AXES = (
     "T0=T1",  # source -> translator
     "T1=T2",  # translator -> IR export (ir/*.ir.json)
-    "T2=T3",  # IR export -> compiled ndjson
-    "T3=T4",  # compiled ndjson -> cluster saved object
+    "T2=T3",  # IR export -> dashboard as stored in Kibana (or compiled ndjson)
+    "T3=T4",  # stored dashboard -> cluster saved object
     "T4=T5",  # cluster saved object -> live _query body
 )
 
@@ -68,6 +68,26 @@ class PanelRecord:
     t1_index: str = ""
     t1_warnings: list[str] = field(default_factory=list)
     t1_notes: list[str] = field(default_factory=list)
+
+    # Where T3 came from: ``"dashboards_api"`` (GET /api/dashboards/{id} -- the
+    # dashboard as Kibana actually stored it) or ``"compiled_ndjson"`` (the
+    # deprecated kb-dashboard-cli artifact). Empty means no T3 source could be
+    # consulted for this record.
+    t3_source: str = ""
+    t3_dashboard_id: str = ""
+    # Kibana's own panel UUID from the stored dashboard. This is what the render
+    # audit and visual regression address panels by; the IR's ``panel_id`` is a
+    # *migration* id and cannot substitute for it.
+    t3_panel_id: str = ""
+    # Set when no T3 source existed at all (e.g. no --kibana-url and no
+    # compiled/ dir). An absent tier must not be reported as a mutated one:
+    # while this is set the T2=T3 axis is skipped and the panel is not claimed
+    # to be missing from Kibana -- see ``compare.compare_panel_record``.
+    t3_unavailable_reason: str = ""
+    # Set when no cluster saved object was requested at all. Same rule as
+    # ``t3_unavailable_reason``: without it, populating T3 from the Dashboards
+    # API turns every uncollected T4 into a "right side empty" drift finding.
+    t4_unavailable_reason: str = ""
 
     t4_saved_object_id: str = ""
     t4_saved_object_updated_at: str = ""
@@ -115,9 +135,16 @@ class PanelRecord:
                 "warnings": list(self.t1_warnings),
                 "notes": list(self.t1_notes),
             },
+            "stored": {
+                "source": self.t3_source,
+                "dashboard_id": self.t3_dashboard_id,
+                "panel_id": self.t3_panel_id,
+                "unavailable_reason": self.t3_unavailable_reason,
+            },
             "cluster": {
                 "saved_object_id": self.t4_saved_object_id,
                 "updated_at": self.t4_saved_object_updated_at,
+                "unavailable_reason": self.t4_unavailable_reason,
             },
             "live": {
                 "response_status": self.t5_response_status,
@@ -146,6 +173,7 @@ class PanelRecord:
     def from_jsonable(cls, blob: dict[str, Any]) -> PanelRecord:
         tiers = blob.get("tiers", {})
         translator = blob.get("translator", {})
+        stored = blob.get("stored", {})
         cluster = blob.get("cluster", {})
         live = blob.get("live", {})
         visual = blob.get("visual", {})
@@ -171,8 +199,13 @@ class PanelRecord:
             t1_index=translator.get("index", ""),
             t1_warnings=list(translator.get("warnings", [])),
             t1_notes=list(translator.get("notes", [])),
+            t3_source=stored.get("source", ""),
+            t3_dashboard_id=stored.get("dashboard_id", ""),
+            t3_panel_id=stored.get("panel_id", ""),
+            t3_unavailable_reason=stored.get("unavailable_reason", ""),
             t4_saved_object_id=cluster.get("saved_object_id", ""),
             t4_saved_object_updated_at=cluster.get("updated_at", ""),
+            t4_unavailable_reason=cluster.get("unavailable_reason", ""),
             t5_response_status=int(live.get("response_status", 0)),
             t5_response_columns=list(live.get("response_columns", [])),
             t5_response_row_count=int(live.get("response_row_count", 0)),

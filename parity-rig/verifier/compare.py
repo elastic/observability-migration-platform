@@ -62,6 +62,17 @@ def compare_panel_record(record: PanelRecord) -> Verdict:
         record.notes.append("no translator output (panel may be markdown / manual)")
         return record.verdict
 
+    # A tier nobody could look at is not a tier that changed. When no T3 source
+    # existed at all (no Kibana URL and no ``compiled/`` dir), comparing T2
+    # against an empty T3 manufactures one "right side empty" finding per panel,
+    # and the pair T3=T4 does the same -- pure noise about an unperformed check.
+    t3_unavailable = bool(record.t3_unavailable_reason)
+    t4_unavailable = bool(record.t4_unavailable_reason)
+    skipped_axes = set()
+    if t3_unavailable:
+        skipped_axes |= {"T2=T3", "T3=T4"}
+    if t4_unavailable:
+        skipped_axes |= {"T3=T4", "T4=T5"}
     pairs: Iterable[tuple[str, str, str]] = (
         ("T0=T1", record.t0_source_promql, record.t1_translator_esql),
         ("T1=T2", record.t1_translator_esql, record.t2_ir_esql),
@@ -70,6 +81,8 @@ def compare_panel_record(record: PanelRecord) -> Verdict:
         ("T4=T5", record.t4_cluster_esql, record.t5_live_query_body),
     )
     for axis, left, right in pairs:
+        if axis in skipped_axes:
+            continue
         verdict = _compare_pair(axis, left, right, record)
         if verdict:
             record.drift_axes.append(axis)
@@ -83,8 +96,19 @@ def compare_panel_record(record: PanelRecord) -> Verdict:
         return record.verdict
 
     if not record.t3_ndjson_esql and not record.t4_cluster_esql:
+        if t3_unavailable:
+            # Nothing on the target side was consulted. NOT_UPLOADED would
+            # assert a fact that was never checked, and PASS would claim a
+            # verification that never happened -- so any real drift found in the
+            # tiers that *were* compared still wins, and otherwise the panel is
+            # explicitly unverified.
+            if record.drift_axes:
+                record.verdict = Verdict.DRIFT
+                return record.verdict
+            record.verdict = Verdict.SKIP
+            return record.verdict
         record.verdict = Verdict.NOT_UPLOADED
-        record.notes.append("no compiled NDJSON or cluster saved object available")
+        record.notes.append("no stored Kibana dashboard or cluster saved object available")
         return record.verdict
 
     if record.drift_axes:

@@ -247,6 +247,37 @@ Use `scripts/audit_migrated_rules.py` (or `cluster`-level queries against `GET /
 - **YAML lint and compiled-layout validation** are shared target checks and run through `targets/kibana/compile.py`.
 - **Post-upload smoke validation** is now shared under `targets/kibana/smoke.py`, with a Grafana wrapper retained for backward-compatible CLI usage.
 
+### Payload Fields Kibana Does Not Store
+
+The typed Dashboards API accepts some fields it then discards. A field that is
+accepted-and-dropped is worse than useless: it looks like fidelity in the
+payload, is invisible in Kibana, and shows up as a false divergence in any
+PUT-then-GET round-trip check. The emitter therefore does not send them.
+
+- **`data_table` metric colour is never emitted.** No colour shape survives a
+  table metric. Probed live on 9.5 against a throwaway dashboard: a multi-step
+  `dynamic` palette returns HTTP 200 but is stored as `color: null`; `dynamic`
+  with `apply_to: cell`/`text` is rejected with HTTP 400; `dynamic` with
+  `range: percentage` is accepted and not persisted; `static` is rejected;
+  `auto` is accepted and not persisted. When the source *did* carry conditional
+  formatting (e.g. a Datadog conditional format on a table column) this is a
+  real fidelity loss, so it is recorded rather than silently dropped: the
+  mapper counts `dropped_unsupported_datatable_metric_color` into
+  `NativeMappingCounts.reasons` — the same channel dropped dashboard filters
+  use — which lands in `native/<stem>.native.json` under `mapping.reasons` and
+  is rendered as an `--upload` warning naming the column count and telling the
+  operator to restyle those columns in Kibana. Table *row* colours are
+  unaffected: those do persist as a categorical/gradient colour mapping.
+- **An inert second y-axis is not emitted.** Datadog XY widgets declare all
+  three axes with a hidden title whether or not any series uses the right axis;
+  a `config.axis.y2` that styles an axis nothing is plotted on is discarded by
+  Kibana. It is suppressed only when no series targets the right axis *and* the
+  `y2` block carries nothing of its own — a panel that really does plot on the
+  right axis keeps its `y2`, hidden title included.
+- **An empty axis title text is not emitted.** `title: {"text": "", ...}` names
+  nothing and Kibana stores no `text` for it; only the `visible` request is
+  sent.
+
 ## Current Structural Gaps
 
 - Source-aware emitted-query validation is still source-located because it depends on Grafana- and Datadog-specific query rewrite logic.

@@ -134,11 +134,20 @@ _SUMMARY_TYPES = {"sum", "avg", "count", "min", "max"}
 
 @dataclass
 class PanelMapping:
-    """Result of mapping one report panel to the typed API."""
+    """Result of mapping one report panel to the typed API.
+
+    ``reason`` explains a panel that could NOT be mapped. ``losses`` is the
+    other half of the story: reason keys for panels that mapped fine but lost
+    source detail the target cannot express (a ``data_table`` metric's
+    conditional colour, today). Callers fold them into
+    ``NativeMappingCounts.reasons`` so a fidelity gap is recorded instead of
+    disappearing -- one entry per lost thing.
+    """
 
     api_panel: dict[str, Any] | None
     reason: str = ""
     kind: str = ""
+    losses: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -439,13 +448,71 @@ def _api_color_for_role(color: Any, role: str) -> dict[str, Any] | None:
     if role in _MAPPING_ONLY_ROLES:
         return mapped if mode in {"categorical", "gradient"} else None
     if role == "datatable_metric":
-        # colorByValue (dynamic) | colorMapping (categorical/gradient) | auto — no static.
-        return mapped if color_type in {"dynamic", "auto"} or mode in {"categorical", "gradient"} else None
+        # No colour shape survives a data_table metric, so send none. Probed
+        # live on a throwaway dashboard (PUT then GET back):
+        #
+        #   dynamic (3-step)              -> 200, stored as ``color: null``
+        #   dynamic + apply_to cell/text  -> 400
+        #   dynamic with range percentage -> 200, not persisted
+        #   static                        -> 400
+        #   auto                          -> 200, not persisted
+        #
+        # The two shapes that used to be emitted here (dynamic/auto) were
+        # therefore write-only: they cost payload bytes, showed up as a false
+        # divergence in the round-trip oracle, and never coloured a cell. This
+        # is a real fidelity loss when the source had conditional formatting,
+        # so it is *recorded* rather than silently dropped -- see
+        # :data:`DROPPED_DATATABLE_COLOR_REASON` and :func:`_refused_color_count`.
+        return None
     allowed = _COLOR_TYPES_BY_ROLE.get(role)
     if allowed is not None:
         return mapped if color_type in allowed else None
     # Unknown role: only the universally-safe shapes.
     return mapped if color_type in {"static", "auto"} else None
+
+
+# One unmapped-reason key per ``data_table`` metric whose source colour the
+# API cannot store. It travels the same channel as
+# :data:`_DROPPED_FILTER_REASON` -- ``NativeMappingCounts.reasons`` -- which is
+# this module's existing record for "the dashboard mapped, but something the
+# source expressed did not survive". :func:`upload_warnings_from_reasons` turns
+# it into an operator-facing warning.
+DROPPED_DATATABLE_COLOR_REASON = "dropped_unsupported_datatable_metric_color"
+
+# YAML/visual-IR chart types that build a ``data_table`` API panel.
+_DATATABLE_KINDS = {"datatable", "data_table"}
+
+
+def _refused_color_count(items: Any, role: str) -> int:
+    """How many columns carried a colour this API role cannot store.
+
+    Defined in terms of the two functions that already decide, so the count can
+    never drift from the drop: :func:`_api_color` says the source *had* a colour
+    this emitter could shape, and :func:`_api_color_for_role` refusing it says
+    the target cannot express it. That difference is exactly the semantic loss.
+    """
+    if not isinstance(items, list):
+        return 0
+    return sum(
+        1
+        for item in items
+        if isinstance(item, dict)
+        and _api_color(item.get("color")) is not None
+        and _api_color_for_role(item.get("color"), role) is None
+    )
+
+
+def _chart_semantic_losses(chart_type: str, cfg: dict[str, Any]) -> list[str]:
+    """Reason keys for source detail this chart's API mapping cannot carry.
+
+    One entry per lost thing (not per panel), so the histogram in
+    ``NativeMappingCounts.reasons`` counts occurrences the way the dropped-filter
+    reason already does.
+    """
+    if str(chart_type or "").lower() not in _DATATABLE_KINDS:
+        return []
+    dropped = _refused_color_count(cfg.get("metrics"), "datatable_metric")
+    return [DROPPED_DATATABLE_COLOR_REASON] * dropped
 
 
 def _api_summary(summary: Any) -> dict[str, Any] | None:
@@ -621,7 +688,81 @@ def _infer_y_axis_title(metrics: list[Any]) -> str:
     return ""
 
 
+def _xy_metrics(cfg: dict[str, Any]) -> list[Any]:
+    """Every metric an XY config plots, including per-layer metrics.
+
+    Cross-data-stream XY panels carry their series under ``layers[*].metrics``
+    rather than the top-level ``metrics``, so an axis decision that only reads
+    the top level would misjudge them.
+    """
+    raw = cfg.get("metrics")
+    metrics: list[Any] = list(raw) if isinstance(raw, list) else []
+    layers = cfg.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if isinstance(layer, dict) and isinstance(layer.get("metrics"), list):
+                metrics.extend(layer["metrics"])
+    return metrics
+
+
+# YAML/visual-IR spellings that put a series on the right-hand axis. Kept in
+# sync with the ``axis`` mapping in :func:`_api_column` (role ``xy_y``).
+_RIGHT_AXIS_VALUES = {"right", "y2"}
+
+
+def _has_right_axis_series(cfg: dict[str, Any]) -> bool:
+    """True when at least one series is plotted against the right-hand axis."""
+    return any(
+        isinstance(metric, dict) and str(metric.get("axis") or "") in _RIGHT_AXIS_VALUES
+        for metric in _xy_metrics(cfg)
+    )
+
+
+def _axis_requests_configuration(axis: Any) -> bool:
+    """True when an axis config asks Kibana for something it can render.
+
+    A title with no ``text`` is the one exception: on its own it neither names
+    the axis nor changes a default, so an axis whose *only* content is such a
+    title is inert.
+    """
+    if not isinstance(axis, dict):
+        return False
+    for key, value in axis.items():
+        if key != "title":
+            return True
+        if isinstance(value, dict) and str(value.get("text") or ""):
+            return True
+    return False
+
+
+def _prune_inert_y2(axis: dict[str, Any] | None, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Drop a ``y2`` entry that configures an axis nothing is plotted on.
+
+    Datadog XY widgets declare all three axes with a hidden title
+    (``appearance.y_right_axis: {"title": false}``) whether or not any series
+    uses the right axis. With no right-axis series that ``y2`` block styles
+    an axis Kibana never draws, and Kibana discards it -- measured at 157
+    occurrences across the 13-dashboard Datadog corpus.
+
+    Two guards keep a *real* second axis: a panel that puts a series on the
+    right axis keeps its ``y2`` (hiding that axis's title is then a genuine
+    request), and so does a ``y2`` that carries any configuration of its own
+    (a title text, a scale, a domain, grid/tick/label settings).
+    """
+    if not axis or "y2" not in axis:
+        return axis
+    if _has_right_axis_series(cfg) or _axis_requests_configuration(axis["y2"]):
+        return axis
+    pruned = {name: item for name, item in axis.items() if name != "y2"}
+    return pruned or None
+
+
 def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the XY axis config, with any inert second axis pruned."""
+    return _prune_inert_y2(_xy_axis_from_cfg(cfg), cfg)
+
+
+def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Return the XY axis config, falling back to format-inferred Y title."""
     axis = _api_xy_axis(_cfg_axis_source(cfg))
     if axis and (axis.get("y") or {}).get("title"):
@@ -641,7 +782,9 @@ def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
             if isinstance(m, dict) and m.get("axis") != "right"
         ]
         if len(left) >= 2:
-            hidden: dict[str, Any] = {"title": {"text": "", "visible": False}}
+            # ``visible: false`` alone hides the title; a companion ``text: ""``
+            # names nothing and Kibana does not store it (see _api_axis_title).
+            hidden: dict[str, Any] = {"title": {"visible": False}}
             if axis:
                 merged_hidden = dict(axis)
                 merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
@@ -657,11 +800,20 @@ def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _api_axis_title(title: Any) -> dict[str, Any] | None:
+    """Map an axis title, omitting a ``text`` that says nothing.
+
+    An empty ``text`` is not a title: Kibana stores no ``text`` key for it at
+    all (measured by PUT-then-GET round trip over both corpora -- 15 Grafana
+    panels sent ``axis.y.title.text: ""`` and got it back absent). Emitting one
+    is payload noise that also shows up as a false divergence in any
+    round-trip oracle, so drop it and keep only the ``visible`` request.
+    """
     if not isinstance(title, dict):
         return None
     out: dict[str, Any] = {}
-    if title.get("text") is not None:
-        out["text"] = str(title["text"])
+    text = title.get("text")
+    if text is not None and str(text):
+        out["text"] = str(text)
     if isinstance(title.get("visible"), bool):
         out["visible"] = title["visible"]
     return out or None
@@ -1360,7 +1512,11 @@ def map_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=f"esql chart type '{chart_type}' has no API builder", kind=chart_type)
         config = builder(title, cfg, query)
 
-    return PanelMapping({"grid": grid, "type": "vis", "config": config}, kind=chart_type)
+    return PanelMapping(
+        {"grid": grid, "type": "vis", "config": config},
+        kind=chart_type,
+        losses=_chart_semantic_losses(chart_type, cfg),
+    )
 
 
 def native_dashboard_from_report(dashboard: dict[str, Any]) -> tuple[NativeDashboard, NativeMappingCounts]:
@@ -1384,9 +1540,21 @@ def native_dashboard_from_report(dashboard: dict[str, Any]) -> tuple[NativeDashb
             continue
         result = map_panel(panel)
         counts.record(result.api_panel is not None, result.reason)
+        _record_losses(counts, result)
         if result.api_panel is not None:
             native.items.append(NativePanel.from_api_dict(result.api_panel))
     return native, counts
+
+
+def _record_losses(counts: NativeMappingCounts, result: PanelMapping) -> None:
+    """Fold a mapped panel's semantic losses into the unmapped-reason histogram.
+
+    Deliberately the *same* channel unmapped panels and dropped dashboard
+    filters use: a fidelity gap the target cannot express is reported to the
+    operator, not hidden behind a clean ``mapped`` count.
+    """
+    for loss in result.losses:
+        counts.add_reason(loss)
 
 
 def build_dashboard_payload(dashboard: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int], dict[str, int]]:
@@ -1512,7 +1680,11 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=reason, kind=kind)
         if hide_title:
             esql_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "vis", "config": esql_config}, kind=kind)
+        return PanelMapping(
+            {"grid": grid, "type": "vis", "config": esql_config},
+            kind=kind,
+            losses=_chart_semantic_losses(kind, esql),
+        )
 
     return PanelMapping(None, reason="panel has none of esql/markdown/links/image", kind="")
 
@@ -1642,26 +1814,38 @@ def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _reason_count(unmapped_reasons: dict[str, Any], reason: str) -> int:
+    try:
+        return int(unmapped_reasons.get(reason, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def upload_warnings_from_reasons(unmapped_reasons: Any) -> list[str]:
     """Render user-facing upload warnings from a native mapper's unmapped-reason
     histogram.
 
-    The typed upload silently omits dashboard-level filters it can't express;
-    surfacing that here lets every ``--upload`` caller warn instead of
-    reporting a clean upload while quietly broadening the queried dataset.
+    The typed upload silently omits things it can't express -- dashboard-level
+    filters, and conditional colour on table metrics; surfacing them here lets
+    every ``--upload`` caller warn instead of reporting a clean upload while
+    quietly broadening the queried dataset or losing threshold formatting.
     """
     warnings: list[str] = []
     if not isinstance(unmapped_reasons, dict):
         return warnings
-    raw = unmapped_reasons.get(_DROPPED_FILTER_REASON, 0)
-    try:
-        dropped_filters = int(raw)
-    except (TypeError, ValueError):
-        dropped_filters = 0
+    dropped_filters = _reason_count(unmapped_reasons, _DROPPED_FILTER_REASON)
     if dropped_filters > 0:
         warnings.append(
             f"dropped {dropped_filters} unsupported dashboard filter(s); "
             "affected panels may query a broader dataset than the source"
+        )
+    dropped_colors = _reason_count(unmapped_reasons, DROPPED_DATATABLE_COLOR_REASON)
+    if dropped_colors > 0:
+        warnings.append(
+            f"dropped conditional colour on {dropped_colors} data_table metric "
+            "column(s); Kibana stores no colour for table metrics, so the "
+            "source's threshold formatting is not shown -- restyle those "
+            "columns in Kibana if the colour carried meaning"
         )
     return warnings
 
@@ -1906,6 +2090,7 @@ def _native_dashboard_from_parts(
                     counts.add_reason("dropped_over_section_panel_cap")
                     continue
                 counts.record(result.api_panel is not None, result.reason)
+                _record_losses(counts, result)
                 if result.api_panel is not None:
                     sec_panels.append(NativePanel.from_api_dict(result.api_panel))
             native.items.append(
@@ -1921,6 +2106,7 @@ def _native_dashboard_from_parts(
             continue
         result = map_yaml_panel(panel)
         counts.record(result.api_panel is not None, result.reason)
+        _record_losses(counts, result)
         if result.api_panel is not None:
             native_panel = NativePanel.from_api_dict(result.api_panel)
             native.items.append(native_panel)

@@ -884,7 +884,12 @@ def _build_datatable(title: str, config: dict[str, Any], query: str) -> dict[str
         "table": True,
         "apply_color_to": {"value", "background", "badge"},
     }
-    metrics = _api_columns(config.get("metrics"), summary=True, **table_kwargs)
+    # data_table *metrics* take no colour: every shape the API accepts there is
+    # stored as ``color: null`` (or 400s), so the production mapper stops
+    # emitting one and records the loss instead. Mirrored here to keep the two
+    # mappers byte-identical -- see tests/test_dashboards_api_mapper_parity.py.
+    metric_kwargs = {**table_kwargs, "color": ""}
+    metrics = _api_columns(config.get("metrics"), summary=True, **metric_kwargs)
     rows = _api_columns(config.get("breakdowns"), collapse=True, **table_kwargs) or _api_columns(
         config.get("dimensions"),
         collapse=True,
