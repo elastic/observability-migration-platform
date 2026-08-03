@@ -24,6 +24,7 @@ from .serverless import (
 from .serverless import (
     detect_serverless,
     ensure_migration_data_views,
+    list_data_views,
 )
 from .serverless import (
     list_dashboards as serverless_list_dashboards,
@@ -70,6 +71,75 @@ def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
         if title and view_id and title != view_id:
             lookup[title] = view_id
     return lookup
+
+
+def _data_view_inventory(data_views: list[dict[str, Any]]) -> frozenset[str]:
+    """Every title *and* id in ``data_views``.
+
+    The complement of :func:`_data_view_id_lookup`, which deliberately omits a
+    data view whose title is its own id because rewriting it would be a no-op.
+    A control ``data_view_id`` outside this set names nothing Kibana holds, so
+    leaving it in place is the silent failure worth warning about -- while a
+    value already naming a real data view (by id, or by a title that *is* its
+    id) is a correct fallback and must stay quiet. See
+    ``dashboards_api._resolve_pinned_panel_data_view_ids``.
+    """
+    refs: set[str] = set()
+    for data_view in data_views:
+        for key in ("title", "id"):
+            value = str(data_view.get(key) or "")
+            if value:
+                refs.add(value)
+    return frozenset(refs)
+
+
+def _report_unresolved_data_views(
+    result: Any,
+    label: str,
+    kibana_url: str = "",
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    verify: bool | str = True,
+) -> None:
+    """Warn, per control, about a ``data_view_id`` that stayed a raw pattern.
+
+    ``ensure_migration_data_views`` is supposed to make the lookup complete by
+    construction, so a miss means ensuring failed for that pattern and Kibana
+    will render the control as "An error occurred". The dashboard itself
+    uploaded, so this is a warning -- but a named one, because the symptom is
+    otherwise indistinguishable from a product bug.
+
+    The *ensured* data views are the wrong yardstick for "does this data view
+    exist": a control can legitimately point at one the operator (or an earlier
+    ingest) already created, which this upload had no reason to ensure. So a
+    reported fallback is re-checked against every data view in the space before
+    it is warned about -- and that listing happens only when there is something
+    to re-check, never on the clean path. Listing is best effort: if it fails,
+    the resolver's own verdict stands rather than the warning being dropped.
+    """
+    unresolved = list(getattr(result, "unresolved_data_views", None) or [])
+    if not unresolved:
+        return
+    live: frozenset[str] = frozenset()
+    try:
+        live = _data_view_inventory(
+            list_data_views(kibana_url, api_key=api_key, space_id=space_id, verify=verify)
+        )
+    except Exception:
+        pass
+    unresolved = [item for item in unresolved if item.data_view not in live]
+    # Pruned on the result too, so the JSON upload record cannot carry a
+    # false positive the console decided not to print.
+    result.unresolved_data_views = unresolved
+    for item in unresolved:
+        control = item.control or "(untitled)"
+        print(
+            f"    warning: {label}: control '{control}' points at data view "
+            f"'{item.data_view}', which matches no Kibana data view id or title; "
+            "the control will render an error until that data view exists.",
+            file=sys.stderr,
+        )
 
 
 def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
@@ -158,6 +228,7 @@ class KibanaTargetAdapter(TargetAdapter):
         native_dashboard: Any,
         native_dashboard_stats: dict[str, Any] | None = None,
         artifact_label: str = "",
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Deploy one in-memory ``NativeDashboard`` via the typed Dashboards API.
 
@@ -180,13 +251,32 @@ class KibanaTargetAdapter(TargetAdapter):
                 verify=verify,
                 native_stats=native_dashboard_stats,
                 data_view_ids=data_view_ids,
+                data_view_inventory=_data_view_inventory(data_views),
+                seen_dashboard_ids=seen_dashboard_ids,
             )
         ]
+        _report_unresolved_data_views(
+            results[0],
+            label,
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+            verify=verify,
+        )
         # A "conflict" (409) is reported as a terminal failure so the operator
         # can investigate a cross-space id collision rather than having it
         # silently overwritten.
         if results[0].status == "rejected":
             print(f"    ✗ Dashboards API rejected the payload for {label}.")
+        elif results[0].status == "duplicate_id":
+            # Same discipline as "lossy": the upload that would have looked like
+            # a success is the one that destroys data.
+            print(
+                f"    ✗ {label} resolves to dashboard id "
+                f"'{results[0].dashboard_id}', which another dashboard in this "
+                "upload already wrote; nothing was sent for this one.",
+                file=sys.stderr,
+            )
         elif results[0].status == "lossy":
             # HTTP 200 with panels missing. Say so loudly: this is the
             # failure mode nobody investigates, because everything else
@@ -214,10 +304,14 @@ class KibanaTargetAdapter(TargetAdapter):
             "success": result.status in {"created", "updated"},
             "output": (
                 f"{result.dashboard or '(untitled)'}: {result.status}"
-                # A "lossy" status alone reads like a shrug; the message names
-                # the panels the operator lost, so it travels with it into
-                # ``upload_error`` and the migration report.
-                + (f" — {result.message}" if result.status == "lossy" and result.message else "")
+                # A "lossy"/"duplicate_id" status alone reads like a shrug; the
+                # message names what the operator lost, so it travels with it
+                # into ``upload_error`` and the migration report.
+                + (
+                    f" — {result.message}"
+                    if result.status in {"lossy", "duplicate_id"} and result.message
+                    else ""
+                )
             ),
             "space_id": space_id or target_space,
             "kibana_url": upload_kibana_url,
@@ -229,6 +323,9 @@ class KibanaTargetAdapter(TargetAdapter):
             "panels_sent": result.panels_sent,
             "panels_accepted": result.panels_accepted,
             "dropped_panels": [dropped.to_dict() for dropped in (result.dropped_panels or [])],
+            "unresolved_data_views": [
+                unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
+            ],
         }
 
     def _native_artifact_upload_file(
@@ -242,6 +339,8 @@ class KibanaTargetAdapter(TargetAdapter):
         upload_kibana_url: str,
         target_space: str,
         data_view_ids: dict[str, str] | None = None,
+        data_view_inventory: frozenset[str] = frozenset(),
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Deploy one persisted native review artifact file.
 
@@ -267,6 +366,7 @@ class KibanaTargetAdapter(TargetAdapter):
                 "panels_sent": 0,
                 "panels_accepted": 0,
                 "dropped_panels": [],
+                "unresolved_data_views": [],
             }
         result = dashboards_api.upload_native_artifact(
             artifact,
@@ -275,7 +375,26 @@ class KibanaTargetAdapter(TargetAdapter):
             space_id=space_id,
             verify=verify,
             data_view_ids=data_view_ids,
+            data_view_inventory=data_view_inventory,
+            seen_dashboard_ids=seen_dashboard_ids,
         )
+        _report_unresolved_data_views(
+            result,
+            artifact_path.name,
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+            verify=verify,
+        )
+        if result.status == "duplicate_id":
+            # Two reviewed artifacts resolving to one id would leave Kibana
+            # holding whichever was uploaded last, with both reported OK.
+            print(
+                f"    ✗ {artifact_path.name} resolves to dashboard id "
+                f"'{result.dashboard_id}', which another artifact in this upload "
+                "already wrote; nothing was sent for this one.",
+                file=sys.stderr,
+            )
         return {
             "artifact": artifact_path.name,
             "success": result.status in {"created", "updated"},
@@ -292,6 +411,9 @@ class KibanaTargetAdapter(TargetAdapter):
             "panels_sent": result.panels_sent,
             "panels_accepted": result.panels_accepted,
             "dropped_panels": [dropped.to_dict() for dropped in (result.dropped_panels or [])],
+            "unresolved_data_views": [
+                unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
+            ],
         }
 
     def upload(self, artifact_dir: Path, **kwargs: Any) -> dict[str, Any]:
@@ -329,6 +451,11 @@ class KibanaTargetAdapter(TargetAdapter):
             verify=verify,
         )
         data_view_ids = _data_view_id_lookup(data_views)
+        data_view_inventory = _data_view_inventory(data_views)
+        # One ledger for the whole batch: artifact *stems* are unique, dashboard
+        # ids are the upsert key, and two artifacts reaching one id would leave
+        # Kibana holding only the last while both records said OK.
+        seen_dashboard_ids: set[str] = set()
         records = [
             self._native_artifact_upload_file(
                 artifact_file,
@@ -339,6 +466,8 @@ class KibanaTargetAdapter(TargetAdapter):
                 upload_kibana_url=upload_kibana_url,
                 target_space=target_space,
                 data_view_ids=data_view_ids,
+                data_view_inventory=data_view_inventory,
+                seen_dashboard_ids=seen_dashboard_ids,
             )
             for artifact_file in native_files
         ]
@@ -362,11 +491,15 @@ class KibanaTargetAdapter(TargetAdapter):
         native_dashboard: Any,
         native_dashboard_stats: dict[str, Any] | None = None,
         artifact_label: str = "",
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Deploy one dashboard from the in-memory ``NativeDashboard`` payload.
 
         The migration pipeline holds the typed payload it just built and uploads
         that, passing ``artifact_label`` (the artifact stem) for reporting.
+        ``seen_dashboard_ids`` is the caller's per-run id ledger: a pipeline
+        uploading many dashboards passes one set across the loop so a repeated
+        dashboard id fails instead of overwriting an earlier dashboard.
         """
         if native_dashboard is None:
             raise ValueError("upload_dashboard requires a native_dashboard payload")
@@ -390,6 +523,7 @@ class KibanaTargetAdapter(TargetAdapter):
             native_dashboard=native_dashboard,
             native_dashboard_stats=native_dashboard_stats,
             artifact_label=artifact_label,
+            seen_dashboard_ids=seen_dashboard_ids,
         )
         return {
             "success": record["success"],
@@ -404,6 +538,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "panels_sent": record.get("panels_sent", 0),
             "panels_accepted": record.get("panels_accepted", 0),
             "dropped_panels": record.get("dropped_panels", []),
+            "unresolved_data_views": record.get("unresolved_data_views", []),
         }
 
     def smoke(self, **kwargs: Any) -> dict[str, Any]:

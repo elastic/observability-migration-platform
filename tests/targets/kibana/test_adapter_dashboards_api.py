@@ -259,6 +259,9 @@ class TestNativeArtifactUpload(unittest.TestCase):
                 "panels_sent",
                 "panels_accepted",
                 "dropped_panels",
+                # Controls left pointing at an index pattern no ensured data
+                # view matches; Kibana renders those as "An error occurred".
+                "unresolved_data_views",
             },
         )
 

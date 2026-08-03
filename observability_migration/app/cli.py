@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -187,7 +188,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Requires alert-capable asset selection, --kibana-url, and "
             "--kibana-api-key. Writes alert_rule_upload_results.json (Grafana) "
             "or monitor_rule_upload_results.json (Datadog) to the output "
-            "directory."
+            "directory. If rules were requested but none were created, the run "
+            "exits non-zero and names the reason instead of reporting success."
         ),
     )
     migrate.add_argument(
@@ -1048,9 +1050,54 @@ def _run_migrate(args: Any) -> None:
         sys.exit(1)
 
 
+def _validate_create_alert_rules(args: Any, *, fetch_monitors: bool = False) -> None:
+    """Reject a ``--create-alert-rules`` run that could never create a rule.
+
+    Two things make the request unsatisfiable no matter what happens later, and
+    both are decidable from argv alone: no alert-capable ``--assets`` (the alert
+    pipeline never runs) and no ``--kibana-url`` (there is no target to create
+    rules in). That is argument validation, so it exits 2 up front rather than
+    letting a long dashboard migration run to completion first.
+
+    A missing ``--kibana-api-key`` is deliberately NOT checked here. Whether a
+    write needs a credential is a property of the target's auth policy, not of
+    the command line, so it is reported by the alert pipeline as a runtime
+    capability gap (exit 1, after the artifacts and run summary are written).
+    """
+    if not getattr(args, "create_alert_rules", False):
+        return
+    with warnings.catch_warnings():
+        # The forwarding path below normalizes again and owns the deprecation
+        # warning for --fetch-alerts/--fetch-monitors; validating must not
+        # print it a second time.
+        warnings.simplefilter("ignore", FutureWarning)
+        selection = normalize_requested_assets(
+            assets=getattr(args, "assets", None) or "dashboards",
+            fetch_alerts=getattr(args, "fetch_alerts", False),
+            fetch_monitors=fetch_monitors and getattr(args, "fetch_monitors", False),
+        )
+    if not selection.alerts:
+        print(
+            "ERROR: --create-alert-rules needs an alert-capable asset selection; "
+            f"--assets {selection.label} never runs the alert pipeline. Re-run "
+            "with --assets alerts or --assets all.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if not getattr(args, "kibana_url", ""):
+        print(
+            "ERROR: --create-alert-rules requires --kibana-url; rules are created "
+            "in Kibana and there is no target to create them in.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def _run_grafana_migration(args: Any) -> None:
     """Run the Grafana migration pipeline directly."""
     from observability_migration.adapters.source.grafana.cli import main as grafana_main
+
+    _validate_create_alert_rules(args)
 
     legacy_argv = [
         "--source", args.input_mode,
@@ -1156,6 +1203,8 @@ def _run_grafana_migration(args: Any) -> None:
 def _run_datadog_migration(args: Any) -> None:
     """Run the Datadog migration pipeline directly."""
     from observability_migration.adapters.source.datadog.cli import main as datadog_main
+
+    _validate_create_alert_rules(args, fetch_monitors=True)
 
     legacy_argv = [
         "--source", args.input_mode,

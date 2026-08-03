@@ -525,7 +525,11 @@ Use that doc for:
   emitted ES|QL `WHERE` clause fires on exactly the same values as the Grafana
   source, preserving the exclusive-vs-inclusive range distinction.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes
-  `<output-dir>/alerts/alert_rule_upload_results.json`.
+  `<output-dir>/alerts/alert_rule_upload_results.json`. If it was requested but
+  no rules were created (no `--kibana-api-key`, unreachable alerting preflight)
+  the run exits non-zero and records the reason under `alerts.rule_creation` in
+  `run_summary.json`; a missing `--kibana-url` or non-alert `--assets` is
+  rejected up front with exit `2`.
 - `--rules-file` / `--plugin` extend deterministic translation without editing
   core code.
 - `--preflight`, `--polish-metadata`, and `--review-explanations` remain

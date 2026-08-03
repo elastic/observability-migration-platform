@@ -22,7 +22,11 @@ from observability_migration.core.selection import (
     criteria_from_args,
 )
 from observability_migration.targets.kibana.alerting import (
+    RULE_CREATION_NOT_REQUESTED,
     create_rules_from_payloads,
+    rule_creation_attempted,
+    rule_creation_capability_gap,
+    rule_creation_not_requested,
     run_alerting_preflight,
     validate_rule_payload,
 )
@@ -307,15 +311,24 @@ def create_rules_if_requested(
     output_dir: Path,
     mapping_batch: dict[str, Any],
     payload_preflight: dict[str, Any] | None,
-) -> None:
+) -> dict[str, Any]:
+    """Create the emitted Kibana rules, and report whether that actually happened.
+
+    Returns a ``rule_creation`` status document (see
+    ``targets.kibana.alerting``). A requested creation that was skipped is
+    reported on stderr and carried out to the caller so it can fail the run --
+    it used to be a bare ``print`` with no exit-code consequence, which left an
+    operator who asked for rules and got none looking at a green migration.
+    """
     if not getattr(args, "create_alert_rules", False):
-        return
-    if not getattr(args, "kibana_url", ""):
-        print("    WARNING: --create-alert-rules ignored (requires --kibana-url)")
-        return
-    if not getattr(args, "kibana_api_key", ""):
-        print("    WARNING: --create-alert-rules ignored (requires --kibana-api-key)")
-        return
+        return rule_creation_not_requested()
+    gap = rule_creation_capability_gap(args)
+    if gap is not None:
+        print(f"    ERROR: {gap['headline']}", file=sys.stderr)
+        # A skip artifact, so the output directory says "asked for, not done"
+        # rather than staying silent about it.
+        _write_rule_upload_results(output_dir, gap)
+        return gap
 
     print("\n  Creating Kibana alerting rules (disabled by default)...")
     # --no-draft-alert-rules restricts creation to the fully-automated tier;
@@ -335,9 +348,8 @@ def create_rules_if_requested(
         creatable_tiers=creatable_tiers,
         verify=_verify_from_args(args),
     )
-    rule_upload_path = output_dir / "alert_rule_upload_results.json"
-    with rule_upload_path.open("w", encoding="utf-8") as fh:
-        json.dump(rule_upload, fh, indent=2)
+    outcome = rule_creation_attempted(rule_upload)
+    rule_upload_path = _write_rule_upload_results(output_dir, {**rule_upload, **outcome})
     print(f"    Alert rule upload results: {rule_upload_path}")
     print(
         "    Created: {created}  Failed: {failed}  Skipped: {skipped}".format(
@@ -345,13 +357,22 @@ def create_rules_if_requested(
         ),
     )
     if rule_upload.get("preflight_unreachable"):
-        print("    WARNING: alerting preflight unreachable; no rules were created")
+        print(f"    ERROR: {outcome['headline']}", file=sys.stderr)
     if rule_upload["failed"]:
         for failure in rule_upload["failed"][:5]:
             print(
                 f"      FAILED: {failure['name']} "
                 f"({failure['rule_type_id']}): {failure['error'][:200]}"
             )
+    return outcome
+
+
+def _write_rule_upload_results(output_dir: Path, payload: dict[str, Any]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rule_upload_path = output_dir / "alert_rule_upload_results.json"
+    with rule_upload_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    return rule_upload_path
 
 
 def _build_alert_schema_resolver(args):
@@ -479,7 +500,7 @@ def run_alert_pipeline(
         total_legacy=len(legacy_alert_irs),
         total_unified=len(unified_alert_irs),
     )
-    create_rules_if_requested(
+    rule_creation = create_rules_if_requested(
         args=args,
         output_dir=output_dir,
         mapping_batch=mapping_batch,
@@ -501,6 +522,10 @@ def run_alert_pipeline(
         "by_automation_tier": by_tier,
         "by_kind": by_kind,
     }
+    # Only present when rules were actually asked for, so a run that never used
+    # --create-alert-rules keeps the exact summary shape it had before.
+    if rule_creation["status"] != RULE_CREATION_NOT_REQUESTED:
+        summary["rule_creation"] = rule_creation
     if metrics_target_guidance is not None:
         summary["metrics_target"] = metrics_target_guidance.as_summary()
     if resolver is not None:

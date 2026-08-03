@@ -44,12 +44,14 @@ from observability_migration.core.selection import (
 from observability_migration.core.telemetry_contract import write_schema_report_artifacts
 from observability_migration.core.verification.disposition import validation_failure_self_heals
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
+from observability_migration.targets.kibana.alerting import exit_if_rule_creation_skipped
 from observability_migration.targets.kibana.compile import (
     detect_space_id_from_kibana_url,
     kibana_url_for_space,
     sync_result_queries_to_ir,
 )
 from observability_migration.targets.kibana.dashboards_api import (
+    dashboard_id_disambiguation_note,
     upload_warnings_from_reasons,
 )
 from observability_migration.targets.kibana.native_artifacts import (
@@ -2003,6 +2005,7 @@ def _translate_dashboard_resilient(
     rule_pack: Any,
     resolver: Any,
     output_stem: str | None = None,
+    id_disambiguator: str = "",
 ) -> MigrationResult:
     """Translate one dashboard; on unhandled exception return a stub result with translation_error set."""
     try:
@@ -2013,6 +2016,7 @@ def _translate_dashboard_resilient(
             rule_pack=rule_pack,
             resolver=resolver,
             output_stem=output_stem,
+            id_disambiguator=id_disambiguator,
         )
     except Exception as exc:
         title = dashboard.get("title") or dashboard.get("_source_file") or "unknown"
@@ -2030,12 +2034,21 @@ def _allocate_dashboard_output_stem(
     title: str,
     dashboard_uid: str | None,
     used_stems: set[str],
-) -> str:
-    """Allocate a unique dashboard artifact stem for one Grafana run."""
+) -> tuple[str, str]:
+    """Allocate a unique dashboard artifact stem for one Grafana run.
+
+    Returns ``(stem, id_disambiguator)``. The second value is empty unless the
+    title collided with one already allocated, in which case it is the token
+    that made the stem unique -- and the same token is appended to the Kibana
+    dashboard id (see
+    ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``). Both
+    come from one allocation so the artifact name and the dashboard id agree:
+    ``shared_title_dash-beta`` <-> ``obs-migrate-shared-title-dash-beta``.
+    """
     base = _dashboard_output_stem(title) or "untitled"
     if base not in used_stems:
         used_stems.add(base)
-        return base
+        return base, ""
 
     raw_uid = str(dashboard_uid or "").strip()
     if raw_uid:
@@ -2043,14 +2056,14 @@ def _allocate_dashboard_output_stem(
         uid_candidate = f"{base}_{uid_suffix}"
         if uid_candidate not in used_stems:
             used_stems.add(uid_candidate)
-            return uid_candidate
+            return uid_candidate, uid_suffix
 
     index = 2
     while True:
         candidate = f"{base}_{index}"
         if candidate not in used_stems:
             used_stems.add(candidate)
-            return candidate
+            return candidate, str(index)
         index += 1
 
 
@@ -2111,6 +2124,8 @@ def main(argv: list[str] | None = None):
                 dashboard_summary=None,
                 alert_summary=alert_summary,
             )
+            # After the summary is written, so the operator keeps the artifacts.
+            exit_if_rule_creation_skipped(alert_summary)
         return
 
     rule_pack = _load_configured_rule_pack_or_exit(args)
@@ -2223,7 +2238,7 @@ def main(argv: list[str] | None = None):
     dashboard_outputs = []
     used_dashboard_stems: set[str] = set()
     for dashboard in dashboards:
-        output_stem = _allocate_dashboard_output_stem(
+        output_stem, id_disambiguator = _allocate_dashboard_output_stem(
             title=str(dashboard.get("title") or ""),
             dashboard_uid=str(dashboard.get("uid") or ""),
             used_stems=used_dashboard_stems,
@@ -2248,6 +2263,7 @@ def main(argv: list[str] | None = None):
             rule_pack=dashboard_pack,
             resolver=dashboard_resolver,
             output_stem=output_stem,
+            id_disambiguator=id_disambiguator,
         )
         curated_pack_name = getattr(dashboard_pack, "_curated_pack_name", "")
         if curated_pack_name:
@@ -2256,6 +2272,11 @@ def main(argv: list[str] | None = None):
             results.append(result)
             dashboard_outputs.append((result, None, dashboard))
             continue
+        # The dashboard id no longer matches the plain title slug, so say so:
+        # nothing else in the run output would explain where it went.
+        disambiguation_note = dashboard_id_disambiguation_note(result.dashboard_ir)
+        if disambiguation_note:
+            print(f"  ⚠ {disambiguation_note}")
         if args.polish_metadata:
             polish_summary = apply_metadata_polish(
                 result,
@@ -2494,6 +2515,10 @@ def main(argv: list[str] | None = None):
         upload_space = args.shadow_space or ""
         upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
         target_adapter = KibanaTargetAdapter()
+        # Shared across the loop: a dashboard id reached twice would upsert over
+        # an earlier dashboard and report "updated". See
+        # ``dashboards_api._upload_native_api_payload``.
+        uploaded_dashboard_ids: set[str] = set()
         for result, artifact_stem, _dashboard in dashboard_outputs:
             result.upload_attempted = True
             if artifact_stem is None:
@@ -2514,6 +2539,7 @@ def main(argv: list[str] | None = None):
                 native_dashboard=native_dashboard,
                 native_dashboard_stats=getattr(result, "native_dashboard_stats", None),
                 artifact_label=artifact_stem,
+                seen_dashboard_ids=uploaded_dashboard_ids,
             )
             ok = upload_result["success"]
             output = upload_result["output"]
@@ -2746,6 +2772,11 @@ def main(argv: list[str] | None = None):
             print(f"\nVALIDATION FAILURES ({len(failed_validations)}):")
             for title, err in failed_validations[:20]:
                 print(f"  {title}: {err[:120]}")
+
+    # Last thing in the run: the full report is printed and every artifact is on
+    # disk, but a requested --create-alert-rules that created nothing must not
+    # exit 0.
+    exit_if_rule_creation_skipped(alert_run_summary)
 
 
 __all__ = ["main", "parse_args"]

@@ -4975,6 +4975,37 @@ def _build_metric_color_mapping(panel, minimum=None, maximum=None):
     return color
 
 
+_ASCENDING_SORT_STAGE_RE = re.compile(
+    r"^SORT\s+([A-Za-z_@][\w.@]*)(?:\s+ASC)?$",
+    re.IGNORECASE,
+)
+
+
+def _already_ends_with_ascending_sort(esql, time_field):
+    """True when *esql*'s last pipeline stage already sorts ascending on *time_field*.
+
+    The comparison is on the *effective* clause rather than a byte-exact
+    string, because raw ES|QL supplied by a dashboard author arrives as a
+    single line with arbitrary spacing and casing (a line-based check misses
+    it and emits a second, redundant ``| SORT`` -- see the "Native ESQL
+    Errors" panel in ``multi-pattern-coverage.json``). ES|QL also treats an
+    omitted direction as ``ASC``, so ``SORT time_bucket`` counts.
+
+    A compound sort (``SORT time_bucket ASC, service.name``), a descending
+    sort, a sort on another column, or a sort that is not the final stage are
+    all *different* clauses: they do not match, and the caller still appends
+    the ascending bucket sort it needs.
+    """
+    stages = [stage.strip() for stage in _split_esql_pipeline(esql) if stage.strip()]
+    if len(stages) < 2:
+        return False
+    last_stage = " ".join(stages[-1].lstrip("|").split())
+    match = _ASCENDING_SORT_STAGE_RE.match(last_stage)
+    # Column names are case-sensitive in ES|QL, so only the keyword and the
+    # direction tolerate case variation -- the field must match exactly.
+    return bool(match) and match.group(1) == time_field
+
+
 def _ensure_bucket_sort(esql):
     if not esql or esql.lstrip().startswith("PROMQL "):
         return esql
@@ -4994,11 +5025,9 @@ def _ensure_bucket_sort(esql):
         if keep_fields and time_field not in keep_fields:
             return esql
         break
-    asc_sort = f"| SORT {time_field} ASC"
-    stripped_lines = [line.strip() for line in lines if line.strip()]
-    if stripped_lines and stripped_lines[-1] == asc_sort:
+    if _already_ends_with_ascending_sort(esql, time_field):
         return esql
-    lines.append(asc_sort)
+    lines.append(f"| SORT {time_field} ASC")
     return "\n".join(lines)
 
 
@@ -8808,7 +8837,8 @@ def _translate_panel_group(
 
 
 def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                        llm_endpoint="", llm_model="", llm_api_key="", output_stem=None):
+                        llm_endpoint="", llm_model="", llm_api_key="", output_stem=None,
+                        id_disambiguator=""):
     """Translate one Grafana dashboard into a :class:`MigrationResult`.
 
     Returns the :class:`MigrationResult`. The artifacts the pipeline writes are
@@ -8817,6 +8847,11 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     the kb-dashboard-core dict shape (for example a structural cross-check of
     the native payload) build it in memory with
     ``result.dashboard_ir.to_yaml_dict()``.
+
+    ``id_disambiguator`` comes from the run's artifact-stem allocation and is
+    non-empty only when another dashboard in the run has the same title; it
+    keeps the two dashboards off one Kibana dashboard id (see
+    ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``).
     """
     rule_pack = rule_pack or RulePackConfig()
     title = dashboard.get("title", "Untitled Dashboard")
@@ -9137,6 +9172,9 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
     dashboard_ir.uid = uid
     dashboard_ir.tags = source_tags
+    # Set before `native_dashboard_from_ir`: it is what keeps two same-titled
+    # dashboards off one Kibana dashboard id (the upsert key).
+    dashboard_ir.id_disambiguator = str(id_disambiguator or "")
     # Source lineage is not expressible in the intermediate document shape, so it
     # has to be set here or ir/<stem>.ir.json ships with empty `source_file` and
     # `folder`. Taken off `result` rather than re-derived from the raw dashboard

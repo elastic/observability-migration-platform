@@ -220,6 +220,44 @@ class TestUnifiedCliRouting(unittest.TestCase):
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    def _make_datadog_args(self, **overrides):
+        defaults = dict(
+            input_mode="files",
+            input_dir="infra/datadog/dashboards",
+            output_dir="datadog_migration_output",
+            data_view="metrics-*",
+            field_profile="otel",
+            assets="dashboards",
+            logs_index="",
+            fetch_monitors=False,
+            create_alert_rules=False,
+            validate=False,
+            upload=False,
+            preflight=False,
+            es_url="",
+            es_api_key="",
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            dataset_filter="",
+            logs_dataset_filter="",
+            smoke=False,
+            browser_audit=False,
+            capture_screenshots=False,
+            smoke_output="",
+            smoke_timeout=30,
+            chrome_binary="",
+            select_folder=[],
+            select_tag=[],
+            select_datasource=[],
+            select_team=[],
+            select_updated_after="",
+            select_updated_before="",
+            select_starred=False,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
     @patch("observability_migration.adapters.source.grafana.cli.main")
     def test_run_grafana_migration_forwards_field_profile(self, mock_main):
         args = self._make_grafana_args()
@@ -414,6 +452,8 @@ class TestUnifiedCliRouting(unittest.TestCase):
         args = self._make_grafana_args(
             assets="alerts",
             create_alert_rules=True,
+            # --create-alert-rules is rejected up front without a Kibana target.
+            kibana_url="https://kibana.example",
             alert_uids="rule-uid-1,rule-uid-2",
             alert_folder="",
         )
@@ -432,6 +472,8 @@ class TestUnifiedCliRouting(unittest.TestCase):
         args = self._make_grafana_args(
             assets="alerts",
             create_alert_rules=True,
+            # --create-alert-rules is rejected up front without a Kibana target.
+            kibana_url="https://kibana.example",
             alert_uids="",
             alert_folder="infra-folder-uid",
         )
@@ -466,6 +508,108 @@ class TestUnifiedCliRouting(unittest.TestCase):
         ])
         self.assertEqual(args.alert_uids, "rule-uid-1,rule-uid-2")
         self.assertEqual(args.alert_folder, "infra-folder-uid")
+
+    # --create-alert-rules with no possible target is a malformed invocation,
+    # not a runtime gap: there is no Kibana to create rules in and no asset
+    # selection that would produce any. Reject it before doing the work.
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_create_alert_rules_without_kibana_url_exits_two_for_grafana(self, mock_main):
+        args = self._make_grafana_args(
+            assets="alerts", create_alert_rules=True, kibana_url=""
+        )
+        original_argv = list(sys.argv)
+        stderr = io.StringIO()
+        try:
+            with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(stderr):
+                app_cli._run_grafana_migration(args)
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(ctx.exception.code, 2)
+        error_text = " ".join(stderr.getvalue().split())
+        self.assertIn("--create-alert-rules", error_text)
+        self.assertIn("--kibana-url", error_text)
+        mock_main.assert_not_called()
+
+    @patch("observability_migration.adapters.source.datadog.cli.main")
+    def test_create_alert_rules_without_kibana_url_exits_two_for_datadog(self, mock_main):
+        args = self._make_datadog_args(
+            assets="alerts", create_alert_rules=True, kibana_url=""
+        )
+        original_argv = list(sys.argv)
+        stderr = io.StringIO()
+        try:
+            with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(stderr):
+                app_cli._run_datadog_migration(args)
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(ctx.exception.code, 2)
+        error_text = " ".join(stderr.getvalue().split())
+        self.assertIn("--create-alert-rules", error_text)
+        self.assertIn("--kibana-url", error_text)
+        mock_main.assert_not_called()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_create_alert_rules_without_alert_assets_exits_two(self, mock_main):
+        args = self._make_grafana_args(
+            assets="dashboards",
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+        )
+        original_argv = list(sys.argv)
+        stderr = io.StringIO()
+        try:
+            with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(stderr):
+                app_cli._run_grafana_migration(args)
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(ctx.exception.code, 2)
+        error_text = " ".join(stderr.getvalue().split())
+        self.assertIn("--create-alert-rules", error_text)
+        self.assertIn("--assets", error_text)
+        mock_main.assert_not_called()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_create_alert_rules_with_a_target_runs_the_migration(self, mock_main):
+        args = self._make_grafana_args(
+            assets="alerts",
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+        )
+        original_argv = list(sys.argv)
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr):
+                app_cli._run_grafana_migration(args)
+            self.assertIn("--create-alert-rules", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(stderr.getvalue(), "")
+        mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_no_create_alert_rules_never_validates_a_kibana_target(self, mock_main):
+        # The common path. A false alarm here would be worse than the bug.
+        args = self._make_grafana_args(assets="alerts", create_alert_rules=False, kibana_url="")
+        original_argv = list(sys.argv)
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr):
+                app_cli._run_grafana_migration(args)
+            self.assertNotIn("--create-alert-rules", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(stderr.getvalue(), "")
+        mock_main.assert_called_once_with()
 
     @patch("observability_migration.adapters.source.datadog.cli.main")
     def test_run_datadog_migration_forwards_select_flags(self, mock_main):

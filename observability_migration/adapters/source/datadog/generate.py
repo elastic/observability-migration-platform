@@ -335,6 +335,7 @@ def generate_dashboard_artifacts(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
+    id_disambiguator: str = "",
 ) -> tuple[str, NativeDashboard, dict[str, Any], DashboardIR]:
     """Generate YAML, NativeDashboard, and the semantic DashboardIR.
 
@@ -351,6 +352,11 @@ def generate_dashboard_artifacts(
     Returns ``(yaml_string, native_dashboard, native_stats, dashboard_ir)``
     where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
     ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
+
+    ``id_disambiguator`` comes from the run's artifact-stem allocation and is
+    non-empty only when another dashboard in the run has the same title; it
+    keeps the two dashboards off one Kibana dashboard id (see
+    ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``).
     """
     doc = _build_dashboard_yaml_doc(
         dashboard,
@@ -365,6 +371,9 @@ def generate_dashboard_artifacts(
     dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
     dashboard_ir.uid = str(dashboard.id or "")
     dashboard_ir.title = dashboard.title or dashboard_ir.title
+    # Set before `native_dashboard_from_ir`: it is what keeps two same-titled
+    # dashboards off one Kibana dashboard id (the upsert key).
+    dashboard_ir.id_disambiguator = str(id_disambiguator or "")
     # The YAML document shape carries neither tags nor source lineage, so both
     # have to come off the normalized dashboard: otherwise they are absent from
     # ir/<stem>.ir.json, and because native_dashboard_from_ir reads tags

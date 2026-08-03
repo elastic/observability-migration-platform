@@ -70,6 +70,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -181,10 +182,29 @@ class DroppedPanel:
 
 
 @dataclass
+class UnresolvedDataView:
+    """A control whose ``data_view_id`` upload could not resolve to a real id.
+
+    ``data_view`` is the value left in place (an index pattern such as
+    ``metrics-*.prometheus-*``) and ``control`` names the control carrying it.
+    Kibana renders such a control as "An error occurred", so the fallback is
+    reported rather than taken silently -- ``ensure_migration_data_views`` is
+    meant to make the lookup complete by construction, and a miss means
+    ensuring failed.
+    """
+
+    data_view: str = ""
+    control: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"data_view": self.data_view, "control": self.control}
+
+
+@dataclass
 class UploadResult:
     dashboard: str
     dashboard_id: str = ""
-    # created | updated | conflict | rejected | empty | lossy
+    # created | updated | conflict | rejected | empty | lossy | duplicate_id
     #
     # ``lossy`` is a 2xx upload that Kibana accepted *without* some of the leaf
     # panels that were sent (see :func:`_record_panel_loss`). It is a failure,
@@ -192,6 +212,12 @@ class UploadResult:
     # nobody investigates it. Only ``created``/``updated`` count as success
     # downstream, which makes ``lossy`` fail the upload exit code, the
     # per-dashboard runtime summary, and the manifest's ``uploaded_ok``.
+    #
+    # ``duplicate_id`` follows the same discipline for the other silent partial
+    # write: a second payload in one batch resolving to an id the batch already
+    # uploaded would upsert *over* the first dashboard and report ``"updated"``.
+    # Nothing is sent, and the batch fails, because a loud stop beats a run that
+    # claims two dashboards and leaves one.
     status: str = ""
     mapped: int = 0
     unmapped: int = 0
@@ -203,6 +229,10 @@ class UploadResult:
     panels_sent: int = 0
     panels_accepted: int = 0
     dropped_panels: list[DroppedPanel] = field(default_factory=list)
+    # Controls whose ``data_view_id`` stayed a raw index pattern because the
+    # ensured-data-view lookup did not know it. A warning, not a failure: the
+    # dashboard uploads, that one control renders an error.
+    unresolved_data_views: list[UnresolvedDataView] = field(default_factory=list)
 
     @property
     def dropped_panel_count(self) -> int:
@@ -1628,20 +1658,56 @@ def _stable_dashboard_id(dashboard: dict[str, Any]) -> str:
     return f"obs-migrate-{slug or 'dashboard'}"
 
 
+def _dashboard_id_slug(text: str) -> str:
+    """The id-safe slug of ``text``, using :func:`_stable_dashboard_id`'s rules."""
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+
+
 def _stable_dashboard_id_from_ir(dashboard_ir: DashboardIR) -> str:
     """Deterministic API dashboard id for an IR-sourced dashboard.
 
-    Deliberately identical to what :func:`_stable_dashboard_id` produced when
-    this path still went through ``to_yaml_dict()``. The YAML document shape
-    carries no ``id``/``uid``, so ids have always been the title slug -- and the
-    id is the upsert key. Switching to ``dashboard_ir.uid`` here would change
-    every migrated dashboard's id, orphaning previously uploaded copies and
-    (measured) getting the payload rejected outright. Any change to id
-    derivation is a migration concern in its own right, not a side effect of
-    removing the YAML hop.
+    The base is the title slug :func:`_stable_dashboard_id` has always
+    produced, because the id is the *upsert key*: rederiving it from
+    ``dashboard_ir.uid`` (or from the artifact stem, which sources truncate at
+    their own filename lengths) would change every migrated dashboard's id,
+    orphaning previously uploaded copies and -- measured -- getting the payload
+    rejected outright.
+
+    A title slug alone is not unique, though. Artifact *stems* are allocated to
+    be unique, dashboard ids were not, so two source dashboards sharing a title
+    silently upserted onto one id and Kibana kept only the second -- reported as
+    a routine ``"updated"``. ``dashboard_ir.id_disambiguator`` closes that: it
+    is empty unless the run allocated this dashboard's stem against a title
+    collision, in which case the same token that disambiguated the stem is
+    appended here. Unique titles -- every dashboard in both corpora -- are
+    therefore byte-identical to the pre-collision-handling id by construction,
+    and collisions get distinct ids that match their artifact names.
     """
-    return _stable_dashboard_id(
+    base = _stable_dashboard_id(
         {"name": str(getattr(dashboard_ir, "title", "") or "")}
+    )
+    suffix = _dashboard_id_slug(getattr(dashboard_ir, "id_disambiguator", "") or "")
+    return f"{base}-{suffix}" if suffix else base
+
+
+def dashboard_id_disambiguation_note(dashboard_ir: DashboardIR) -> str:
+    """Operator-visible note when a title collision moved the id off the slug.
+
+    Returns ``""`` for the unique-title case. The plain title slug is named
+    alongside the id actually used, because that slug is what someone looking
+    for the dashboard in Kibana (or in an older manifest) will search for.
+    """
+    if not str(getattr(dashboard_ir, "id_disambiguator", "") or "").strip():
+        return ""
+    title = str(getattr(dashboard_ir, "title", "") or "")
+    plain = _stable_dashboard_id({"name": title})
+    resolved = _stable_dashboard_id_from_ir(dashboard_ir)
+    if resolved == plain:
+        return ""
+    return (
+        f"'{title}' shares its title with another dashboard in this run, so its "
+        f"Kibana dashboard id is disambiguated to '{resolved}' rather than the "
+        f"plain title slug '{plain}'."
     )
 
 
@@ -2679,7 +2745,12 @@ def _put_with_retry(
     return None, last_error or "request failed after retries"
 
 
-def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: dict[str, str] | None) -> None:
+def _resolve_pinned_panel_data_view_ids(
+    payload: dict[str, Any],
+    data_view_ids: dict[str, str] | None,
+    *,
+    data_view_inventory: Iterable[str] | None = None,
+) -> list[UnresolvedDataView]:
     """Rewrite ``pinned_panels[].config.data_view_id`` from title to Kibana id.
 
     ``map_yaml_control`` copies a control's YAML ``data_view``/``data_view_id``
@@ -2688,9 +2759,19 @@ def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: 
     without this rewrite the typed API rejects the control and the whole
     dashboard falls back to legacy import. ``data_view_ids`` maps
     title -> created id, as returned by :func:`ensure_migration_data_views`.
+
+    Returns the controls whose value had to be left as-is *and* names nothing
+    Kibana holds -- the case that renders as "An error occurred" with nothing in
+    the run output pointing at it. Two fallbacks are legitimate and are not
+    reported: a value that is already a real saved-object id, and a data view
+    whose title is its own id (which ``adapter._data_view_id_lookup`` omits,
+    because rewriting it would be a no-op). Telling those apart needs
+    ``data_view_inventory`` -- every title and id Kibana actually has. Callers
+    that supply none have given no basis for the judgement, so nothing is
+    reported.
     """
-    if not data_view_ids:
-        return
+    known = frozenset(str(ref) for ref in (data_view_inventory or ()))
+    unresolved: list[UnresolvedDataView] = []
     for control in payload.get("pinned_panels") or []:
         if not isinstance(control, dict):
             continue
@@ -2698,8 +2779,19 @@ def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: 
         if not isinstance(config, dict):
             continue
         current = config.get("data_view_id")
-        if isinstance(current, str) and current in data_view_ids:
+        if not isinstance(current, str) or not current.strip():
+            continue
+        if data_view_ids and current in data_view_ids:
             config["data_view_id"] = data_view_ids[current]
+            continue
+        if not known or current in known:
+            continue
+        unresolved.append(
+            UnresolvedDataView(
+                data_view=current, control=str(config.get("title") or ""),
+            )
+        )
+    return unresolved
 
 
 def _upload_native_api_payload(
@@ -2716,6 +2808,8 @@ def _upload_native_api_payload(
     reasons: dict[str, int] | None = None,
     dashboard_id: str = "",
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Shared ``PUT /api/dashboards/{id}`` body for a typed API payload.
 
@@ -2724,6 +2818,13 @@ def _upload_native_api_payload(
     resolve down to this: one already-built payload dict plus the mapping
     stats/dashboard id to report, so the two entry points can never diverge
     in how they talk to Kibana.
+
+    ``seen_dashboard_ids`` is the batch's id ledger, shared across every upload
+    in one run. The dashboard id is the upsert key, so a second payload landing
+    on an id the batch already wrote would silently replace that dashboard and
+    report ``"updated"``. Passing the ledger turns that into a ``"duplicate_id"``
+    failure with nothing sent -- the last line of defence behind unique id
+    derivation, not a substitute for it.
     """
     res = UploadResult(
         dashboard=title,
@@ -2731,7 +2832,9 @@ def _upload_native_api_payload(
         unmapped=unmapped,
         unmapped_reasons=dict(reasons or {}),
     )
-    _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
+    res.unresolved_data_views = _resolve_pinned_panel_data_view_ids(
+        payload, data_view_ids, data_view_inventory=data_view_inventory,
+    )
     if not _payload_has_leaf_panels(payload):
         res.status = "empty"
         return res
@@ -2739,6 +2842,18 @@ def _upload_native_api_payload(
     session = _session(api_key, verify=verify)
     base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
     resolved_dashboard_id = dashboard_id or _stable_dashboard_id({"name": title})
+    if seen_dashboard_ids is not None:
+        if resolved_dashboard_id in seen_dashboard_ids:
+            res.status = "duplicate_id"
+            res.dashboard_id = resolved_dashboard_id
+            res.message = (
+                f"another dashboard in this upload already used dashboard id "
+                f"'{resolved_dashboard_id}'; uploading this one would overwrite it. "
+                "Nothing was sent. Give the two dashboards distinct titles, or "
+                "upload them separately."
+            )
+            return res
+        seen_dashboard_ids.add(resolved_dashboard_id)
     response, error = _put_with_retry(
         session, f"{base}/api/dashboards/{resolved_dashboard_id}", payload, timeout=timeout,
     )
@@ -2763,6 +2878,8 @@ def upload_native_dashboard(
     native_stats: dict[str, Any] | None = None,
     dashboard_id: str = "",
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Deploy one pre-built :class:`NativeDashboard` via the typed API.
 
@@ -2770,7 +2887,10 @@ def upload_native_dashboard(
     in-memory IR is the canonical native payload for Grafana/Datadog CLI
     uploads, and nothing is re-read from disk. ``data_view_ids``
     (title -> created id) resolves data-view-backed pinned controls before
-    upload; see :func:`_resolve_pinned_panel_data_view_ids`.
+    upload and ``data_view_inventory`` decides which unresolved values are worth
+    warning about; see :func:`_resolve_pinned_panel_data_view_ids`.
+    ``seen_dashboard_ids`` is the run's shared id ledger (see
+    :func:`_upload_native_api_payload`).
     """
     stats = native_stats if isinstance(native_stats, dict) else {}
     raw_reasons = stats.get("reasons")
@@ -2794,6 +2914,8 @@ def upload_native_dashboard(
         reasons=reasons,
         dashboard_id=dashboard_id or dashboard.dashboard_id,
         data_view_ids=data_view_ids,
+        data_view_inventory=data_view_inventory,
+        seen_dashboard_ids=seen_dashboard_ids,
     )
 
 
@@ -2844,6 +2966,8 @@ def upload_native_artifact(
     verify: bool | str = True,
     timeout: int = 60,
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Deploy one persisted native review artifact envelope via the typed API.
 
@@ -2895,6 +3019,8 @@ def upload_native_artifact(
         reasons=reasons,
         dashboard_id=dashboard_id,
         data_view_ids=data_view_ids,
+        data_view_inventory=data_view_inventory,
+        seen_dashboard_ids=seen_dashboard_ids,
     )
 
 
@@ -2917,11 +3043,13 @@ def delete_dashboard(
 __all__ = [
     "DroppedPanel",
     "PanelMapping",
+    "UnresolvedDataView",
     "UploadResult",
     "build_dashboard_payload",
     "build_dashboard_payload_from_ir",
     "build_dashboard_payload_from_yaml",
     "build_payload_from_yaml",
+    "dashboard_id_disambiguation_note",
     "delete_dashboard",
     "iter_payload_leaf_panels",
     "map_panel",

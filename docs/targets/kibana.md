@@ -110,6 +110,43 @@ a detected mismatch — to attach Kibana's own `warnings[].message` to each drop
 panel. `lossy` is a failure (it never counts as `uploaded_ok`) and, like `conflict`,
 is terminal. See `docs/command-contract.md` for the operator-facing contract.
 
+#### Dashboard ids and title collisions
+
+`PUT /api/dashboards/{id}` is an *upsert*, so the dashboard id is what decides
+whether an upload creates a dashboard or replaces one. The id is the slug of the
+dashboard title (`obs-migrate-<title-slug>`), which keeps re-migrating the same
+dashboard idempotent, and which is why the derivation is not changed lightly:
+every already-uploaded dashboard is addressed by it.
+
+A title slug alone is not unique. Two source dashboards with the same title
+resolve to one id, so the second upload replaces the first and reports a routine
+`updated`. `DashboardIR.id_disambiguator` closes that: when a run allocates a
+dashboard's artifact stem against a title already taken, the token that made the
+*stem* unique is also appended to the dashboard id, so artifact
+`shared_title_dash-beta` carries id `obs-migrate-shared-title-dash-beta`. The
+token is empty for a unique title, so unique-titled dashboards keep exactly the
+id they have always had. Every disambiguation is printed in the migrate output,
+naming both the id used and the plain title slug it is no longer.
+
+Behind that, the upload keeps a per-run ledger of the ids it has written. A
+second payload resolving to an id the run already uploaded is **not** sent: it is
+reported with status `duplicate_id`, which is a failure on the same terms as
+`lossy` (never `uploaded_ok`, fails the exit code). A loud stop is preferable to
+a run that claims two dashboards and leaves one.
+
+#### Control data views
+
+A control's `data_view_id` starts life as an index pattern (`metrics-*`), which
+upload rewrites to the saved-object id Kibana assigned that pattern. Ensuring the
+patterns the payload references is what makes that lookup complete; when a value
+still cannot be resolved, the raw pattern is left in place and Kibana renders the
+control as "An error occurred". Those controls are reported per control on
+`UploadResult.unresolved_data_views` (and in the upload record), and warned about
+by name. Two fallbacks are correct and stay quiet: a value that is already a real
+saved-object id, and a data view whose title is its own id. Before warning, the
+adapter re-checks against every data view in the space, so a data view the
+operator created but this upload had no reason to ensure is not reported.
+
 In short: `DashboardIR` is the source of truth, `native/*.native.json` is the
 artifact, and the typed Dashboards API is the only deployment contract. The
 YAML, compile, and saved-object import surfaces no longer exist.
@@ -233,7 +270,7 @@ Three entry points create Kibana alerting rules via `POST /api/alerting/rule`:
 
 | Entry point | When to use | Behavior |
 |---|---|---|
-| `obs-migrate migrate --assets alerts --create-alert-rules ...` or `obs-migrate migrate --assets all --create-alert-rules ...` (also via the dedicated Grafana/Datadog source CLIs) | Canonical production path. Use `--assets alerts` for rules-only runs or `--assets all` when the same command should also migrate dashboards. | Both fully-automated and draft (review-required) translations are created **disabled** and tagged `obs-migration`; every created rule that is not positively fully-automated (draft today, plus any future review-required tier) additionally carries `obs-migration-review` so a successful translation always lands an inspectable rule rather than being silently skipped. Pass `--no-draft-alert-rules` to opt out of draft creation and create only fully-automated rules. Rules are skipped only when no faithful rule can be created — `manual_required` translations and payloads missing a `rule_type_id` — or when the alerting preflight is unreachable (in which case nothing is created). An `alert_rule_upload_results.json` / `monitor_rule_upload_results.json` summary is written to the output dir. Rules persist until you review and enable/delete them. |
+| `obs-migrate migrate --assets alerts --create-alert-rules ...` or `obs-migrate migrate --assets all --create-alert-rules ...` (also via the dedicated Grafana/Datadog source CLIs) | Canonical production path. Use `--assets alerts` for rules-only runs or `--assets all` when the same command should also migrate dashboards. | Both fully-automated and draft (review-required) translations are created **disabled** and tagged `obs-migration`; every created rule that is not positively fully-automated (draft today, plus any future review-required tier) additionally carries `obs-migration-review` so a successful translation always lands an inspectable rule rather than being silently skipped. Pass `--no-draft-alert-rules` to opt out of draft creation and create only fully-automated rules. Rules are skipped only when no faithful rule can be created — `manual_required` translations and payloads missing a `rule_type_id`. An `alert_rule_upload_results.json` / `monitor_rule_upload_results.json` summary is written to the output dir. Rules persist until you review and enable/delete them. If creation was requested but never happened at all — no `--kibana-api-key`, or an unreachable alerting preflight — the run **exits non-zero** and records the reason under `alerts.rule_creation` in `run_summary.json`, so asking for rules and getting none can no longer look like a clean run. A missing `--kibana-url` or a non-alert `--assets` is rejected up front with exit `2`. |
 | Legacy `--fetch-alerts` / `--fetch-monitors` compatibility aliases | Deprecated compatibility guidance for older scripts. Using the alias always emits a deprecation warning; if the requested asset selection is `dashboards`, including explicit `--assets dashboards`, runtime normalization upgrades the run to `--assets all`. | After normalization, the alias follows the same alert-rule creation path as the matching `--assets alerts` or `--assets all` run. |
 | `scripts/verify_alert_rule_uploads.py` | Destructive round-trip verifier for test harnesses and CI. | Creates rules with a timestamped marker tag and **deletes them on exit** unless `--keep-rules` is passed. Useful to prove the emitted payloads would succeed without persisting anything. |
 

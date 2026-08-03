@@ -67,8 +67,8 @@ by `docs/dashboards/schema.json` (`additionalProperties: false`), so
 `minimum_kibana_version`, `settings`, `panels`, `filters` and `controls`. Every
 other `DashboardIR` field -- `uid`, `folder`, `tags`, `source_file`, `metadata`,
 `source_extension`, `alerts`, `annotations`, `links`, `transforms`, `version`,
-`source_adapter` -- has to be carried across the rebuild explicitly, or it
-reverts to its dataclass default. `native_dashboard_from_ir` reads dashboard
+`source_adapter`, `id_disambiguator` -- has to be carried across the rebuild
+explicitly, or it reverts to its dataclass default. `native_dashboard_from_ir` reads dashboard
 `tags` straight off the IR precisely because the dict shape cannot express them,
 so dropping them on the rebuild uploaded the dashboard to Kibana with its tags
 stripped. `targets/kibana/compile.py` owns the classification
@@ -177,6 +177,15 @@ readers consume. It deliberately does not rehydrate the referenced asset
 collections (`alerts`/`annotations`/`links`/`transforms`) or a panel's
 embedded `QueryIR`: no artifact reader consumes them, and they are exported
 through `to_dict()` rather than through this path.
+
+Dashboard identity includes `id_disambiguator`, which is part of how the Kibana
+dashboard id is derived. It is empty for the overwhelmingly common case of a
+title that is unique within a run; when two source dashboards share a title, the
+run allocates their artifact stems apart and records the same token here, so the
+two do not upsert onto one `obs-migrate-<title-slug>` id (the id is the upsert
+key -- see `docs/targets/kibana.md`). Because the token and the artifact stem
+come from one allocation, artifact `shared_title_dash-beta` and dashboard id
+`obs-migrate-shared-title-dash-beta` always agree.
 
 Prefer `ir/` for semantic content (queries, titles, controls, filters) and
 `native/` for the typed API shape (`payload.panels[].grid`) and `mapping.*`

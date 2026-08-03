@@ -4893,14 +4893,16 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         used_stems: set[str] = set()
         first = datadog_cli._allocate_artifact_stem("Test", "dash-001", used_stems)
         second = datadog_cli._allocate_artifact_stem("test", "dash-002", used_stems)
-        self.assertEqual(first, "test")
-        self.assertEqual(second, "test_dash-002")
-        self.assertNotEqual(first, second)
+        # (stem, id_disambiguator): the token that made the stem unique also
+        # keeps the two dashboards off one Kibana dashboard id.
+        self.assertEqual(first, ("test", ""))
+        self.assertEqual(second, ("test_dash-002", "dash-002"))
+        self.assertNotEqual(first[0], second[0])
 
     def test_allocate_artifact_stem_uses_numeric_suffix_without_id(self):
         used_stems: set[str] = {"test"}
         stem = datadog_cli._allocate_artifact_stem("Test", None, used_stems)
-        self.assertEqual(stem, "test_2")
+        self.assertEqual(stem, ("test_2", "2"))
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
     def test_upload_all_dashboards_uploads_generated_native_dashboard(self, mock_upload_dashboard):

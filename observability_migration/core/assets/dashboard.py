@@ -32,6 +32,16 @@ class DashboardIR:
     folder: str = ""
     tags: list[str] = field(default_factory=list)
 
+    # Extra token appended to the title-slug Kibana dashboard id when another
+    # dashboard in the same run carries the same title. Empty for the common
+    # unique-title case, which is what keeps every already-uploaded dashboard's
+    # id byte-identical -- the id is the upsert key, so changing it orphans the
+    # uploaded copy (see
+    # ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``).
+    # Allocated together with the artifact stem so the two agree: artifact
+    # ``shared_title_dash-beta`` carries id ``obs-migrate-shared-title-dash-beta``.
+    id_disambiguator: str = ""
+
     description: str = ""
     filters: list[dict[str, Any]] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +90,10 @@ class DashboardIR:
             source_file=str(raw.get("source_file") or ""),
             folder=str(raw.get("folder") or ""),
             tags=[str(tag) for tag in (raw.get("tags") or [])],
+            # Part of dashboard identity: without it a re-upload from the
+            # persisted IR would resolve a disambiguated dashboard back to the
+            # plain title slug and overwrite its same-titled sibling.
+            id_disambiguator=str(raw.get("id_disambiguator") or ""),
             description=str(raw.get("description") or ""),
             filters=[item for item in (raw.get("filters") or []) if isinstance(item, dict)],
             settings=dict(settings) if isinstance(settings, dict) else {},

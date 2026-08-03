@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import copy
 import importlib
+import io
 import json
 import math
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -4250,6 +4252,168 @@ class TestDatadogAlertPipeline(unittest.TestCase):
             frozenset({"automated"}),
         )
 
+    def test_create_rules_reports_missing_api_key_as_a_skip(self):
+        # An operator who asked for rules and got none must not see a green run:
+        # the skip is a status the caller can fail on, not a bare print.
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="",
+            space_id="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+        ) as mock_create, redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+            skip_record = Path(tmpdir) / "monitor_rule_upload_results.json"
+            skip_payload = json.loads(skip_record.read_text(encoding="utf-8"))
+
+        mock_create.assert_not_called()
+        self.assertTrue(status["requested"])
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "missing_kibana_api_key")
+        self.assertIn("--kibana-api-key", status["message"])
+        self.assertIn("--kibana-api-key", stderr.getvalue())
+        self.assertEqual(skip_payload["status"], "skipped")
+
+    def test_create_rules_reports_missing_kibana_url_as_a_skip(self):
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="",
+            kibana_api_key="secret",
+            space_id="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+        ) as mock_create, redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_not_called()
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "missing_kibana_url")
+        self.assertIn("--kibana-url", stderr.getvalue())
+
+    def test_create_rules_reports_unreachable_preflight_as_a_skip(self):
+        # Nothing was created because the target could not be reached. Same
+        # outcome as a missing credential, so it gets the same loud status.
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 3},
+            "failed": [],
+            "preflight_unreachable": True,
+        }
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "preflight_unreachable")
+        self.assertIn("preflight", stderr.getvalue())
+
+    def test_create_rules_reports_a_successful_creation_as_attempted(self):
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 2, "failed": 0, "skipped": 1},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.datadog.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertEqual(status["status"], "attempted")
+        self.assertEqual(status["reason"], "")
+        self.assertEqual(status["summary"], {"created": 2, "failed": 0, "skipped": 1})
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_create_rules_stays_silent_when_not_requested(self):
+        # The common path. A false alarm here would be worse than the bug.
+        from observability_migration.adapters.source.datadog import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=False,
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, redirect_stdout(stdout), redirect_stderr(
+            stderr
+        ):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertFalse(status["requested"])
+        self.assertEqual(status["status"], "not_requested")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
 
 class TestGrafanaAlertPipeline(unittest.TestCase):
     def test_create_rules_opts_out_of_draft_tier(self):
@@ -4321,6 +4485,207 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
 
         mock_create.assert_called_once()
         self.assertIsNone(mock_create.call_args.kwargs.get("creatable_tiers"))
+
+    def test_create_rules_reports_missing_api_key_as_a_skip(self):
+        # An operator who asked for rules and got none must not see a green run:
+        # the skip is a status the caller can fail on, not a bare print.
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+        ) as mock_create, redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+            skip_record = Path(tmpdir) / "alert_rule_upload_results.json"
+            skip_payload = json.loads(skip_record.read_text(encoding="utf-8"))
+
+        mock_create.assert_not_called()
+        self.assertTrue(status["requested"])
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "missing_kibana_api_key")
+        self.assertIn("--kibana-api-key", status["message"])
+        self.assertIn("--kibana-api-key", stderr.getvalue())
+        self.assertEqual(skip_payload["status"], "skipped")
+
+    def test_create_rules_reports_missing_kibana_url_as_a_skip(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="",
+            kibana_api_key="secret",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+        ) as mock_create, redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        mock_create.assert_not_called()
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "missing_kibana_url")
+        self.assertIn("--kibana-url", stderr.getvalue())
+
+    def test_create_rules_reports_unreachable_preflight_as_a_skip(self):
+        # Nothing was created because the target could not be reached. Same
+        # outcome as a missing credential, so it gets the same loud status.
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 0, "failed": 0, "skipped": 3},
+            "failed": [],
+            "preflight_unreachable": True,
+        }
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertEqual(status["status"], "skipped")
+        self.assertEqual(status["reason"], "preflight_unreachable")
+        self.assertIn("preflight", stderr.getvalue())
+
+    def test_create_rules_reports_a_successful_creation_as_attempted(self):
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=True,
+            kibana_url="https://kibana.example",
+            kibana_api_key="secret",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+        upload_result = {
+            "summary": {"created": 2, "failed": 0, "skipped": 1},
+            "failed": [],
+            "preflight_unreachable": False,
+        }
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "observability_migration.adapters.source.grafana.alert_pipeline.create_rules_from_payloads",
+            return_value=upload_result,
+        ), redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertEqual(status["status"], "attempted")
+        self.assertEqual(status["reason"], "")
+        self.assertEqual(status["summary"], {"created": 2, "failed": 0, "skipped": 1})
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_create_rules_stays_silent_when_not_requested(self):
+        # The common path. A false alarm here would be worse than the bug.
+        from observability_migration.adapters.source.grafana import alert_pipeline
+
+        args = SimpleNamespace(
+            create_alert_rules=False,
+            kibana_url="",
+            kibana_api_key="",
+            space_id="",
+            shadow_space="",
+            ca_cert="",
+            insecure=False,
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir, redirect_stdout(stdout), redirect_stderr(
+            stderr
+        ):
+            status = alert_pipeline.create_rules_if_requested(
+                args=args,
+                output_dir=Path(tmpdir),
+                mapping_batch={"results": []},
+                payload_preflight={},
+            )
+
+        self.assertFalse(status["requested"])
+        self.assertEqual(status["status"], "not_requested")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_run_alert_pipeline_carries_rule_creation_status_into_its_summary(self):
+        # The banner scrolls past mid-run and CI only keeps the artifacts, so
+        # the skip has to ride into run_summary.json alongside the exit code.
+        from observability_migration.adapters.source.grafana.alert_pipeline import (
+            run_alert_pipeline,
+        )
+
+        args = SimpleNamespace(
+            source="files",
+            input_dir="examples/alerting/grafana",
+            data_view="metrics-*",
+            es_url="",
+            es_api_key="",
+            kibana_url="https://kibana.example",
+            kibana_api_key="",
+            space_id="",
+            shadow_space="",
+            create_alert_rules=True,
+            preflight=False,
+            alert_uids="",
+            alert_folder="",
+            ca_cert="",
+            insecure=False,
+            field_profile="otel",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, redirect_stdout(
+            io.StringIO()
+        ), redirect_stderr(io.StringIO()):
+            summary = run_alert_pipeline(args, output_dir=Path(tmpdir) / "alerts")
+
+        self.assertEqual(summary["rule_creation"]["status"], "skipped")
+        self.assertEqual(summary["rule_creation"]["reason"], "missing_kibana_api_key")
 
     def test_run_alert_pipeline_writes_alert_artifacts_to_output_dir(self):
         from observability_migration.adapters.source.grafana.alert_pipeline import (
@@ -4526,6 +4891,82 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
 # =====================================================================
 # Kibana alerting client tests
 # =====================================================================
+
+
+class TestRuleCreationExitCode(unittest.TestCase):
+    """``--create-alert-rules`` requested but not performed fails the run.
+
+    Mirrors the ``lossy`` upload discipline: a requested action that silently
+    did not happen is worse than a loud failure, so it fails the exit code
+    instead of scrolling past as a warning.
+    """
+
+    def test_skipped_rule_creation_exits_nonzero_and_names_the_reason(self):
+        from observability_migration.targets.kibana.alerting import (
+            exit_if_rule_creation_skipped,
+        )
+
+        alert_summary = {
+            "total": 27,
+            "rule_creation": {
+                "requested": True,
+                "status": "skipped",
+                "reason": "missing_kibana_api_key",
+                "message": "--create-alert-rules needs --kibana-api-key; no rules were created.",
+            },
+        }
+
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(io.StringIO()), redirect_stderr(
+            stderr
+        ):
+            exit_if_rule_creation_skipped(alert_summary)
+
+        self.assertEqual(ctx.exception.code, 1)
+        error_text = " ".join(stderr.getvalue().split())
+        self.assertIn("--kibana-api-key", error_text)
+        self.assertIn("no rules were created", error_text)
+
+    def test_attempted_rule_creation_exits_zero_and_stays_silent(self):
+        from observability_migration.targets.kibana.alerting import (
+            exit_if_rule_creation_skipped,
+        )
+
+        alert_summary = {
+            "rule_creation": {
+                "requested": True,
+                "status": "attempted",
+                "reason": "",
+                "message": "",
+                "summary": {"created": 4, "failed": 0, "skipped": 2},
+            },
+        }
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_if_rule_creation_skipped(alert_summary)
+
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_unrequested_rule_creation_exits_zero_and_stays_silent(self):
+        # The common path: no --create-alert-rules, no noise, no failure.
+        from observability_migration.targets.kibana.alerting import (
+            exit_if_rule_creation_skipped,
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_if_rule_creation_skipped(
+                {"rule_creation": {"requested": False, "status": "not_requested"}}
+            )
+            exit_if_rule_creation_skipped({"total": 27})
+            exit_if_rule_creation_skipped(None)
+
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
 
 
 class TestKibanaAlertingPreflight(unittest.TestCase):
@@ -5289,7 +5730,9 @@ class TestUnifiedCliFetchAlertsFlag(unittest.TestCase):
                         upload=False,
                         es_url="",
                         es_api_key="",
-                        kibana_url="",
+                        # --create-alert-rules is rejected up front without a
+                        # Kibana target to create the rules in.
+                        kibana_url="https://kibana.example",
                         kibana_api_key="",
                         space_id="",
                     ),
@@ -5332,7 +5775,9 @@ class TestUnifiedCliFetchAlertsFlag(unittest.TestCase):
                         logs_dataset_filter="",
                         es_url="",
                         es_api_key="",
-                        kibana_url="",
+                        # --create-alert-rules is rejected up front without a
+                        # Kibana target to create the rules in.
+                        kibana_url="https://kibana.example",
                         kibana_api_key="",
                         space_id="",
                         fetch_alerts=True,

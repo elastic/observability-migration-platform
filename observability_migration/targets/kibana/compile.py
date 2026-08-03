@@ -362,6 +362,10 @@ IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD: frozenset[str] = frozenset(
         "source_file",
         "folder",
         "tags",
+        # Part of dashboard identity. Losing it here would rebuild the native
+        # payload under the plain title slug, and the rebuilt dashboard would
+        # upsert over its same-titled sibling on upload.
+        "id_disambiguator",
         "alerts",
         "annotations",
         "links",

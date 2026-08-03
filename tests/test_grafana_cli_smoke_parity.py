@@ -1248,6 +1248,9 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             verify=True,
             native_dashboard=translated_results[0].native_dashboard,
             native_dashboard_stats=translated_results[0].native_dashboard_stats,
+            # The run's shared dashboard-id ledger: a second dashboard landing on
+            # an id already uploaded fails instead of overwriting it.
+            seen_dashboard_ids=set(),
         )
 
 

@@ -54,7 +54,11 @@ from observability_migration.core.verification.disposition import (
     missing_target_field_warning,
     validation_failure_self_heals,
 )
-from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
+from observability_migration.targets.kibana.alerting import exit_if_rule_creation_skipped
+from observability_migration.targets.kibana.dashboards_api import (
+    dashboard_id_disambiguation_note,
+    upload_warnings_from_reasons,
+)
 from observability_migration.targets.kibana.native_artifacts import (
     write_ir_artifact,
     write_native_artifact,
@@ -194,6 +198,9 @@ def main(argv: list[str] | None = None) -> None:
         dashboard_summary=dashboard_summary,
         alert_summary=alert_summary,
     )
+    # After the summary is written, so the operator keeps the artifacts: a
+    # requested --create-alert-rules that created nothing must not exit 0.
+    exit_if_rule_creation_skipped(alert_summary)
 
 
 def _clear_dashboard_artifacts(
@@ -340,6 +347,15 @@ def _run_dashboard_pipeline(
                     panel_results.append(_translate_widget(child, field_map, args))
 
         dashboard_result.panel_results = panel_results
+        # Allocated before the artifacts are built, not after: the collision
+        # token that keeps two same-titled dashboards on separate artifact stems
+        # is the same token that keeps them off one Kibana dashboard id, and the
+        # native payload carries that id.
+        dashboard_result.artifact_stem, id_disambiguator = _allocate_artifact_stem(
+            title=dashboard.title,
+            dashboard_id=dashboard.id,
+            used_stems=used_artifact_stems,
+        )
         # ``dashboard_yaml`` stays in memory: it is the derived kb-dashboard
         # document that the structural equivalence guards cross-check the native
         # payload against. The run's artifacts are native/ + ir/; no YAML is
@@ -352,16 +368,16 @@ def _run_dashboard_pipeline(
             logs_dataset_filter=field_map.logs_dataset_filter,
             logs_index=field_map.logs_index,
             field_map=field_map,
+            id_disambiguator=id_disambiguator,
         )
         dashboard_result.dashboard_ir = dashboard_ir
         dashboard_result.native_dashboard = native_dashboard
         dashboard_result.native_dashboard_stats = native_stats
-
-        dashboard_result.artifact_stem = _allocate_artifact_stem(
-            title=dashboard.title,
-            dashboard_id=dashboard.id,
-            used_stems=used_artifact_stems,
-        )
+        # The dashboard id no longer matches the plain title slug, so say so:
+        # nothing else in the run output would explain where it went.
+        disambiguation_note = dashboard_id_disambiguation_note(dashboard_ir)
+        if disambiguation_note:
+            print(f"    WARNING: {disambiguation_note}")
 
         dashboard_result.recompute_counts()
         all_results.append(dashboard_result)
@@ -1165,6 +1181,10 @@ def _upload_all_dashboards(
     upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
 
     print(f"\n  Uploading dashboards to {upload_kibana_url}")
+    # Shared across the loop: a dashboard id reached twice would upsert over an
+    # earlier dashboard and report "updated". See
+    # ``dashboards_api._upload_native_api_payload``.
+    uploaded_dashboard_ids: set[str] = set()
     for dr in results:
         dr.upload_attempted = True
         stem = dr.artifact_stem or (dr.dashboard_title or dr.dashboard_id or "untitled")
@@ -1182,6 +1202,7 @@ def _upload_all_dashboards(
             native_dashboard=dr.native_dashboard,
             native_dashboard_stats=dr.native_dashboard_stats,
             artifact_label=dr.artifact_stem,
+            seen_dashboard_ids=uploaded_dashboard_ids,
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
@@ -1421,31 +1442,39 @@ def _allocate_artifact_stem(
     title: str,
     dashboard_id: str | None,
     used_stems: set[str],
-) -> str:
+) -> tuple[str, str]:
     """Allocate a unique artifact filename stem to avoid collisions.
 
     The stem names every artifact for one dashboard
     (``native/<stem>.native.json``, ``ir/<stem>.ir.json``).
+
+    Returns ``(stem, id_disambiguator)``. The second value is empty unless the
+    title collided with one already allocated, in which case it is the token
+    that made the stem unique -- and the same token is appended to the Kibana
+    dashboard id (see
+    ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``). Both
+    come from one allocation so the artifact name and the dashboard id agree:
+    ``shared_title_dash-beta`` <-> ``obs-migrate-shared-title-dash-beta``.
     """
     base = _safe_filename(title)
     if base not in used_stems:
         used_stems.add(base)
-        return base
+        return base, ""
 
     raw_dashboard_id = str(dashboard_id or "").strip()
     if raw_dashboard_id:
-        id_suffix = _safe_filename(raw_dashboard_id)
-        id_candidate = f"{base}_{id_suffix[:24]}"
+        id_suffix = _safe_filename(raw_dashboard_id)[:24]
+        id_candidate = f"{base}_{id_suffix}"
         if id_candidate not in used_stems:
             used_stems.add(id_candidate)
-            return id_candidate
+            return id_candidate, id_suffix
 
     index = 2
     while True:
         candidate = f"{base}_{index}"
         if candidate not in used_stems:
             used_stems.add(candidate)
-            return candidate
+            return candidate, str(index)
         index += 1
 
 

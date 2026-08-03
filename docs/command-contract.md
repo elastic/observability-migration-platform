@@ -254,7 +254,7 @@ Datadog.
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
 | `--validate` | Grafana, Datadog | Validate emitted ES\|QL queries against Elasticsearch after translation | Requires `--es-url`. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
-| `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). |
+| `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). A requested creation that does not happen **fails the run** rather than warning and exiting `0` — see [Creating Kibana alert rules from a single command](#creating-kibana-alert-rules-from-a-single-command) for the exit codes. |
 | `--no-draft-alert-rules` | Grafana, Datadog | With `--create-alert-rules`, skip draft rules and create only fully-automated translations | Draft rules are created by default. Use this to restrict creation to translations the engine is confident about. |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
@@ -931,6 +931,26 @@ and tagged `obs-migration`.
 - Grafana writes `<output-dir>/alerts/alert_rule_upload_results.json`
 - Datadog writes `<output-dir>/alerts/monitor_rule_upload_results.json`
 
+**A requested rule creation that does not happen fails the run.** Asking for
+rules and getting none used to print a warning and still exit `0`, which is the
+one failure nobody investigates because the rest of the run looks green.
+
+| Situation | Exit code | When it is reported |
+| --- | --- | --- |
+| `--create-alert-rules` without an alert-capable `--assets` | `2` | Up front, before any migration work: `--assets dashboards` never runs the alert pipeline, so the request can never be satisfied. |
+| `--create-alert-rules` without `--kibana-url` | `2` | Up front: there is no Kibana target to create rules in. |
+| `--create-alert-rules` without `--kibana-api-key` | `1` | After the alert artifacts and run summary are written, so the translated payloads are still usable. |
+| `--create-alert-rules` with an unreachable alerting preflight | `1` | Same — nothing was created, so the run does not report success. |
+| `--create-alert-rules` with rules actually created | `0` | — |
+| No `--create-alert-rules` | `0` | Never reported; the flag is opt-in and silent when unused. |
+
+A skip is recorded in the rule-upload artifact and in
+`<output-dir>/run_summary.json` under `alerts.rule_creation` (`status`,
+`reason`, `message`), so CI keeps the evidence after the console scrolls. A run
+whose translations are all `manual_required` legitimately creates zero rules and
+still exits `0` — the check fires on *creation never being attempted*, not on a
+zero count.
+
 Use `obs-migrate audit-rules` (or the Kibana UI) to review the rules before
 enabling them. `obs-migrate verify-alert-rules` is the self-cleaning round-trip
 verifier (it creates rules with a temporary marker tag and cleans them up on
@@ -1154,6 +1174,38 @@ sections). When fewer came back, the upload is reported with status `lossy`:
   `migration_report.json` → `summary.upload_panels_dropped` plus
   `runtime_summary.upload.dropped_panels` per dashboard. The `obs-migrate upload`
   summary additionally reports `panels_dropped` across the batch.
+
+**Same-titled dashboards (`duplicate_id`):** `PUT /api/dashboards/{id}` is an
+upsert, and the dashboard id is the title slug (`obs-migrate-<title-slug>`). Two
+source dashboards sharing a title would therefore land on one id, with the second
+replacing the first and reporting a routine `updated`. Instead:
+
+- The run appends the same token that made the two dashboards' *artifact stems*
+  unique to the second dashboard's id, so artifact `shared_title_dash-beta` is
+  uploaded as `obs-migrate-shared-title-dash-beta`. A dashboard whose title is
+  unique in the run keeps exactly the id it has always had, so previously
+  uploaded copies are still addressed by it.
+- Each disambiguation is printed during migration, naming both the id used and
+  the plain title slug it is not, because that slug is what you would search for:
+  `'Shared Title' shares its title with another dashboard in this run, so its
+  Kibana dashboard id is disambiguated to 'obs-migrate-shared-title-dash-beta'
+  rather than the plain title slug 'obs-migrate-shared-title'.`
+- If two payloads still resolve to one id in a single upload, the second is
+  **not sent** and is reported with status `duplicate_id`. Like `lossy`, it is a
+  failure: it never counts toward `uploaded_ok`, so `obs-migrate upload` and
+  `migrate --upload` exit `1`. Give the dashboards distinct titles, or upload
+  them separately.
+
+**Unresolvable control data views:** A control's `data_view_id` is an index
+pattern (`metrics-*`) that upload rewrites to the saved-object id Kibana assigned
+it. When a value cannot be resolved, the raw pattern is left in place and Kibana
+renders that control as "An error occurred" — which looks like a product bug. Each
+such control is now named on stderr (`control '<title>' points at data view
+'<pattern>', which matches no Kibana data view id or title`) and reported in the
+upload record as `unresolved_data_views`. This is a **warning**, not a failure:
+the dashboard uploads and its panels work; that one control does not. A value
+that is already a real saved-object id, or a data view whose title is its own id,
+is a correct fallback and is not reported.
 
 **Re-upload conflict:** The native `PUT /api/dashboards/{id}` returns `409
 Conflict` if a saved object with the same ID already exists in a *different*

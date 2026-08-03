@@ -16732,6 +16732,35 @@ class NativePromqlTests(unittest.TestCase):
             ["cpu", "mem"],
         )
 
+    def test_native_esql_already_sorted_does_not_get_a_second_sort(self):
+        # The "Native ESQL Errors" shape from multi-pattern-coverage.json: a
+        # one-line raw ES|QL body that the dashboard author already terminated
+        # with the same trailing bucket sort the emitter would add.
+        panel = {
+            "type": "barchart",
+            "title": "Native ESQL Errors",
+            "datasource": {"type": "elasticsearch", "uid": "es1"},
+            "targets": [
+                {
+                    "refId": "A",
+                    "query": (
+                        'FROM metrics-* | WHERE service.name == "api" '
+                        "| STATS errors = SUM(http.server.errors) "
+                        "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name "
+                        "| SORT time_bucket ASC"
+                    ),
+                }
+            ],
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertEqual(
+            len(re.findall(r"SORT\s+time_bucket", query, re.IGNORECASE)),
+            1,
+            query,
+        )
+
     # ── datasource_index passthrough ──
 
     def test_custom_datasource_index_in_promql_query(self):
@@ -16819,6 +16848,79 @@ class NativePromqlTests(unittest.TestCase):
         rp = migrate.RulePackConfig()
         rp.native_promql = True
         self.assertTrue(rp.native_promql)
+
+
+class EnsureBucketSortIdempotenceTests(unittest.TestCase):
+    """``_ensure_bucket_sort`` must not append a sort that is already there.
+
+    The guard has to look at the last *pipeline stage*, not the last physical
+    line: raw ES|QL supplied by a dashboard author is routinely one long line
+    that already ends in ``| SORT time_bucket ASC``.
+    """
+
+    STATS = (
+        "STATS errors = SUM(http.server.errors) "
+        "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name"
+    )
+
+    def _sort_count(self, esql):
+        return len(re.findall(r"SORT\s+time_bucket", esql, re.IGNORECASE))
+
+    def test_one_line_query_already_sorted_is_left_alone(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC"
+        self.assertEqual(panels._ensure_bucket_sort(esql), esql)
+
+    def test_multiline_query_already_sorted_is_left_alone(self):
+        esql = f"FROM metrics-*\n| {self.STATS}\n| SORT time_bucket ASC"
+        self.assertEqual(panels._ensure_bucket_sort(esql), esql)
+
+    def test_unsorted_query_still_gets_a_sort(self):
+        esql = f"FROM metrics-* | {self.STATS}"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 1)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_whitespace_and_case_variants_are_recognised_as_equivalent(self):
+        for tail in (
+            "|SORT time_bucket ASC",
+            "|   sort   time_bucket   asc   ",
+            "| Sort\n  time_bucket\n  Asc",
+            # ES|QL treats an omitted direction as ASC, so this is the same clause.
+            "| SORT time_bucket",
+        ):
+            with self.subTest(tail=tail):
+                esql = f"FROM metrics-* | {self.STATS} {tail}"
+                self.assertEqual(
+                    self._sort_count(panels._ensure_bucket_sort(esql)), 1
+                )
+
+    def test_descending_trailing_sort_still_gets_the_ascending_sort(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket DESC"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_trailing_sort_on_another_column_still_gets_the_bucket_sort(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT service.name ASC"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 1)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_compound_trailing_sort_still_gets_the_bucket_sort(self):
+        # ``SORT time_bucket ASC, service.name`` is a different clause: it also
+        # orders within the bucket, so it is not the sort we would have added.
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC, service.name"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_a_sort_that_is_not_the_last_stage_still_gets_the_bucket_sort(self):
+        # The gauge "penultimate bucket" shape deliberately carries two sorts;
+        # a trailing sort earlier in the pipeline must not suppress the append.
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC | LIMIT 10"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
 
 
 class TestMigrationResultTranslationError(unittest.TestCase):

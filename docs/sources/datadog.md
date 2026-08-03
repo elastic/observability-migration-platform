@@ -420,7 +420,11 @@ Use that doc for:
   `--assets alerts` is selected, dashboard JSON files are not required because
   dashboard extraction is skipped.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes
-  `<output-dir>/alerts/monitor_rule_upload_results.json`.
+  `<output-dir>/alerts/monitor_rule_upload_results.json`. If it was requested but
+  no rules were created (no `--kibana-api-key`, unreachable alerting preflight)
+  the run exits non-zero and records the reason under `alerts.rule_creation` in
+  `run_summary.json`; a missing `--kibana-url` or non-alert `--assets` is
+  rejected up front with exit `2`.
 - `--compile` / `--no-compile` / `--legacy-import` were **removed** from both the
   dedicated `datadog-migrate` CLI and unified `obs-migrate migrate --source
   datadog`; they now exit `2` with a message naming the replacement. The
