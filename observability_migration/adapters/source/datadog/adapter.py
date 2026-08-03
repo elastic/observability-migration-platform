@@ -19,8 +19,16 @@ class DatadogAdapter(SourceAdapter):
 
     @property
     def supported_assets(self) -> Sequence[str]:
+        # ``alerts`` belongs here: Datadog monitor migration is implemented
+        # (``monitor_translate.py``, ``alert_pipeline.py``, ``monitor_seed.py``,
+        # and monitor selection in ``extract.py``) and reachable from the CLI via
+        # ``--assets alerts`` / ``--monitor-ids`` / ``--monitor-query``. It was
+        # omitted, which made this adapter under-report a capability it has --
+        # nothing gates on the declaration today, so the inconsistency was
+        # invisible, but it is the introspection surface documented in
+        # ``docs/contributing/add-source.md``.
         return [
-            "dashboards", "panels", "queries", "controls",
+            "dashboards", "panels", "queries", "controls", "alerts",
         ]
 
     @property

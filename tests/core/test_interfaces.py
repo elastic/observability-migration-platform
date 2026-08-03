@@ -33,6 +33,36 @@ class TestSourceRegistry(unittest.TestCase):
         self.assertIn("dashboards", adapter.supported_assets)
         self.assertIn("files", adapter.supported_input_modes)
 
+    def test_every_adapter_declaring_alert_support_can_translate_alerts(self):
+        """``supported_assets`` must not under- or over-report alert support.
+
+        Datadog omitted ``alerts`` while shipping full monitor migration
+        (``monitor_translate``/``alert_pipeline``/``monitor_seed``, reachable via
+        ``--assets alerts``). Nothing gates on the declaration, so the
+        inconsistency was invisible -- but it is the introspection surface
+        ``docs/contributing/add-source.md`` tells new adapters to fill in
+        accurately, so it is pinned here in both directions.
+        """
+        import observability_migration.adapters.source.datadog.adapter
+        import observability_migration.adapters.source.grafana.adapter  # noqa: F401
+
+        expected_alert_builder = {
+            "grafana": "build_alerting_ir_from_grafana",
+            "datadog": "build_alerting_ir_from_datadog",
+        }
+        from observability_migration.core.assets import alerting
+
+        for name, builder in expected_alert_builder.items():
+            adapter = source_registry.get(name)()
+            can_translate = hasattr(alerting, builder)
+            declares = "alerts" in adapter.supported_assets
+            self.assertEqual(
+                declares,
+                can_translate,
+                f"{name}: declares alerts={declares} but alerting.{builder} "
+                f"present={can_translate}",
+            )
+
     def test_grafana_extension_catalog_available(self):
         import observability_migration.adapters.source.grafana.adapter  # noqa: F401
 
