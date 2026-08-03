@@ -20,7 +20,7 @@ Grafana and Datadog dashboards alike.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
 # Reuse the DOM error markers the smoke validator already trusts, so the live
@@ -413,21 +413,42 @@ def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tupl
     worth surfacing, since it often means the panel itself did not load, though
     some panels legitimately hide their title). Title-based and therefore
     best-effort; the element checks degrade gracefully on a missing chunk.
+
+    ``titles`` may REPEAT: one dashboard can carry two same-titled panels
+    (Kubernetes ships ``Pods``/``Containers``/``Deployments``/``DaemonSets``
+    pairs). Each repeat is matched against the NEXT occurrence in the snapshot,
+    so the pair yields two chunks in DOM order rather than two chunks both
+    starting at the first occurrence — which would hand the first panel the whole
+    region and the second an empty string, reporting a phantom clean render. A
+    title that repeats in the report but rendered once is matched once and the
+    surplus is returned as unmatched, which is the honest answer: one of the two
+    panels did not draw.
+
+    ``titles`` must be scoped to the dashboard being audited. Passing every title
+    of a multi-dashboard migration report lets a stray DOM text match attribute a
+    chunk of this dashboard to another dashboard's panel metadata — see
+    :func:`scope_report_to_dashboard`.
     """
     text = str(snapshot_text or "")
-    positions: list[tuple[int, str]] = []
+    # (start offset, arrival order, title) — arrival order only breaks ties so
+    # the sort is total and stable for titles found at the same offset.
+    positions: list[tuple[int, int, str]] = []
     unmatched: list[str] = []
-    for title in titles:
+    searched_from: dict[str, int] = {}
+    for order, title in enumerate(titles):
         if not title:
             continue
-        idx = text.find(title)
+        idx = text.find(title, searched_from.get(title, 0))
         if idx < 0:
             unmatched.append(title)
-        else:
-            positions.append((idx, title))
+            continue
+        # Resume past this hit so a repeated title advances instead of matching
+        # the same offset again.
+        searched_from[title] = idx + len(title)
+        positions.append((idx, order, title))
     positions.sort()
     segments: list[tuple[str, str]] = []
-    for i, (start, title) in enumerate(positions):
+    for i, (start, _order, title) in enumerate(positions):
         end = positions[i + 1][0] if i + 1 < len(positions) else len(text)
         segments.append((title, text[start:end]))
     return segments, unmatched
@@ -462,6 +483,7 @@ def audit_dashboard_elements(
     expects_data_titles: Iterable[str] | None = None,
     metrics_by_title: dict[str, list[str]] | None = None,
     target_fields_by_title: dict[str, set[str] | None] | None = None,
+    panel_titles: Iterable[str] | None = None,
 ) -> RenderVerdict:
     """Per-panel element audit of a whole-dashboard snapshot.
 
@@ -480,12 +502,22 @@ def audit_dashboard_elements(
     translator bug even when field caps were supplied. ``metrics_by_title`` and
     ``target_fields_by_title`` carry the rest of that contract — the metric a
     panel reads, and the field caps of the index it reads them from.
+
+    ``panel_titles`` is the segmentation matcher, defaulting to
+    ``expected_kind_by_title``'s keys. Callers holding a migration report pass
+    :func:`panel_titles_in_order` instead, which keeps a dashboard's duplicate
+    titles — a dict cannot, so one of each same-titled pair would be audited in the
+    per-panel render section but not here, and the two sections would disagree on
+    how many panels the dashboard has.
     """
     expected_kind_by_title = expected_kind_by_title or {}
     breakdown_by_title = breakdown_by_title or {}
     metrics_by_title = metrics_by_title or {}
     breakdown = set(breakdown_titles) if breakdown_titles is not None else set(breakdown_by_title)
-    segments, unmatched = segment_panels(snapshot_text, expected_kind_by_title)
+    segments, unmatched = segment_panels(
+        snapshot_text,
+        expected_kind_by_title if panel_titles is None else panel_titles,
+    )
     verdict = RenderVerdict()
     reasons: list[str] = []
     for title, chunk in segments:
@@ -1171,14 +1203,17 @@ _ESQL_TYPE_TO_KIND = {
 }
 
 
-def expected_kind_by_panel(report: dict) -> dict[str, str]:
-    """Map each panel title to the normalized chart kind to expect in the render.
+def _iter_kinded_panels(report: dict) -> Iterator[tuple[str, str]]:
+    """Yield ``(title, normalized_kind)`` per non-skipped report panel that has a
+    kind, in report order — the panels the render audit expects to find drawn.
 
-    Prefers the report's ``kibana_type`` (always present), falling back to the
-    emitted YAML ``esql.type`` when a report doesn't carry it. Skipped panels are
-    excluded."""
-    out: dict[str, str] = {}
+    Shared by :func:`expected_kind_by_panel` (which keys them by title) and
+    :func:`panel_titles_in_order` (which keeps duplicates), so the kind lookup and
+    the segmentation matcher can never disagree about which panels count.
+    """
     for dashboard in report.get("dashboards", []):
+        if not isinstance(dashboard, dict):
+            continue
         for panel in dashboard.get("panels", []):
             if not isinstance(panel, dict) or panel.get("status") == "skipped":
                 continue
@@ -1188,8 +1223,216 @@ def expected_kind_by_panel(report: dict) -> dict[str, str]:
                 esql = yaml_panel.get("esql") if isinstance(yaml_panel.get("esql"), dict) else {}
                 etype = str((esql or {}).get("type") or "").lower()
             if etype:
-                out[str(panel.get("title") or "")] = _ESQL_TYPE_TO_KIND.get(etype, etype)
-    return out
+                yield str(panel.get("title") or ""), _ESQL_TYPE_TO_KIND.get(etype, etype)
+
+
+def expected_kind_by_panel(report: dict) -> dict[str, str]:
+    """Map each panel title to the normalized chart kind to expect in the render.
+
+    Prefers the report's ``kibana_type`` (always present), falling back to the
+    emitted YAML ``esql.type`` when a report doesn't carry it. Skipped panels are
+    excluded."""
+    return dict(_iter_kinded_panels(report))
+
+
+def panel_titles_in_order(report: dict) -> list[str]:
+    """The titles to segment a rendered dashboard by, in report order.
+
+    :func:`expected_kind_by_panel` is a title-keyed *dict*, so two same-titled
+    panels of one dashboard collapse into one key and the audit silently drops the
+    second — Kubernetes carries ``Pods``/``Containers``/``Deployments``/
+    ``DaemonSets`` twice. This keeps the duplicates, which
+    :func:`segment_panels` resolves against successive DOM occurrences.
+
+    Pass a report already scoped to the dashboard being audited
+    (:func:`scope_report_to_dashboard`); this function deliberately does not
+    filter by dashboard, so handing it a whole run's report reintroduces the
+    cross-dashboard misattribution.
+    """
+    return [title for title, _kind in _iter_kinded_panels(report) if title]
+
+
+# --------------------------------------------------------------------------- #
+# Which dashboard is being audited
+# --------------------------------------------------------------------------- #
+#
+# ``--migration-out`` points at a whole migration run, so its
+# ``migration_report.json`` describes every dashboard of that run, while
+# ``--dashboard-id`` names ONE uploaded dashboard. Segmenting the rendered DOM by
+# every title in the report lets a stray text match hand a chunk of the audited
+# dashboard to a *different* dashboard's panel metadata -- the wrong breakdown
+# field, the wrong metric, the wrong index -- and the verdict that follows is
+# confidently wrong rather than merely missing. Observed live: a Docker panel's
+# error chunk was labelled ``Untitled``, which is a *Celery* table, and was
+# therefore judged against ``logs-*`` when the erroring query reads ``metrics-*``.
+#
+# This is the same join bug the verifier fixed in 07e5829 (``Kafka``'s
+# ``Error Logs`` compared against Redis's query, five of six drift findings fake),
+# and it is fixed the same way: index the report by dashboard identity, drop a key
+# two different dashboards claim, and report an unmatchable dashboard instead of
+# guessing.
+
+_ID_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _dashboard_id_slug(text: str) -> str:
+    """The Kibana-id slug of a dashboard title.
+
+    Mirrors ``targets/kibana/dashboards_api.py::_dashboard_id_slug``, which
+    produces the ``obs-migrate-<title-slug>`` id an uploaded dashboard carries.
+    Only a FALLBACK: the producer also appends a disambiguator when two
+    dashboards of one run share a title, which no slug rule can reproduce from
+    the title alone, so the driver prefers the ids recorded in ``native/`` (see
+    ``render_audit_driver.native_dashboard_id_aliases``).
+    """
+    return _ID_SLUG_RE.sub("-", str(text or "").lower()).strip("-")
+
+
+def dashboard_identity_keys(dashboard: dict) -> list[str]:
+    """Every identity one migration-report dashboard entry can be joined on.
+
+    A migration report is written before (or without) an upload, so which of
+    these is populated varies: Grafana carries a source ``id``/``uid``, Datadog
+    carries only a ``title``, an uploaded run also records
+    ``upload.saved_object_id``, and ``--dashboard-id`` is whichever id Kibana
+    actually stored it under. All of them are offered as keys and the caller
+    matches on any one, exactly as the verifier tries uid-then-title.
+    """
+    upload = dashboard.get("upload") if isinstance(dashboard.get("upload"), dict) else {}
+    title = str(dashboard.get("title") or "")
+    slug = _dashboard_id_slug(title)
+    candidates = (
+        str((upload or {}).get("saved_object_id") or ""),
+        str(dashboard.get("id") or ""),
+        str(dashboard.get("uid") or ""),
+        title,
+        str(dashboard.get("artifact_stem") or ""),
+        f"obs-migrate-{slug}" if slug else "",
+    )
+    return list(dict.fromkeys(key for key in candidates if key))
+
+
+def _report_dashboard_index(
+    report: dict, id_aliases: dict[str, str] | None
+) -> tuple[list[dict], dict[str, int]]:
+    """``([dashboards], {identity_key: position})`` with ambiguous keys dropped.
+
+    A key claimed by two *different* dashboards is removed rather than resolved
+    arbitrarily, so an artifact set with no usable dashboard identity yields an
+    unmatchable dashboard -- visible as a note -- instead of a confidently wrong
+    attribution. ``id_aliases`` maps a Kibana dashboard id to the dashboard title
+    it was uploaded under; an alias whose title two dashboards share is dropped
+    for the same reason.
+    """
+    dashboards = [d for d in (report or {}).get("dashboards") or [] if isinstance(d, dict)]
+    positions_by_title: dict[str, list[int]] = {}
+    for index, dashboard in enumerate(dashboards):
+        positions_by_title.setdefault(str(dashboard.get("title") or ""), []).append(index)
+
+    keyed: dict[str, int] = {}
+    ambiguous: set[str] = set()
+
+    def claim(key: str, index: int) -> None:
+        if not key:
+            return
+        if keyed.get(key, index) != index:
+            ambiguous.add(key)
+            return
+        keyed[key] = index
+
+    for index, dashboard in enumerate(dashboards):
+        for key in dashboard_identity_keys(dashboard):
+            claim(key, index)
+    for dashboard_id, title in (id_aliases or {}).items():
+        owners = positions_by_title.get(str(title or ""), [])
+        if len(owners) == 1:
+            claim(str(dashboard_id), owners[0])
+        elif owners:
+            ambiguous.add(str(dashboard_id))
+    for key in ambiguous:
+        keyed.pop(key, None)
+    return dashboards, keyed
+
+
+def report_dashboards_by_key(
+    report: dict, *, id_aliases: dict[str, str] | None = None
+) -> dict[str, dict]:
+    """``{identity_key: dashboard}`` for a migration report.
+
+    The dashboard-scoped twin of the report's flat panel readers, in the spirit of
+    the verifier's ``load_ir_panels_by_dashboard``. Keys two different dashboards
+    claim are absent rather than guessed.
+    """
+    dashboards, keyed = _report_dashboard_index(report, id_aliases)
+    return {key: dashboards[index] for key, index in keyed.items()}
+
+
+def unmatchable_dashboard_note(report: dict, dashboard_id: str) -> str:
+    """Why per-panel attribution is unavailable for ``dashboard_id``."""
+    titles = [
+        str(d.get("title") or "?")
+        for d in (report or {}).get("dashboards") or []
+        if isinstance(d, dict)
+    ]
+    shown = ", ".join(repr(t) for t in titles[:6]) + (", ..." if len(titles) > 6 else "")
+    return (
+        f"per-panel attribution unavailable: --dashboard-id {dashboard_id!r} matches "
+        f"none of the {len(titles)} dashboard(s) in this migration report ({shown}). "
+        "Panel titles are not unique across dashboards, so the whole report's titles "
+        "were NOT used as a fallback -- that would attribute this dashboard's DOM to "
+        "another dashboard's panel metadata. Point --migration-out at the run that "
+        "produced this dashboard."
+    )
+
+
+def scope_report_to_dashboard(
+    report: dict, dashboard_id: str, *, id_aliases: dict[str, str] | None = None
+) -> tuple[dict | None, str]:
+    """Narrow a migration report to the single dashboard being audited.
+
+    Returns ``(report_shaped_dict, "")`` on a match -- the same shape every
+    ``*_by_panel`` reader already consumes, so they all become dashboard-scoped
+    without changing -- or ``(None, note)`` when the dashboard cannot be
+    identified. ``None`` means "per-panel attribution is unavailable", never "use
+    every title": a fallback to the global title set is the bug this exists to
+    prevent, and it would fail silently.
+
+    Resolution order:
+
+    1. An exact identity key (:func:`dashboard_identity_keys`, plus any
+       ``id_aliases`` recorded at upload time).
+    2. The longest key ``dashboard_id`` extends with ``-<suffix>``, which matches
+       a throwaway re-upload such as the ``-renderaudit-tmp`` copy
+       ``scripts/render_audit_all_panels.py`` makes to expand collapsed rows.
+       Longest wins, so ``obs-migrate-shared-title-dash-beta`` is preferred over
+       ``obs-migrate-shared-title``; a tie between two different dashboards is
+       not guessed.
+    3. A report with exactly ONE dashboard, whatever the id: there is nothing to
+       confuse it with, and a single-dashboard ``--migration-out`` is the shape
+       the docs describe. Same allowance the verifier's
+       ``_scoped_dashboard_index`` makes.
+    """
+    dashboards, keyed = _report_dashboard_index(report, id_aliases)
+    if not dashboards:
+        return None, unmatchable_dashboard_note(report, dashboard_id)
+
+    def scoped(dashboard: dict) -> dict:
+        return {**report, "dashboards": [dashboard]}
+
+    wanted = str(dashboard_id or "")
+    if wanted and wanted in keyed:
+        return scoped(dashboards[keyed[wanted]]), ""
+    if wanted:
+        extended = sorted(
+            (key for key in keyed if wanted.startswith(f"{key}-")), key=len, reverse=True
+        )
+        if extended:
+            longest = [key for key in extended if len(key) == len(extended[0])]
+            if len({keyed[key] for key in longest}) == 1:
+                return scoped(dashboards[keyed[longest[0]]]), ""
+    if len(dashboards) == 1:
+        return scoped(dashboards[0]), ""
+    return None, unmatchable_dashboard_note(report, dashboard_id)
 
 
 def expects_data_by_panel(report: dict) -> set[str]:

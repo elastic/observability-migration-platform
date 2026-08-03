@@ -57,7 +57,7 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
-| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
+| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Per-panel metadata comes from the audited dashboard only, never the whole run. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
@@ -172,6 +172,17 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 # cached `_field_caps` call per distinct index). You do NOT need to hand-union
 # patterns; a dashboard mixing `metrics-*` and `FROM logs-*` panels resolves each
 # against its own.
+#
+# --migration-out may point at a WHOLE run: the audit narrows the report to the
+# dashboard --dashboard-id names before reading any panel list, so one
+# dashboard's DOM is never segmented by another dashboard's panel titles (that
+# join attributed a Docker error chunk to a Celery table and judged it against
+# logs-*). The dashboard is matched on its recorded id (native/index.json), its
+# uid/title, or an id that merely extends one of those; a single-dashboard
+# --migration-out always matches. A dashboard the report cannot identify is
+# reported as "per-panel attribution unavailable" on stderr AND in
+# render.reasons, with "panels": [] -- it never falls back to the run's full
+# title set, and whole-dashboard error markers still hard-fail.
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --migration-out migration_output/dashboards \

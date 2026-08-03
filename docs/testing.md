@@ -458,6 +458,25 @@ dashboard:
 INPUT_DIR=/tmp/community bash scripts/run_render_audit_local.sh
 ```
 
+Both the render and the element section segment the rendered DOM by the audited
+dashboard's panel titles **only**. `--migration-out` names a whole run, so
+feeding every title of that run to the matcher let a stray text match attribute a
+chunk of one dashboard to another dashboard's breakdown field, metric and index —
+on the 13-dashboard Datadog corpus 51 of 402 panel records and 303 of 305 "panel
+title did not render" warnings belonged to a different dashboard. Same class as
+the verifier join fixed in 07e5829. A dashboard the report cannot identify now
+reports `per-panel attribution unavailable` (on stderr and in `render.reasons`)
+with `"panels": []` rather than borrowing the run's titles; whole-dashboard error
+markers still hard-fail. Duplicate titles inside one dashboard (Kubernetes ships
+`Pods`/`Containers`/`Deployments`/`DaemonSets` twice) resolve against successive
+DOM occurrences instead of collapsing to one record.
+
+Known limitation, not fixed: a title that is a strict *prefix* of another title in
+the same dashboard still matches inside the longer one (`Running containers by
+image` inside `Running containers by image (widget 27)`), which hands its region
+to a neighbouring panel. That is an in-dashboard attribution error, not a
+cross-dashboard one.
+
 Caveat: a community dashboard renders cleanly only when its metrics are seeded
 and its template-variable controls resolve against the seeded label values;
 otherwise the element audit honestly reports the resulting empties / data gaps.

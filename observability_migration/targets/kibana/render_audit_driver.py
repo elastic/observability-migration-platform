@@ -53,6 +53,8 @@ from observability_migration.targets.kibana.render_audit import (
     expects_data_by_panel,
     interaction_regression,
     metric_fields_by_panel,
+    panel_titles_in_order,
+    scope_report_to_dashboard,
     segment_panels,
     source_indices_by_panel,
 )
@@ -341,6 +343,49 @@ def fetch_panel_field_caps(
     return out
 
 
+def native_dashboard_id_aliases(migration_out: Path) -> dict[str, str]:
+    """``{kibana_dashboard_id: dashboard_title}`` for a run's ``native/`` artifacts.
+
+    ``native/index.json`` is written once per migration run and already records the
+    deterministic id (``obs-migrate-<title-slug>``, plus a disambiguator when two
+    dashboards of the run share a title) each dashboard was or would be uploaded
+    under. Reading it lets ``--dashboard-id`` be joined to a report dashboard
+    exactly, instead of re-deriving a slug that cannot reproduce the
+    disambiguator. Mirrors the verifier's ``load_native_dashboard_index``.
+
+    Returns ``{}`` when the artifacts are absent or unreadable — the caller then
+    falls back to the identity keys the report itself carries.
+    """
+    native_dir = Path(migration_out) / "native"
+    if not native_dir.exists():
+        return {}
+    out: dict[str, str] = {}
+
+    def record(blob: object) -> None:
+        if not isinstance(blob, dict):
+            return
+        dashboard_id = str(blob.get("dashboard_id") or "")
+        if dashboard_id:
+            out.setdefault(dashboard_id, str(blob.get("title") or ""))
+
+    index_path = native_dir / "index.json"
+    if index_path.exists():
+        try:
+            blob = json.loads(index_path.read_text())
+        except (OSError, ValueError):
+            blob = {}
+        for item in (blob or {}).get("dashboards") or []:
+            record(item)
+        if out:
+            return out
+    for artifact in sorted(native_dir.glob("*.native.json")):
+        try:
+            record(json.loads(artifact.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
 def build_render_audit_command(
     chrome_binary: str,
     url: str,
@@ -473,6 +518,15 @@ def run_audit_cli(
     from looking there is unfounded. Without ``--migration-out`` it falls back to
     the whole-dashboard ``classify_render``.
 
+    The report is first narrowed to the dashboard ``--dashboard-id`` names
+    (:func:`scope_report_to_dashboard`), because ``--migration-out`` points at a
+    whole run: segmenting one dashboard's DOM by every title in the run lets a
+    stray text match attribute a chunk to another dashboard's breakdown field,
+    metric and index. A dashboard the report cannot identify reports that fact —
+    on stderr and in ``render.reasons`` — and gets no per-panel attribution;
+    borrowing the run's full title set is exactly the misattribution being
+    prevented, and it would fail silently.
+
     With ``--elements`` it also runs the per-panel element audit (chart kind /
     legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
     a render ``fail`` when ``--fail-on-error``.
@@ -505,6 +559,11 @@ def run_audit_cli(
     snapshot = fetch(url)
 
     report: dict | None = None
+    # Non-empty when --migration-out was supplied but the audited dashboard could
+    # not be found in it. Per-panel attribution is then unavailable and says so;
+    # it never falls back to the whole report's titles, which would attribute this
+    # dashboard's DOM to another dashboard's panel metadata.
+    scope_note = ""
     # Target field caps, needed by BOTH the per-panel render classification and
     # the --elements audit to confirm a field absence. None == unknown schema, in
     # which case every render marker stays a hard render_error. ``available_fields``
@@ -521,9 +580,11 @@ def run_audit_cli(
                 report = json.loads(report_path.read_text())
             except (ValueError, OSError) as exc:
                 # A malformed/unreadable report must not crash the audit; degrade
-                # to the whole-dashboard render classification (hunt #4).
+                # to the whole-dashboard render classification (hunt #4). stderr,
+                # for the reason given below.
                 print(f"warning: could not read migration_report.json ({exc}); "
-                      "falling back to whole-dashboard render classification")
+                      "falling back to whole-dashboard render classification",
+                      file=sys.stderr)
                 report = None
         else:
             # stderr, not stdout: stdout carries the JSON report and a stray
@@ -541,8 +602,21 @@ def run_audit_cli(
               "per-panel attribution.", file=sys.stderr)
 
     if report is not None:
-        kinds = expected_kind_by_panel(report)
-        segments, unmatched = segment_panels(snapshot, kinds.keys())
+        # ONE dashboard is being audited; the report describes the whole run. Scope
+        # it before anything reads a panel list, so the segmentation matcher, the
+        # breakdown fields, the metrics and the per-panel index all come from the
+        # dashboard actually on screen.
+        report, scope_note = scope_report_to_dashboard(
+            report,
+            args.dashboard_id,
+            id_aliases=native_dashboard_id_aliases(Path(migration_out)),
+        )
+        if scope_note:
+            print(f"warning: {scope_note}", file=sys.stderr)
+
+    if report is not None:
+        titles = panel_titles_in_order(report)
+        segments, unmatched = segment_panels(snapshot, titles)
         fetch_fields = field_fetcher or (
             lambda index: fetch_available_fields(
                 getattr(args, "es_url", "") or "",
@@ -614,6 +688,13 @@ def run_audit_cli(
             verdict.reasons.append(f"panel title(s) did not render: {unmatched}")
     else:
         verdict = classify_render(snapshot)
+        if scope_note:
+            # Machine-visible, not just a stderr line: a consumer reading only the
+            # JSON must be able to see that "panels": [] means "we could not
+            # identify this dashboard", not "every panel rendered".
+            verdict.reasons.append(scope_note)
+            if verdict.status == "pass":
+                verdict.status = "warn"
 
     output: dict[str, object] = {"render": verdict.to_dict()}
 
@@ -628,6 +709,7 @@ def run_audit_cli(
             expects_data_titles=expects_data_by_panel(report),
             metrics_by_title=metrics_by_title,
             target_fields_by_title=fields_by_title,
+            panel_titles=panel_titles_in_order(report),
         )
         output["elements"] = elements.to_dict()
 
