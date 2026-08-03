@@ -56,7 +56,7 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
-| `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
+| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); without field caps absence is unconfirmable and it stays `render_error` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
@@ -157,6 +157,18 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
+
+# ALWAYS pass --es-url (+ --es-index / --es-api-key) on a partially-seeded
+# cluster. Field caps are the only evidence that lets the audit downgrade a
+# panel whose error names absent columns to `field_gap` (warn); without them
+# absence is unconfirmable and every such panel stays `render_error` (fail) --
+# by design, so a missing-evidence run cannot silently pass. This applies to the
+# --elements section too, which shares the same classifier.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --migration-out migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" --es-index "metrics-*" \
+  --time-from now-24h --time-to now --elements
 
 # Focusing the right tab in a live agent-browser session (--agent-browser):
 # bootstrap.sh logs in once and keeps a persistent profile

@@ -570,3 +570,176 @@ def test_audit_dashboard_elements_includes_control_warnings():
     v = audit_dashboard_elements(snap, expected_kind_by_title={"p1": "xy"}, breakdown_titles={"p1"})
     assert v.status == "warn"
     assert any("incompatible selections" in r for r in v.reasons)
+
+
+# --- verification_exception: evidence-based field-gap classification ---------
+#
+# Elasticsearch wraps BOTH genuine translator defects (syntax/type errors) and
+# pure field absence in one ``verification_exception``. The classifier must read
+# the exception's problem list rather than the marker: a problem list that is
+# exclusively unknown-column complaints whose columns field caps confirm absent
+# is a data-readiness ``field_gap``; anything else (mixed content, unparsed
+# problems, unconfirmable absence) stays a hard ``render_error``.
+
+# The real Kibana DOM for a MySQL panel whose Datadog-shaped metric names are
+# absent from a prometheus-shaped target index. Kibana renders the error in a
+# EUI code block, one <span> per line, and emits the block TWICE per panel.
+_UNKNOWN_COLUMN_BLOCK = (
+    '<code class="euiCodeBlock__code" data-code-language="text" data-test-subj="errMessage">'
+    '<span class="euiCodeBlock__line">Unexpected error from Elasticsearch: '
+    "verification_exception - Found 2 problems\n</span>"
+    '<span class="euiCodeBlock__line">line 3:22: Unknown column [mysql_net_connections]\n</span>'
+    '<span class="euiCodeBlock__line">line 3:61: Unknown column [mysql_net_max_connections]'
+    "</span></code>"
+    '<div class="euiCodeBlock__controls"><button aria-label="Copy">Copy</button></div>'
+)
+_UNKNOWN_COLUMN_DOM = _UNKNOWN_COLUMN_BLOCK * 2
+
+# The same error as plain a11y/console text.
+_UNKNOWN_COLUMN_TEXT = (
+    "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+    "line 3:22: Unknown column [mysql_net_connections]\n"
+    "line 3:61: Unknown column [mysql_net_max_connections]"
+)
+
+# prometheus-shaped target: no mysql_* Datadog metric columns exist.
+_PROM_FIELDS = ["@timestamp", "labels", "mysql_user", "node_cpu_seconds_total"]
+
+
+def test_verification_exception_of_only_unknown_columns_is_field_gap():
+    r = classify_panel(
+        "MySQL connections", _UNKNOWN_COLUMN_TEXT, available_fields=_PROM_FIELDS,
+    )
+    assert r.status == "error"
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_verification_exception_in_real_kibana_dom_is_field_gap():
+    # Regression for the live symptom: the audit reported render_error with an
+    # EMPTY missing_fields even though the DOM named both absent columns.
+    r = classify_panel(
+        "MySQL connections", _UNKNOWN_COLUMN_DOM, available_fields=_PROM_FIELDS,
+    )
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_unknown_column_with_did_you_mean_hint_is_still_field_gap():
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_net_connections], did you mean [mysql_user]?"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections"]
+
+
+def test_unknown_column_without_field_caps_stays_render_error():
+    # Absence cannot be confirmed without field caps -> do NOT guess lenient.
+    r = classify_panel("MySQL connections", _UNKNOWN_COLUMN_TEXT)
+    assert r.status == "error"
+    assert r.error_class == "render_error"
+    assert "unconfirmed" in r.detail
+    assert "mysql_net_connections" in r.detail
+
+
+def test_verification_exception_mixing_syntax_error_stays_render_error():
+    # One real defect is not excused by an accompanying field gap.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]\n"
+        "line 5:9: mismatched input 'BY' expecting {'(', UNQUOTED_IDENTIFIER}"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_verification_exception_mixing_type_error_stays_render_error():
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 2:9: first argument of [avg(message)] must be [numeric], found value "
+        "[message] type [keyword]\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_verification_exception_with_unreadable_problem_stays_render_error():
+    # "Found 2 problems" but only one is readable -> unparsed content remains.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_bare_verification_exception_stays_render_error_hunt4_guard():
+    # hunt #4 regression guard: a verification_exception with NO column detail
+    # carries no field-absence evidence and must stay a hard render_error even
+    # when a breakdown field happens to be absent from the target.
+    r = classify_panel(
+        "ts", "embPanel__error Unexpected error from Elasticsearch: verification_exception",
+        breakdown_fields=["method"], available_fields=_PROM_FIELDS,
+    )
+    assert r.error_class == "render_error"
+
+
+def test_unbound_parameter_stays_render_error_even_with_unknown_column():
+    # An unbound param is a construction bug; an accompanying field gap must not
+    # excuse it.
+    text = (
+        "Couldn't parse Elasticsearch ES|QL query. Check your query and try again.\n"
+        "Error: line 1:134: Parameter [?instance] value not found\n"
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("P", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_named_column_that_exists_stays_render_error():
+    # The column IS in the target, so the query failing on it is a genuine bug.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_user]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_partially_present_columns_stay_render_error():
+    # Every named column must be confirmed absent; one that exists means a bug.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]\n"
+        "line 3:61: Unknown column [mysql_user]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_element_audit_classifies_unknown_columns_as_field_gap():
+    # The --elements section ran its own marker-only classification and stamped
+    # every error panel render_error with an EMPTY missing_fields, even with
+    # field caps available. It must use the same evidence-based classifier.
+    snapshot = f'StaticText "MySQL connections" {_UNKNOWN_COLUMN_DOM}'
+    verdict = audit_dashboard_elements(
+        snapshot,
+        expected_kind_by_title={"MySQL connections": "xy"},
+        available_fields=_PROM_FIELDS,
+    )
+    panel = verdict.panels[0]
+    assert panel.status == "error"
+    assert panel.error_class == "field_gap"
+    assert panel.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_element_audit_without_field_caps_stays_render_error():
+    snapshot = f'StaticText "MySQL connections" {_UNKNOWN_COLUMN_DOM}'
+    verdict = audit_dashboard_elements(
+        snapshot, expected_kind_by_title={"MySQL connections": "xy"},
+    )
+    assert verdict.panels[0].error_class == "render_error"

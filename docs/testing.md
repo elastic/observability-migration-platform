@@ -230,11 +230,32 @@ audit below.
   per-panel verdict.
 - **Per-panel classification:**
   - `render_error` — an unexplained Lens/ES\|QL failure → **fail** (real bug).
-  - `field_gap` — the panel's breakdown field is absent from the target's fields
-    → **warn** (data-readiness, not a translator bug).
+  - `field_gap` — a field the panel needs (its breakdown, or a column the error
+    names) is absent from the target's fields → **warn** (data-readiness, not a
+    translator bug).
   - `data_gap` — a referenced metric is absent → **warn** (expected empty).
   - `unexpected_empty` — a query panel rendered nothing despite no known gap →
     **warn** (verify data/time window or a broken query).
+- **`field_gap` is evidence-based, never marker-based.** Elasticsearch wraps both
+  pure field absence *and* genuine translator defects in one
+  `verification_exception`, so the marker decides nothing. The classifier reads
+  the exception's problem list and downgrades to `field_gap` only when **every**
+  reported problem is an unknown-column/unknown-field complaint **and every
+  column it names is confirmed absent** from the target's `_field_caps`;
+  `missing_fields` then lists those columns. It stays a hard `render_error` when
+  the problem list mixes in a syntax/type/unsupported-function problem (one real
+  defect is not excused by accompanying gaps), when a problem cannot be read,
+  when a named column *does* exist, when a second failure mode is present, or
+  when `--es-url` field caps are unavailable so absence cannot be confirmed —
+  `detail` records which of those applied. Construction bugs (`is not yet
+  implemented`, `Output has changed from`, `Couldn't parse Elasticsearch ES|QL
+  query`, `Parameter [?x] value not found`) are never downgraded, no matter what
+  else the panel says.
+- **`--elements` uses the same contract.** The element audit (chart kind / legend
+  / data) classifies its errored panels through the same `classify_panel`, so it
+  needs `--es-url` too; without field caps it reports `render_error`. Do not read
+  an `--elements` `render_error` on an unseeded cluster as a translator bug
+  without checking whether field caps were supplied.
 - **Regression ratchet:** `render_snapshot` + `diff_render_snapshots` — the live
   per-panel outcomes must not regress vs a committed baseline.
 - **Default-state control coverage:** the local render-audit script uploads

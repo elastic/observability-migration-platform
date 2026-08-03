@@ -66,6 +66,129 @@ _UNKNOWN_COLUMN_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Markers a field gap can NEVER excuse, no matter what else the panel says: the
+# panel's query was mis-constructed (unimplemented translation, schema-output
+# drift, a query Kibana could not even build, an unbound control parameter). One
+# real defect is not excused by accompanying field gaps, so these are checked
+# before any field-absence evidence is considered.
+_CONSTRUCTION_BUG_PATTERNS = (
+    r"is not yet implemented",
+    r"Output has changed from",
+    r"Couldn't parse Elasticsearch ES\|QL query",
+    r"Parameter \[\?[^\]]+\] value not found",
+)
+_CONSTRUCTION_BUG_RE = [
+    re.compile(p, re.IGNORECASE) for p in _CONSTRUCTION_BUG_PATTERNS
+]
+
+# Markers that merely *frame* an in-panel error: the Lens error container and the
+# generic Elasticsearch wrapper always accompany a field-absence error, so their
+# presence alone cannot disqualify field-absence evidence. Any OTHER marker
+# alongside a verification_exception is a second, distinct failure mode (a Lens
+# accessor bug, a missing data view) and keeps the panel a hard render_error.
+_ERROR_FRAME_PATTERNS = frozenset({
+    r"dashboardPanelError",
+    r"embPanel__error",
+    r"An error occurred while loading this panel",
+    r"Error loading data",
+    r"Unexpected error from Elasticsearch",
+    r"verification_exception",
+})
+
+# Elasticsearch reports an ES|QL ``verification_exception`` as an enumerated
+# problem list, e.g.::
+#
+#     Unexpected error from Elasticsearch: verification_exception - Found 2 problems
+#     line 3:22: Unknown column [mysql_net_connections]
+#     line 3:61: Unknown column [mysql_net_max_connections]
+#
+# That same exception also wraps genuine translator defects (syntax errors, type
+# mismatches, unsupported functions), so the marker alone says nothing about
+# whether the panel is a data-readiness gap or a bug. The parse below reads the
+# problem list so the verdict rests on evidence instead of the marker.
+_VERIFICATION_RE = re.compile(r"verification_exception", re.IGNORECASE)
+_PROBLEM_COUNT_RE = re.compile(r"Found\s+(\d+)\s+problems?", re.IGNORECASE)
+# One problem: ``line <l>:<c>: <message>``. The message ends at the next problem,
+# at an HTML tag (Kibana renders one ``<span>`` per line in a EUI code block), or
+# at the end of the line — so trailing DOM chrome never leaks into it.
+_PROBLEM_MSG_RE = re.compile(
+    r"line\s+\d+:\d+:[ \t]*(.*?)(?=[ \t]*line\s+\d+:\d+:|<|$)",
+    re.MULTILINE,
+)
+# A problem that is *purely* a field-absence complaint, optionally carrying
+# Elasticsearch's "did you mean" suggestion. Anchored: any extra content (a
+# syntax error, a type mismatch) fails the match and keeps the panel a hard
+# render_error.
+_ONLY_FIELD_ABSENCE_RE = re.compile(
+    r"^(?:Unknown column|unknown field)\s*\[([^\]]+)\]"
+    r"(?:\s*,?\s*did you mean.*)?$",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class _AbsenceEvidence:
+    """What a ``verification_exception``'s problem list proves about field absence.
+
+    ``columns`` are every column the exception named. ``exclusive`` is True only
+    when every reported problem was read AND every one of them was a pure
+    unknown-column/unknown-field complaint; ``reason`` explains why not.
+    """
+    columns: list[str] = field(default_factory=list)
+    exclusive: bool = False
+    reason: str = ""
+
+
+def _construction_bug_marker(text: str) -> str:
+    """The first construction-bug marker in ``text`` (empty when there is none)."""
+    for pattern, compiled in zip(_CONSTRUCTION_BUG_PATTERNS, _CONSTRUCTION_BUG_RE, strict=True):
+        if compiled.search(text):
+            return pattern
+    return ""
+
+
+def _verification_absence_evidence(text: str) -> _AbsenceEvidence | None:
+    """Read a ``verification_exception``'s problem list as field-absence evidence.
+
+    Returns ``None`` when ``text`` carries no ``verification_exception`` (the
+    caller then falls back to the marker-level heuristics). Otherwise every
+    exception block in the text is parsed independently — Kibana renders the same
+    error block more than once per panel — and the evidence is ``exclusive`` only
+    if *all* blocks are fully accounted for and name nothing but absent columns.
+    """
+    starts = [m.start() for m in _VERIFICATION_RE.finditer(text)]
+    if not starts:
+        return None
+    columns: list[str] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        block = text[start:end]
+        count = _PROBLEM_COUNT_RE.search(block)
+        if not count:
+            return _AbsenceEvidence(
+                reason="verification_exception without an enumerable problem list"
+            )
+        declared = int(count.group(1))
+        problems = [
+            m.group(1).strip()
+            for m in _PROBLEM_MSG_RE.finditer(block, count.end())
+        ][:declared]
+        if len(problems) < declared:
+            return _AbsenceEvidence(
+                reason=f"only {len(problems)} of {declared} reported problem(s) could be read"
+            )
+        for problem in problems:
+            named = _ONLY_FIELD_ABSENCE_RE.match(problem)
+            if not named:
+                return _AbsenceEvidence(
+                    reason=f"problem is not a field absence: {problem[:120]}"
+                )
+            columns.append(named.group(1))
+    columns = list(dict.fromkeys(columns))
+    if not columns:
+        return _AbsenceEvidence(reason="verification_exception named no column")
+    return _AbsenceEvidence(columns=columns, exclusive=True)
+
 # Console signatures that indicate a panel/query/render failure — specific enough
 # to exclude benign platform noise. A bare "kibana" keyword is intentionally NOT
 # used: it matches CSP violations referencing ``kibana.estccdn.com`` and other
@@ -92,6 +215,16 @@ class PanelRenderResult:
     breakdown/group field absent from the target data — a data/field-mapping
     readiness gap, NOT a translation bug, mirroring live_validate's data_gap) vs
     ``render_error`` (an unexplained Lens/ES|QL failure — a real bug).
+
+    ``field_gap`` is *evidence-based*, never marker-based. An Elasticsearch
+    ``verification_exception`` wraps both pure field absence and genuine
+    translator defects, so it is a ``field_gap`` only when every problem it
+    reports is an unknown-column/unknown-field complaint AND every column it
+    names is confirmed absent from the target's field caps; ``missing_fields``
+    then lists those columns. Mixed content (one syntax/type problem among field
+    gaps), an unreadable problem list, a column that does exist, or absent field
+    caps all keep the panel a ``render_error`` — with ``detail`` recording why,
+    including when absence could not be confirmed.
     """
     title: str
     status: str
@@ -298,6 +431,9 @@ def audit_dashboard_elements(
     *,
     expected_kind_by_title: dict[str, str] | None = None,
     breakdown_titles: Iterable[str] | None = None,
+    breakdown_by_title: dict[str, list[str]] | None = None,
+    available_fields: Iterable[str] | None = None,
+    expects_data_titles: Iterable[str] | None = None,
 ) -> RenderVerdict:
     """Per-panel element audit of a whole-dashboard snapshot.
 
@@ -306,22 +442,53 @@ def audit_dashboard_elements(
     Element findings are ``warn`` (a render that drew the wrong thing or no data
     is a review signal, not a hard ES|QL/Lens failure — those are caught by
     classify_render). Titles whose chunk never rendered are also a warn.
+
+    An errored/empty panel's ``error_class`` comes from :func:`classify_panel`, so
+    this audit and the per-panel render audit share ONE classification contract:
+    it too needs ``available_fields`` (target field caps) to confirm a field
+    absence, and without them an error stays a hard ``render_error``. This section
+    used to stamp every errored panel ``render_error`` with an empty
+    ``missing_fields``, which reported a fully-explained data-readiness gap as a
+    translator bug even when field caps were supplied.
     """
     expected_kind_by_title = expected_kind_by_title or {}
-    breakdown = set(breakdown_titles or ())
+    breakdown_by_title = breakdown_by_title or {}
+    breakdown = set(breakdown_titles) if breakdown_titles is not None else set(breakdown_by_title)
     segments, unmatched = segment_panels(snapshot_text, expected_kind_by_title)
     verdict = RenderVerdict()
     reasons: list[str] = []
     for title, chunk in segments:
         el = extract_panel_elements(title, chunk)
-        verdict.panels.append(
-            PanelRenderResult(
-                title=title,
-                status="rendered" if el.status == "rendered" else el.status,
-                error_class="" if el.status == "rendered" else "render_error" if el.status == "error" else "unexpected_empty",
-                detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
+        if el.status in ("error", "empty"):
+            # Unknown query-bearingness (no ``expects_data_titles``) must not
+            # weaken the signal, so assume the panel expects data.
+            classified = classify_panel(
+                title, chunk,
+                breakdown_fields=breakdown_by_title.get(title, []),
+                available_fields=available_fields,
+                expects_data=(
+                    True if expects_data_titles is None else title in set(expects_data_titles)
+                ),
             )
-        )
+            el.detail = classified.detail or el.detail
+            verdict.panels.append(
+                PanelRenderResult(
+                    title=title, status=el.status,
+                    error_class=classified.error_class,
+                    missing_fields=classified.missing_fields,
+                    detail=classified.detail,
+                )
+            )
+        else:
+            verdict.panels.append(
+                PanelRenderResult(
+                    title=title,
+                    status=el.status,
+                    # "loading" keeps its historical qualifier; only rendered is clean.
+                    error_class="" if el.status == "rendered" else "unexpected_empty",
+                    detail=f"{el.chart_kind or '?'}; legend={len(el.legend_entries)}; data={el.has_data}",
+                )
+            )
         reasons += check_panel_elements(
             el,
             expected_kind=expected_kind_by_title.get(title, ""),
@@ -449,6 +616,53 @@ def classify_panel(
         # Only a column/field-absence error can be a field_gap. A translator/ES|QL
         # bug marker (or a bare embPanel__error) is a real render_error even when
         # a breakdown field is absent — never downgrade it (hunt #4).
+        construction_bug = _construction_bug_marker(text)
+        if construction_bug:
+            return PanelRenderResult(
+                title=title, status="error", error_class="render_error",
+                detail=f"{markers[0]}; {construction_bug} is a construction bug, not a data gap",
+            )
+        evidence = _verification_absence_evidence(text)
+        if evidence is not None:
+            # A verification_exception wraps both field absence and real defects,
+            # so the verdict rests on its parsed problem list — never the marker.
+            other = [m for m in markers if m not in _ERROR_FRAME_PATTERNS]
+            if other:
+                return PanelRenderResult(
+                    title=title, status="error", error_class="render_error",
+                    detail=f"{markers[0]}; second failure mode alongside the field absence: {other}",
+                )
+            if not evidence.exclusive:
+                return PanelRenderResult(
+                    title=title, status="error", error_class="render_error",
+                    detail=f"{markers[0]}; {evidence.reason}",
+                )
+            if available_fields is None:
+                # No field caps: absence is unproven. Downgrading here is how a
+                # gate stops catching things, so stay hard and say why.
+                return PanelRenderResult(
+                    title=title, status="error", error_class="render_error",
+                    detail=(
+                        f"{markers[0]}; names column(s) {evidence.columns} but target "
+                        "field caps were unavailable, so absence is unconfirmed"
+                    ),
+                )
+            present = [c for c in evidence.columns if c in set(available_fields)]
+            if present:
+                return PanelRenderResult(
+                    title=title, status="error", error_class="render_error",
+                    detail=(
+                        f"{markers[0]}; column(s) {present} DO exist in the target, "
+                        "so this is a real failure, not a data gap"
+                    ),
+                )
+            return PanelRenderResult(
+                title=title, status="error", error_class="field_gap",
+                missing_fields=evidence.columns,
+                detail=(
+                    f"{markers[0]}; field(s) confirmed absent from target: {evidence.columns}"
+                ),
+            )
         if available_fields is not None and _FIELD_ABSENCE_RE.search(text):
             avail = set(available_fields)
             named_missing = [

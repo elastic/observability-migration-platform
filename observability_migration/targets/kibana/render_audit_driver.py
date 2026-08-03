@@ -458,6 +458,10 @@ def run_audit_cli(
     snapshot = fetch(url)
 
     report: dict | None = None
+    # Target field caps, needed by BOTH the per-panel render classification and
+    # the --elements audit to confirm a field absence. None == unknown schema, in
+    # which case every render marker stays a hard render_error.
+    available_fields: set[str] | None = None
     migration_out = getattr(args, "migration_out", "")
     if migration_out:
         report_path = Path(migration_out) / "migration_report.json"
@@ -551,10 +555,14 @@ def run_audit_cli(
     output: dict[str, object] = {"render": verdict.to_dict()}
 
     if getattr(args, "elements", False) and report is not None:
+        breakdowns = breakdown_fields_by_panel(report)
         elements = audit_dashboard_elements(
             snapshot,
             expected_kind_by_title=expected_kind_by_panel(report),
-            breakdown_titles=set(breakdown_fields_by_panel(report)),
+            breakdown_titles=set(breakdowns),
+            breakdown_by_title=breakdowns,
+            available_fields=available_fields,
+            expects_data_titles=expects_data_by_panel(report),
         )
         output["elements"] = elements.to_dict()
 
