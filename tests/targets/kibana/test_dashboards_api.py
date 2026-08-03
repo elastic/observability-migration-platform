@@ -1958,7 +1958,17 @@ def test_upload_native_artifact_resolves_pinned_control_data_view_id():
 # Per-chart metric color allow-lists (schema-verified live on 9.5.0)
 # --------------------------------------------------------------------------- #
 
-_DYNAMIC = {"type": "dynamic", "range": "absolute", "steps": [{"gte": 80, "color": "#E7664C"}]}
+# Two steps, deliberately: Kibana rejects a SINGLE-step dynamic palette
+# ([steps.1]: At least one of "gte", "lt", or "lte" must be provided) and drops
+# the panel, so `_api_color` collapses that case to a static colour. A one-step
+# fixture would therefore never reach the dynamic branch these tests exercise --
+# and the pass-through assertions below would have been pinning a payload shape
+# that no live Kibana accepts.
+_DYNAMIC = {
+    "type": "dynamic",
+    "range": "absolute",
+    "steps": [{"lt": 80, "color": "#54B399"}, {"gte": 80, "color": "#E7664C"}],
+}
 _STATIC = {"type": "static", "color": "#54B399"}
 _CATEGORICAL = {"mode": "categorical", "palette": "default", "mapping": [{"values": ["a"], "color": "#ffffff"}]}
 

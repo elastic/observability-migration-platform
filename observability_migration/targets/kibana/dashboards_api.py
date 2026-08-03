@@ -290,6 +290,26 @@ def _api_color_mapping(color: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
+def _dynamic_palette(color_type: str, range_kind: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a dynamic color palette, collapsing a single step to a static color.
+
+    Kibana rejects a one-step dynamic palette: its schema validates the step list
+    pairwise and reports ``[steps.1]: At least one of "gte", "lt", or "lte" must
+    be provided``, which makes the whole panel fail transform and get **dropped**
+    from the saved dashboard (observed on a Datadog metric whose only threshold
+    was ``gte: 0``). A lone step has no boundary to switch at, so it means "always
+    this color" -- which is exactly a static color, not a threshold.
+
+    Roles that disallow ``static`` (gauge/heatmap/datatable metrics, see
+    :data:`_COLOR_TYPES_BY_ROLE`) drop the color entirely in
+    :func:`_api_color_for_role` and fall back to Kibana's default, which is
+    correct: better no color than a panel that never renders.
+    """
+    if len(steps) == 1:
+        return {"type": "static", "color": steps[0]["color"]}
+    return {"type": color_type, "range": range_kind, "steps": steps}
+
+
 def _api_color(color: Any) -> dict[str, Any] | None:
     """Return API-shaped color configs, dropping incomplete legacy thresholds."""
     if isinstance(color, str) and _HEX_COLOR_RE.match(color):
@@ -321,7 +341,7 @@ def _api_color(color: Any) -> dict[str, Any] | None:
             if {"gte", "lt"} & set(step):
                 legacy_steps.append(step)
         if legacy_steps:
-            return {"type": "dynamic", "range": "absolute", "steps": legacy_steps}
+            return _dynamic_palette("dynamic", "absolute", legacy_steps)
     color_type = str(color.get("type") or "")
     if color_type in {"auto", "none"}:
         return {"type": color_type}
@@ -338,7 +358,7 @@ def _api_color(color: Any) -> dict[str, Any] | None:
             steps.append(out_step)
     if not steps:
         return None
-    return {"type": color_type, "range": color["range"], "steps": steps}
+    return _dynamic_palette(color_type, color["range"], steps)
 
 
 # Roles whose API schema exposes NO ``color`` property at all (emitting one

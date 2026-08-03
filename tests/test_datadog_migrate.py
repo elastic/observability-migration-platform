@@ -2732,13 +2732,21 @@ class TestYAMLGeneration(unittest.TestCase):
 
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["decimals"], 3)
 
-    def test_query_value_conditional_format_emits_native_dynamic_color(self):
-        # The YAML schema's ``primary_metric`` color is ``MetricChartColor``
+    def test_query_value_single_conditional_format_emits_native_static_color(self):
+        # The intermediate ``primary_metric`` color is ``MetricChartColor``
         # (``apply_to`` + ascending ``thresholds``); the target mapper
-        # (``dashboards_api._api_color``) turns that into the native
-        # Dashboards API's dynamic ``range``/``steps`` color-by-value. A
-        # single ">" conditional format becomes a single open-ended band from
-        # its threshold up.
+        # (``dashboards_api._api_color``) turns that into a native Dashboards
+        # API color. A single ">" conditional format yields ONE band, and this
+        # test used to assert that shipped as a one-step dynamic palette.
+        #
+        # It cannot: Kibana rejects a single-step dynamic palette outright with
+        #   [metrics.0.color.0.steps.1]: At least one of "gte", "lt", or "lte"
+        #   must be provided
+        # and drops the whole panel from the saved dashboard -- verified live,
+        # where it silently cost 6 panels across 4 Datadog integration
+        # dashboards. One band has no boundary to switch at, so it means
+        # "always this color", which is precisely a static color. The threshold
+        # assertions below still hold; only the API color shape changed.
         query = "avg:system.cpu.user{*}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
@@ -2767,13 +2775,14 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertTrue(threshold["color"].startswith("#"))
 
         native = _api_color(color)
-        self.assertEqual(native["type"], "dynamic")
-        self.assertEqual(native["range"], "absolute")
-        self.assertEqual(len(native["steps"]), 1)
-        step = native["steps"][0]
-        self.assertEqual(step["gte"], 80)
-        self.assertNotIn("lt", step)
-        self.assertTrue(step["color"].startswith("#"))
+        self.assertEqual(native["type"], "static")
+        self.assertTrue(native["color"].startswith("#"))
+        # The colour is carried over from the band, not invented.
+        self.assertEqual(native["color"], threshold["color"])
+        # A single-step dynamic palette is what Kibana drops the panel over, so
+        # the shape must not survive anywhere in the emitted colour.
+        self.assertNotIn("steps", native)
+        self.assertNotIn("range", native)
 
     def test_query_value_multi_conditional_formats_build_contiguous_bands(self):
         # Two ">" rules (warn at 70, critical at 90) become contiguous absolute

@@ -9143,6 +9143,13 @@ def translate_dashboard(dashboard, output_dir=None, datasource_index="metrics-*"
     dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
     dashboard_ir.uid = uid
     dashboard_ir.tags = source_tags
+    # Source lineage is not expressible in the intermediate document shape, so it
+    # has to be set here or ir/<stem>.ir.json ships with empty `source_file` and
+    # `folder`. Taken off `result` rather than re-derived from the raw dashboard
+    # so the IR artifact and the migration report cannot disagree about where a
+    # dashboard came from.
+    dashboard_ir.source_file = str(getattr(result, "source_file", "") or "")
+    dashboard_ir.folder = str(getattr(result, "folder_title", "") or "")
     result.dashboard_ir = dashboard_ir
 
     native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)

@@ -116,3 +116,68 @@ class TestDatadogNativeDashboardEmission:
         )
         tuple_yaml, _native, _stats, _dashboard_ir = _artifacts(dashboard, results)
         assert plain_yaml == tuple_yaml
+
+
+def test_no_emitted_panel_carries_a_single_step_dynamic_palette():
+    """No integration dashboard may emit a one-step dynamic colour palette.
+
+    Kibana rejects it with ``[metrics.0.color.0.steps.1]: At least one of
+    "gte", "lt", or "lte" must be provided`` and DROPS the whole panel from the
+    saved dashboard -- silently, because the upload path only reads ``id`` off a
+    2xx response. It cost 6 panels across Apache, Kubernetes (2), MongoDB (2)
+    and Redis before ``_dynamic_palette`` collapsed the single-step case to a
+    static colour. Asserted over the whole corpus rather than one widget so a
+    new emitter path cannot reintroduce the shape somewhere else.
+    """
+    import glob
+    import json as _json
+
+    from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+    from observability_migration.adapters.source.datadog.generate import (
+        generate_dashboard_artifacts,
+    )
+    from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+    from observability_migration.adapters.source.datadog.planner import plan_widget
+    from observability_migration.adapters.source.datadog.translate import translate_widget
+
+    def _widgets(widgets):
+        for widget in widgets:
+            yield widget
+            yield from _widgets(widget.children)
+
+    def _colors(node):
+        """Yield every ``color`` object anywhere in the emitted payload."""
+        if isinstance(node, dict):
+            if isinstance(node.get("color"), dict):
+                yield node["color"]
+            for value in node.values():
+                yield from _colors(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from _colors(item)
+
+    offenders = []
+    sources = sorted(glob.glob("infra/datadog/dashboards/integrations/*.json"))
+    assert sources, "expected Datadog integration dashboards to be present"
+    for path in sources:
+        with open(path, encoding="utf-8") as handle:
+            raw = _json.load(handle)
+        if "widgets" not in raw:
+            continue
+        normalized = normalize_dashboard(raw)
+        results = [
+            translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+            for widget in _widgets(normalized.widgets)
+        ]
+        _yaml, native, _stats, _ir = generate_dashboard_artifacts(
+            normalized, results, field_map=OTEL_PROFILE
+        )
+        for color in _colors(native.to_api_payload()):
+            steps = color.get("steps")
+            if isinstance(steps, list) and len(steps) == 1:
+                offenders.append(f"{normalized.title}: {color}")
+
+    assert not offenders, (
+        "single-step dynamic colour palettes are rejected by Kibana and cause the "
+        f"panel to be dropped from the saved dashboard: {offenders}"
+    )
