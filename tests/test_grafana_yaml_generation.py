@@ -43,13 +43,10 @@ import json
 import os
 import pathlib
 import re
-import tempfile
 import unittest
 from functools import cache
 from types import SimpleNamespace
 from typing import Any
-
-import yaml
 
 from observability_migration.adapters.source.grafana.panels import (
     SKIP_PANEL_TYPES,
@@ -387,16 +384,14 @@ def _render_snapshot_dashboard(path: pathlib.Path) -> tuple[dict[str, Any], tupl
     """Translate a dashboard fixture through the dashboard-level YAML path."""
     dashboard = _load_dashboard(path)
     rule_pack, resolver = _snapshot_rule_pack_and_resolver(path)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result, yaml_path = translate_dashboard(
-            dashboard,
-            pathlib.Path(tmpdir),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rule_pack,
-            resolver=resolver,
-        )
-        payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
     rendered = (payload.get("dashboards") or [{}])[0]
     leaf_panels = list(_iter_leaf_panels(rendered.get("panels") or []))

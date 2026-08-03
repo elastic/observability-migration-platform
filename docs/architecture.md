@@ -28,9 +28,9 @@ Current runtime surfaces:
 
 | Surface | Entry point | Purpose |
 |---|---|---|
-| Unified CLI | `.venv/bin/obs-migrate` or `python -m observability_migration` | Source-agnostic CLI with `migrate`, `compile`, `upload`, `cluster`, `verify`, `compare`, `schema-report`, `audit-rules`, `verify-alert-rules`, `seed-sample-data`, `remove-sample-data`, `metric-map`, `list-samples`, and `extensions` subcommands |
+| Unified CLI | `.venv/bin/obs-migrate` or `python -m observability_migration` | Source-agnostic CLI with `migrate`, `upload`, `cluster`, `verify`, `compare`, `schema-report`, `audit-rules`, `verify-alert-rules`, `seed-sample-data`, `remove-sample-data`, `metric-map`, `list-samples`, and `extensions` subcommands (the `compile` subcommand was removed with the dashboard-YAML path) |
 | Grafana CLI | `.venv/bin/grafana-migrate` or `python -m observability_migration.adapters.source.grafana.cli` | Full Grafana migration pipeline |
-| Datadog CLI | `.venv/bin/datadog-migrate` or `python -m observability_migration.adapters.source.datadog.cli` | Datadog extraction, preflight, translation, report, and optional compile |
+| Datadog CLI | `.venv/bin/datadog-migrate` or `python -m observability_migration.adapters.source.datadog.cli` | Datadog extraction, preflight, translation, report, and optional upload |
 | Grafana smoke validator | `.venv/bin/grafana-validate-uploaded` or `python -m observability_migration.adapters.source.grafana.validate_uploaded_dashboards` | Post-upload Kibana saved-object validation |
 | Grafana corpus generator | `.venv/bin/grafana-generate-corpus` or `python -m observability_migration.adapters.source.grafana.corpus` | Synthetic metrics/log generation for validation gaps |
 
@@ -69,7 +69,7 @@ flowchart LR
         ir["Build QueryIR / VisualIR / OperationalIR<br/>Assemble DashboardIR (Grafana + Datadog)"]
         emit["Derive native Dashboards API payload<br/>from DashboardIR"]
         validate[Optional runtime validation]
-        compile["Opt-in scratch-YAML lint + NDJSON compile<br/>(--compile / --legacy-import)"]
+        artifacts["Write native review artifacts<br/>(native/*.native.json + ir/*.ir.json)"]
         verify[Verification and reporting]
     end
 
@@ -85,13 +85,13 @@ flowchart LR
     translate --> ir
     ir --> emit
     emit --> validate
-    emit --> compile
-    emit -->|"native PUT /api/dashboards/{id}<br/>(default upload path)"| kb
-    validate --> compile
+    emit --> artifacts
+    emit -->|"native PUT /api/dashboards/{id}<br/>(the only upload path)"| kb
+    validate --> artifacts
     validate --> verify
     validate --> es
-    compile --> verify
-    compile -->|"--legacy-import:<br/>_import?overwrite=true"| kb
+    artifacts --> verify
+    artifacts -->|"obs-migrate upload --artifact-dir:<br/>PUT /api/dashboards/{id}"| kb
     kb --> smoke
     es --> smoke
 ```
@@ -101,7 +101,6 @@ Generated artifacts typically include:
 - `dashboards/native/<stem>.native.json` — exact typed Dashboards API payload (written unconditionally every run)
 - `dashboards/ir/<stem>.ir.json` — semantic `DashboardIR` export (written unconditionally every run)
 - `dashboards/native/index.json` — index over every native artifact in the run
-- `dashboards/compiled/<stem>/compiled_dashboards.ndjson` — NDJSON (only when `--compile` is passed)
 - `migration_report.json`
 - `migration_manifest.json`
 - `rollout_plan.json`
@@ -109,6 +108,10 @@ Generated artifacts typically include:
 - `preflight_report.json` and `required_target_contract.json` in Grafana preflight mode
 - `target_readiness_contract.json` in Datadog preflight mode
 - `upload_smoke_report.json` or `uploaded_dashboard_smoke_report.json` from smoke validation
+
+There is no `dashboards/yaml/` or `dashboards/compiled/` directory: dashboard
+YAML and the NDJSON compile step were removed. A stale one from an older
+release is swept at the start of the next run.
 
 ## Package Map
 
@@ -134,7 +137,7 @@ Generated artifacts typically include:
 | `observability_migration/adapters/source/datadog/planner.py` | Widget planning |
 | `observability_migration/adapters/source/datadog/query_parser.py` and `log_parser.py` | Datadog metric/log parsing |
 | `observability_migration/adapters/source/datadog/translate.py` | Widget translation |
-| `observability_migration/adapters/source/datadog/generate.py` | Dashboard artifact emission: assemble `DashboardIR`, then derive the native Dashboards API payload (plus the in-memory kb-dashboard YAML document) from it |
+| `observability_migration/adapters/source/datadog/generate.py` | Dashboard artifact emission: assemble `DashboardIR`, then derive the native Dashboards API payload from it |
 | `observability_migration/adapters/source/datadog/curated_packs/` | Bundled per-dashboard curated Kibana **layout** packs, matched by dashboard title and applied by `generate.py` after the generic layout passes (`docs/design/curated-dashboard-packs.md#datadog-curated-layout-packs`) |
 | `observability_migration/adapters/source/datadog/field_map.py` | Built-in field profiles and custom profile loading |
 | `observability_migration/adapters/source/datadog/execution.py` | Live Datadog metric source execution for verification |
@@ -143,17 +146,18 @@ Generated artifacts typically include:
 | `observability_migration/core/interfaces/` | Source/target adapter ABCs and registries |
 | `observability_migration/core/reporting/report.py` | Shared result dataclasses and report helpers |
 | `observability_migration/core/verification/comparators.py` | Comparator helpers and verification support types |
-| `observability_migration/targets/kibana/emit/` | Shared Kibana YAML emission helpers |
+| `observability_migration/targets/kibana/emit/` | Shared Kibana panel/layout/display emission helpers |
 | `observability_migration/targets/kibana/native_artifacts.py` | Writes `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` — the primary Dashboard-as-Code review artifacts, unconditional on every dashboard run |
-| `observability_migration/targets/kibana/dashboards_api.py` | Typed Kibana Dashboards API (`PUT /api/dashboards/{id}`) — default upload path |
-| `observability_migration/targets/kibana/compile.py` | Shared compile, upload, lint, layout-validation, post-validation IR-sync, and (scratch) YAML-render helpers |
+| `observability_migration/targets/kibana/dashboards_api.py` | Typed Kibana Dashboards API (`PUT /api/dashboards/{id}`) — the only upload path |
+| `observability_migration/targets/kibana/compile.py` | Kibana space-URL helpers and the post-validation `DashboardIR` sync (`sync_result_queries_to_ir`). The compile/lint/layout/YAML-render helpers it used to host were removed with the dashboard-YAML path; the module keeps its historical name |
+| `observability_migration/targets/kibana/lint.py`, `layout.py` | Library-only checks retained after the lint/compile stages were removed. `lint.unbound_param_findings` is still used by the interaction audit; no user-facing command calls `lint_dashboard_yaml` or `validate_compiled_layout` |
 
 ## Architecture By Layer
 
 ### Unified CLI And Adapter Registry
 
 `observability_migration/app/cli.py` is the source-agnostic entry point. It
-imports the registered adapters, exposes `migrate`, `compile`, `upload`,
+imports the registered adapters, exposes `migrate`, `upload`,
 `cluster`, `verify`, `compare`, `schema-report`, `audit-rules`,
 `verify-alert-rules`, `seed-sample-data`, `remove-sample-data`, `metric-map`,
 `list-samples`, and `extensions`, and dispatches to the dedicated Grafana or
@@ -183,7 +187,6 @@ Datadog currently covers:
 - IR-first dashboard emission (`DashboardIR` → native payload) plus manifest and rollout outputs
 - capability-aware preflight via `--preflight` and/or live `_field_caps` loaded by `--es-url`
 - first-class emitted-query validation
-- optional shared compile via `--compile`
 - first-class upload in the dedicated Datadog CLI or via `obs-migrate upload`
 - post-upload smoke validation and verification packets
 - live Datadog metric source execution during verification when credentials are configured
@@ -203,8 +206,8 @@ the same stage sequence.
 | Translate / emit | `translate_dashboard()` builds `DashboardIR`, then derives the native payload | `translate_widget()` then `generate_dashboard_artifacts()` builds `DashboardIR` and derives the native payload |
 | Preflight / capability safety | Customer-facing preflight mode plus source/target probes; validation remains part of the preflight flow when target access is configured | Capability-aware preflight runs before translation when `--preflight` or live field capabilities are available |
 | Target query validation | First-class `--validate --es-url` loop with auto-fix/manualize and IR sync | First-class `--validate --es-url` loop with shared ES query fixes plus Datadog-safe artifact regeneration/manualization |
-| Compile / layout | Scratch-YAML lint, NDJSON compile and compiled-layout validation are all opt-in via `--compile` (implied by `--legacy-import`) | Same: optional shared compile via `--compile`, after any validation-driven artifact regeneration |
-| Upload | First-class `--upload` in the dedicated CLI after lint/compile/layout pass | First-class `--upload` in the dedicated CLI after compile; shared `obs-migrate upload` remains available |
+| Review artifacts | Writes `dashboards/native/*.native.json` + `dashboards/ir/*.ir.json` unconditionally (stage `[4/5]`). The YAML lint and NDJSON compile stages were removed | Same unconditional native/IR artifacts, after any validation-driven artifact regeneration |
+| Upload | First-class `--upload` in the dedicated CLI, straight to `PUT /api/dashboards/{id}` | First-class `--upload` in the dedicated CLI; shared `obs-migrate upload --artifact-dir` remains available |
 | Smoke / verification | First-class `--smoke`, Grafana-only pre-existing `--smoke-report` merge, verification packets, and semantic gates in the main flow | First-class `--smoke`, semantic gates, and live metric source execution during verification when configured |
 | Reports | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, optional preflight artifacts, rollout plan | `migration_report.json`, `migration_manifest.json`, `verification_packets.json`, `rollout_plan.json`, optional smoke report |
 
@@ -218,9 +221,8 @@ rule packs/plugins/schema setup
   -> translate_dashboard() (assemble DashboardIR; derive native payload)
   -> optional metadata polish (rebuild DashboardIR; re-derive native payload)
   -> optional ES query validation and IR sync (same IR rebuild)
-  -> optional (--compile/--legacy-import only) scratch YAML render + lint
-  -> optional compile and layout validation
-  -> optional upload (typed API prefers native_dashboard from IR)
+  -> write native/IR review artifacts (unconditional)
+  -> optional upload (typed API, native_dashboard derived from IR)
   -> optional integrated smoke validation / browser audit / screenshot capture
   -> verification packets and reviewer explanations
   -> report / manifest
@@ -248,8 +250,7 @@ field profile setup
   -> generate_dashboard_artifacts() (assemble DashboardIR; derive native payload)
   -> optional emitted-query validation (regenerate via generate_dashboard_artifacts)
   -> persist native/IR review artifacts
-  -> optional compile
-  -> optional upload (typed API prefers native_dashboard from IR)
+  -> optional upload (typed API, native_dashboard derived from IR)
   -> optional smoke validation
   -> verification packets
   -> report
@@ -257,10 +258,9 @@ field profile setup
 
 Important detail: Datadog has a more explicit **normalize -> plan -> translate
 -> emit** pipeline than Grafana, and it now continues through first-class
-validate/compile/upload/smoke/verification steps. Emission is IR-first: the typed
-Dashboards API payload (and the in-memory kb-dashboard YAML document) are derived
-from `DashboardIR`; the run persists `dashboards/native/` and `dashboards/ir/`
-only. Datadog also produces `migration_manifest.json` and
+validate/upload/smoke/verification steps. Emission is IR-first: the typed
+Dashboards API payload is derived from `DashboardIR`, and the run persists
+`dashboards/native/` and `dashboards/ir/` only. Datadog also produces `migration_manifest.json` and
 `rollout_plan.json` artifacts, and runs live metric source execution during
 verification when API credentials are available. The remaining breadth gap is
 log-query and multi-query source execution, which still fall back to
@@ -273,23 +273,28 @@ The repo uses a mix of typed IRs and report/result objects:
 - `DashboardIR`, `PanelIR`, `QueryIR`, `TargetQueryPlan`, `VisualIR`, and `OperationalIR` live under `core/assets/`
 - `MigrationResult` and `PanelResult` live in `core/reporting/report.py`
 - For Grafana and Datadog, `DashboardIR` (on `MigrationResult.dashboard_ir` /
-  `DashboardResult.dashboard_ir`) is the primary working artifact: both
-  `native_dashboard` and the on-disk YAML are derived from it
-  (`docs/architecture/asset-model.md`).
+  `DashboardResult.dashboard_ir`) is the primary working artifact:
+  `native_dashboard` is derived from it
+  (`docs/architecture/asset-model.md`). `MigrationResult` no longer carries the
+  removed compile/lint/layout fields (`compiled`, `compile_error`,
+  `yaml_linted`, `yaml_lint_error`, `layout_validated`, `layout_error`,
+  `compiled_path`); Datadog's `DashboardResult` likewise dropped `compiled`,
+  `compiled_path`, and `compile_error` but keeps `layout_checked` /
+  `layout_error` for its post-upload smoke layout check.
 - `PanelResult.visual_ir` (the flat per-panel report snapshot) remains a
   derived snapshot refreshed after emission/mutation, not a source of truth;
   the `VisualIR` embedded in each `PanelIR` inside `dashboard_ir` *is*
-  authoritative for that dashboard's native/YAML derivation
+  authoritative for that dashboard's native payload derivation
 - `OperationalIR` is refreshed after verification with the final semantic gate and runtime state
 
 ### Kibana Target Runtime
 
 The shared target runtime is centered on `targets/kibana/`:
 
-- `emit/` builds YAML panel shapes and display metadata
-- `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate compile/upload` and the Datadog smoke path
-- `compile.py` wraps YAML lint, optional `kb-dashboard-cli` compile (pinned `uvx` fallback), compiled-layout validation, upload helpers, and post-validation IR rebuild / YAML sync
-- `dashboards_api.py` maps `DashboardIR` / YAML to the typed Dashboards API and is the default upload path
+- `emit/` builds panel shapes, layout, and display metadata
+- `adapter.py` registers the real Kibana `TargetAdapter` used by `obs-migrate upload` and the Datadog smoke path. Its contract is now just `upload(artifact_dir, **kwargs)` + `smoke(**kwargs)`; `emit_dashboard`, `compile`, and `validate_queries` were removed from `TargetAdapter`
+- `compile.py` holds the Kibana space-URL helpers and the post-validation `DashboardIR` rebuild (`sync_result_queries_to_ir`). Its YAML render / `kb-dashboard-cli` compile / lint / layout wrappers were removed
+- `dashboards_api.py` maps `DashboardIR` to the typed Dashboards API and is the only upload path
 - `native_artifacts.py` writes `native/*.native.json`, `ir/*.ir.json`, and `native/index.json` unconditionally on every dashboard run — these are the primary review artifacts for the two-step migrate → review → upload workflow, and the only dashboard artifacts the repo's own tools read back (`docs/architecture/asset-model.md` → *Reading the IR artifact back*)
 - `alerting.py` Kibana Serverless alerting and connector API client (used by `--create-alert-rules` and `verify-alert-rules`)
 - `smoke_integration.py` merges Kibana smoke-test results back into migration result objects
@@ -326,11 +331,11 @@ a single success/failure flag.
 The current architecture is intentionally honest about what is still partial:
 
 - source-vs-target value comparison is not yet a full first-class workflow
-- Datadog now has preflight plus first-class validate/compile/upload/smoke, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining parity gap is broader source execution coverage for logs and multi-query widgets.
-- the active runtime is still partly CLI-centric, but Kibana is now wired through a registered `TargetAdapter` for shared compile/upload/smoke behavior
+- Datadog now has preflight plus first-class validate/upload/smoke, migration manifest and rollout artifacts, and live metric source execution during verification. The main remaining parity gap is broader source execution coverage for logs and multi-query widgets.
+- the active runtime is still partly CLI-centric, but Kibana is now wired through a registered `TargetAdapter` for shared upload/smoke behavior
 - some query families still degrade to warnings, placeholders, or manual review
 - `VisualIR` embeds chart type/config as an opaque dict (`presentation.config`), not a full typed Grafana visual model
-- Grafana and Datadog are both IR-first (`DashboardIR` primary, native + YAML derived from it); YAML remains a derived export for lint / `--compile` / `--legacy-import`
+- Grafana and Datadog are both IR-first (`DashboardIR` primary, the native payload derived from it). Dashboard YAML is fully removed: no artifact, no CLI surface, and no `kb-dashboard-cli` invocation
 - emitted-query validation is shared in spirit but still partly source-specific in code layout
 
 ## Contributor Reading Order
@@ -343,7 +348,7 @@ The current architecture is intentionally honest about what is still partial:
 6. `docs/sources/grafana.md` or `docs/sources/datadog.md` for source-specific entry points, then `docs/sources/grafana-trace.md` or `docs/sources/datadog-trace.md` for real trace output
 7. `observability_migration/app/cli.py` for the unified bootstrap
 8. `observability_migration/adapters/source/grafana/cli.py` or `observability_migration/adapters/source/datadog/cli.py` for the active source path
-9. `observability_migration/targets/kibana/compile.py` for shared compile/upload helpers
+9. `observability_migration/targets/kibana/dashboards_api.py` and `native_artifacts.py` for the native payload mapping, review artifacts, and upload
 10. `scripts/full_local_demo.sh` (full and bundled sample local validation flows) and `scripts/setup_telemetry_data.py` for operational flows
 
 ## Related Docs

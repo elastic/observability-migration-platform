@@ -1175,12 +1175,6 @@ class TestPromotionStubs(unittest.TestCase):
         self.assertTrue(dr.native_artifact_path)
         self.assertTrue(dr.ir_artifact_path)
 
-    def test_compile_path_set_after_compile(self):
-        dr = DashboardResult(dashboard_id="1", dashboard_title="Test")
-        dr.compiled = True
-        dr.compiled_path = "/tmp/compiled/test"
-        self.assertTrue(dr.compiled)
-
 
 # =========================================================================
 # 10.15 Performance Suite

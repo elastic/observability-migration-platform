@@ -80,7 +80,7 @@ obs-migrate schema-report \
   --output schema_change_report.md
 ```
 
-Point `--artifact-dir` at the per-source `dashboards/` output (the dir containing `yaml/` and `verification_packets.json`). Repeat `--artifact-dir` to merge several sources into one report. Add `--contract-out telemetry_contract.json` to also emit the machine-readable telemetry producer contract. Open `schema_change_report.md` and read the table.
+Point `--artifact-dir` at the per-source `dashboards/` output (the dir containing `ir/`, `native/`, and `verification_packets.json`). Repeat `--artifact-dir` to merge several sources into one report. Add `--contract-out telemetry_contract.json` to also emit the machine-readable telemetry producer contract. Open `schema_change_report.md` and read the table.
 
 ## Where else the same information lives
 

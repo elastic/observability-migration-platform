@@ -4,17 +4,23 @@
 
 The shared Kibana target runtime starts once a source adapter has produced
 dashboard artifacts. For Grafana and Datadog that means a semantic
-`DashboardIR` plus the derived native Dashboards API payload and on-disk YAML.
-Every dashboard migration run also persists the native payload and the IR as
-review artifacts (`dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`)
-so they can be inspected before upload -- see "Native Dashboard-as-Code Review
-Artifacts" below. The target package provides YAML emission helpers, native
-API mapping/upload, compile/upload functions, layout validation hooks, and
-supporting utilities that other pipelines reuse.
+`DashboardIR` plus the native Dashboards API payload derived from it. Every
+dashboard migration run persists both as review artifacts
+(`dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`) so they can be
+inspected before upload -- see "Native Dashboard-as-Code Review Artifacts"
+below. The target package provides panel/layout emission helpers, native API
+mapping and upload, and supporting utilities that other pipelines reuse.
+
+**Dashboard YAML has been removed.** Nothing in the engine renders, writes,
+lints, or compiles a kb-dashboard YAML document, and nothing shells out to
+`kb-dashboard-cli` or `kb-dashboard-lint`. There is exactly one deploy path:
+the typed Kibana Dashboards API (`PUT /api/dashboards/{id}`). See "Removed:
+the dashboard-YAML surfaces" in `docs/command-contract.md` for the
+operator-facing list of removed flags and their replacements.
 
 Today the shared target code lives in `observability_migration/targets/kibana/`.
-It now includes the registered Kibana `TargetAdapter`, shared compile/upload
-entry points, and the shared post-upload smoke runtime. Source-aware emitted
+It now includes the registered Kibana `TargetAdapter`, the shared upload entry
+points, and the shared post-upload smoke runtime. Source-aware emitted
 query validation still remains in source adapters because it needs
 source-specific rewrite logic.
 
@@ -22,87 +28,78 @@ source-specific rewrite logic.
 
 | Responsibility | Primary location | Notes |
 |---|---|---|
-| YAML emission helpers | `observability_migration/targets/kibana/emit/` | Shared panel/layout helpers used while adapters assemble IR/YAML |
+| Panel/layout emission helpers | `observability_migration/targets/kibana/emit/` | Shared panel/layout helpers used while adapters assemble the `DashboardIR` |
 | Display enrichment | `observability_migration/targets/kibana/emit/display.py` | Common panel display helpers |
 | ES\|QL shape helpers | `observability_migration/targets/kibana/emit/esql_utils.py` | Field extraction and query-shape helpers |
-| Registered target adapter | `observability_migration/targets/kibana/adapter.py` | Shared `TargetAdapter` for compile/upload/smoke/cluster orchestration |
-| Compile / upload / layout validation | `observability_migration/targets/kibana/compile.py` | Resolves `kb-dashboard-cli` installed-first (uvx fallback); lint/layout run in-process; post-validation IR rebuild |
-| Native Dashboards API mapping / upload | `observability_migration/targets/kibana/dashboards_api.py` | `native_dashboard_from_ir` / `native_dashboard_from_yaml`; default typed `PUT /api/dashboards/{id}` with per-dashboard legacy fallback |
+| Registered target adapter | `observability_migration/targets/kibana/adapter.py` | Shared `TargetAdapter` for upload/smoke/cluster orchestration |
+| Space-URL helpers + post-validation IR sync | `observability_migration/targets/kibana/compile.py` | `detect_space_id_from_kibana_url`, `kibana_url_for_space`, `sync_result_queries_to_ir` (the YAML render/compile/legacy-upload functions were removed) |
+| Native Dashboards API mapping / upload | `observability_migration/targets/kibana/dashboards_api.py` | `native_dashboard_from_ir`; typed `PUT /api/dashboards/{id}`, no fallback renderer |
 | Native Dashboard-as-Code review artifacts | `observability_migration/targets/kibana/native_artifacts.py` | Persists the exact typed API payload (`native/*.native.json`) and semantic IR (`ir/*.ir.json`) for review before upload |
 | Serverless API helpers | `observability_migration/targets/kibana/serverless.py` | Serverless-safe dashboard listing, data view CRUD, deletion workaround |
 | Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit |
 | Render audit | `observability_migration/targets/kibana/render_audit*.py` | Default-state panel render truth in real Kibana |
 | Interaction audit | `observability_migration/targets/kibana/interaction_*.py` | Playwright control selection + affected-query evidence (9.5+) |
-| Unified compile / upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate compile`, `obs-migrate upload`, `obs-migrate cluster` |
+| Unified upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate upload`, `obs-migrate cluster` (`obs-migrate compile` was removed) |
 | Grafana query validation | `observability_migration/adapters/source/grafana/esql_validate.py` | Source-aware runtime validation against Elasticsearch |
 | Grafana smoke wrapper | `observability_migration/adapters/source/grafana/validate_uploaded_dashboards.py` | Backward-compatible CLI surface for the shared smoke runtime |
 
-## Shared Compile And Upload Flow
+## Shared Upload Flow
 
-`observability_migration/targets/kibana/compile.py` exposes the shared runtime
-functions:
+`observability_migration/targets/kibana/compile.py` (kept under its historical
+name) exposes the shared runtime functions that survived the YAML removal:
 
-- `dashboard_yaml_text()` / `write_dashboard_yaml()` render the deprecated
-  kb-dashboard YAML document from a `DashboardIR` (in memory, or into a caller-
-  owned scratch directory). A migration writes no YAML artifact directory.
-- `compile_yaml()` and `compile_all()` compile dashboard YAML to NDJSON.
-- `upload_yaml()` compiles and uploads a dashboard through `kb-dashboard-cli`
-  (legacy path).
-- `dashboards_api.native_dashboard_from_ir()` / `native_dashboard_from_yaml()`
-  build the typed API payload; `upload_native_dashboard()` /
-  `upload_yaml_files()` upsert with stable dashboard IDs, with caller-provided
-  legacy fallback for rejected or empty dashboards.
-- `native_artifacts.write_native_artifact()` / `write_ir_artifact()` persist
-  that same typed API payload and its source `DashboardIR` to disk for
-  review; `dashboards_api.upload_native_artifact()` deploys a persisted
-  artifact later with no re-mapping and no legacy fallback.
-- `lint_dashboard_yaml()` runs the in-process YAML lint gate
-  (`observability_migration.targets.kibana.lint`).
-- `validate_compiled_layout()` runs the in-process layout validator
-  (`observability_migration.targets.kibana.layout`).
+- `detect_space_id_from_kibana_url()` / `kibana_url_for_space()` resolve the
+  Kibana space to deploy into.
 - `sync_result_queries_to_ir()` rebuilds `DashboardIR` after post-validation
-  query rewrites and re-derives the native payload from it (it writes no YAML).
-  The rebuild goes through the YAML document shape, which can only carry
+  query rewrites and re-derives the native payload from it. Nothing is written
+  to disk here. The rebuild goes through the internal **in-memory dict shape**
+  (`DashboardIR.to_yaml_dict()`, no file involved), which can only carry
   `compile.YAML_ROUND_TRIPPED_IR_FIELDS`, so every other IR field --
   dashboard identity (`uid`/`folder`/`tags`), lineage and the referenced asset
-  collections -- is carried across from the pre-rebuild IR. Adding a
-  `DashboardIR` field means classifying it in
-  `compile.YAML_ROUND_TRIPPED_IR_FIELDS` or
+  collections -- is carried across from the pre-rebuild IR by
+  `carry_over_non_yaml_ir_fields()`. Adding a `DashboardIR` field means
+  classifying it in `compile.YAML_ROUND_TRIPPED_IR_FIELDS` or
   `compile.IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD`; an exhaustiveness test
   fails until you do.
 
-The **default** upload path is the typed Dashboards API (no
-`kb-dashboard-cli`). Compilation and the `--legacy-import` fallback shell out
-to `kb-dashboard-cli`, resolved **installed-first**: if the console script is
-on `PATH` (the `[kibana]` extra, installed via `pip install ".[kibana]"`, which
-requires Python 3.12+) it is used directly; otherwise the runtime falls back to
-a pinned `uvx --from kb-dashboard-cli==0.4.1 kb-dashboard-cli`. Lint and layout
-validation run **in-process** inside the package and no longer shell out to
-repo scripts.
+Removed from this module with the YAML surface: `dashboard_yaml_text`,
+`write_dashboard_yaml`, `compile_yaml`, `compile_all`, `upload_yaml`, and the
+`lint_dashboard_yaml` / `validate_compiled_layout` wrappers. The `*_yaml_*`
+names that remain (`YAML_ROUND_TRIPPED_IR_FIELDS`,
+`carry_over_non_yaml_ir_fields`) describe that internal dict shape, **not** a
+file format.
 
-```bash
-# installed extra (3.12+):
-kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
-# or via the pinned uvx fallback (3.11):
-uvx --from kb-dashboard-cli==0.4.1 kb-dashboard-cli compile --input-file dashboard.yaml --output-dir compiled/
-```
+Upload itself lives in `dashboards_api.py` and `adapter.py`:
 
-The native API path is the **default** on `obs-migrate upload`,
-`obs-migrate migrate`, `grafana-migrate`, and `datadog-migrate`. Migrate
-`--upload` prefers the in-memory `native_dashboard` already derived from
+- `dashboards_api.native_dashboard_from_ir()` builds the typed API payload from
+  a `DashboardIR`; `upload_native_dashboard()` upserts it with a stable
+  dashboard ID.
+- `native_artifacts.write_native_artifact()` / `write_ir_artifact()` persist
+  that same typed API payload and its source `DashboardIR` to disk for
+  review; `dashboards_api.upload_native_artifact()` deploys a persisted
+  artifact later with no re-mapping and no fallback renderer.
+- `dashboards_api.iter_payload_leaf_panels()` and `payload_panel_queries()`
+  read a built payload back: leaf panels (recursing one level into sections)
+  and the ES|QL each one carries, including per-layer queries on an `xy` panel.
+  They are what the structural guard in `tests/native_payload_guard.py` uses to
+  check the shipped payload against the IR it came from.
+- `native_dashboard_from_yaml()`, `build_dashboard_payload_from_yaml()`,
+  `build_payload_from_yaml()`, `map_yaml_panel()`, `map_yaml_control()`, and
+  `map_yaml_filters()` are retained, but despite their names they map the
+  internal dict shape produced by `DashboardIR.to_yaml_dict()` -- they never
+  read a YAML file. Treat them as the dict-shape mapper.
+
+There is one upload path on `obs-migrate upload`, `obs-migrate migrate`,
+`grafana-migrate`, and `datadog-migrate`: the typed Dashboards API. Migrate
+`--upload` uploads the in-memory `native_dashboard` already derived from
 `DashboardIR` (the same payload persisted to `native/*.native.json`, see
-below); standalone `obs-migrate upload --artifact-dir …` prefers that
-persisted native artifact when present, else maps YAML through
-`native_dashboard_from_yaml`. All three produce the same typed API panels
+below); standalone `obs-migrate upload --artifact-dir …` uploads that persisted
+native artifact byte-for-byte. Both produce the same typed API panels
 (sections, controls/`pinned_panels`, markdown, `links`, `image`, and all 11
 ES\|QL visualization families) and use `PUT /api/dashboards/{id}` for
-idempotent deploys. When
-mapping from YAML, a dashboard that is rejected or contains no API-mappable
-content falls back to the legacy `kb-dashboard-cli` import path; a rejected
-*native* artifact does not, since there is no YAML to silently re-derive it
-from (pass `--artifact-format yaml` explicitly for that fallback). Pass
-`--legacy-import` to force the legacy compile+import path for every
-dashboard; it always requires YAML (it forces `--artifact-format yaml`).
+idempotent deploys. A rejected payload is a **terminal failure** -- there is no
+second renderer to silently re-derive the dashboard from, and the
+`--legacy-import` compile+`_import` fallback was removed.
 
 An accepted (2xx) upload is not automatically a clean one: Kibana drops panels it
 cannot transform and still answers `200`, with no `warnings` key on the PUT body.
@@ -111,30 +108,32 @@ response echoes in `data.panels` and downgrades the result to status `lossy` whe
 fewer came back, then issues a single follow-up `GET /api/dashboards/{id}` — only on
 a detected mismatch — to attach Kibana's own `warnings[].message` to each dropped
 panel. `lossy` is a failure (it never counts as `uploaded_ok`) and, like `conflict`,
-is terminal rather than routed to the legacy fallback. See
-`docs/command-contract.md` for the operator-facing contract.
+is terminal. See `docs/command-contract.md` for the operator-facing contract.
 
-In short: native IR is the new source of truth for dashboard upload. The YAML,
-compile, and saved-object import surfaces are compatibility paths for review,
-linting, legacy automation, and explicit fallback workflows; they are not the
-default deployment contract anymore.
+In short: `DashboardIR` is the source of truth, `native/*.native.json` is the
+artifact, and the typed Dashboards API is the only deployment contract. The
+YAML, compile, and saved-object import surfaces no longer exist.
 
 ### Native Dashboard-as-Code Review Artifacts
 
 Every dashboard migration run persists two artifacts per dashboard, whether or
 not `--upload` is passed, so the typed API payload can be reviewed before it
-is ever sent to Kibana -- restoring the pre-typed-API "compile, inspect,
-upload" workflow without reviving the legacy YAML-to-NDJSON compile step (see
-`docs/architecture/asset-model.md`):
+is ever sent to Kibana. This is the "generate, inspect, upload" workflow with
+no compile step at all (see `docs/architecture/asset-model.md`):
 
 - `dashboards/native/<stem>.native.json` -- exactly `NativeDashboard.to_api_payload()`,
   wrapped in a small envelope (`kind`, `version`, `dashboard_id`, `title`,
-  `payload`, `mapping`). This is what `obs-migrate upload --artifact-format
-  native` sends to Kibana, unchanged.
-- `dashboards/ir/<stem>.ir.json` -- the semantic `DashboardIR` both the native
-  payload and the on-disk YAML are derived from.
+  `payload`, `mapping`). This is what `obs-migrate upload --artifact-dir` sends
+  to Kibana, unchanged.
+- `dashboards/ir/<stem>.ir.json` -- the semantic `DashboardIR` the native
+  payload is derived from.
 - `dashboards/native/index.json` -- one row per dashboard in the run
   (`stem`, `title`, `dashboard_id`, `native_path`, `ir_path`).
+
+These are the **only** dashboard artifacts a run writes: there is no
+`dashboards/yaml/` and no `dashboards/compiled/`. A `yaml/` or `compiled/`
+directory left behind by an older release is swept on the next run, so stale
+artifacts cannot sit next to fresh `native/` ones.
 
 Both `MigrationResult` (Grafana) and `DashboardResult` (Datadog) expose the
 written paths as `native_artifact_path` / `ir_artifact_path`, and
@@ -142,34 +141,30 @@ written paths as `native_artifact_path` / `ir_artifact_path`, and
 
 ### `obs-migrate upload` Input Shape
 
-`obs-migrate upload` takes `--artifact-dir <path>`: the dashboard artifact
-directory, or directly its `native/` child. `--artifact-format`
-(`auto` default, `native`, or `yaml`) picks the representation -- `auto`
-prefers the reviewed native artifacts when present, else falls back to
-mapping YAML through Kibana's typed Dashboards API. Because a migration writes
-no YAML, `auto` always resolves to `native/` for its own output; the YAML branch
-exists for an externally supplied (hand-written or archived) YAML directory. With
-`--legacy-import` (which forces `--artifact-format yaml`), it instead recompiles
-every YAML through the `kb-dashboard-cli` resolution path and imports the
-resulting saved objects. The accepted shapes are:
+`obs-migrate upload` takes exactly one input: `--artifact-dir <path>`
+(required). Every `native/*.native.json` under it is sent to
+`PUT /api/dashboards/{id}` byte-for-byte -- no re-mapping, no second renderer,
+no fallback. The accepted shapes are:
 
 - A directory containing `*.native.json` review artifacts directly (e.g. `migration_output/dashboards/native`).
 - A dashboard artifacts directory that holds `native/` (e.g. `migration_output/dashboards`).
-- A directory containing externally supplied `*.yaml` dashboard files directly.
-- A directory that holds a `yaml/` subdirectory of externally supplied YAML, or that directory's `compiled/` sibling (the command falls back to the sibling `yaml/` directory).
+- Any sibling child of the artifact root, which still resolves to `../native/`.
 
-When `--artifact-format auto` sees both native artifacts and YAML under an
-artifact root, it requires their stems to match exactly. A partial/mixed tree
-(for example, one missing `*.native.json`) is rejected with
-`mixed_native_yaml_artifacts` instead of uploading a silent subset. Point
-directly at the `native/` directory for an intentional native-only subset, or
-pass `--artifact-format yaml` when you intentionally want the YAML mapping path.
+If no `native/*.native.json` is found, `upload` exits `1` and says so rather
+than uploading nothing quietly.
 
-`--yaml-dir` remains accepted as a compatibility alias for `--artifact-dir ...
---artifact-format yaml`. The older `--compiled-dir` alias is still accepted
-for backward compatibility and behaves identically to `--yaml-dir`, but its
-name is misleading because NDJSON input is never consumed; prefer
-`--artifact-dir`/`--yaml-dir` in new scripts.
+**Removed input flags.** These now exit `2` with a message naming the
+replacement rather than being silently ignored:
+
+| Removed flag | Replacement |
+|---|---|
+| `--yaml-dir <dir>` | `--artifact-dir <dashboards>` |
+| `--compiled-dir <dir>` | `--artifact-dir <dashboards>` |
+| `--artifact-format {auto,native,yaml}` | Drop it. There is one format: the native payload under `native/`. |
+| `--legacy-import` | Drop it. Uploads go through the typed Dashboards API. |
+
+The `obs-migrate compile` subcommand is removed as well; nothing consumes
+NDJSON. See `docs/command-contract.md` for the full removal table.
 
 ### Dashboard Controls (ES|QL `pinned_panels`)
 
@@ -181,26 +176,29 @@ Source template variables become Kibana `pinned_panels` controls via
   `STATIC_VALUES` (`available_options`).
 - **`fields`** controls bind an *identifier* parameter (`STATS ... BY ??var`)
   for late-bound grouping (Grafana `by ($var)`, issue #282). The control's
-  selectable dimensions are carried under `choices` in the YAML/IR control and
-  map to a `STATIC_VALUES` ES|QL control with `variable_type: fields`. The lint
-  gate requires a `??var` identifier to be bound specifically by a `fields`
-  control — a same-named `values` control does **not** satisfy it, because a
-  value is not a valid identifier for `STATS ... BY`. The converse is also
-  enforced: a `fields` control does not bind a `?var` value parameter.
+  selectable dimensions are carried under `choices` on the IR control and
+  map to a `STATIC_VALUES` ES|QL control with `variable_type: fields`.
+  `lint.unbound_param_findings` requires a `??var` identifier to be bound
+  specifically by a `fields` control — a same-named `values` control does
+  **not** satisfy it, because a value is not a valid identifier for
+  `STATS ... BY`. The converse is also enforced: a `fields` control does not
+  bind a `?var` value parameter. That check reads the in-memory dict shape (or
+  one rebuilt from `ir/*.ir.json`), so it survived the YAML removal and is
+  still applied by the interaction audit.
 
 ### `links` And `image` Panels
 
 Beyond markdown and the 11 ES\|QL visualization families, the native mapper
 (`map_yaml_panel` / `map_panel` in `targets/kibana/dashboards_api.py`) also
-maps two non-query panel types, driven by the kb-dashboard-core YAML keys of
-the same name:
+maps two non-query panel types, driven by the internal dict-shape keys of
+the same name (named after the kb-dashboard-core schema they descend from):
 
-- **`links`** -- a YAML `links: {layout, items: [...]}` block (each item
+- **`links`** -- a `links: {layout, items: [...]}` block (each item
   either `url`-keyed or `dashboard`-keyed) maps to the native `type: "links"`
   panel, with `url` items becoming `externalLink`s and `dashboard` items
   becoming `dashboardLink`s (`new_tab`/`encode`/`with_filters`/`with_time` map
   onto the native `options` bag; `open_in_new_tab` is always emitted for URL
-  links because the YAML and native API defaults differ). Grafana synthesizes
+  links because the dict-shape and native API defaults differ). Grafana synthesizes
   one of these panels per dashboard from `dashboard.links[]` entries of type
   `"link"` with an absolute HTTP(S) URL and no inline Grafana variables -- see
   `adapters/source/grafana/links.py::build_links_panel`.
@@ -209,7 +207,7 @@ the same name:
   manual-navigation notes instead. Grafana `includeVars`/`keepTime` requests
   are preserved as explicit migration warnings because native external links
   cannot forward that context.
-- **`image`** -- a YAML `image: {from_url, fit, background_color,
+- **`image`** -- an `image: {from_url, fit, background_color,
   description}` block maps to the native `type: "image"` panel
   (`image_config.src` as a `url` source; `fit` maps 1:1 onto
   `object_fit`). Datadog `image` widgets with a real absolute `http(s)` URL
@@ -219,13 +217,15 @@ the same name:
 
 ## Command Coverage
 
-Compile/upload/cluster command examples are centralized in `docs/command-contract.md`.
+Upload/cluster command examples are centralized in `docs/command-contract.md`.
 
 Use that doc for:
-- `obs-migrate compile`
 - `obs-migrate upload`
 - `obs-migrate cluster ...`
 - source-specific smoke command examples
+- the full list of removed dashboard-YAML surfaces (`obs-migrate compile`,
+  `--yaml-dir`, `--compiled-dir`, `--artifact-format`, `--legacy-import`,
+  `--compile`/`--no-compile`) and their replacements
 
 ## Alert Rule Creation
 
@@ -243,9 +243,10 @@ Use `scripts/audit_migrated_rules.py` (or `cluster`-level queries against `GET /
 
 ## Validation Boundaries
 
-- **Pre-upload query validation** currently lives in source adapters because it needs source-aware query rewrite and manualization logic before compile/upload.
-- **YAML lint and compiled-layout validation** are shared target checks and run through `targets/kibana/compile.py`.
+- **Pre-upload query validation** currently lives in source adapters because it needs source-aware query rewrite and manualization logic before upload.
+- **The YAML lint stage and the compiled-layout validation stage are gone.** `targets/kibana/lint.py` and `targets/kibana/layout.py` are retained as library code — `lint.py` also hosts `unbound_param_findings`, which the interaction audit uses — but no user-facing command calls `lint_dashboard_yaml` or `validate_compiled_layout` any more.
 - **Post-upload smoke validation** is now shared under `targets/kibana/smoke.py`, with a Grafana wrapper retained for backward-compatible CLI usage.
+- **Structural payload guards** live in `tests/native_payload_guard.py`: `assert_payload_matches_ir` (the load-bearing check — the shipped payload versus the `DashboardIR` it was built from) and `assert_payload_matches_dict_shape_bridge` (a second construction through the in-memory dict shape, which pins the dashboard-level derivations). Neither reads or writes YAML.
 
 ### Payload Fields Kibana Does Not Store
 
@@ -281,13 +282,13 @@ PUT-then-GET round-trip check. The emitter therefore does not send them.
 ## Current Structural Gaps
 
 - Source-aware emitted-query validation is still source-located because it depends on Grafana- and Datadog-specific query rewrite logic.
-- Datadog now reuses the registered Kibana target adapter for compile/upload/smoke and emits first-class manifest/rollout artifacts. The remaining Datadog parity gap is broader source execution coverage beyond simple metric widgets.
+- Datadog now reuses the registered Kibana target adapter for upload/smoke and emits first-class manifest/rollout artifacts. The remaining Datadog parity gap is broader source execution coverage beyond simple metric widgets.
 - The shared target adapter does not yet own source-aware pre-upload fixup loops; those still sit at the source boundary.
 
 ## Notes By Source
 
-- Grafana uses the full target path: emit, optional runtime validation, lint, compile, optional upload, verification artifacts, and optional smoke merge.
-- Datadog reuses shared YAML emission, optional compile (`--compile`), first-class dedicated upload (`--upload`), shared smoke validation (`--smoke`), manifest/rollout artifacts, and verification packets. Preflight is first-class (`--preflight` with capability-aware field checks when `--es-url` is provided), while source-aware query validation remains Datadog-located because it can rewrite emitted queries safely before compile/upload.
+- Grafana uses the full target path: translate to `DashboardIR`, optional runtime validation, native review artifacts, optional upload, verification artifacts, and optional smoke merge. Its console pipeline is 5 stages (`[1/5]` extract, `[2/5]` translate, `[3/5]` verification-packet ES|QL validation, `[4/5]` write native review artifacts, `[5/5]` report) plus an unnumbered rollout-plan step; the old `[4/7]` YAML lint and `[5/7]` YAML→NDJSON compile stages were removed.
+- Datadog reuses the shared IR/native emission, first-class dedicated upload (`--upload`), shared smoke validation (`--smoke`), manifest/rollout artifacts, and verification packets. Preflight is first-class (`--preflight` with capability-aware field checks when `--es-url` is provided), while source-aware query validation remains Datadog-located because it can rewrite emitted queries safely before upload. `datadog-migrate --compile` / `--no-compile` / `--legacy-import` were removed and now exit `2` (`core/cli_contract.reject_removed_surfaces` gives `obs-migrate`, `grafana-migrate`, and `datadog-migrate` the same message).
 
 ## Elastic Serverless Compatibility
 

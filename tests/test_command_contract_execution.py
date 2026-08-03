@@ -6,7 +6,7 @@
 Layers
 ------
 1. **Offline** (always) — doctor, list-samples, extensions, file-mode migrate for
-   both sources, dedicated CLIs, compile, schema-report.
+   both sources, dedicated CLIs, schema-report.
 2. **Live** (opt-in via ``OBS_MIGRATE_CONTRACT_LIVE=1`` + serverless creds) —
    cluster list/detect, audit-rules, delete-rules dry-run, seed/compare/verify,
    upload into an isolated space. Destructive confirms are never run.
@@ -73,26 +73,6 @@ def _run(
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result
-
-
-def _render_yaml_from_ir(ir_dir: Path, dest_dir: Path) -> Path:
-    """Build a YAML directory from a run's ``ir/*.ir.json`` artifacts.
-
-    ``obs-migrate compile`` and ``upload --artifact-format yaml`` still accept an
-    externally supplied YAML directory; a migration no longer produces one, so
-    the contract examples that consume YAML build their input here.
-    """
-    from observability_migration.core.assets.dashboard import DashboardIR
-    from observability_migration.targets.kibana.compile import write_dashboard_yaml
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for artifact_file in sorted(ir_dir.glob("*.ir.json")):
-        artifact = json.loads(artifact_file.read_text(encoding="utf-8"))
-        dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
-        write_dashboard_yaml(
-            dashboard_ir, dest_dir, artifact_file.name[: -len(".ir.json")]
-        )
-    return dest_dir
 
 
 @unittest.skipUnless(OBS.is_file(), "obs-migrate venv binary missing; run make sync")
@@ -188,6 +168,7 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
             )
             dashboards_dir = out / "dashboards"
             self.assertFalse((dashboards_dir / "yaml").exists())
+            self.assertFalse((dashboards_dir / "compiled").exists())
             self.assertTrue(list((dashboards_dir / "native").glob("*.native.json")))
             self.assertTrue(list((dashboards_dir / "ir").glob("*.ir.json")))
             self.assertTrue((out / "dashboards" / "migration_report.json").is_file())
@@ -220,6 +201,7 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
             )
             dashboards_dir = out / "dashboards"
             self.assertFalse((dashboards_dir / "yaml").exists())
+            self.assertFalse((dashboards_dir / "compiled").exists())
             self.assertTrue(list((dashboards_dir / "native").glob("*.native.json")))
             self.assertTrue(list((dashboards_dir / "ir").glob("*.ir.json")))
             self.assertTrue((out / "run_summary.json").is_file())
@@ -273,14 +255,14 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
             )
             for produced in (g_out / "dashboards", d_out / "dashboards"):
                 self.assertFalse((produced / "yaml").exists())
+                self.assertFalse((produced / "compiled").exists())
                 self.assertTrue(list((produced / "native").glob("*.native.json")))
                 self.assertTrue(list((produced / "ir").glob("*.ir.json")))
 
-    def test_compile_and_schema_report_offline(self):
+    def test_schema_report_offline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             migrate_out = root / "migrate"
-            compiled = root / "compiled"
             schema_md = root / "schema.md"
             contract_json = root / "telemetry_contract.json"
             _run(
@@ -304,29 +286,6 @@ class CommandContractOfflineExecutionTests(unittest.TestCase):
                 ],
                 env={"_CONTRACT_OFFLINE": "1"},
                 timeout=240,
-            )
-            # `obs-migrate compile` still consumes YAML, but a migration no
-            # longer emits any, so render the compiler's input from the run's IR
-            # artifacts exactly as the --compile path does internally.
-            yaml_dir = root / "external_yaml"
-            _render_yaml_from_ir(migrate_out / "dashboards" / "ir", yaml_dir)
-            compile_result = _run(
-                [
-                    str(OBS),
-                    "compile",
-                    "--yaml-dir",
-                    str(yaml_dir),
-                    "--output-dir",
-                    str(compiled),
-                ],
-                env={"_CONTRACT_OFFLINE": "1"},
-                check=False,
-                timeout=240,
-            )
-            # compile may exit nonzero on lint while still writing NDJSON.
-            self.assertTrue(
-                compiled.exists() or compile_result.returncode in (0, 1),
-                f"compile produced nothing:\n{compile_result.stdout}\n{compile_result.stderr}",
             )
             _run(
                 [

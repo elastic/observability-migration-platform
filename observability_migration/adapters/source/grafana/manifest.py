@@ -183,7 +183,7 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
     if inventory["has_library_panel"]:
         notes.append("Grafana library panel reference detected; verify source ownership manually")
     if inventory["has_description"]:
-        notes.append("Grafana panel description is not carried into Kibana YAML automatically")
+        notes.append("Grafana panel description is not carried into the migrated Kibana panel automatically")
     if panel_analysis and panel_analysis.get("mixed_datasource"):
         notes.append("Panel mixes datasource or query-language types and needs manual redesign")
     return notes
@@ -292,12 +292,7 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "uid": getattr(result, "dashboard_uid", ""),
             "source_file": getattr(result, "source_file", ""),
             "folder_title": getattr(result, "folder_title", ""),
-            # Deprecated: kept so existing consumers keep resolving "the
-            # artifact for this dashboard". Migration no longer writes YAML, so
-            # this now mirrors ``native_artifact_path``; read that instead.
-            "yaml_path": getattr(result, "native_artifact_path", ""),
             "artifact_stem": getattr(result, "artifact_stem", ""),
-            "compiled_path": getattr(result, "compiled_path", ""),
             "native_artifact_path": getattr(result, "native_artifact_path", ""),
             "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),

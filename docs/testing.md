@@ -10,8 +10,9 @@ for the operator CLI see `command-contract.md`. This document explains the
 
 No single check proves "the dashboard migrated correctly", so gates are layered —
 each answers a different question, and **real Kibana is the ultimate authority**
-(the offline schema/lint is only a fast pre-filter for a YAML→JSON compiler that
-has its own bugs).
+(the offline schema gate is only a fast pre-filter: it validates the in-memory
+dict shape rebuilt from `ir/*.ir.json`, not what Kibana does with the payload
+it is actually sent).
 
 ```
  Tier 4  LIVE        live_validate · dashboards_api · render audit · interaction
@@ -59,7 +60,8 @@ CI mapping (`.github/workflows/`):
 | Core-IR units | `tests/test_grafana_ir_units.py` | `_parse_fragment`, `DashboardLineage`, IR dataclass contracts (directly, not via snapshot churn) |
 | Grafana semantic suite | `tests/test_grafana_semantic_accuracy.py` | aggregation / metric / group-by / time-bucket preserved (asserts the structured `esql` block, robust to native-PROMQL vs ES\|QL) |
 | Datadog semantic suite | `tests/e2e/test_datadog_semantic_accuracy.py` | same properties for Datadog |
-| Snapshots | `tests/snapshots/`, `tests/test_*_snapshots.py` | emitted ES\|QL / YAML is byte-stable |
+| Snapshots | `tests/snapshots/`, `tests/test_*_snapshots.py` | emitted ES\|QL is byte-stable |
+| Native payload guards | `tests/native_payload_guard.py` (used by the Grafana/Datadog CLI artifact tests) | the shipped `native/*.native.json` still describes its `DashboardIR` (`assert_payload_matches_ir`, the load-bearing check) and agrees with a second construction through the in-memory dict shape (`assert_payload_matches_dict_shape_bridge`) |
 
 **Updating snapshots** (only when the output change is intentional):
 
@@ -108,9 +110,10 @@ Baselines: `parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`
 the *current* code and fails if ERROR counts rise. → See
 [Refreshing a fidelity baseline](#refreshing-a-fidelity-baseline).
 
-> The vendored `schema.json` comes from the abandoned `kb-dashboard-core`, so
-> passing the schema gate is **necessary but not sufficient** — real Kibana
-> (Tier 4) is the authority.
+> The vendored `schema.json` comes from the abandoned `kb-dashboard-core` and now
+> describes only the engine's internal in-memory dict shape (no YAML file is
+> written or read any more), so passing the schema gate is **necessary but not
+> sufficient** — real Kibana (Tier 4), fed the native payload, is the authority.
 
 ### Grafana ES|QL structural harness (offline)
 
@@ -233,9 +236,25 @@ audit below.
   - `field_gap` — a field the panel needs (its breakdown, or a column the error
     names) is absent from the target's fields → **warn** (data-readiness, not a
     translator bug).
-  - `data_gap` — a referenced metric is absent → **warn** (expected empty).
+  - `data_gap` — an empty panel whose metric column is confirmed absent from the
+    index it reads → **warn** (expected empty; remediate data/mapping).
   - `unexpected_empty` — a query panel rendered nothing despite no known gap →
     **warn** (verify data/time window or a broken query).
+- **`data_gap` is held to the same evidence bar as `field_gap`.** The metric is
+  the *source* column the panel's ES\|QL reads (`AVG(redis_keys)` → `redis_keys`;
+  a projection-only log table → its `KEEP` columns), never the output alias
+  (`value`, `count`) which exists in no index. An empty panel stays in the
+  stricter `unexpected_empty` when there is no attributable metric (`COUNT(*)`
+  reads no column), when field caps are unavailable, or when the metric *does*
+  exist — with `detail` naming which of those applied. "We don't know why this is
+  empty" is a weaker claim than "your target has no such metric", so it is what
+  the audit reports when it does not know.
+- **Field caps are per index, not per dashboard.** Each panel is judged against
+  the index its own ES\|QL `FROM` names, so a `FROM logs-*` panel's columns are
+  never looked up in `metrics-*`. `--es-index` is only the fallback for panels
+  whose query names no index. One `_field_caps` call per distinct index per
+  dashboard (cached), and a panel whose index could not be read is treated as
+  unknown-schema, which keeps it in the stricter class.
 - **`field_gap` is evidence-based, never marker-based.** Elasticsearch wraps both
   pure field absence *and* genuine translator defects in one
   `verification_exception`, so the marker decides nothing. The classifier reads

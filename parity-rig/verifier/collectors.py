@@ -282,11 +282,12 @@ def _iter_ir_panels(panels: list[dict[str, Any]]) -> Iterable[dict[str, str]]:
 # T3  — the dashboard as Kibana stored it (GET /api/dashboards/{id})
 #
 # The original T3 source was ``compiled/<slug>/compiled_dashboards.ndjson``,
-# which only exists when ``--compile`` ran the deprecated kb-dashboard-cli YAML
-# compiler. With YAML on the way out that file is usually absent, and an absent
-# T3 does not merely lose a tier: every panel reads as "T2 mutated into
-# nothing" and gets a NOT_UPLOADED verdict it was never checked for (measured:
-# 251 of 415 panels on a Datadog artifact set with no ``compiled/`` dir).
+# produced by the removed ``--compile`` kb-dashboard-cli YAML compiler. No
+# migration writes it any more, and an absent T3 does not merely lose a tier:
+# every panel reads as "T2 mutated into nothing" and gets a NOT_UPLOADED
+# verdict it was never checked for (measured: 251 of 415 panels on a Datadog
+# artifact set with no ``compiled/`` dir). The reader below is kept so it still
+# works when pointed at an archived artifact directory.
 #
 # The typed Dashboards API supersedes it outright. ``GET /api/dashboards/{id}``
 # returns ``{id, data, meta, warnings}`` where ``data.panels`` is the panel tree

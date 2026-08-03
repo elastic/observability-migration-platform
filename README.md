@@ -131,9 +131,9 @@ PKG='elastic-observability-migration[all]@git+https://github.com/elastic/observa
 uvx --from "$PKG" obs-migrate doctor
 ```
 
-On **Python 3.11**, keep `uv` on `PATH` so Kibana compile tools can use the
-`uvx` fallback when needed. Default typed dashboard upload does not require
-those tools.
+Dashboard upload goes through Kibana's typed Dashboards API and needs no
+external tooling: the `kb-dashboard-*` compile/lint path was removed, so there
+is no longer a Python 3.11 `uvx`-fallback requirement for dashboard work.
 
 The older `grafana-migrate` and `datadog-migrate` commands remain as
 compatibility aliases. Prefer `obs-migrate`.

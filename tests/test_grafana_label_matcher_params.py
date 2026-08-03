@@ -5,11 +5,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-import yaml
-
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.adapters.source.grafana.runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
@@ -68,16 +63,14 @@ def test_dashboard_templating_emits_named_param_and_control():
     )
     rp = rules.RulePackConfig()
     resolver = schema.SchemaResolver(rp)
-    with tempfile.TemporaryDirectory() as td:
-        result, yaml_path = panels.translate_dashboard(
-            dash,
-            Path(td),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rp,
-            resolver=resolver,
-        )
-        payload = yaml.safe_load(Path(yaml_path).read_text())
+    result = panels.translate_dashboard(
+        dash,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rp,
+        resolver=resolver,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
     assert binds_esql_named_params(rp)
     pr = result.panel_results[0]
@@ -104,15 +97,13 @@ def test_explicit_unsupported_probe_still_drops_matchers():
         reason="cluster cannot bind named params",
     )
     resolver = schema.SchemaResolver(rp)
-    with tempfile.TemporaryDirectory() as td:
-        result, _yaml_path = panels.translate_dashboard(
-            dash,
-            Path(td),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rp,
-            resolver=resolver,
-        )
+    result = panels.translate_dashboard(
+        dash,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rp,
+        resolver=resolver,
+    )
 
     assert not binds_esql_named_params(rp)
     pr = result.panel_results[0]

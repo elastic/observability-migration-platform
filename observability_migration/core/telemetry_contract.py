@@ -759,8 +759,9 @@ def _resolve_ir_dir(artifact_path: Path, *, caller: str) -> Path:
 
     Callers pass either the dashboards artifact root (which holds an
     ``ir/`` subdirectory) or one of its artifact subdirectories -- most
-    often ``ir/`` itself, but ``yaml/``/``native/`` are accepted because
-    the CLI's ``--yaml-dir``/``--compiled-dir`` flags still point there.
+    often ``ir/`` or ``native/``. The legacy ``yaml/``/``compiled/`` names
+    are still resolved so an archived artifact tree from an older release
+    keeps working.
     The fallback to ``artifact_path`` is legitimate for the ``ir/`` shape.
     It is *not* legitimate for anything else: an unconditional fallback
     root-globs ``*.ir.json``, matches nothing, and warns nothing — so a

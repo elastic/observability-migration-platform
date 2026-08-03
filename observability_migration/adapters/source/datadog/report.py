@@ -248,9 +248,6 @@ def print_report(results: list[DashboardResult]) -> None:
         if groups:
             print(f"    Groups: {groups} (structural, not migrated)")
 
-        if dr.compile_error:
-            print(f"    COMPILE ERROR: {dr.compile_error}")
-
         if dr.upload_attempted:
             upload_status = "pass" if dr.uploaded and not dr.upload_error else "fail"
             print(f"    Upload: {upload_status}")
@@ -383,12 +380,6 @@ def save_detailed_report(
             "not_feasible": dr.not_feasible,
             "skipped": dr.skipped,
             "blocked": dr.blocked,
-            "compiled": dr.compiled,
-            "compiled_path": dr.compiled_path,
-            "compile_error": dr.compile_error,
-            # Deprecated: migration no longer writes YAML. Mirrors
-            # ``native_artifact_path``; read that (or ``artifact_stem``) instead.
-            "yaml_path": dr.native_artifact_path,
             "artifact_stem": dr.artifact_stem,
             "native_artifact_path": dr.native_artifact_path,
             "ir_artifact_path": dr.ir_artifact_path,
@@ -543,8 +534,6 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         green=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Green")),
         yellow=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Yellow")),
         red=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Red")),
-        compiled_ok=sum(1 for dr in results if dr.compiled),
-        compiled_total=len(results),
         uploaded_ok=sum(1 for dr in results if dr.uploaded),
         upload_attempted=sum(1 for dr in results if dr.upload_attempted),
         native_promql=sum(
@@ -574,8 +563,6 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
                 warnings=dr.migrated_with_warnings,
                 manual=dr.requires_manual,
                 not_feasible=dr.not_feasible,
-                compiled=dr.compiled,
-                compile_error=dr.compile_error,
                 risk_score=risk_by_title.get(dr.dashboard_title),
                 rollout_state="",
                 native_promql=prov.count(PanelProvenance.NATIVE),

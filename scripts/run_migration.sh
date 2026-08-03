@@ -4,21 +4,20 @@
 
 #
 # End-to-end migration pipeline:
-#   1. Migrate Grafana dashboards → Kibana YAML  (native PROMQL by default)
-#   2. Extract required metrics from compiled YAML
-#   3. Generate & ingest synthetic data (with preflight validation)
-#   4. Upload compiled dashboards to Kibana
-#   5. Validate every panel query against live ES cluster
+#   1. Migrate Grafana dashboards → native Kibana Dashboard-as-Code artifacts
+#      (native PROMQL by default)
+#   2. Extract required metrics and generate & ingest synthetic data
+#   3. Upload the native dashboard artifacts to Kibana
+#   4. Validate every panel query against live ES cluster
 #
 # Usage:
 #   ./scripts/run_migration.sh                # full pipeline
-#   ./scripts/run_migration.sh --skip-data    # skip data generation (steps 2-3)
-#   ./scripts/run_migration.sh --skip-upload  # skip upload + validate (steps 4-5)
+#   ./scripts/run_migration.sh --skip-data    # skip data generation (step 2)
+#   ./scripts/run_migration.sh --skip-upload  # skip upload + validate (steps 3-4)
 #
 # Prerequisites:
 #   - serverless_creds.env in project root
 #   - .venv with requirements.txt installed
-#   - uvx kb-dashboard-cli on PATH (for compile step)
 #
 set -euo pipefail
 
@@ -37,8 +36,8 @@ Usage: bash scripts/run_migration.sh [options]
 Runs the Grafana native-PROMQL migration flow with optional data generation and upload checks.
 
 Options:
-  --skip-data     Skip synthetic data extraction/generation (steps 2-3).
-  --skip-upload   Skip upload and panel runtime validation (steps 4-5).
+  --skip-data     Skip synthetic data extraction/generation (step 2).
+  --skip-upload   Skip upload and panel runtime validation (steps 3-4).
   -h, --help      Show this help text.
 EOF
       exit 0
@@ -70,14 +69,14 @@ INPUT_DIR="infra/grafana/dashboards"
 OUTPUT_DIR="migration_output_native"
 ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"
 DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"
-COMPILED_DIR="$OUTPUT_DIR/dashboards/compiled"
+NATIVE_DIR="$OUTPUT_DIR/dashboards/native"
 RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"
 DATA_VIEW="metrics-*"
 ESQL_INDEX="metrics-*"
 
 echo ""
 echo "============================================================"
-echo "  Step 1: Migrate Grafana → Kibana YAML (native PROMQL)"
+echo "  Step 1: Migrate Grafana → native Kibana dashboards (native PROMQL)"
 echo "============================================================"
 $VENV -m observability_migration.adapters.source.grafana.cli \
   --source files \
@@ -111,34 +110,22 @@ fi
 if [ "$SKIP_UPLOAD" = false ]; then
   echo ""
   echo "============================================================"
-  echo "  Step 3: Upload compiled dashboards to Kibana"
+  echo "  Step 3: Upload native dashboard artifacts to Kibana"
   echo "============================================================"
-  upload_ok=0
-  upload_fail=0
-  for dir in "$COMPILED_DIR"/*/; do
-    ndjson="$dir/compiled_dashboards.ndjson"
-    if [ ! -f "$ndjson" ]; then
-      continue
-    fi
-    name="$(basename "$dir")"
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-      -X POST "$KIBANA_ENDPOINT/api/saved_objects/_import?overwrite=true" \
-      -H "kbn-xsrf: true" \
-      -H "Authorization: ApiKey $KEY" \
-      -F "file=@$ndjson")
-    if [ "$http_code" = "200" ]; then
-      echo "  OK: $name"
-      upload_ok=$((upload_ok + 1))
-    else
-      echo "  FAIL ($http_code): $name"
-      upload_fail=$((upload_fail + 1))
-    fi
-  done
-  echo "  Uploaded: $upload_ok OK, $upload_fail failed"
+  if [ ! -d "$NATIVE_DIR" ]; then
+    echo "ERROR: no native dashboard artifacts at $NATIVE_DIR — step 1 wrote nothing to upload." >&2
+    exit 1
+  fi
+  # The typed Dashboards API (PUT /api/dashboards/{id}) is the only upload
+  # path: it sends each native/*.native.json byte-for-byte.
+  $VENV -m observability_migration.app.cli upload \
+    --artifact-dir "$DASHBOARD_ARTIFACT_DIR" \
+    --kibana-url "$KIBANA_ENDPOINT" \
+    --kibana-api-key "$KEY"
 
   echo ""
   echo "============================================================"
-  echo "  Step 5: Validate panel queries against live ES"
+  echo "  Step 4: Validate panel queries against live ES"
   echo "============================================================"
   MAX_BROKEN_PCT="${MAX_BROKEN_PCT:-10}" \
     $VENV "$SCRIPT_DIR/validate_panel_queries.py" "$DASHBOARD_ARTIFACT_DIR"

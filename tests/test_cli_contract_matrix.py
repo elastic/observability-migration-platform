@@ -81,8 +81,6 @@ SHARED_MIGRATE_FLAGS = frozenset(
         "--insecure",
         "--validate",
         "--upload",
-        "--legacy-import",
-        "--compile",
         "--create-alert-rules",
         "--no-draft-alert-rules",
         "--es-url",

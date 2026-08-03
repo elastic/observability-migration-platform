@@ -5,9 +5,9 @@
 pipeline writes under ``<output-dir>/dashboards/{native,ir}/``.
 
 Mirrors ``tests/test_grafana_cli_native_artifacts.py``: proves the persisted
-``*.native.json`` payload equals the YAML-bridged upload payload, and that
-IR/index/manifest artifacts are present and shaped as documented in
-``docs/targets/kibana.md``.
+``*.native.json`` payload still structurally describes the ``DashboardIR`` it
+was built from, and that IR/index/manifest artifacts are present and shaped as
+documented in ``docs/targets/kibana.md``.
 """
 
 from __future__ import annotations
@@ -16,6 +16,11 @@ import json
 from unittest.mock import patch
 
 from observability_migration.adapters.source.datadog import cli as datadog_cli
+from observability_migration.core.assets.dashboard import DashboardIR
+from tests.native_payload_guard import (
+    assert_payload_matches_dict_shape_bridge,
+    assert_payload_matches_ir,
+)
 
 
 def _write_dashboard(tmp_path):
@@ -52,35 +57,13 @@ def _run(tmp_path, out_dir, *extra_args):
         datadog_cli.main(argv)
 
 
-def _run_capturing_yaml_exports(tmp_path, out_dir, *extra_args):
-    """Run the pipeline and capture each dashboard's derived YAML document.
-
-    The migration writes no YAML, so the kb-dashboard document
-    ``generate_dashboard_artifacts`` derives only exists in memory. Capture it
-    per artifact stem so the artifact-vs-YAML-bridge guards keep an oracle.
-    """
-    import yaml as yaml_lib
-
-    from observability_migration.targets.kibana import compile as compile_module
-
-    exports: dict[str, dict] = {}
-    real_native = datadog_cli.write_native_artifact
-
-    def _record(*, dashboard_ir, native_dashboard, native_stats, native_dir, stem):
-        exports[stem] = yaml_lib.safe_load(
-            compile_module.dashboard_yaml_text(dashboard_ir)
-        )["dashboards"][0]
-        return real_native(
-            dashboard_ir=dashboard_ir,
-            native_dashboard=native_dashboard,
-            native_stats=native_stats,
-            native_dir=native_dir,
-            stem=stem,
-        )
-
-    with patch.object(datadog_cli, "write_native_artifact", side_effect=_record):
-        _run(tmp_path, out_dir, *extra_args)
-    return exports
+def _ir_by_stem(dashboards_dir):
+    """``{artifact stem: DashboardIR}`` rebuilt from the persisted ir/ artifacts."""
+    out = {}
+    for ir_file in sorted((dashboards_dir / "ir").glob("*.ir.json")):
+        stem = ir_file.name[: -len(".ir.json")]
+        out[stem] = DashboardIR.from_dict(json.loads(ir_file.read_text())["dashboard_ir"])
+    return out
 
 
 class TestDatadogCliNativeArtifacts:
@@ -95,48 +78,53 @@ class TestDatadogCliNativeArtifacts:
         assert len(native_files) == 1
         assert len(ir_files) == 1
 
-    def test_native_artifact_payload_matches_yaml_bridge_payload(self, tmp_path):
-        """The persisted typed payload must equal the one the YAML bridge builds.
+    def test_native_artifact_payload_describes_the_persisted_ir(self, tmp_path):
+        """The shipped payload must still describe the IR it was built from.
 
-        ``generate_dashboard_artifacts`` still returns the kb-dashboard document
-        alongside the native payload; nothing writes it to disk. Building the
-        payload through that document is the only structural cross-check on the
-        artifact we ship, so it stays -- against the in-memory export.
+        Load-bearing structural cross-check on the artifact we upload: compares
+        the payload against the ``DashboardIR`` rather than re-running the
+        mapper, so a widget or ES|QL query lost during mapping surfaces here.
         """
-        from observability_migration.targets.kibana import dashboards_api
-
         _write_dashboard(tmp_path)
         out_dir = tmp_path / "out"
-        exports = _run_capturing_yaml_exports(tmp_path, out_dir)
+        _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
+        native_files = sorted((dashboards_dir / "native").glob("*.native.json"))
+        assert native_files
+        for native_file in native_files:
+            stem = native_file.name[: -len(".native.json")]
+            artifact = json.loads(native_file.read_text())
+            assert_payload_matches_ir(artifact["payload"], irs[stem], label=stem)
+
+    def test_native_artifact_payload_matches_dict_shape_bridge(self, tmp_path):
+        """Both mapper entry points must build the same payload from one IR.
+
+        The internal dict shape cannot express dashboard-level ``tags`` -- its
+        schema is ``additionalProperties: false``, which is exactly why
+        ``native_dashboard_from_ir`` reads dashboard fields off the IR rather
+        than through ``to_yaml_dict()``. So the divergence is *pinned* rather
+        than ignored: tags may differ, nothing else may, and tags must actually
+        be populated (an empty list would make the two payloads match again and
+        silently re-open the bug where Datadog tags never reached the upload).
+        """
+        _write_dashboard(tmp_path)
+        out_dir = tmp_path / "out"
+        _run(tmp_path, out_dir)
+
+        dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
         native_file = next((dashboards_dir / "native").glob("*.native.json"))
         stem = native_file.name[: -len(".native.json")]
 
         artifact = json.loads(native_file.read_text())
-        bridged_payload, _stats = dashboards_api.build_payload_from_yaml(
-            {"dashboards": [exports[stem]]}
+        assert_payload_matches_dict_shape_bridge(
+            artifact["payload"],
+            irs[stem],
+            allow_divergent_keys=frozenset({"tags"}),
+            label=stem,
         )
-
-        # The kb-dashboard document cannot express dashboard-level `tags` -- its
-        # schema is additionalProperties: false, which is exactly why
-        # native_dashboard_from_ir reads dashboard fields off the IR rather than
-        # through to_yaml_dict(). So the divergence is *pinned* rather than
-        # ignored: tags may differ, nothing else may, and tags must actually be
-        # populated (an empty list would make the two payloads match again and
-        # silently re-open the bug where Datadog tags never reached the upload).
-        divergent_keys = {
-            key
-            for key in set(artifact["payload"]) | set(bridged_payload)
-            if artifact["payload"].get(key) != bridged_payload.get(key)
-        }
-        assert divergent_keys <= {"tags"}, (
-            f"native payload diverged from the YAML bridge on {divergent_keys - {'tags'}}, "
-            "which the document shape can represent"
-        )
-        assert {k: v for k, v in artifact["payload"].items() if k != "tags"} == {
-            k: v for k, v in bridged_payload.items() if k != "tags"
-        }
         assert artifact["payload"]["tags"] == ["team:infra"]
 
     def test_native_artifact_envelope_shape(self, tmp_path):
@@ -153,18 +141,14 @@ class TestDatadogCliNativeArtifacts:
         assert "payload" in artifact
         assert set(artifact["mapping"]) == {"mapped", "unmapped", "sections", "controls", "reasons"}
 
-    def test_ir_artifact_rebuilds_the_exact_dashboard_yaml_export(self, tmp_path):
+    def test_ir_artifact_round_trips_through_the_internal_dict_shape(self, tmp_path):
         """Datadog counterpart of the Grafana IR round-trip guard.
 
         Datadog still emits some ``lens`` presentation blocks and template
         variables, so this covers presentation kinds and control shapes the
-        Grafana fixture does not reach. Every reader ported off the YAML export
-        depends on this round-trip being lossless. The oracle is the
-        kb-dashboard document the pipeline derives in memory (nothing writes it
-        to disk any more).
+        Grafana fixture does not reach. Every reader of ``ir/*.ir.json`` depends
+        on this round-trip being lossless.
         """
-        from observability_migration.core.assets.dashboard import DashboardIR
-
         _write_dashboard(tmp_path)
         (tmp_path / "grouped.json").write_text(
             json.dumps(
@@ -206,17 +190,17 @@ class TestDatadogCliNativeArtifacts:
             )
         )
         out_dir = tmp_path / "out"
-        exports = _run_capturing_yaml_exports(tmp_path, out_dir)
+        _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
         ir_files = sorted((dashboards_dir / "ir").glob("*.ir.json"))
         assert len(ir_files) == 2
         for ir_file in ir_files:
-            stem = ir_file.name[: -len(".ir.json")]
-            expected = exports[stem]
             artifact = json.loads(ir_file.read_text())
-            rebuilt = DashboardIR.from_dict(artifact["dashboard_ir"]).to_yaml_dict()
-            assert rebuilt == expected, ir_file.name
+            dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
+            exported = dashboard_ir.to_yaml_dict()
+            reloaded = DashboardIR.from_yaml_dict(exported, source_adapter="datadog")
+            assert reloaded.to_yaml_dict() == exported, ir_file.name
 
     def test_ir_artifact_contains_json_safe_dashboard_ir(self, tmp_path):
         _write_dashboard(tmp_path)

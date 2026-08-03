@@ -74,11 +74,11 @@ obs-migrate migrate \
   --create-alert-rules
 ```
 
-- `--upload` pushes dashboards via the **typed Dashboards API** (in-memory / persisted `native/*.native.json` payloads). It does **not** require `kb-dashboard-cli` recompile for the default path; pass `--compile` / `--legacy-import` only when you intentionally want NDJSON/YAML compile artifacts. `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
+- `--upload` pushes dashboards via the **typed Dashboards API** (in-memory / persisted `native/*.native.json` payloads). That is the only upload path — there is no YAML/NDJSON compile step and no external tool to install. `--create-alert-rules` creates the emitted rules **disabled** and tagged `obs-migration`.
 - Drop `--upload` / `--create-alert-rules` for a dry, target-aware translation pass first; add them once the readout looks right. You can also split into two runs: produce artifacts, inspect `full_out/dashboards/native/*.native.json` (upload payload) and `full_out/dashboards/ir/*.ir.json` (translator decisions, inspection-only), then `obs-migrate upload --artifact-dir full_out/dashboards`.
 - Without `--create-alert-rules`, alert translation still writes `monitor_migration_results.json` (Datadog) / equivalent Grafana alert artifacts — **not** `monitor_rule_upload_results.json` / `alert_rule_upload_results.json` (those appear only when rules are created in Kibana).
 - File-based sources: swap `--input-mode api` for `--input-mode files --input-dir <dir>` pointing at all exported dashboard JSON.
-- **Custom-CA / self-signed clusters:** `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) verifies against a private CA; `--insecure` (env `OBS_MIGRATE_INSECURE`) skips verification for testing only. Both cover source, Elasticsearch, Kibana, and the Node upload step.
+- **Custom-CA / self-signed clusters:** `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) verifies against a private CA; `--insecure` (env `OBS_MIGRATE_INSECURE`) skips verification for testing only. Both cover source, Elasticsearch, and Kibana (including the dashboard upload).
 
 ## Step 2 — Read what landed and what did NOT
 

@@ -542,12 +542,17 @@ class CommandContractDocTests(unittest.TestCase):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("They accept the same `--input-mode {files,api}`", text)
         self.assertIn("`--source files|api`", text)
+        # `--compile` / `--no-compile` were removed with the dashboard-YAML
+        # path; the contract must still name them so an operator upgrading a
+        # script that passed them finds the replacement.
         self.assertIn("--no-compile", text)
-        # Phrase may wrap across a Markdown line break.
+        # No longer "by default" — the typed Dashboards API is the only upload
+        # path. Phrase may wrap across a Markdown line break.
         self.assertRegex(
             text,
-            r"Upload deploys through Kibana's\s+typed Dashboards API by default",
+            r"Upload deploys through Kibana's\s+typed Dashboards API",
         )
+        self.assertNotIn("typed Dashboards API by default", text)
         self.assertIn("obs-migrate migrate --source <source> --input-mode files", text)
 
     def test_command_contract_documents_every_obs_migrate_subcommand(self):

@@ -9,7 +9,7 @@ A 5-tier verification framework for migrated Grafana → Kibana dashboards. For 
 | **T0** | `migration_report.json:panels[*].promql` (else `query_ir.source_expression`) | the original source panel as authored |
 | **T1** | `migration_report.json:panels[*].esql` (Datadog: `esql_query`) | what obs-migrate emitted |
 | **T2** | `<output>/ir/<dash>.ir.json` | the migration's semantic `DashboardIR` export, as emitted (`visual.presentation.config.query`) |
-| **T3** | `GET /api/dashboards/<id>` (fallback: `<output>/compiled/<dash>/compiled_dashboards.ndjson`) | the dashboard as Kibana actually stored it |
+| **T3** | `GET /api/dashboards/<id>` (fallback: `<output>/compiled/<dash>/compiled_dashboards.ndjson`, only ever present in an *archived* pre-removal artifact directory) | the dashboard as Kibana actually stored it |
 | **T4** | `GET /api/saved_objects/dashboard/<id>` (or HAR walker fallback) | what Kibana stores as the saved object |
 | **T5** | live `POST /_query` response | what the cluster actually executes |
 
@@ -17,19 +17,22 @@ T0 → T1 is expected to differ (different languages); the verifier only flags d
 
 ### T3: the stored dashboard, not the compiler output
 
-T3 used to read `compiled/<slug>/compiled_dashboards.ndjson`, which only exists
-when `--compile` ran the deprecated kb-dashboard-cli YAML compiler. With YAML
-being removed that file is usually absent, and an absent T3 did not merely lose
-a tier: every panel read as "T2 mutated into nothing" and got a `NOT_UPLOADED`
-verdict for a check that never ran (measured: 251 of 415 panels on a Datadog
-artifact set with no `compiled/` dir, plus 251 phantom `T2=T3` findings).
+T3 used to read `compiled/<slug>/compiled_dashboards.ndjson`, which only existed
+when `--compile` ran the kb-dashboard-cli YAML compiler. **That compiler, the
+`--compile` flag, and the `compiled/` directory have all been removed**, so no
+current migration produces that file. An absent T3 did not merely lose a tier:
+every panel read as "T2 mutated into nothing" and got a `NOT_UPLOADED` verdict
+for a check that never ran (measured: 251 of 415 panels on a Datadog artifact
+set with no `compiled/` dir, plus 251 phantom `T2=T3` findings).
 
 With `--kibana-url`, T3 now comes from `GET /api/dashboards/{id}` for every
 dashboard in `native/index.json`. That is strictly better — the real uploaded
 state rather than a compiler artifact — and it is the only source of the real
 Kibana panel UUIDs, surfaced on each record as `stored.panel_id` (the IR's
-`panel_id` is a *migration* id and is not interchangeable). The NDJSON reader
-remains as a fallback for runs that still have a `compiled/` dir.
+`panel_id` is a *migration* id and is not interchangeable). The NDJSON reader is
+kept on purpose so the verifier still works when pointed at an **archived**
+artifact directory from a pre-removal release; expect it never to fire on a
+fresh run.
 
 Where the ES|QL lives in a stored panel depends on the chart family: single
 series charts (`metric`/`data_table`/`gauge`/`pie`/`heatmap`/…) carry
@@ -39,7 +42,7 @@ first query, which is the primary layer's — the one T1/T2 record.
 
 ### Unchecked tiers are reported, not inferred
 
-When no T3 source exists (no `--kibana-url` and no `compiled/`), or the record's
+When no T3 source exists (no `--kibana-url`, and no archived `compiled/`), or the record's
 dashboard could not be read back, T3 is reported unavailable with a reason on the
 panel record. The `T2=T3` / `T3=T4` axes are then skipped instead of producing a
 "right side empty" finding per panel, and the panel is *not* labelled
@@ -52,8 +55,9 @@ Markdown summaries) with the per-tier panel count, T3's provenance, and how many
 records carry a real Kibana UUID. Read it alongside the verdict counts: a verdict
 distribution alone cannot tell "checked and agreed" from "never checked".
 
-T2 used to read `<output>/yaml/<dash>.yaml`. It now reads the IR export, which
-is the artifact the YAML was *derived* from (`DashboardIR.to_yaml_dict`), so
+T2 used to read `<output>/yaml/<dash>.yaml`, which no migration writes any more.
+It now reads the IR export — the artifact the YAML document shape was always
+*derived* from (`DashboardIR.to_yaml_dict`, now an in-memory dict only) — so
 `T1=T2` still measures the same thing: post-translator emitter transforms
 (composite-legend splice, synthetic gauge bounds) that
 `migration_report.json:esql` does not carry. The tier field in the JSON report
@@ -68,7 +72,7 @@ reports written before the move.
 | `DRIFT` | at least one tier transition mutated the query in a way that wasn't expected |
 | `FAIL` | live `_query` returned 4xx/5xx |
 | `NOT_FEASIBLE` | translator refused to migrate this panel (e.g. `histogram_quantile`); not a regression |
-| `NOT_UPLOADED` | a stored dashboard *was* read back (or compiled NDJSON found) but has no panel with this title — the panel really is not in Kibana |
+| `NOT_UPLOADED` | a stored dashboard *was* read back (or archived compiled NDJSON found) but has no panel with this title — the panel really is not in Kibana |
 | `SKIP` | nothing to compare: the panel had no translator output (likely markdown / manual), or no target-side tier could be consulted at all (see `stored.unavailable_reason`) |
 | `ERROR` | unhandled exception during verification |
 
@@ -121,7 +125,7 @@ To add another known transform, edit `_KNOWN_T1_T2_RIGHT_ONLY_PATTERNS` in `comp
 
 `--migration-out` is normally a single dashboard's output directory, but
 `grafana-migrate --input-dir` / `datadog-migrate --input-dir` write every
-dashboard of a run into one `ir/` (and one `compiled/`), and pointing the
+dashboard of a run into one `native/` and one `ir/`, and pointing the
 verifier at that is supported.
 
 The local tiers are therefore joined **per dashboard** (on the report's
@@ -141,7 +145,7 @@ it with.
 
 ## Limitations
 
-- **Elastic Serverless saved-objects API is gated.** When the verifier can't fetch the cluster saved object via `GET /api/saved_objects/dashboard/<id>`, it falls back to using the compiled NDJSON as T4. The browser walker (Workflow E1 in the [debug-uploaded-kibana-dashboard skill](../../.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md)) is the recommended source for a true T4/T5 capture on Serverless.
+- **Elastic Serverless saved-objects API is gated.** When the verifier can't fetch the cluster saved object via `GET /api/saved_objects/dashboard/<id>`, it falls back to using the compiled NDJSON as T4 — which only an archived pre-removal artifact directory still has, so on a current run that fallback is simply unavailable. The browser walker (Workflow E1 in the [debug-uploaded-kibana-dashboard skill](../../.cursor/skills/debug-uploaded-kibana-dashboard/SKILL.md)) is the recommended source for a true T4/T5 capture on Serverless.
 - **Lens injects `?_tstart` / `?_tend` parameters at runtime.** The verifier auto-supplies a 1-hour window for T5; if you want a specific time range, edit `_autoparams_for_esql` in `collectors.py`.
 
 ## File layout

@@ -5,11 +5,7 @@
 
 from __future__ import annotations
 
-import pathlib
-import tempfile
 import unittest
-
-import yaml
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.adapters.source.grafana.runtime_features import (
@@ -296,12 +292,11 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
             supported=True, source="test", confidence="assumed",
         )
         resolver = schema.SchemaResolver(rule_pack)
-        with tempfile.TemporaryDirectory() as tmp:
-            _result, path = panels.translate_dashboard(
-                self._dash(multi), tmp, datasource_index="metrics-*",
-                esql_index="metrics-*", rule_pack=rule_pack, resolver=resolver,
-            )
-            return yaml.safe_load(pathlib.Path(path).read_text())["dashboards"][0]
+        result = panels.translate_dashboard(
+            self._dash(multi), datasource_index="metrics-*",
+            esql_index="metrics-*", rule_pack=rule_pack, resolver=resolver,
+        )
+        return result.dashboard_ir.to_yaml_dict()
 
     def test_multi_select_emits_mv_contains_with_all_sentinel(self):
         doc = self._translate(multi=True)

@@ -92,17 +92,21 @@ Generated files tracked in this repository:
 - `docs/dashboards/schema.toon` — regenerated from the same source when
   `npx` is available.
 
-The local dashboard workflow may also invoke `kb-dashboard-cli` and
-`kb-dashboard-lint`, but those tools are not themselves tracked artifacts in
-this repository.
+`kb-dashboard-core` remains the upstream source of that tracked JSON **schema**.
+The dashboard workflow no longer invokes `kb-dashboard-cli` or
+`kb-dashboard-lint` at runtime: the dashboard-YAML compile/lint path was
+removed, and dashboards are deployed through Kibana's own typed Dashboards API.
+Those tools are not tracked artifacts in this repository either way.
 
 ### `elastic-observability-migration[kibana]` Extra
 
 The optional `[kibana]` dependency group (installed via
 `pip install ".[kibana]"`, resolved only on **Python 3.12+** per the
-`pyproject.toml` environment markers) declares the following packages so the
-Kibana compile/lint tooling can be installed in-environment instead of fetched
-at runtime via `uvx`:
+`pyproject.toml` environment markers) still declares the following packages, and
+they are documented here for license attribution. **No command in this
+repository invokes them any more** — the dashboard-YAML compile/lint path that
+used to shell out to them (installed-first, with a pinned `uvx` fallback) has
+been removed:
 
 - `kb-dashboard-cli`, `kb-dashboard-lint`, and their transitive
   `kb-dashboard-core`, `kb-dashboard-tools`, and `kb-dashboard-docs` — all

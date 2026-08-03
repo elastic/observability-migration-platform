@@ -11,25 +11,23 @@ from typing import Any
 
 
 class TargetAdapter(ABC):
-    """Contract for target-side emission, compilation, and validation."""
+    """Contract for target-side artifact upload and post-upload validation.
+
+    The former ``emit_dashboard`` / ``compile`` / ``validate_queries`` members
+    described the removed dashboard-YAML artifact path (emit YAML -> compile to
+    NDJSON -> lint/validate the YAML). A migration now writes native
+    Dashboard-as-Code artifacts and uploads them through the target's typed
+    API, so the contract is upload + smoke.
+    """
 
     name: str  # e.g. "kibana"
 
     @abstractmethod
-    def emit_dashboard(self, dashboard_ir: Any, output_dir: Path, **kwargs: Any) -> Path:
-        """Emit a dashboard artifact (e.g. YAML) and return the output path."""
+    def upload(self, artifact_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        """Upload the target-native artifacts under ``artifact_dir``.
 
-    @abstractmethod
-    def compile(self, yaml_dir: Path, output_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        """Compile emitted artifacts and return a structured summary."""
-
-    @abstractmethod
-    def validate_queries(self, run_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        """Validate emitted queries against the live target; return a summary."""
-
-    @abstractmethod
-    def upload(self, compiled_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        """Upload compiled artifacts to the target and return a structured summary."""
+        Returns a structured ``{"summary": ..., "records": [...]}`` payload.
+        """
 
     @abstractmethod
     def smoke(self, **kwargs: Any) -> dict[str, Any]:

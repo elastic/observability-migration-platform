@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -24,7 +22,6 @@ from observability_migration.adapters.source.grafana.panels import translate_das
 from observability_migration.adapters.source.grafana.rules import RulePackConfig
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
 from observability_migration.core.reporting.report import MigrationResult
-from observability_migration.targets.kibana import compile as shared_compile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GRAFANA_DASHBOARD_DIR = REPO_ROOT / "infra" / "grafana" / "dashboards"
@@ -95,25 +92,28 @@ def _iter_datadog_widgets(widgets: list[Any]) -> list[Any]:
 
 def _translate_grafana_dashboard(
     filename: str,
-    output_dir: Path,
     *,
     native_promql: bool = False,
-) -> tuple[MigrationResult, Path, dict[str, Any]]:
+) -> tuple[MigrationResult, dict[str, Any]]:
+    """Translate a shipped Grafana dashboard and return its kb-dashboard-core doc.
+
+    ``translate_dashboard`` writes nothing to disk; the document shape the
+    assertions below walk is derived in memory from the semantic IR, which is
+    the same source the native Dashboards API payload is built from.
+    """
     rule_pack = RulePackConfig()
     rule_pack.native_promql = native_promql
     resolver = SchemaResolver(rule_pack)
     dashboard = json.loads((GRAFANA_DASHBOARD_DIR / filename).read_text(encoding="utf-8"))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    result, yaml_path = translate_dashboard(
+    result = translate_dashboard(
         dashboard,
-        output_dir,
         datasource_index="metrics-*",
         esql_index="metrics-*",
         rule_pack=rule_pack,
         resolver=resolver,
     )
-    yaml_doc = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
-    return result, Path(yaml_path), yaml_doc
+    yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+    return result, yaml_doc
 
 
 def _translate_datadog_raw(
@@ -179,8 +179,7 @@ def _status_counts(results: list[TranslationResult]) -> dict[str, int]:
 
 class TestGrafanaRealDashboardPipelines(unittest.TestCase):
     def test_diverse_panels_dashboard_preserves_mixed_semantics(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _, yaml_doc = _translate_grafana_dashboard("diverse-panels-test.json", Path(tmpdir))
+        result, yaml_doc = _translate_grafana_dashboard("diverse-panels-test.json")
 
         panels = _panels_by_title(yaml_doc)
         controls = yaml_doc["dashboards"][0].get("controls") or []
@@ -215,8 +214,7 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         self.assertIn('message LIKE "*error*"', app_logs["query"])
 
     def test_k8s_views_global_keeps_sections_and_metrics(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _, yaml_doc = _translate_grafana_dashboard("k8s-views-global.json", Path(tmpdir))
+        result, yaml_doc = _translate_grafana_dashboard("k8s-views-global.json")
 
         top_panels = yaml_doc["dashboards"][0].get("panels") or []
         section_titles = [panel.get("title") for panel in top_panels if "section" in panel]
@@ -229,8 +227,7 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         self.assertEqual(leaf_panels["Nodes"]["esql"]["type"], "metric")
 
     def test_prometheus_all_keeps_metric_and_area_panels(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _, yaml_doc = _translate_grafana_dashboard("prometheus-all.json", Path(tmpdir))
+        result, yaml_doc = _translate_grafana_dashboard("prometheus-all.json")
 
         panels = _panels_by_title(yaml_doc)
 
@@ -321,48 +318,3 @@ class TestDatadogRealDashboardPipelines(unittest.TestCase):
         avg_panel = panels["Avg duration"]
         self.assertNotIn("lens", avg_panel)
         self.assertIn("AVG(trace_http_request_duration)", avg_panel["esql"]["query"])
-
-
-@unittest.skipUnless(shutil.which("uvx"), "uvx is required for compile smoke tests")
-class TestRealCompileSmoke(unittest.TestCase):
-    def _assert_lint_compile_and_layout(self, yaml_dir: Path, yaml_path: Path, expected_dashboard_name: str):
-        lint_ok, lint_output = shared_compile.lint_dashboard_yaml(yaml_dir)
-        self.assertTrue(lint_ok, lint_output)
-
-        compiled_dir = yaml_dir / "compiled"
-        compiled_dir.mkdir(parents=True, exist_ok=True)
-        compile_ok, compile_output = shared_compile.compile_yaml(yaml_path, compiled_dir)
-        self.assertTrue(compile_ok, compile_output)
-
-        layout_ok, layout_output = shared_compile.validate_compiled_layout(compiled_dir)
-        self.assertTrue(layout_ok, layout_output)
-        self.assertTrue((compiled_dir / "compiled_dashboards.ndjson").exists())
-        self.assertIn(expected_dashboard_name, layout_output)
-
-    def test_grafana_diverse_dashboard_lints_compiles_and_validates(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "grafana_yaml"
-            _, yaml_path, _ = _translate_grafana_dashboard("diverse-panels-test.json", yaml_dir)
-            self._assert_lint_compile_and_layout(yaml_dir, yaml_path, "Diverse Panel Types Test")
-
-    def test_datadog_postgres_dashboard_lints_compiles_and_validates(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "datadog_yaml"
-            _, _, yaml_path, _ = _translate_datadog_dashboard("integrations/postgres.json", yaml_dir)
-            assert yaml_path is not None
-            self._assert_lint_compile_and_layout(yaml_dir, yaml_path, "Postgres - Metrics")
-
-    def test_issue_144_percentile_dashboard_lints_compiles_and_validates(self):
-        """Issue #144 regression: a p50/p75/p95/p99/max/avg dashboard must pass
-        the real kb-dashboard-cli schema compiler, not just produce the right
-        YAML dict shape. This is the schema-level guard the original bug evaded.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "datadog_yaml"
-            _, _, yaml_path, _ = _translate_datadog_raw(
-                ISSUE_144_PERCENTILE_DASHBOARD, yaml_dir, yaml_stem="issue_144_percentiles"
-            )
-            assert yaml_path is not None
-            self._assert_lint_compile_and_layout(
-                yaml_dir, yaml_path, "Latency percentiles (issue 144)"
-            )

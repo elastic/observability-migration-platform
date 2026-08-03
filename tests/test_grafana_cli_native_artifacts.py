@@ -4,20 +4,23 @@
 """End-to-end coverage of the native/IR review artifacts the Grafana CLI
 pipeline writes under ``<output-dir>/dashboards/{native,ir}/``.
 
-``translate_dashboard`` already proves the in-memory ``native_dashboard``
-matches the YAML bridge payload (see
-``tests/test_grafana_native_dashboard_emission.py``); this file proves the
-CLI pipeline persists that exact same payload to disk before any upload, so
-``obs-migrate upload --artifact-dir ... --artifact-format native`` deploys
-byte-for-byte what a reviewer inspected.
+``obs-migrate upload --artifact-dir ...`` deploys ``native/*.native.json``
+byte-for-byte, so this file proves the pipeline persists exactly the payload a
+reviewer inspects, and that the payload still structurally describes the
+``DashboardIR`` it was built from (see ``tests/native_payload_guard.py`` for the
+two cross-checks and why each exists).
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
 
 from observability_migration.adapters.source.grafana import cli as grafana_cli
+from observability_migration.core.assets.dashboard import DashboardIR
+from tests.native_payload_guard import (
+    assert_payload_matches_dict_shape_bridge,
+    assert_payload_matches_ir,
+)
 
 
 def _write_dashboard(tmp_path):
@@ -54,36 +57,13 @@ def _run(tmp_path, out_dir):
     )
 
 
-def _run_capturing_yaml_exports(tmp_path, out_dir):
-    """Run the pipeline and capture each dashboard's derived YAML document.
-
-    The migration writes no YAML, so the kb-dashboard document the artifacts are
-    derived from only exists in memory. Capture it per dashboard (keyed by
-    artifact stem) so the artifact-vs-YAML-bridge guards still have an oracle.
-    """
-    import yaml as yaml_lib
-
-    from observability_migration.targets.kibana import compile as compile_module
-
-    exports: dict[str, dict] = {}
-    # The native artifact writer is the pipeline's last stop and receives the
-    # same IR the ir/ artifact is built from, so capture the derived document
-    # there.
-    real_native = grafana_cli.write_native_artifact
-
-    def _record(*, dashboard_ir, native_dashboard, native_stats, native_dir, stem):
-        exports[stem] = yaml_lib.safe_load(compile_module.dashboard_yaml_text(dashboard_ir))["dashboards"][0]
-        return real_native(
-            dashboard_ir=dashboard_ir,
-            native_dashboard=native_dashboard,
-            native_stats=native_stats,
-            native_dir=native_dir,
-            stem=stem,
-        )
-
-    with patch.object(grafana_cli, "write_native_artifact", side_effect=_record):
-        _run(tmp_path, out_dir)
-    return exports
+def _ir_by_stem(dashboards_dir):
+    """``{artifact stem: DashboardIR}`` rebuilt from the persisted ir/ artifacts."""
+    out = {}
+    for ir_file in sorted((dashboards_dir / "ir").glob("*.ir.json")):
+        stem = ir_file.name[: -len(".ir.json")]
+        out[stem] = DashboardIR.from_dict(json.loads(ir_file.read_text())["dashboard_ir"])
+    return out
 
 
 class TestGrafanaCliNativeArtifacts:
@@ -98,30 +78,45 @@ class TestGrafanaCliNativeArtifacts:
         assert len(native_files) == 1
         assert len(ir_files) == 1
 
-    def test_native_artifact_payload_matches_yaml_bridge_payload(self, tmp_path):
-        """The persisted typed payload must equal the one the YAML bridge builds.
+    def test_native_artifact_payload_describes_the_persisted_ir(self, tmp_path):
+        """The shipped payload must still describe the IR it was built from.
 
-        The migration no longer writes YAML, but the kb-dashboard document is
-        still derived from the same IR in memory. Building the payload through
-        that document is the only structural cross-check on the artifact we ship,
-        so it stays -- against the in-memory export instead of a file on disk.
+        This is the load-bearing structural cross-check on the artifact we
+        upload: it compares the payload against the ``DashboardIR`` rather than
+        re-running the mapper, so a panel or ES|QL query lost during mapping
+        shows up here instead of being reproduced identically on both sides.
         """
-        from observability_migration.targets.kibana import dashboards_api
-
         _write_dashboard(tmp_path)
         out_dir = tmp_path / "out"
-        exports = _run_capturing_yaml_exports(tmp_path, out_dir)
+        _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
+        native_files = sorted((dashboards_dir / "native").glob("*.native.json"))
+        assert native_files
+        for native_file in native_files:
+            stem = native_file.name[: -len(".native.json")]
+            artifact = json.loads(native_file.read_text())
+            assert_payload_matches_ir(artifact["payload"], irs[stem], label=stem)
+
+    def test_native_artifact_payload_matches_dict_shape_bridge(self, tmp_path):
+        """Both mapper entry points must build the same payload from one IR.
+
+        Pins the dashboard-level derivations (stable id, title, filters) that
+        the per-panel IR guard above does not look at. In-memory dict shape --
+        no YAML file is written or read.
+        """
+        _write_dashboard(tmp_path)
+        out_dir = tmp_path / "out"
+        _run(tmp_path, out_dir)
+
+        dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
         native_file = next((dashboards_dir / "native").glob("*.native.json"))
         stem = native_file.name[: -len(".native.json")]
 
         artifact = json.loads(native_file.read_text())
-        bridged_payload, _stats = dashboards_api.build_payload_from_yaml(
-            {"dashboards": [exports[stem]]}
-        )
-
-        assert artifact["payload"] == bridged_payload
+        assert_payload_matches_dict_shape_bridge(artifact["payload"], irs[stem], label=stem)
 
     def test_native_artifact_envelope_shape(self, tmp_path):
         _write_dashboard(tmp_path)
@@ -153,20 +148,15 @@ class TestGrafanaCliNativeArtifacts:
         # Enum status must already be a plain string, not an Enum repr.
         assert isinstance(panels[0]["status"], str)
 
-    def test_ir_artifact_rebuilds_the_exact_dashboard_yaml_export(self, tmp_path):
-        """The IR artifact must round-trip to the YAML export, byte for byte.
+    def test_ir_artifact_round_trips_through_the_internal_dict_shape(self, tmp_path):
+        """``ir/*.ir.json`` must survive a ``to_yaml_dict``/``from_yaml_dict`` round trip.
 
-        Every in-repo reader that used to glob ``yaml/*.yaml`` now reads
-        ``ir/*.ir.json`` and rebuilds the kb-dashboard-core document with
-        ``DashboardIR.from_dict(...).to_yaml_dict()``. This is the invariant
-        that makes those ports lossless: if the round-trip ever drops a field,
-        the telemetry contract, the verifier's T2 tier and visual-regression
-        panel discovery all silently lose it at once. The oracle is the
-        kb-dashboard document the pipeline derives in memory (nothing writes it
-        to disk any more).
+        Every in-repo reader reads ``ir/*.ir.json`` and rebuilds the internal
+        dict shape with ``DashboardIR.from_dict(...).to_yaml_dict()``. This is
+        the invariant that makes those readers lossless: if the round-trip ever
+        drops a field, the telemetry contract, the verifier's T2 tier and
+        visual-regression panel discovery all silently lose it at once.
         """
-        from observability_migration.core.assets.dashboard import DashboardIR
-
         _write_dashboard(tmp_path)
         (tmp_path / "sectioned.json").write_text(
             json.dumps(
@@ -216,17 +206,17 @@ class TestGrafanaCliNativeArtifacts:
             )
         )
         out_dir = tmp_path / "out"
-        exports = _run_capturing_yaml_exports(tmp_path, out_dir)
+        _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
         ir_files = sorted((dashboards_dir / "ir").glob("*.ir.json"))
         assert len(ir_files) == 2
         for ir_file in ir_files:
-            stem = ir_file.name[: -len(".ir.json")]
-            expected = exports[stem]
             artifact = json.loads(ir_file.read_text())
-            rebuilt = DashboardIR.from_dict(artifact["dashboard_ir"]).to_yaml_dict()
-            assert rebuilt == expected, ir_file.name
+            dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
+            exported = dashboard_ir.to_yaml_dict()
+            reloaded = DashboardIR.from_yaml_dict(exported, source_adapter="grafana")
+            assert reloaded.to_yaml_dict() == exported, ir_file.name
 
     def test_native_index_lists_every_migrated_dashboard(self, tmp_path):
         _write_dashboard(tmp_path)

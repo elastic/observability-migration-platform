@@ -30,7 +30,7 @@ class ControlWarningReportingTests(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            print_report([result], [(result.dashboard_title, True, "")])
+            print_report([result])
 
         self.assertIn("CONTROL WARNINGS (1):", output.getvalue())
         self.assertIn(
@@ -43,7 +43,7 @@ class ControlWarningReportingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "migration_report.json"
-            save_detailed_report([result], [], output_path)
+            save_detailed_report([result], output_path)
             payload = json.loads(output_path.read_text(encoding="utf-8"))
 
         self.assertEqual(

@@ -201,9 +201,9 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
     dash["__source_file__"] = str(dashboard_path)
 
     try:
-        # No output directory: translation writes nothing, and the audit reads
-        # the in-memory result / IR (see ``controls`` below).
-        result, _yaml_path = translate_dashboard(
+        # Translation writes nothing; the audit reads the in-memory result /
+        # IR (see ``controls`` below).
+        result = translate_dashboard(
             dash,
             datasource_index=data_view,
             esql_index=data_view,

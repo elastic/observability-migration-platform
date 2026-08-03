@@ -18,7 +18,6 @@ import json
 import pathlib
 import re
 import sys
-import tempfile
 import time
 import unittest
 
@@ -74,13 +73,12 @@ def _translate_panel(panel, rule_pack=None, resolver=None):
 def _translate_dashboard(dashboard, rule_pack=None, resolver=None):
     rp = rule_pack or rules.RulePackConfig()
     res = resolver or schema.SchemaResolver(rp)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result, yaml_path = panels.translate_dashboard(
-            dashboard, pathlib.Path(tmpdir),
-            datasource_index="metrics-*", esql_index="metrics-*",
-            rule_pack=rp, resolver=res,
-        )
-        payload = yaml.safe_load(yaml_path.read_text())
+    result = panels.translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rp, resolver=res,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, payload
 
 

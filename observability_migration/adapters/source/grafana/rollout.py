@@ -35,7 +35,6 @@ class ArtifactBundle:
     # manifest lists what the run actually produced (replaces ``yaml_paths``).
     native_artifact_paths: list[str] = field(default_factory=list)
     ir_artifact_paths: list[str] = field(default_factory=list)
-    compiled_paths: list[str] = field(default_factory=list)
     report_path: str = ""
     manifest_path: str = ""
     verification_path: str = ""
@@ -49,7 +48,6 @@ class ArtifactBundle:
             "timestamp": self.timestamp,
             "native_artifact_paths": self.native_artifact_paths,
             "ir_artifact_paths": self.ir_artifact_paths,
-            "compiled_paths": self.compiled_paths,
             "report_path": self.report_path,
             "manifest_path": self.manifest_path,
             "verification_path": self.verification_path,
@@ -70,7 +68,6 @@ class DashboardLineage:
     kibana_space: str = ""
     native_artifact_path: str = ""
     ir_artifact_path: str = ""
-    compiled_path: str = ""
     panel_count: int = 0
     migrated_panels: int = 0
     semantic_gate_summary: dict[str, int] = field(default_factory=dict)
@@ -98,7 +95,6 @@ class DashboardLineage:
             "kibana_space": self.kibana_space,
             "native_artifact_path": self.native_artifact_path,
             "ir_artifact_path": self.ir_artifact_path,
-            "compiled_path": self.compiled_path,
             "panel_count": self.panel_count,
             "migrated_panels": self.migrated_panels,
             "semantic_gate_summary": self.semantic_gate_summary,
@@ -163,7 +159,6 @@ def build_rollout_plan(
             run_id=plan.run_id,
             native_artifact_paths=[str(p) for p in sorted(base.glob("native/*.native.json"))],
             ir_artifact_paths=[str(p) for p in sorted(base.glob("ir/*.ir.json"))],
-            compiled_paths=[str(p) for p in sorted(base.glob("compiled/*/compiled_dashboards.ndjson"))],
             report_path=str(base / "migration_report.json"),
             manifest_path=str(base / "migration_manifest.json"),
             verification_path=str(base / "verification_packets.json"),
@@ -186,7 +181,6 @@ def build_rollout_plan(
             source_file=str(getattr(result, "source_file", "")),
             native_artifact_path=str(getattr(result, "native_artifact_path", "") or ""),
             ir_artifact_path=str(getattr(result, "ir_artifact_path", "") or ""),
-            compiled_path=str(getattr(result, "compiled_path", "") or ""),
             panel_count=result.total_panels,
             migrated_panels=result.migrated + result.migrated_with_warnings,
             semantic_gate_summary=gate_summary,

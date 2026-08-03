@@ -1,16 +1,17 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Unit tests for the native Kibana Dashboards API YAML mapping.
+"""Unit tests for the native Kibana Dashboards API mapping and upload.
 
-Pure-dict fixtures, no network. Covers every ES|QL chart-type builder, markdown,
-YAML section reconstruction, control -> ``pinned_panels`` mapping, the
-``field`` -> ``column`` translation, and the >100-panel sectioning cap.
+Pure-dict fixtures, no network and nothing read from disk: the ``*_yaml_*``
+mappers operate on the in-memory ``DashboardIR.to_yaml_dict()`` shape, not on a
+file format. Covers every ES|QL chart-type builder, markdown, section
+reconstruction, control -> ``pinned_panels`` mapping, the ``field`` ->
+``column`` translation, the >100-panel sectioning cap, and the typed-API
+upload transport (retries, 409 conflicts, silent panel loss).
 """
 
 import json
-import tempfile
-from pathlib import Path
 from unittest import mock
 
 import requests
@@ -1390,225 +1391,101 @@ def test_section_panel_cap_respected():
 # Upload transport
 # --------------------------------------------------------------------------- #
 
-def test_upload_yaml_files_uses_put_with_stable_dashboard_id():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Stable Dashboard\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-
-        response = mock.Mock(status_code=200)
-        response.json.return_value = {"id": "obs-migrate-stable-dashboard"}
-        session = mock.Mock()
-        session.put.return_value = response
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            results = api.upload_yaml_files([str(yaml_path)], "https://kibana.example", api_key="k")
-
-    assert results[0].status == "updated"
-    session.put.assert_called_once()
-    assert session.put.call_args.args[0].endswith("/api/dashboards/obs-migrate-stable-dashboard")
-    session.post.assert_not_called()
-
-
-def test_upload_yaml_files_fallback_receives_only_rejected_dashboard():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Good\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n"
-            "- name: Bad\n"
-            "  panels:\n"
-            "  - title: Broken\n"
-            "    esql:\n"
-            "      type: sankey\n"
-            "      query: FROM metrics-*\n",
-            encoding="utf-8",
-        )
-
-        ok_response = mock.Mock(status_code=200)
-        ok_response.json.return_value = {"id": "good"}
-        session = mock.Mock()
-        session.put.return_value = ok_response
-        fallback_calls = []
-
-        def fallback(path, dashboard):
-            fallback_calls.append((Path(path).name, dashboard["name"]))
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            api.upload_yaml_files([str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback)
-
-    assert fallback_calls == [("dash.yaml", "Bad")]
-    session.put.assert_called_once()
-
-
-def test_upload_yaml_files_zero_leaf_with_controls_falls_back():
+def test_zero_leaf_payload_with_controls_is_empty_and_never_sent():
     # A dashboard whose panels all fail to map but that still carries a mapped
     # control is degenerate: controls filter nothing without panels, so
     # uploading it would create a panel-less dashboard while silently dropping
     # the source panels. The emptiness gate keys only on leaf panels (not
-    # pinned_panels), so this must be classified "empty" and routed to the
-    # legacy-import fallback rather than PUT.
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: ControlsOnly\n"
-            "  panels:\n"
-            "  - title: Broken\n"
-            "    esql:\n"
-            "      type: sankey\n"
-            "      query: FROM metrics-*\n"
-            "  controls:\n"
-            "  - type: esql\n"
-            "    label: instance\n"
-            "    variable_name: instance\n"
-            "    query: FROM metrics-* | STATS x\n",
-            encoding="utf-8",
-        )
+    # pinned_panels), so this must be classified "empty" and never PUT.
+    payload, _counts, _reasons = api.build_dashboard_payload_from_yaml(
+        {
+            "name": "ControlsOnly",
+            "panels": [{"title": "Broken", "esql": {"type": "sankey", "query": "FROM metrics-*"}}],
+            "controls": [
+                {"type": "esql", "label": "instance", "variable_name": "instance", "query": "FROM metrics-* | STATS x"}
+            ],
+        }
+    )
+    # Guard against a vacuous test: the payload must genuinely be the
+    # zero-leaf-but-has-controls shape this regression targets.
+    assert not api._payload_has_leaf_panels(payload)
+    assert payload.get("pinned_panels")
 
-        # Guard against a vacuous test: the payload must genuinely be the
-        # zero-leaf-but-has-controls shape this regression targets.
-        payload, _counts, _reasons = api.build_dashboard_payload_from_yaml(
-            {
-                "name": "ControlsOnly",
-                "panels": [{"title": "Broken", "esql": {"type": "sankey", "query": "FROM metrics-*"}}],
-                "controls": [
-                    {"type": "esql", "label": "instance", "variable_name": "instance", "query": "FROM metrics-* | STATS x"}
-                ],
-            }
-        )
-        assert not api._payload_has_leaf_panels(payload)
-        assert payload.get("pinned_panels")
+    artifact = _native_artifact_envelope(title="ControlsOnly", payload=payload)
+    session = mock.Mock()
 
-        session = mock.Mock()
-        fallback_calls = []
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
 
-        def fallback(path, dashboard):
-            fallback_calls.append((Path(path).name, dashboard["name"]))
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            results = api.upload_yaml_files(
-                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
-            )
-
-    assert results[0].status == "empty"
-    assert fallback_calls == [("dash.yaml", "ControlsOnly")]
+    assert result.status == "empty"
     session.put.assert_not_called()
 
 
-def test_upload_yaml_files_retries_transient_5xx_before_succeeding():
+def test_upload_native_dashboard_retries_transient_5xx_before_succeeding():
     # A slow/overloaded cluster can return a transient 503 on an otherwise
-    # valid payload. Without a retry, this permanently downgrades a good
-    # dashboard to the legacy _import fallback (see the 20-30 dashboard
-    # deep-check: ~58% of otherwise-valid dashboards fell back this way).
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Flaky\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-        transient = mock.Mock(status_code=503)
-        ok_response = mock.Mock(status_code=200)
-        ok_response.json.return_value = {"id": "flaky"}
-        session = mock.Mock()
-        session.put.side_effect = [transient, ok_response]
-        fallback = mock.Mock()
+    # valid payload. Without a retry this permanently reports a good dashboard
+    # as rejected (see the 20-30 dashboard deep-check: ~58% of otherwise-valid
+    # dashboards failed this way on a shared staging cluster).
+    native_dashboard = NativeDashboard(
+        title="Flaky",
+        dashboard_id="flaky",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+    )
+    transient = mock.Mock(status_code=503)
+    ok_response = mock.Mock(status_code=200)
+    ok_response.json.return_value = {"id": "flaky"}
+    session = mock.Mock()
+    session.put.side_effect = [transient, ok_response]
 
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
-                mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep"):
-            results = api.upload_yaml_files(
-                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
-            )
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
+            mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep"):
+        result = api.upload_native_dashboard(native_dashboard, "https://kibana.example", api_key="k")
 
     assert session.put.call_count == 2
-    assert results[0].status == "updated"
-    fallback.assert_not_called()
+    assert result.status == "updated"
 
 
-def test_upload_yaml_files_falls_back_after_exhausting_retries_on_persistent_5xx():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: AlwaysDown\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-        always_down = mock.Mock(status_code=503)
-        session = mock.Mock()
-        session.put.return_value = always_down
-        fallback = mock.Mock()
+def test_upload_native_dashboard_gives_up_after_exhausting_retries_on_persistent_5xx():
+    native_dashboard = NativeDashboard(
+        title="Always Down",
+        dashboard_id="always-down",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+    )
+    always_down = mock.Mock(status_code=503)
+    always_down.json.return_value = {"message": "service unavailable"}
+    session = mock.Mock()
+    session.put.return_value = always_down
 
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
-                mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep"):
-            results = api.upload_yaml_files(
-                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
-            )
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
+            mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep"):
+        result = api.upload_native_dashboard(native_dashboard, "https://kibana.example", api_key="k")
 
     assert session.put.call_count == 3
-    assert results[0].status == "rejected"
-    fallback.assert_called_once()
+    assert result.status == "rejected"
+    assert "service unavailable" in result.message
 
 
-def test_upload_yaml_files_does_not_retry_genuine_client_rejection():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Bad Payload\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-        bad_request = mock.Mock(status_code=400)
-        bad_request.json.return_value = {"message": "schema violation"}
-        session = mock.Mock()
-        session.put.return_value = bad_request
-        fallback = mock.Mock()
+def test_upload_native_dashboard_does_not_retry_genuine_client_rejection():
+    native_dashboard = NativeDashboard(
+        title="Bad Payload",
+        dashboard_id="bad-payload",
+        items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+    )
+    bad_request = mock.Mock(status_code=400)
+    bad_request.json.return_value = {"message": "schema violation"}
+    session = mock.Mock()
+    session.put.return_value = bad_request
 
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
-                mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep") as sleep_mock:
-            results = api.upload_yaml_files(
-                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
-            )
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session), \
+            mock.patch("observability_migration.targets.kibana.dashboards_api.time.sleep") as sleep_mock:
+        result = api.upload_native_dashboard(native_dashboard, "https://kibana.example", api_key="k")
 
     # A genuine 4xx schema rejection retrying would not change the outcome;
     # fail fast instead of wasting time/backoff on a non-transient error.
     assert session.put.call_count == 1
     sleep_mock.assert_not_called()
-    assert results[0].status == "rejected"
-    fallback.assert_called_once()
+    assert result.status == "rejected"
+    assert "schema violation" in result.message
 
 
 def test_upload_native_dashboard_retries_transient_failures():
@@ -1689,38 +1566,6 @@ def test_upload_native_dashboard_classifies_409_as_conflict_not_rejected():
     assert "conflict" in result.message
 
 
-def test_upload_yaml_files_does_not_fall_back_to_legacy_on_conflict():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Shared\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-
-        conflict = mock.Mock(status_code=409)
-        conflict.json.return_value = {"message": "Saved object [dashboard/x] conflict"}
-        session = mock.Mock()
-        session.put.return_value = conflict
-        fallback_calls = []
-
-        def fallback(path, dashboard):
-            fallback_calls.append((Path(path).name, dashboard["name"]))
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            results = api.upload_yaml_files([str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback)
-
-    assert results[0].status == "conflict"
-    # A conflict is terminal: the legacy/compiler fallback must not be invoked.
-    assert fallback_calls == []
-
-
 # --------------------------------------------------------------------------- #
 # Native control data_view_id resolution (PR #278 review regression)
 # --------------------------------------------------------------------------- #
@@ -1781,42 +1626,27 @@ def test_upload_native_dashboard_leaves_data_view_id_unchanged_without_mapping()
     assert sent["pinned_panels"][0]["config"]["data_view_id"] == "metrics-*"
 
 
-def test_upload_yaml_files_resolves_pinned_control_data_view_id():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Has Control\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n"
-            "  controls:\n"
-            "  - type: options\n"
-            "    label: Service\n"
-            "    data_view: metrics-*\n"
-            "    field: service.name\n",
-            encoding="utf-8",
-        )
-        response = mock.Mock(status_code=201)
-        response.json.return_value = {"id": "has-control"}
-        session = mock.Mock()
-        session.put.return_value = response
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            results = api.upload_yaml_files(
-                [str(yaml_path)],
-                "https://kibana.example",
-                api_key="k",
-                # Kibana assigned a different id than the wildcard title used in YAML.
-                data_view_ids={"metrics-*": "generated-id"},
-            )
-
-    assert results[0].status == "created"
-    sent = json.loads(session.put.call_args[1]["data"])
-    assert sent["pinned_panels"][0]["config"]["data_view_id"] == "generated-id"
+def test_resolve_pinned_panel_data_view_ids_leaves_an_unknown_reference_alone():
+    # Controls spell it ``data_view_id``. A reference the lookup does not know
+    # about must be left untouched rather than blanked or guessed at -- only a
+    # title Kibana actually created is rewritten to its assigned id.
+    payload = {
+        "pinned_panels": [
+            {
+                "type": "options_list_control",
+                "config": {"data_view_id": "not-in-lookup", "field_name": "labels.instance"},
+            },
+            {
+                "type": "options_list_control",
+                "config": {"data_view_id": "metrics-*.prometheus-*", "field_name": "labels.instance"},
+            },
+        ]
+    }
+    api._resolve_pinned_panel_data_view_ids(
+        payload, {"metrics-*.prometheus-*": "real-data-view-id"}
+    )
+    assert payload["pinned_panels"][0]["config"]["data_view_id"] == "not-in-lookup"
+    assert payload["pinned_panels"][1]["config"]["data_view_id"] == "real-data-view-id"
 
 
 # --------------------------------------------------------------------------- #
@@ -2173,27 +2003,24 @@ def test_selected_options_excludes_bool_defaults():
     assert pinned["config"]["selected_options"] == []
 
 
-def test_upload_yaml_files_disambiguates_duplicate_titles():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Same Title\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql: {type: metric, query: FROM m | STATS c = COUNT(*), primary: {field: c}}\n"
-            "- name: Same Title\n"
-            "  panels:\n"
-            "  - title: Count\n"
-            "    esql: {type: metric, query: FROM m | STATS c = COUNT(*), primary: {field: c}}\n",
-            encoding="utf-8",
-        )
-        resp = mock.Mock(status_code=200)
-        resp.json.return_value = {"id": "x"}
-        session = mock.Mock()
-        session.put.return_value = resp
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            api.upload_yaml_files([str(yaml_path)], "https://kibana.example", api_key="k")
+def test_same_titled_artifacts_put_to_their_own_envelope_dashboard_ids():
+    # Two distinct dashboards that share a title must not overwrite each other
+    # via the idempotent PUT. The upload key is the envelope's own
+    # ``dashboard_id`` -- not a slug re-derived from the title at upload time --
+    # so distinct ids stay distinct even when the titles are identical.
+    artifacts = [
+        _native_artifact_envelope(dashboard_id="obs-migrate-same-title", title="Same Title"),
+        _native_artifact_envelope(dashboard_id="obs-migrate-same-title-2", title="Same Title"),
+    ]
+    resp = mock.Mock(status_code=200)
+    resp.json.return_value = {"id": "x"}
+    session = mock.Mock()
+    session.put.return_value = resp
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        for artifact in artifacts:
+            api.upload_native_artifact(artifact, "https://kibana.example", api_key="k")
+
     put_urls = [call.args[0] for call in session.put.call_args_list]
     assert len(put_urls) == 2
     assert len(set(put_urls)) == 2, f"duplicate PUT ids collide: {put_urls}"
@@ -2404,47 +2231,6 @@ def test_response_without_data_is_unverifiable_and_stays_clean():
     assert result.dropped_panels == []
 
 
-def test_lossy_upload_does_not_fall_back_to_the_legacy_compiler():
-    # A lossy PUT already wrote a partial dashboard. Re-importing it through the
-    # deprecated compiler would hide the loss behind a second, different code
-    # path -- matching how a 409 conflict is deliberately terminal.
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yaml_path = Path(tmpdir) / "dash.yaml"
-        yaml_path.write_text(
-            "dashboards:\n"
-            "- name: Lossy\n"
-            "  panels:\n"
-            "  - title: Kept\n"
-            "    size: {w: 12, h: 6}\n"
-            "    position: {x: 0, y: 0}\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n"
-            "  - title: Dropped\n"
-            "    size: {w: 12, h: 6}\n"
-            "    position: {x: 12, y: 0}\n"
-            "    esql:\n"
-            "      type: metric\n"
-            "      query: FROM metrics-* | STATS count = COUNT(*)\n"
-            "      primary: {field: count}\n",
-            encoding="utf-8",
-        )
-        accepted = {"title": "Lossy", "panels": [_api_leaf("Kept", x=0)]}
-        session = _dashboards_session(_put_200(accepted, dashboard_id="lossy"))
-        session.get.return_value = mock.Mock(status_code=500, json=mock.Mock(return_value={}))
-        fallback = mock.Mock()
-
-        with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
-            results = api.upload_yaml_files(
-                [str(yaml_path)], "https://kibana.example", api_key="k", fallback=fallback,
-            )
-
-    assert results[0].status == "lossy"
-    assert [d.title for d in results[0].dropped_panels] == ["Dropped"]
-    fallback.assert_not_called()
-
-
 def test_dropped_panel_explanation_get_is_only_issued_on_a_mismatch():
     # The follow-up GET buys Kibana's own validation error, so it is paid only
     # when the count comparison already proved something was dropped.
@@ -2475,3 +2261,119 @@ def test_dropped_panel_detection_survives_a_failed_explanation_get():
     assert result.status == "lossy"
     assert [d.title for d in result.dropped_panels] == ["B"]
     assert result.dropped_panels[0].reason == ""
+
+
+# --------------------------------------------------------------------------- #
+# payload_panel_queries / iter_payload_leaf_panels
+#
+# These back the structural guard in ``tests/native_payload_guard.py``. The
+# ES|QL query is NOT always at ``config.data_source.query``: an ``xy`` panel has
+# no top-level ``data_source`` at all and carries one query per layer under
+# ``config.layers[*]``. A reader that only looked at the fixed path would report
+# zero queries for every xy panel and the guard would pass vacuously, so the
+# multi-layer shape is pinned here — the real corpora happen not to contain one.
+# --------------------------------------------------------------------------- #
+
+
+def test_payload_panel_queries_collects_every_xy_layer_query():
+    payload = {
+        "title": "Layered",
+        "panels": [
+            {
+                "type": "vis",
+                "grid": {"x": 0, "y": 0, "w": 24, "h": 8},
+                "config": {
+                    "type": "xy",
+                    "title": "Stacked plus overlay",
+                    "layers": [
+                        {"type": "bar", "data_source": {"type": "esql", "query": "FROM m | STATS a = SUM(x)"}},
+                        {"type": "line", "data_source": {"type": "esql", "query": "FROM m | STATS b = MAX(y)"}},
+                    ],
+                },
+            }
+        ],
+    }
+
+    assert api.payload_panel_queries(payload) == {
+        ("", "Stacked plus overlay"): [
+            "FROM m | STATS a = SUM(x)",
+            "FROM m | STATS b = MAX(y)",
+        ]
+    }
+
+
+def test_payload_panel_queries_reads_a_non_xy_panels_own_data_source():
+    payload = {
+        "title": "Flat",
+        "panels": [
+            {
+                "type": "vis",
+                "grid": {"x": 0, "y": 0, "w": 12, "h": 8},
+                "config": {
+                    "type": "metric",
+                    "title": "CPU",
+                    "data_source": {"type": "esql", "query": "FROM m | STATS v = AVG(c)"},
+                },
+            },
+            {
+                "type": "markdown",
+                "grid": {"x": 12, "y": 0, "w": 12, "h": 8},
+                "config": {"title": "Notes", "content": "hello"},
+            },
+        ],
+    }
+
+    assert api.payload_panel_queries(payload) == {
+        ("", "CPU"): ["FROM m | STATS v = AVG(c)"],
+        ("", "Notes"): [],
+    }
+
+
+def test_payload_panel_queries_scopes_leaves_by_section():
+    """Same panel title in two sections must not collide."""
+    def _leaf(query: str) -> dict:
+        return {
+            "type": "vis",
+            "grid": {"x": 0, "y": 0, "w": 12, "h": 8},
+            "config": {
+                "type": "metric",
+                "title": "Requests",
+                "data_source": {"type": "esql", "query": query},
+            },
+        }
+
+    payload = {
+        "title": "Sectioned",
+        "panels": [
+            {"title": "Frontend", "grid": {"y": 0}, "panels": [_leaf("FROM a")]},
+            {"title": "", "grid": {"y": 1}, "panels": [_leaf("FROM b")]},
+        ],
+    }
+
+    index = api.payload_panel_queries(payload)
+    # An untitled section is keyed by its ordinal so the two leaves stay distinct.
+    assert index == {
+        ("Frontend", "Requests"): ["FROM a"],
+        ("#1", "Requests"): ["FROM b"],
+    }
+
+
+def test_iter_payload_leaf_panels_returns_only_leaves():
+    payload = {
+        "title": "Mixed",
+        "panels": [
+            {"type": "markdown", "grid": {}, "config": {"title": "Top"}},
+            {
+                "title": "Section",
+                "grid": {"y": 1},
+                "panels": [
+                    {"type": "markdown", "grid": {}, "config": {"title": "Inner"}},
+                ],
+            },
+        ],
+    }
+
+    assert [
+        (section, panel["config"]["title"])
+        for section, panel in api.iter_payload_leaf_panels(payload)
+    ] == [("", "Top"), ("Section", "Inner")]

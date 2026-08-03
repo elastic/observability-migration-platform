@@ -102,19 +102,20 @@ def apply_subprocess_tls_env(
 ) -> dict[str, str]:
     """Translate a resolved ``verify`` value into subprocess TLS env vars.
 
-    The dashboard compile/upload step shells out to ``kb-dashboard-cli``. That
-    tool is a Python/aiohttp uploader (it is *not* driven by our ``requests``
-    session and cannot read our ``verify`` setting directly), but historically
-    a Node implementation was assumed. To stay correct regardless of which
-    runtime backs the resolved tool, we set both families of standard env vars:
+    Library helper with no caller in the engine today: its only consumer was the
+    ``kb-dashboard-cli`` compile/upload subprocess, which was removed along with
+    the dashboard-YAML path. Every outbound call the engine now makes goes
+    through a ``requests`` session (see :func:`apply_tls`), which reads
+    ``verify`` directly. Kept because it is the correct translation for *any*
+    child process, and it sets both runtime families so it stays right whether
+    the child is Node or Python:
 
     - ``verify`` is a path -> ``NODE_EXTRA_CA_CERTS=<path>`` (Node) and
-      ``SSL_CERT_FILE=<path>`` / ``REQUESTS_CA_BUNDLE=<path>`` (Python). The
-      Python uploader builds its aiohttp connector with ``ssl=True``, whose
-      default ``ssl.create_default_context()`` honors ``SSL_CERT_FILE``.
+      ``SSL_CERT_FILE=<path>`` / ``REQUESTS_CA_BUNDLE=<path>`` (Python), the
+      latter being what ``ssl.create_default_context()`` honors.
     - ``verify is False`` -> ``NODE_TLS_REJECT_UNAUTHORIZED=0`` (Node). Python
-      has no env var that disables verification globally; the upload path passes
-      the uploader's explicit ``--kibana-no-ssl-verify`` flag instead.
+      has no env var that disables verification globally, so a Python child
+      needs its own explicit flag.
     - ``verify is True``  -> leave the environment untouched (default behavior).
 
     Mutates ``env`` (defaults to ``os.environ``) in place and returns it.

@@ -90,9 +90,9 @@ obs-migrate upload \
 
 Optional one-shot: append `--upload --kibana-url … --kibana-api-key …` to the Step 1 `migrate` command instead of a separate `upload` (same typed Dashboards API path). Prefer the two-step flow when the user wants to review `native/*.native.json` first.
 
-- Default upload reads **persisted native** payloads (`--artifact-format auto`). Prefer reviewing `native/*.native.json` (and `ir/*.ir.json`) before upload. `--yaml-dir` / `--artifact-format yaml` is a compatibility path that maps YAML through the typed API — not the primary package path.
+- `upload` reads the **persisted native** payloads under `native/` and sends them byte-for-byte through the typed Dashboards API — that is the only input it accepts. Review `native/*.native.json` (and `ir/*.ir.json`) before uploading.
 - Adding `--es-url` during Step 1 turns on live target field discovery and emitted-query validation; without it the run stays in offline analysis and panels may look empty for lack of data, not because the translation is wrong.
-- **Custom-CA / self-signed clusters:** all CLIs accept `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) to skip verification for testing only. These apply to source, Elasticsearch, Kibana, and the Node upload step.
+- **Custom-CA / self-signed clusters:** all CLIs accept `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) to skip verification for testing only. These apply to source, Elasticsearch, and Kibana (including the dashboard upload).
 
 ## Step 3 — Do the side-by-side
 

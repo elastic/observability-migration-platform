@@ -43,10 +43,19 @@ class ScriptHelpCliTests(unittest.TestCase):
         self.assertRegex(script_text, re.compile(r"--assets\s+dashboards"))
         self.assertIn('ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"', script_text)
         self.assertIn('DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"', script_text)
-        self.assertIn('COMPILED_DIR="$OUTPUT_DIR/dashboards/compiled"', script_text)
+        self.assertIn('NATIVE_DIR="$OUTPUT_DIR/dashboards/native"', script_text)
         self.assertIn('RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"', script_text)
-        # A migration writes native/ + ir/, never a yaml/ directory.
+        # A migration writes native/ + ir/ only: neither a yaml/ nor a
+        # compiled/ directory exists any more, so a script that reads either
+        # silently uploads nothing (which is exactly what this one used to do).
         self.assertNotIn("dashboards/yaml", script_text)
+        self.assertNotIn("dashboards/compiled", script_text)
+        self.assertNotIn("compiled_dashboards.ndjson", script_text)
+        # Upload goes through the CLI's typed Dashboards API path, not a
+        # hand-rolled saved-objects _import over compiled NDJSON.
+        self.assertIn("observability_migration.app.cli upload", script_text)
+        self.assertIn('--artifact-dir "$DASHBOARD_ARTIFACT_DIR"', script_text)
+        self.assertNotIn("saved_objects/_import", script_text)
 
     def test_helper_scripts_default_to_dashboard_scoped_layouts(self):
         panel_help = subprocess.run(

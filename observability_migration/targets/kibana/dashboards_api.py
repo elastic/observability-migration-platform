@@ -3,21 +3,23 @@
 
 """Native Kibana Dashboards API target (typed, ES|QL-first).
 
-This is an alternative to the ``kb-dashboard-cli`` compile+``_import`` path.
-The schema authority for this module is the typed Kibana Dashboards API
-itself — see ``observability_migration.core.assets.native_dashboard`` for the
+This is the only path a migration deploys through. The schema authority for
+this module is the typed Kibana Dashboards API itself — see
+``observability_migration.core.assets.native_dashboard`` for the
 :class:`NativeDashboard`/:class:`NativePanel`/:class:`NativeSection`/
 :class:`NativeControl` IR that mirrors that API's own payload shape (``panels``
-/ ``pinned_panels`` / ``grid`` / ``config``, plus native API item caps). YAML and
-the flat migration report are *bridge inputs* into that IR, not the schema
-itself; neither one decides what the native API accepts.
+/ ``pinned_panels`` / ``grid`` / ``config``, plus native API item caps). The
+``DashboardIR`` dict shape and the flat migration report are *bridge inputs*
+into that IR, not the schema itself; neither one decides what the native API
+accepts.
 
 Why this exists
 ---------------
-``kb-dashboard-cli`` compiles YAML into legacy stringified ``panelsJSON`` saved
-objects and uploads them through ``POST /api/saved_objects/_import``. That path
-accepts blobs the typed UI contract would reject, so "compiled" is not the same
-as "valid". The Dashboards API validates structurally at write time.
+The removed ``kb-dashboard-cli`` path compiled dashboard YAML into legacy
+stringified ``panelsJSON`` saved objects and uploaded them through ``POST
+/api/saved_objects/_import``. That path accepted blobs the typed UI contract
+rejects, so "compiled" was never the same as "valid". The Dashboards API
+validates structurally at write time.
 
 Coverage (verified live against Elastic Serverless 9.5.0)
 ---------------------------------------------------------
@@ -32,20 +34,26 @@ The column references in each chart's config are the ES|QL *output column*
 names — exactly what ``visual_ir.presentation.config`` already records as
 ``field``.
 
-Two entry points
-----------------
+Entry points
+------------
+* **IR-based** (``native_dashboard_from_ir`` /
+  ``build_dashboard_payload_from_ir`` / ``upload_native_dashboard``): the path
+  every migration takes. Maps a :class:`DashboardIR` straight to the native API
+  shape, reconstructing nested sections and dashboard-level controls
+  (``pinned_panels``). Prefer this path.
+* **Dict-shape based** (``native_dashboard_from_yaml`` /
+  ``build_payload_from_yaml``): the same mapping driven from the internal
+  ``DashboardIR.to_yaml_dict()`` dict shape rather than the IR object. Despite
+  the ``*_yaml_*`` names this is an in-memory dict, not a file format -- no
+  dashboard YAML is read or written anywhere. It survives as an independent
+  second construction of the payload, which the structural equivalence guards
+  use to cross-check what ``native_dashboard_from_ir`` produced.
 * **Report-based** (``native_dashboard_from_report`` / ``build_dashboard_payload``
   / ``upload_report``): maps the *flat* ``migration_report.json`` panels via
   ``visual_ir.presentation``. The flat report carries no controls and no
   nested sections.
-* **YAML-based** (``native_dashboard_from_yaml`` / ``build_payload_from_yaml``
-  / ``upload_yaml_files``): maps the canonical kb-dashboard-core **YAML** —
-  the richest bridge input. It reconstructs nested ``section`` blocks into
-  native API sections and dashboard-level ``controls`` into native API
-  ``pinned_panels`` (ES|QL controls), on top of the same 11 chart types +
-  markdown. Prefer this path.
 
-Both entry points build a :class:`NativeDashboard` first and then call
+All entry points build a :class:`NativeDashboard` first and then call
 ``NativeDashboard.to_api_payload()`` for the actual JSON body — the
 ``build_dashboard_payload*`` functions are thin, backward-compatible wrappers
 around that IR, kept so existing callers do not need the object form.
@@ -66,7 +74,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import requests
-import yaml
 
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import (
@@ -282,8 +289,8 @@ def _api_format(fmt: Any) -> dict[str, Any] | None:
 # units. Sending the long name is rejected:
 #   [layers[0].y[0].format]: [from]: expected value to equal [ps|ns|us|ms|s|min|h|d|w|mo|y]
 # This was invisible for a long time because a rejected payload silently fell
-# back to the deprecated kb-dashboard-cli compiler, which accepted it -- the run
-# reported success while never using the API path at all.
+# back to the (now removed) kb-dashboard-cli compiler, which accepted it -- the
+# run reported success while never using the API path at all.
 _DURATION_UNIT_ALIASES = {
     "picoseconds": "ps", "nanoseconds": "ns", "microseconds": "us",
     "milliseconds": "ms", "seconds": "s", "minutes": "min", "hours": "h",
@@ -1797,12 +1804,11 @@ def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     ``payload["panels"]`` holds both leaf panels (each carrying a ``type``) and
     sections (no ``type`` discriminator, their leaves nested under a ``panels``
     list). A payload whose only items are empty sections has zero leaves and
-    must count as empty so the upload path routes it to the legacy-import
-    fallback instead of creating a dashboard of empty collapsibles with the
-    source panels silently dropped. A zero-leaf payload is degenerate even
-    when it carries ``pinned_panels``: controls filter nothing without panels,
-    so the emptiness gate deliberately ignores controls and keys only on
-    leaves, letting a controls-only-but-panel-dropped dashboard fall back too.
+    must count as empty so the upload path reports it rather than creating a
+    dashboard of empty collapsibles with the source panels silently dropped. A
+    zero-leaf payload is degenerate even when it carries ``pinned_panels``:
+    controls filter nothing without panels, so the emptiness gate deliberately
+    ignores controls and keys only on leaves.
     """
     for item in payload.get("panels") or []:
         if not isinstance(item, dict):
@@ -2279,9 +2285,8 @@ def upload_report(
     """Deploy each dashboard in a migration report via the typed API.
 
     ``fallback`` (optional) is called ``fallback(dashboard)`` when the typed
-    payload is rejected, so callers can route the rejected dashboard through the
-    legacy ``kb-dashboard-cli`` ``_import`` path. This module does not import
-    that path itself to keep the dependency direction clean.
+    payload is rejected, so a caller can decide what to do with it. No caller
+    supplies one today: there is no second deploy path to degrade to.
     """
     session = _session(api_key, verify=verify)
     base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
@@ -2367,6 +2372,70 @@ def _leaf_panel_descriptors(panels: Any) -> list[DroppedPanel]:
             if isinstance(sub, dict):
                 out.append(_leaf_descriptor(sub, section=section))
     return out
+
+
+def iter_payload_leaf_panels(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """``(section_title, leaf_panel)`` for every leaf panel in an API payload.
+
+    Panels nest exactly one level: a section is an entry with a nested
+    ``panels`` list and no ``type``; its leaves are the panels inside it. An
+    untitled section is identified by its ordinal so two same-titled leaves in
+    different sections stay distinguishable.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
+    for index, item in enumerate(payload.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        if "type" in item:
+            out.append(("", item))
+            continue
+        nested = item.get("panels")
+        if not isinstance(nested, list):
+            continue
+        section = str(item.get("title") or "") or f"#{index}"
+        for sub in nested:
+            if isinstance(sub, dict):
+                out.append((section, sub))
+    return out
+
+
+def _collect_esql_queries(node: Any, out: list[str]) -> None:
+    if isinstance(node, dict):
+        source = node.get("data_source")
+        if isinstance(source, dict) and source.get("type") == "esql":
+            query = str(source.get("query") or "")
+            if query:
+                out.append(query)
+        for key, child in node.items():
+            if key == "data_source":
+                continue
+            _collect_esql_queries(child, out)
+    elif isinstance(node, list):
+        for child in node:
+            _collect_esql_queries(child, out)
+
+
+def payload_panel_queries(payload: dict[str, Any]) -> dict[tuple[str, str], list[str]]:
+    """``{(section, panel_title): [esql query, ...]}`` for every leaf panel.
+
+    The ES|QL query is **not** always at ``config.data_source.query``: an ``xy``
+    panel carries one query per layer under ``config.layers[*].data_source``.
+    Queries are therefore collected by walking the panel config, so a panel with
+    any number of layers reports all of them, in document order. Panels with no
+    ES|QL (markdown, links, image) map to an empty list.
+
+    Exposed so a structural guard can check the payload the run ships against
+    the ``DashboardIR`` it was built from, independently of the mapping code
+    that produced it.
+    """
+    index: dict[tuple[str, str], list[str]] = {}
+    for section, panel in iter_payload_leaf_panels(payload):
+        config = panel.get("config")
+        config = config if isinstance(config, dict) else {}
+        queries: list[str] = []
+        _collect_esql_queries(config, queries)
+        index[(section, str(config.get("title") or ""))] = queries
+    return index
 
 
 def _leaf_descriptor(panel: dict[str, Any], *, section: str) -> DroppedPanel:
@@ -2528,10 +2597,9 @@ def _classify_response(
     are a *shareable* saved-object type, so their ids are cluster-global rather
     than space-scoped: the deterministic name-based id succeeds (201/200) within
     the space that owns it, but PUTting the same id from a different space
-    returns 409. That is an id-ownership collision, not a payload defect, so the
-    legacy ``kb-dashboard-cli`` ``_import`` fallback cannot fix it (and would
-    only re-introduce the compiler dependency the native path removes). Callers
-    treat ``"conflict"`` as a terminal, actionable failure and skip the fallback.
+    returns 409. That is an id-ownership collision, not a payload defect, so
+    there is nothing to retry: callers treat ``"conflict"`` as a terminal,
+    actionable failure.
 
     A 2xx is *not* automatically a clean success. When ``payload`` is supplied,
     the leaf panels it sent are compared against the ones the response echoes
@@ -2561,7 +2629,7 @@ def _classify_response(
 # Retryable server-side conditions: rate limiting and transient gateway/service
 # failures on a slow or momentarily overloaded cluster. Genuine 4xx schema
 # rejections (400, 404, ...) are not retried -- retrying would not change a
-# real payload defect, only waste time before the legacy fallback kicks in.
+# real payload defect, only waste time before reporting it.
 _RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 _UPLOAD_MAX_ATTEMPTS = 3
 _UPLOAD_BACKOFF_SECONDS = 1.5
@@ -2577,12 +2645,12 @@ def _put_with_retry(
     backoff_seconds: float = _UPLOAD_BACKOFF_SECONDS,
 ) -> tuple[requests.Response | None, str]:
     """``PUT`` with retry-with-backoff so a transient failure doesn't
-    permanently downgrade a valid dashboard to the legacy import fallback.
+    permanently fail a valid dashboard.
 
     A 20-30 dashboard live batch test found that ~58% of dashboards whose
-    payload the typed API independently accepted on retry still fell back to
-    legacy ``_import`` during the real run, on a slow/shared staging
-    cluster -- almost certainly transient 5xx/timeouts with no retry before
+    payload the typed API independently accepted on retry were reported as
+    rejected during the real run, on a slow/shared staging cluster -- almost
+    certainly transient 5xx/timeouts with no retry before
     ``_classify_response`` marked them ``"rejected"``. Retry connection
     errors, read timeouts, and ``_RETRYABLE_STATUS_CODES`` a few times with
     exponential backoff before giving up.
@@ -2590,9 +2658,8 @@ def _put_with_retry(
     Returns ``(response, error)``. ``response`` is ``None`` only when every
     attempt raised a network-level exception (no HTTP response was ever
     received); ``error`` then holds a short description so the caller can
-    report a ``"rejected"`` :class:`UploadResult` (and let its existing
-    fallback path run) instead of the exception propagating and crashing the
-    whole batch upload.
+    report a ``"rejected"`` :class:`UploadResult` instead of the exception
+    propagating and crashing the whole batch upload.
     """
     data = json.dumps(payload)
     last_error = ""
@@ -2699,10 +2766,9 @@ def upload_native_dashboard(
 ) -> UploadResult:
     """Deploy one pre-built :class:`NativeDashboard` via the typed API.
 
-    Source translators can hand the emitted native artifact straight to upload
-    instead of forcing a disk YAML reparse. YAML remains available as the
-    legacy/debug fallback artifact, but this path makes the in-memory IR the
-    canonical native payload for Grafana/Datadog CLI uploads. ``data_view_ids``
+    Source translators hand the emitted native payload straight to upload: the
+    in-memory IR is the canonical native payload for Grafana/Datadog CLI
+    uploads, and nothing is re-read from disk. ``data_view_ids``
     (title -> created id) resolves data-view-backed pinned controls before
     upload; see :func:`_resolve_pinned_panel_data_view_ids`.
     """
@@ -2786,10 +2852,8 @@ def upload_native_artifact(
     ``version``, ``dashboard_id``, ``title``, ``payload``, ``mapping``). This
     is the delayed-upload counterpart of :func:`upload_native_dashboard`: it
     sends the *exact* payload a reviewer already inspected on disk, with no
-    YAML re-mapping and no legacy fallback -- a rejection is reported as-is
-    so a reviewed artifact never silently degrades to a different upload
-    path (``obs-migrate upload --artifact-format yaml`` remains available
-    for that, explicitly).
+    re-mapping -- a rejection is reported as-is so a reviewed artifact never
+    silently degrades to a different upload path.
     """
     envelope_error = _validate_native_artifact_envelope(artifact)
     if envelope_error:
@@ -2834,79 +2898,6 @@ def upload_native_artifact(
     )
 
 
-def upload_yaml_files(
-    yaml_paths: list[str],
-    kibana_url: str,
-    *,
-    api_key: str = "",
-    space_id: str = "",
-    verify: bool | str = True,
-    timeout: int = 60,
-    fallback: Any = None,
-    data_view_ids: dict[str, str] | None = None,
-) -> list[UploadResult]:
-    """Deploy each dashboard in each kb-dashboard-core YAML file via the typed API.
-
-    This is the richest path: it reconstructs nested sections and dashboard
-    controls (``pinned_panels``) that the flat report cannot express. Each YAML
-    file may contain one or more dashboards. ``fallback`` (optional) is called
-    ``fallback(yaml_path, dashboard)`` when a dashboard's typed payload is rejected, so
-    callers can route it through the legacy ``kb-dashboard-cli`` ``_import`` path.
-    ``data_view_ids`` (title -> created id) resolves data-view-backed pinned
-    controls before upload; see :func:`_resolve_pinned_panel_data_view_ids`.
-    """
-    session = _session(api_key, verify=verify)
-    base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
-    results: list[UploadResult] = []
-    seen_ids: set[str] = set()
-
-    for path in yaml_paths:
-        with open(path, encoding="utf-8") as handle:
-            doc = yaml.safe_load(handle)
-        for dashboard in _iter_yaml_dashboards(doc):
-            payload, counts, reasons = build_dashboard_payload_from_yaml(dashboard)
-            _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
-            res = UploadResult(
-                dashboard=str(dashboard.get("name") or dashboard.get("title") or ""),
-                mapped=counts["mapped"],
-                unmapped=counts["unmapped"],
-                unmapped_reasons=dict(reasons),
-            )
-            if not _payload_has_leaf_panels(payload):
-                res.status = "empty"
-                if fallback is not None:
-                    fallback(path, dashboard)
-                results.append(res)
-                continue
-            # Distinct dashboards that slug to the same id (e.g. duplicate
-            # titles) must not overwrite each other via idempotent PUT.
-            dashboard_id = _stable_dashboard_id(dashboard)
-            if dashboard_id in seen_ids:
-                suffix = 2
-                while f"{dashboard_id}-{suffix}" in seen_ids:
-                    suffix += 1
-                dashboard_id = f"{dashboard_id}-{suffix}"
-            seen_ids.add(dashboard_id)
-            response, error = _put_with_retry(
-                session, f"{base}/api/dashboards/{dashboard_id}", payload, timeout=timeout,
-            )
-            if response is None:
-                res.status = "rejected"
-                res.message = error[:2000]
-            else:
-                _classify_response(
-                    res, response, payload=payload, session=session, base=base, timeout=timeout,
-                )
-            # A "lossy" upload is deliberately *not* routed to the fallback: the
-            # PUT already wrote a partial dashboard, and re-importing it through
-            # the deprecated compiler would hide the loss behind a second,
-            # different code path (same reasoning as a 409 "conflict").
-            if res.status == "rejected" and fallback is not None:
-                fallback(path, dashboard)
-            results.append(res)
-    return results
-
-
 def delete_dashboard(
     dashboard_id: str,
     kibana_url: str,
@@ -2932,15 +2923,16 @@ __all__ = [
     "build_dashboard_payload_from_yaml",
     "build_payload_from_yaml",
     "delete_dashboard",
+    "iter_payload_leaf_panels",
     "map_panel",
     "map_yaml_control",
     "map_yaml_panel",
     "native_dashboard_from_ir",
     "native_dashboard_from_report",
     "native_dashboard_from_yaml",
+    "payload_panel_queries",
     "upload_native_artifact",
     "upload_native_dashboard",
     "upload_report",
     "upload_warnings_from_reasons",
-    "upload_yaml_files",
 ]

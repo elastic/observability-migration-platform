@@ -3,13 +3,18 @@
 Dashboard authoring flow for local migration work:
 
 - `bash scripts/generate_dashboard_schema.sh`
-  Regenerates `docs/dashboards/schema.json` from `kb-dashboard-core`.
+  Regenerates `docs/dashboards/schema.json` from `kb-dashboard-core`. No YAML
+  file is produced or consumed anywhere in the engine any more; this schema is
+  kept because it documents the internal in-memory dict shape that
+  `DashboardIR.to_yaml_dict()` produces and `dashboards_api`'s `*_yaml_*`
+  mappers accept.
   If `npx` is available, it also writes `docs/dashboards/schema.toon` for easier schema browsing.
 
 - `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>`
   Fetches/checks the typed Kibana Dashboards API OpenAPI bundle for
-  `/api/dashboards`. This is the native API schema refresh path; it is separate
-  from the YAML bridge schema above because the Dashboards API is still
+  `/api/dashboards`. This is the native API schema refresh path — and the one
+  that governs what actually ships. It is separate
+  from the dict-shape schema above because the Dashboards API is still
   technical preview and its full schemas may be hosted outside the standard
   Kibana OpenAPI bundle. The current native IR enforces the documented limits:
   1,000 top-level dashboard items, 1,000 panels per section, 100 pinned
@@ -20,29 +25,23 @@ Dashboard authoring flow for local migration work:
   or local path explicitly so ordinary lint/test runs do not depend on live
   network availability.
 
-- Dashboard YAML lint and compiled-layout validation run **automatically**
-  inside `obs-migrate compile` and inside `migrate --compile`/`--legacy-import`
-  (in-process, via `observability_migration.targets.kibana.{lint,layout}`). They
-  no longer have standalone scripts. A migration writes no `yaml/` directory, so
-  ad-hoc lint needs a YAML directory of its own — either an externally supplied
-  one, or one rendered from a run's `ir/*.ir.json`
-  (`targets.kibana.compile.write_dashboard_yaml`; see
-  `docs/contributing/dev-commands.md`):
+- **The dashboard-YAML lint stage and the compiled-layout validation stage were
+  removed**, along with `obs-migrate compile` and `migrate
+  --compile`/`--legacy-import`. A migration writes only
+  `dashboards/native/*.native.json` and `dashboards/ir/*.ir.json`, and uploads
+  the native payload through `PUT /api/dashboards/{id}`. Nothing shells out to
+  `kb-dashboard-cli` or `kb-dashboard-lint`, so `uv` is no longer needed on
+  Python 3.11 for dashboard work.
 
-```python
-from observability_migration.targets.kibana.lint import lint_dashboard_yaml
-ok, output = lint_dashboard_yaml("/tmp/yaml-lint-input")
+  `observability_migration.targets.kibana.lint` and `.layout` still exist as
+  library code, but no user-facing command calls `lint_dashboard_yaml` or
+  `validate_compiled_layout`, and there is no `yaml/` or `compiled/` directory to
+  point them at. The one check that carried over is the `?param`/`??param`
+  control-binding gate (`lint.unbound_param_findings`), which the interaction
+  audit runs against the IR export — see
+  `docs/contributing/dev-commands.md`.
 
-from observability_migration.targets.kibana.layout import validate_compiled_layout
-ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
-```
-
-  The lint gate calls `kb-dashboard-lint`. Install the Kibana tools in-venv with
-  `.venv/bin/pip install ".[kibana]"` (requires Python 3.12+); on 3.11 the
-  runtime falls back to a pinned `uvx`, so `uv` must be on `PATH`. Run
-  `obs-migrate doctor` to check which path is active.
-
-The migration pipeline now targets the newer dashboard YAML conventions where possible:
+The migration pipeline now targets the newer dashboard conventions where possible:
 
 - dashboard-time parameters (`?_tstart`, `?_tend`) instead of fixed one-hour windows
 - `BUCKET(@timestamp, 50, ?_tstart, ?_tend)` for adaptive time bucketing

@@ -210,13 +210,11 @@ class TestDatadogTlsCliThreading(unittest.TestCase):
             native_dashboard=NativeDashboard(title="Dash"),
             dashboard_title="Dash",
             dashboard_id="dash-1",
-            compiled=True,
-            compile_error="",
             layout_error="",
         )
 
-        with TemporaryDirectory() as tmpdir:
-            datadog_cli._upload_all_dashboards([result], Path(tmpdir), self._args(), target_adapter)
+        # Uploads the in-memory native payload; no artifact directory is read.
+        datadog_cli._upload_all_dashboards([result], self._args(), target_adapter)
 
         self.assertEqual(target_adapter.upload_dashboard.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 

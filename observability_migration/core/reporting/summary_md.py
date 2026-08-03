@@ -105,8 +105,6 @@ class SummaryTotals:
     green: int
     yellow: int
     red: int
-    compiled_ok: int
-    compiled_total: int
     uploaded_ok: int
     upload_attempted: int
     # Translation-provenance breakdown across all dashboards. Native-PROMQL
@@ -125,8 +123,6 @@ class DashboardRow:
     warnings: int
     manual: int
     not_feasible: int
-    compiled: bool | None
-    compile_error: str
     risk_score: float | None
     rollout_state: str
     # Per-dashboard translation-provenance breakdown (see PanelProvenance).
@@ -209,8 +205,6 @@ def _truncate(text: str, limit: int = _QUERY_TRUNCATE) -> str:
 
 
 def _verdict(totals: SummaryTotals) -> str:
-    if totals.compiled_ok < totals.compiled_total:
-        return "❌"
     if totals.not_feasible or totals.manual or totals.red:
         return "⚠️"
     return "✅"
@@ -231,13 +225,11 @@ def render_markdown(view: SummaryView) -> str:
     run_bit = f"`{view.run_id}` · " if view.run_id else ""
     lines.append(
         f"**Run** {run_bit}{when} · {t.dashboards} "
-        f"{_plural('dashboard', t.dashboards)} · {t.compiled_ok}/{t.compiled_total} compiled"
+        f"{_plural('dashboard', t.dashboards)}"
     )
     lines.append("")
     verdict = _verdict(t)
-    if verdict == "❌":
-        lines.append(f"> {verdict} **Blocking errors** — {t.compiled_total - t.compiled_ok} failed to compile.")
-    elif verdict == "⚠️":
+    if verdict == "⚠️":
         lines.append(
             f"> {verdict} **Review recommended** — {t.not_feasible} not-feasible, "
             f"{t.red} Red, {t.warnings} with warnings."
@@ -298,18 +290,17 @@ def _render_dashboard_table(view: SummaryView) -> list[str]:
     else:
         rows.sort(key=lambda d: -(d.not_feasible + d.manual))
     out = ["## Dashboards", ""]
-    header = "| Dashboard | " + view.element_noun.title() + "s | ✓ | ⚠ | ? | ✗ | Compiled |"
-    sep = "|---|--:|--:|--:|--:|--:|:--:|"
+    header = "| Dashboard | " + view.element_noun.title() + "s | ✓ | ⚠ | ? | ✗ |"
+    sep = "|---|--:|--:|--:|--:|--:|"
     if show_risk:
         header += " Risk |"
         sep += "--:|"
     out.append(header)
     out.append(sep)
     for d in rows:
-        compiled = "✅" if d.compiled else ("❌" if d.compile_error else "—")
         row = (
             f"| {_cell(d.title)} | {d.elements} | {d.migrated} | {d.warnings} | "
-            f"{d.manual} | {d.not_feasible} | {compiled} |"
+            f"{d.manual} | {d.not_feasible} |"
         )
         if show_risk:
             row += f" {int(d.risk_score or 0)} |"

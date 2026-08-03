@@ -6,7 +6,7 @@ The Datadog adapter translates Datadog dashboards through widget planning,
 metric-query parsing, formula translation, and log-search conversion. Its
 current first-class flow is extraction, normalization, translation,
 capability-aware preflight, IR-first artifact emission (`DashboardIR` → native
-Dashboards API payload + YAML), emitted-query validation, optional compile,
+Dashboards API payload), emitted-query validation, native review artifacts,
 optional upload, post-upload smoke validation, verification packets, and
 reporting via the shared Kibana target runtime.
 
@@ -40,7 +40,7 @@ Datadog-specific field/filter handling.
 | Template variables | Kibana dashboard controls emitted; query-level semantics still approximate |
 | Events / markers | Preserved in normalization, not emitted as first-class target assets |
 | Links / drilldowns | Not yet first-class |
-| Compilation | Opt-in via `--compile` (implied by `--legacy-import`); typed-API upload does not need NDJSON |
+| Compilation | Removed. `--compile` / `--no-compile` / `--legacy-import` now exit `2`; the typed-API upload never consumed NDJSON |
 | Preflight | Capability-aware field safety checks with live `_field_caps` |
 | Upload | First-class `--upload` or shared `obs-migrate upload` |
 | Validation / smoke | First-class `--validate --es-url` and post-upload `--smoke` |
@@ -83,11 +83,10 @@ field profile setup
   -> optional capability-aware preflight
   -> plan_widget()
   -> translate_widget()
-  -> generate_dashboard_artifacts() (assemble DashboardIR; derive native + YAML)
+  -> generate_dashboard_artifacts() (assemble DashboardIR; derive native payload)
   -> optional emitted-query validation
   -> persist native/IR review artifacts
-  -> optional compile
-  -> optional upload (typed API prefers native_dashboard from IR)
+  -> optional upload (typed API, native_dashboard derived from IR)
   -> optional post-upload smoke validation
   -> optional live metric source execution during verification
   -> verification packets and semantic gates
@@ -103,11 +102,10 @@ field profile setup
 | Optional preflight | `preflight.py` | Check mapped fields and capability risks before translation when `--preflight` is requested |
 | Plan | `planner.py` | Choose `lens`, `esql`, `esql_with_kql`, `markdown`, `group`, or `blocked` for each widget |
 | Translate | `translate.py` | Translate metric, log, and formula queries according to the widget plan |
-| Emit | `generate.py` | Assemble `DashboardIR`, then derive native Dashboards API payload + YAML (controls included) |
+| Emit | `generate.py` | Assemble `DashboardIR`, then derive the native Dashboards API payload from it (controls included) |
 | Optional validate | `grafana/esql_validate.py`, `datadog/cli.py` | Validate emitted ES|QL with live Elasticsearch, auto-apply safe fixes, and regenerate artifacts via `generate_dashboard_artifacts` |
 | Native/IR review artifacts | `targets/kibana/native_artifacts.py` | Persist `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`, and `dashboards/native/index.json` after final IR/native regeneration so review artifacts match an immediate upload |
-| Optional compile | `targets/kibana/compile.py` | Compile generated YAML to NDJSON when `--compile` is requested |
-| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Dedicated Datadog CLI prefers in-memory `native_dashboard` from IR; shared `obs-migrate upload --artifact-dir` prefers the persisted native review artifact when present, rejects mixed native/YAML artifact roots, and falls back to YAML only when native artifacts are absent or YAML is selected |
+| Optional upload | `targets/kibana/adapter.py`, `dashboards_api.py`, `native_artifacts.py` | Dedicated Datadog CLI uploads the in-memory `native_dashboard` derived from the IR; shared `obs-migrate upload --artifact-dir` uploads the persisted `native/*.native.json` byte-for-byte. There is no YAML input and no fallback renderer |
 | Optional smoke | `targets/kibana/adapter.py`, `targets/kibana/smoke.py` | Inspect uploaded dashboards in Kibana, validate runnable panel ES|QL, and merge smoke/browser rollups back into results |
 | Verification | `verification.py`, `execution.py` | Build semantic gates, compare target execution with live Datadog metric evidence when configured, and persist `OperationalIR` snapshots |
 | Report / artifacts | `report.py`, `manifest.py`, `rollout.py` | Save `migration_report.json`, `migration_manifest.json`, `rollout_plan.json`, smoke/validation evidence, and per-dashboard/widget status details |
@@ -386,7 +384,7 @@ Use that doc for:
 - unified `obs-migrate migrate --source datadog`
 - the asset scope contract (`--assets {dashboards,alerts,all}` plus the
   deprecated `--fetch-monitors` / unified `--fetch-alerts` aliases)
-- shared compile/upload/cluster commands
+- shared upload/cluster commands, and the table of removed dashboard-YAML surfaces
 - extension catalog and template commands
 
 ## Datadog-Specific Notes
@@ -398,10 +396,11 @@ Use that doc for:
   always emits a deprecation warning; if the requested asset selection is
   `dashboards`, including explicit `--assets dashboards`, runtime normalization
   upgrades the run to `--assets all`.
-- Dashboard artifacts are written under `<output-dir>/dashboards`, including
-  native review artifacts, IR review artifacts, YAML, reports, manifests, and
-  rollout evidence; alert artifacts are written under `<output-dir>/alerts`;
-  Datadog also writes a root `run_summary.json`.
+- Dashboard artifacts are written under `<output-dir>/dashboards`: native review
+  artifacts (`native/*.native.json`, `native/index.json`), IR review artifacts
+  (`ir/*.ir.json`), reports, manifests, and rollout evidence — no `yaml/` and no
+  `compiled/` directory. Alert artifacts are written under
+  `<output-dir>/alerts`; Datadog also writes a root `run_summary.json`.
 - `--field-profile` selects a built-in mapping profile or a custom YAML profile.
   There is no `auto` profile — pick the plan that matches your ingest route,
   then verify with `--es-url` (`confirmed` / `missing` / `unknown` on
@@ -422,9 +421,12 @@ Use that doc for:
   dashboard extraction is skipped.
 - `--create-alert-rules` runs after an alert-capable asset selection and writes
   `<output-dir>/alerts/monitor_rule_upload_results.json`.
-- `--compile` is opt-in on both the dedicated `datadog-migrate` CLI and unified
-  `obs-migrate migrate --source datadog`; typed-API upload does not require the
-  compiled NDJSON artifact.
+- `--compile` / `--no-compile` / `--legacy-import` were **removed** from both the
+  dedicated `datadog-migrate` CLI and unified `obs-migrate migrate --source
+  datadog`; they now exit `2` with a message naming the replacement. The
+  typed-API upload never consumed the compiled NDJSON artifact. Datadog's
+  `runtime_summary.layout` survives, but it is now populated only by the
+  post-upload smoke layout check, not by a compile-time layout validator.
 - `obs-migrate extensions --source datadog --template-out ...` emits a
   validated starter field-profile template, and
   `examples/cue/datadog-field-profile.cue` remains the optional CUE authoring
@@ -447,10 +449,10 @@ The Datadog path is now organized around executable stages:
 3. `preflight.py`: resolve mapped target fields and surface capability risks before translation.
 4. `translate.py`: run registry-backed metric, log, and Lens translation rules.
 5. `generate.py`: assemble `DashboardIR` and derive the native Dashboards API
-   payload from it, then hand off to review-artifact/report/compile steps. The
-   kb-dashboard YAML document is derived alongside but stays in memory: the run
-   writes `dashboards/native/` and `dashboards/ir/`, never a `dashboards/yaml/`
-   directory.
+   payload from it, then hand off to the review-artifact and report steps. The
+   run writes `dashboards/native/` and `dashboards/ir/` only — never a
+   `dashboards/yaml/` or `dashboards/compiled/` directory, and a stale one from
+   an older release is swept first.
 
 ### Layout Derivation And Curated Layout Packs
 
@@ -501,7 +503,7 @@ equivalent:
 - Source `available_values` and preselected defaults are retained in the typed
   `ControlIR`. Kibana options-list controls populate from target field values,
   so `available_values` is provenance rather than an enforced static
-  allow-list in generated YAML.
+  allow-list in the emitted control.
 - `$scope` represents an entire Datadog scope expression rather than one tag
   field. It is omitted with an explicit manual-recreation warning; the
   migration does not claim that a nonexistent single control replaces it.
@@ -566,7 +568,7 @@ Preflight is already executable and reported, but it is not yet exposed through 
 
 ## Current Boundaries
 
-- The Datadog migrate flow now supports first-class preflight, validate, compile, upload, smoke validation, migration manifest and rollout outputs, and verification packets.
+- The Datadog migrate flow now supports first-class preflight, validate, upload, smoke validation, migration manifest and rollout outputs, and verification packets.
 - Live target `_field_caps` and emitted-query validation are integrated, but the safe-fix validation helper still reuses shared logic that currently lives in the Grafana-side module layout.
 - Verification can now execute simple Datadog metric queries live for measured source-vs-target comparison, but logs and multi-query metric widgets still fall back to target/runtime evidence.
 - Datadog monitors are first-class extraction inputs, but the main Datadog migration command currently stops at emitted/validated Kibana rule payloads for monitor shapes we can parse faithfully and verify against the configured field profile plus live target `_field_caps`.

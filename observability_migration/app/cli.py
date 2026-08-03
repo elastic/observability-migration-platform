@@ -25,7 +25,11 @@ import yaml
 import observability_migration.adapters.source.datadog.adapter
 import observability_migration.adapters.source.grafana.adapter
 import observability_migration.targets.kibana.adapter  # noqa: F401
-from observability_migration.core.cli_contract import ASSET_CHOICES, normalize_requested_assets
+from observability_migration.core.cli_contract import (
+    ASSET_CHOICES,
+    normalize_requested_assets,
+    reject_removed_surfaces,
+)
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import source_registry, target_registry
 from observability_migration.core.progress import null_progress, stderr_progress
@@ -63,21 +67,17 @@ _DOCS_URL = "https://github.com/elastic/observability-migration-platform/blob/ma
 
 _UPLOAD_SHAPE_HELP = (
     "Accepted input shapes: a dashboard artifact dir with a 'native/' child "
-    "(for example 'migration_output/dashboards'), the 'native/' directory "
-    "itself, or -- for externally supplied or archived YAML -- a directory of "
-    ".yaml files, a dir with a 'yaml/' child, or that dir's sibling 'compiled/' "
-    "directory. 'obs-migrate migrate' writes native/ and ir/ artifacts; it does "
-    "not produce a 'yaml/' directory."
+    "(for example 'migration_output/dashboards'), or the 'native/' directory "
+    "itself. 'obs-migrate migrate' writes native/ and ir/ artifacts; "
+    "'native/*.native.json' is the only upload input."
 )
 
 _UPLOAD_ARTIFACT_DIR_HELP = (
-    "Canonical upload input: the dashboard artifact directory written by "
-    "'obs-migrate migrate' (for example 'migration_output/dashboards'), or "
-    "directly its 'native/' child. Combine with --artifact-format to pick a "
-    "representation; the default 'auto' resolves to the reviewed native "
-    "Dashboard-as-Code artifacts ('native/*.native.json') a migration writes, "
-    "and falls back to YAML only for a directory that actually contains "
-    f".yaml files. {_UPLOAD_SHAPE_HELP}"
+    "The dashboard artifact directory written by 'obs-migrate migrate' (for "
+    "example 'migration_output/dashboards'), or directly its 'native/' child. "
+    "The reviewed native Dashboard-as-Code artifacts "
+    "('native/*.native.json') are uploaded byte-for-byte through the typed "
+    f"Kibana Dashboards API. {_UPLOAD_SHAPE_HELP}"
 )
 
 
@@ -227,14 +227,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     migrate.add_argument(
-        "--compile", action="store_true",
-        help=(
-            "Compile generated YAML to legacy NDJSON. Optional local/debug artifact; "
-            "not required for the typed Dashboards API upload path. Implied by "
-            "--legacy-import when combined with --upload."
-        ),
-    )
-    migrate.add_argument(
         "--validate", action="store_true",
         help=(
             "Validate emitted ES|QL queries against Elasticsearch after translation. "
@@ -251,23 +243,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "not, so options_list_control filters shipped pointing at a data view "
             "id that did not exist and rendered as 'An error occurred'."
         ),
-    )
-    migrate.add_argument(
-        "--legacy-import",
-        dest="legacy_import",
-        action="store_true",
-        help=(
-            "Deploy dashboards via the legacy kb-dashboard-cli saved-objects "
-            "import instead of the default typed Kibana Dashboards API "
-            "(PUT /api/dashboards/{id}). The native API is used by default; this "
-            "flag forces the older compile+import path."
-        ),
-    )
-    migrate.add_argument(
-        "--use-dashboards-api",
-        dest="use_dashboards_api",
-        action="store_true",
-        help=argparse.SUPPRESS,
     )
     migrate.add_argument("--es-url", default="")
     migrate.add_argument("--es-api-key", default="")
@@ -353,74 +328,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Check that obs-migrate is installed and ready (start here)",
     )
 
-    compile_cmd = sub.add_parser("compile", help="Compile YAML to NDJSON")
-    compile_cmd.add_argument("--yaml-dir", required=True, help="Directory with dashboard YAML files")
-    compile_cmd.add_argument("--output-dir", required=True, help="Output directory for NDJSON")
-
     upload_cmd = sub.add_parser(
         "upload",
         help="Deploy a dashboard artifact directory to Kibana via the typed Dashboards API",
         description=(
-            "Deploy a dashboard artifact directory to Kibana via the typed Kibana "
-            "Dashboards API (PUT /api/dashboards/{id}) by default, with "
-            "per-dashboard fallback to the legacy kb-dashboard-cli saved-objects "
-            "import. Pass --legacy-import to force the legacy compile+import path. "
-            f"{_UPLOAD_SHAPE_HELP}"
+            "Deploy the native Dashboard-as-Code artifacts under a dashboard "
+            "artifact directory to Kibana via the typed Kibana Dashboards API "
+            "(PUT /api/dashboards/{id}). The reviewed 'native/*.native.json' "
+            f"payloads are sent byte-for-byte. {_UPLOAD_SHAPE_HELP}"
         ),
-    )
-    upload_group = upload_cmd.add_mutually_exclusive_group(required=True)
-    upload_group.add_argument(
-        "--artifact-dir",
-        help=_UPLOAD_ARTIFACT_DIR_HELP,
-    )
-    upload_group.add_argument(
-        "--yaml-dir",
-        help="[Compatibility alias for --artifact-dir --artifact-format yaml] "
-             "Path to a dashboard YAML directory input for compile+upload. "
-             f"{_UPLOAD_SHAPE_HELP}",
-    )
-    upload_group.add_argument(
-        "--compiled-dir",
-        help="[Deprecated alias for --yaml-dir] Kept for backward compatibility. "
-             "May point at a 'compiled/' directory whose sibling 'yaml/' directory "
-             "holds the externally supplied YAML. Despite the name, this upload step "
-             "recompiles YAML from the matching 'yaml/' directory; it does not consume "
-             "pre-compiled NDJSON. A migration no longer writes 'yaml/', so this only "
-             "applies to a hand-written or archived YAML tree.",
     )
     upload_cmd.add_argument(
-        "--artifact-format",
-        choices=["auto", "native", "yaml"],
-        default="auto",
-        help=(
-            "Representation to upload from --artifact-dir. 'auto' (default) "
-            "prefers reviewed native Dashboard-as-Code artifacts when present, "
-            "else falls back to YAML; 'native' uploads the reviewed typed API "
-            "payload exactly, with no YAML re-mapping and no legacy fallback; "
-            "'yaml' forces the existing YAML-to-native mapping path. Ignored "
-            "(forced to 'yaml') when --yaml-dir/--compiled-dir or "
-            "--legacy-import is used."
-        ),
+        "--artifact-dir",
+        required=True,
+        help=_UPLOAD_ARTIFACT_DIR_HELP,
     )
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
-    upload_cmd.add_argument(
-        "--legacy-import",
-        dest="legacy_import",
-        action="store_true",
-        help=(
-            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
-            "default typed Kibana Dashboards API (POST /api/dashboards). Requires "
-            "YAML artifacts (--artifact-format is forced to 'yaml')."
-        ),
-    )
-    upload_cmd.add_argument(
-        "--use-dashboards-api",
-        dest="use_dashboards_api",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
@@ -438,12 +363,13 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_cmd = sub.add_parser(
         "verify-panels",
         help="Run the 5-tier panel verifier against a migrated dashboard "
-             "(source PromQL -> translator -> YAML -> NDJSON -> cluster -> live _query).",
+             "(source PromQL -> translator -> IR -> stored dashboard -> cluster "
+             "-> live _query).",
     )
     verify_cmd.add_argument(
         "--migration-out",
         required=True,
-        help="Per-dashboard obs-migrate output directory (contains migration_report.json, ir/, native/, and compiled/ when --compile ran).",
+        help="Per-dashboard obs-migrate output directory (contains migration_report.json, ir/, and native/).",
     )
     verify_cmd.add_argument("--kibana-url", default="", help="Kibana base URL (required for T4).")
     verify_cmd.add_argument("--es-url", default="", help="Elasticsearch base URL (required for T5).")
@@ -487,7 +413,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "state file for Kibana SAML auth.",
     )
     visual_cmd.add_argument("--migration-out", required=True,
-                            help="Per-dashboard migration output (contains ir/, native/, and compiled/ when --compile ran).")
+                            help="Per-dashboard migration output (contains ir/ and native/).")
     visual_cmd.add_argument("--grafana-url", default="http://localhost:23000",
                             help="Parity-rig Grafana base URL (default: http://localhost:23000).")
     visual_cmd.add_argument("--grafana-uid", required=True,
@@ -837,6 +763,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     """Unified CLI entry point."""
+    reject_removed_surfaces(list(sys.argv[1:] if argv is None else argv))
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -846,8 +773,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "migrate":
         _run_migrate(args)
-    elif args.command == "compile":
-        _run_compile(args)
     elif args.command == "upload":
         _run_upload(args)
     elif args.command == "extensions":
@@ -890,19 +815,16 @@ def main(argv: list[str] | None = None) -> None:
 def _run_doctor() -> int:
     """Report first-run readiness: Python, deps, extras, and Kibana tools.
 
-    Returns 0 when the install can compile/migrate (kb tools installed or
-    reachable via ``uvx``); returns 1 when a blocking gap remains.
+    Returns 0 when the install can migrate and upload; returns 1 when a
+    blocking gap remains. The dashboard-YAML compile path was removed, so the
+    external ``kb-dashboard-*`` tools are no longer required by any command and
+    their absence is not a blocking gap.
     """
     import importlib.util
     import platform
 
     from observability_migration import __version__
     from observability_migration._version import read_project_version
-    from observability_migration.targets.kibana._kbtool import (
-        KB_DASHBOARD_TOOL_VERSION,
-        KbToolUnavailableError,
-        tool_argv,
-    )
 
     issues: list[str] = []
     notes: list[str] = []
@@ -973,33 +895,6 @@ def _run_doctor() -> int:
     uvx_path = shutil.which("uvx")
     print(f"  uv on PATH: {'yes (' + uv_path + ')' if uv_path else 'no'}")
     print(f"  uvx on PATH: {'yes (' + uvx_path + ')' if uvx_path else 'no'}")
-    if not uvx_path and py < (3, 12):
-        issues.append(
-            "Python < 3.12 needs uv/uvx on PATH so compile/lint can use the "
-            "pinned kb-dashboard-* fallback. Install: https://docs.astral.sh/uv/"
-        )
-    elif not uvx_path:
-        notes.append(
-            "uv/uvx not on PATH. Fine if kb-dashboard-* is installed via "
-            "elastic-observability-migration[kibana]/[all] on Python 3.12+; otherwise install uv."
-        )
-
-    print(f"  pinned kb-dashboard tool version: {KB_DASHBOARD_TOOL_VERSION}")
-    kb_ok = True
-    for tool in ("kb-dashboard-cli", "kb-dashboard-lint"):
-        try:
-            argv = tool_argv(tool)
-            mode = "installed" if argv[0] != "uvx" else "uvx fallback"
-            print(f"  {tool}: available ({mode})")
-        except KbToolUnavailableError as exc:
-            kb_ok = False
-            print(f"  {tool}: UNAVAILABLE - {exc}")
-            issues.append(str(exc))
-    if not kb_ok and py >= (3, 12):
-        notes.append(
-            "On Python 3.12+, prefer elastic-observability-migration[all] (or [kibana]) so "
-            "kb-dashboard-cli/lint install in-venv without needing uvx."
-        )
 
     if notes:
         print()
@@ -1179,14 +1074,10 @@ def _run_grafana_migration(args: Any) -> None:
         legacy_argv.extend(["--logs-index", args.logs_index])
     if args.validate:
         legacy_argv.append("--validate")
-    if getattr(args, "compile", False):
-        legacy_argv.append("--compile")
     if args.upload:
         legacy_argv.append("--upload")
     if getattr(args, "ensure_data_views", False):
         legacy_argv.append("--ensure-data-views")
-    if getattr(args, "legacy_import", False):
-        legacy_argv.append("--legacy-import")
     if args.es_url:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
@@ -1290,16 +1181,12 @@ def _run_datadog_migration(args: Any) -> None:
         legacy_argv.extend(["--es-url", args.es_url])
     if args.es_api_key:
         legacy_argv.extend(["--es-api-key", args.es_api_key])
-    if getattr(args, "compile", False):
-        legacy_argv.append("--compile")
     if args.validate:
         legacy_argv.append("--validate")
     if args.upload:
         legacy_argv.append("--upload")
     if getattr(args, "ensure_data_views", False):
         legacy_argv.append("--ensure-data-views")
-    if getattr(args, "legacy_import", False):
-        legacy_argv.append("--legacy-import")
     if args.preflight:
         legacy_argv.append("--preflight")
     if getattr(args, "source_execution", False):
@@ -1357,85 +1244,9 @@ def _run_datadog_migration(args: Any) -> None:
     datadog_main()
 
 
-def _run_compile(args: Any) -> None:
-    """Compile dashboard YAML to NDJSON using the shared Kibana target."""
-    yaml_dir = Path(args.yaml_dir)
-    output_dir = Path(args.output_dir)
-    if not yaml_dir.is_dir():
-        print(f"YAML directory not found: {yaml_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    adapter = target_registry.get("kibana")()
-    compile_payload = adapter.compile(yaml_dir, output_dir)
-    results = compile_payload["compile_results"]
-    ok = compile_payload["summary"]["compiled_ok"]
-    total = compile_payload["summary"]["total"]
-    print(f"\nCompiled {ok}/{total} dashboards to {output_dir}")
-    for item in results:
-        status = "OK" if item["success"] else "FAIL"
-        print(f"  [{status}] {item['name']}")
-        if not item["success"]:
-            for line in item["output"].strip().splitlines()[:5]:
-                print(f"         {line}")
-    lint_status = compile_payload["yaml_lint"]["ok"]
-    if lint_status is False:
-        print("\nYAML lint failed:")
-        for line in compile_payload["yaml_lint"]["output"].strip().splitlines()[:10]:
-            print(f"  {line}")
-    layout_status = compile_payload["layout"]["ok"]
-    if layout_status is False:
-        print("\nCompiled layout validation failed:")
-        for line in compile_payload["layout"]["output"].strip().splitlines()[:10]:
-            print(f"  {line}")
-    if ok < total or lint_status is False or layout_status is False:
-        sys.exit(1)
-
-
-def _resolve_upload_input(args: Any) -> tuple[Path, str]:
-    """Resolve the effective ``(artifact_dir, artifact_format)`` for upload.
-
-    ``--artifact-dir`` is the canonical input; ``--yaml-dir``/``--compiled-dir``
-    are compatibility aliases that pin the format to ``"yaml"`` so existing
-    scripts keep their exact prior behavior (see docs/command-contract.md).
-    """
-    artifact_dir_raw = getattr(args, "artifact_dir", None)
-    yaml_dir_raw = getattr(args, "yaml_dir", None)
-    compiled_dir_raw = getattr(args, "compiled_dir", None)
-    artifact_format = str(getattr(args, "artifact_format", "") or "auto")
-
-    if artifact_dir_raw:
-        return Path(artifact_dir_raw), artifact_format
-    if compiled_dir_raw and not yaml_dir_raw:
-        print(
-            "  NOTE: --compiled-dir is a deprecated alias for --yaml-dir. "
-            "Upload recompiles YAML internally; prefer --yaml-dir or "
-            "--artifact-dir in new scripts.",
-            file=sys.stderr,
-        )
-        return Path(compiled_dir_raw), "yaml"
-    if yaml_dir_raw:
-        return Path(yaml_dir_raw), "yaml"
-    return Path(""), artifact_format
-
-
 def _run_upload(args: Any) -> None:
-    """Deploy a dashboard artifact directory to Kibana via the typed Dashboards API by default."""
-    input_dir, artifact_format = _resolve_upload_input(args)
-    legacy_import = bool(getattr(args, "legacy_import", False))
-    if legacy_import:
-        # The legacy importer compiles saved objects from YAML, so it has no
-        # native-payload equivalent; forcing yaml here keeps
-        # --artifact-format meaningless-but-harmless when combined with
-        # --legacy-import instead of silently ignoring an explicit 'native'.
-        if artifact_format == "native":
-            print(
-                "  ERROR: --legacy-import requires YAML artifacts (it compiles "
-                "through kb-dashboard-cli) but --artifact-format native was "
-                "requested. Pass --artifact-format yaml (or --yaml-dir) instead.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        artifact_format = "yaml"
+    """Deploy a dashboard artifact directory to Kibana via the typed Dashboards API."""
+    input_dir = Path(getattr(args, "artifact_dir", "") or "")
     if not input_dir or not input_dir.is_dir():
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
@@ -1448,30 +1259,13 @@ def _run_upload(args: Any) -> None:
         kibana_api_key=args.kibana_api_key,
         space_id=args.space_id,
         verify=verify,
-        use_dashboards_api=not legacy_import,
-        artifact_format=artifact_format,
     )
     if upload_payload["summary"].get("error") == "no_native_artifacts_found":
         print(
-            f"No native Dashboard-as-Code artifacts (native/*.native.json) found "
-            f"under {input_dir}. Pass --artifact-format auto or yaml to fall back "
-            "to YAML, or point --artifact-dir at a directory containing 'native/'.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if upload_payload["summary"].get("error") == "mixed_native_yaml_artifacts":
-        missing = upload_payload["summary"].get("missing_native_artifacts") or []
-        extra = upload_payload["summary"].get("extra_native_artifacts") or []
-        detail = ""
-        if missing:
-            detail = f" Missing native artifacts for: {', '.join(str(item) for item in missing[:5])}."
-        elif extra:
-            detail = f" Native artifacts without YAML siblings: {', '.join(str(item) for item in extra[:5])}."
-        print(
-            "Native Dashboard-as-Code artifacts and YAML artifacts do not match under "
-            f"{input_dir}; refusing an auto upload that would skip dashboards.{detail} "
-            "Regenerate the migration output, pass --artifact-format yaml, or point "
-            "--artifact-dir directly at the native/ directory.",
+            "No native Dashboard-as-Code artifacts (native/*.native.json) found "
+            f"under {input_dir}. Point --artifact-dir at a migration's dashboard "
+            "artifact dir (e.g. 'migration_output/dashboards', which holds "
+            "native/ and ir/) or directly at its 'native/' child.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1479,22 +1273,15 @@ def _run_upload(args: Any) -> None:
         print(
             f"No dashboard artifacts found under {input_dir}. "
             "Point --artifact-dir at a migration's dashboard artifact dir (e.g. "
-            "'migration_output/dashboards', which holds native/ and ir/), or -- "
-            "for externally supplied YAML -- point --yaml-dir at a directory of "
-            ".yaml files, a dir containing 'yaml/', or that dir's sibling "
-            "'compiled/' directory.",
+            "'migration_output/dashboards', which holds native/ and ir/).",
             file=sys.stderr,
         )
         sys.exit(1)
 
     for item in upload_payload["records"]:
         status = "OK" if item["success"] else "FAIL"
-        suffix = ""
-        if item.get("fallback_used"):
-            suffix = " (via legacy _import fallback)"
-        elif item.get("status"):
-            suffix = f" ({item['status']} via dashboards API)"
-        print(f"  [{status}] {item['yaml_file']}{suffix}")
+        suffix = f" ({item['status']} via dashboards API)" if item.get("status") else ""
+        print(f"  [{status}] {item['artifact']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
         # An HTTP 200 that dropped panels is reported as a failure, not a

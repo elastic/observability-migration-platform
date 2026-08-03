@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -94,16 +93,14 @@ def _translate_grafana_fixture(filename: str) -> tuple[Any, dict[str, Any]]:
     dashboard = json.loads((GRAFANA_DASHBOARDS / filename).read_text(encoding="utf-8"))
     rule_pack = _grafana_rule_pack_with_named_params()
     resolver = SchemaResolver(rule_pack)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result, yaml_path = translate_dashboard(
-            dashboard,
-            Path(tmpdir),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rule_pack,
-            resolver=resolver,
-        )
-        yaml_doc = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, yaml_doc
 
 

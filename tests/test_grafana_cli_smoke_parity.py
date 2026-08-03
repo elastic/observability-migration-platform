@@ -323,9 +323,9 @@ class GrafanaAlertSpaceSelectionTests(unittest.TestCase):
 def _fake_migration_result(dashboard):
     """A translated result carrying the IR the pipeline derives artifacts from.
 
-    ``translate_dashboard`` writes no YAML; downstream stages render the
-    transient compile input from ``result.dashboard_ir``, so a stub has to carry
-    one.
+    ``translate_dashboard`` writes nothing to disk; the review artifacts
+    (``native/*.native.json``, ``ir/*.ir.json``) and the uploaded payload are all
+    derived from ``result.dashboard_ir``, so a stub has to carry one.
     """
     result = MigrationResult(dashboard["title"], dashboard["uid"])
     result.dashboard_ir = DashboardIR(
@@ -340,7 +340,15 @@ def _fake_migration_result(dashboard):
 
 
 class GrafanaAssetIsolationTests(unittest.TestCase):
-    def test_dashboards_only_clears_stale_dashboard_yaml_before_compile(self):
+    def test_dashboards_only_clears_stale_yaml_and_compiled_dirs(self):
+        """A migration must not leave a previous release's artifacts behind.
+
+        An older release wrote ``dashboards/yaml/`` and ``dashboards/compiled/``.
+        Neither is produced any more, so both must be swept before the run writes
+        its own artifacts — otherwise an operator can upload an NDJSON this run
+        never generated. Stale ``native/``/``ir/`` files from an earlier run of
+        this release must go the same way.
+        """
         rule_pack = SimpleNamespace(
             logs_index="",
             native_promql=False,
@@ -360,22 +368,31 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        compiled_yaml_names = []
-
-        def _fake_compile_all(yaml_dir, _compiled_dir):
-            compiled_yaml_names[:] = [yaml_file.name for yaml_file in sorted(yaml_dir.glob("*.yaml"))]
-            return [(name, True, "") for name in compiled_yaml_names]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            return _fake_migration_result(dashboard)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            stale_yaml_dir = Path(tmpdir) / "dashboards" / "yaml"
-            stale_yaml_dir.mkdir(parents=True)
+            dashboards_dir = Path(tmpdir) / "dashboards"
+            stale_yaml_dir = dashboards_dir / "yaml"
+            stale_compiled_dir = dashboards_dir / "compiled" / "stale_dashboard"
+            stale_native_dir = dashboards_dir / "native"
+            stale_ir_dir = dashboards_dir / "ir"
+            for directory in (stale_yaml_dir, stale_compiled_dir, stale_native_dir, stale_ir_dir):
+                directory.mkdir(parents=True)
             (stale_yaml_dir / "stale-from-other-grafana.yaml").write_text(
                 "dashboard: stale\n",
                 encoding="utf-8",
             )
+            (stale_compiled_dir / "compiled_dashboards.ndjson").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            (stale_native_dir / "stale_dashboard.native.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            (stale_native_dir / "index.json").write_text("[]\n", encoding="utf-8")
+            (stale_ir_dir / "stale_dashboard.ir.json").write_text("{}\n", encoding="utf-8")
 
             with mock.patch.object(
                 grafana_cli,
@@ -417,18 +434,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 },
             ), mock.patch.object(
                 grafana_cli,
-                "lint_dashboard_yaml",
-                return_value=(True, ""),
-            ), mock.patch.object(
-                grafana_cli,
-                "compile_all",
-                side_effect=_fake_compile_all,
-            ), mock.patch.object(
-                grafana_cli,
-                "validate_compiled_layout",
-                return_value=(True, ""),
-            ), mock.patch.object(
-                grafana_cli,
                 "detect_space_id_from_kibana_url",
                 return_value="",
             ), mock.patch.object(
@@ -467,95 +472,23 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                         "api",
                         "--output-dir",
                         tmpdir,
-                        # Force the compile step so it can observe which YAML
-                        # files survive the stale-artifact sweep; the default
-                        # native Dashboards API path no longer compiles.
-                        "--compile",
                     ]
                 )
 
-        self.assertEqual(compiled_yaml_names, ["current_dashboard.yaml"])
+            yaml_dir_exists = stale_yaml_dir.exists()
+            compiled_dir_exists = (dashboards_dir / "compiled").exists()
+            native_artifacts = sorted(path.name for path in stale_native_dir.glob("*.json"))
+            ir_artifacts = sorted(path.name for path in stale_ir_dir.glob("*.json"))
 
-    def test_default_native_path_skips_kb_dashboard_cli_compile(self):
-        """Without --compile/--legacy-import, the [5/7] step must not invoke the
-        external kb-dashboard-cli compiler: the native Dashboards API upload maps
-        straight from the YAML/native IR and never consumes the compiled NDJSON."""
-        rule_pack = SimpleNamespace(
-            logs_index="",
-            native_promql=False,
-            metrics_dataset_filter="",
-            logs_dataset_filter="",
+        self.assertFalse(yaml_dir_exists)
+        self.assertFalse(compiled_dir_exists)
+        # Only this run's artifacts survive: the stale native/IR pair is gone and
+        # the regenerated index describes the current dashboard.
+        self.assertEqual(
+            native_artifacts,
+            ["current_dashboard.native.json", "index.json"],
         )
-        resolver = mock.Mock()
-        resolver._field_cache = {}
-        resolver._discovered_mappings = {}
-        resolver.field_resolution_summary.return_value = {
-            "status": "offline",
-            "schema_profile": None,
-            "index_pattern": "metrics-*",
-            "field_count": 0,
-            "label_mappings": 0,
-            "otel_fallback": True,
-            "error": "",
-        }
-
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
-        ), mock.patch.object(
-            grafana_cli, "SchemaResolver", return_value=resolver,
-        ), mock.patch.object(
-            grafana_cli,
-            "extract_dashboards_from_grafana",
-            return_value=[{"title": "Current Dashboard", "uid": "current-uid"}],
-        ), mock.patch.object(
-            grafana_cli, "translate_dashboard", side_effect=_fake_translate_dashboard,
-        ), mock.patch.object(
-            grafana_cli,
-            "_collect_feature_gap_artifacts",
-            return_value={
-                "dashboard_links": [],
-                "panel_links": [],
-                "annotations": [],
-                "transform_tasks": [],
-                "alert_tasks": [],
-                "links_summary": {"dashboard_links": 0, "panel_links": 0, "manual_wiring_needed": 0},
-                "annotations_summary": {"total": 0, "candidate_event_annotations": 0, "manual_needed": 0},
-                "transform_summary": {"total": 0, "by_complexity": {}},
-                "alert_summary": {"total": 0, "by_kibana_type": {}},
-            },
-        ), mock.patch.object(
-            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli, "compile_all",
-        ) as compile_all_mock, mock.patch.object(
-            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli, "detect_space_id_from_kibana_url", return_value="",
-        ), mock.patch.object(
-            grafana_cli, "annotate_results_with_verification", return_value={},
-        ), mock.patch.object(
-            grafana_cli, "save_detailed_report",
-        ), mock.patch.object(
-            grafana_cli, "save_migration_manifest",
-        ), mock.patch.object(
-            grafana_cli, "save_verification_packets",
-        ), mock.patch.object(
-            grafana_cli, "build_rollout_plan", return_value={},
-        ), mock.patch.object(
-            grafana_cli, "save_rollout_plan",
-        ), mock.patch.object(
-            grafana_cli, "generate_review_queue", return_value=[],
-        ), mock.patch.object(
-            grafana_cli, "print_report",
-        ):
-            grafana_cli.main(
-                ["--assets", "dashboards", "--source", "api", "--output-dir", tmpdir]
-            )
-
-        compile_all_mock.assert_not_called()
+        self.assertEqual(ir_artifacts, ["current_dashboard.ir.json"])
 
     def test_dashboards_only_empty_input_exits_with_clean_message(self):
         """An empty --input-dir should exit(1) with a helpful message instead of
@@ -837,17 +770,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo_dashboard"
-            compiled_leaf.mkdir(parents=True, exist_ok=True)
-            (compiled_leaf / "compiled_dashboards.ndjson").write_text(
-                "{}\n",
-                encoding="utf-8",
-            )
-            return [("demo_dashboard.yaml", True, "")]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            return _fake_migration_result(dashboard)
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli,
@@ -887,18 +811,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 "transform_summary": {"total": 0, "by_complexity": {}},
                 "alert_summary": {"total": 0, "by_kibana_type": {}},
             },
-        ), mock.patch.object(
-            grafana_cli,
-            "lint_dashboard_yaml",
-            return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli,
-            "compile_all",
-            side_effect=_fake_compile_all,
-        ), mock.patch.object(
-            grafana_cli,
-            "validate_compiled_layout",
-            return_value=(True, ""),
         ), mock.patch.object(
             grafana_cli,
             "detect_space_id_from_kibana_url",
@@ -986,14 +898,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo-dashboard"
-            compiled_leaf.mkdir(parents=True, exist_ok=True)
-            (compiled_leaf / "compiled_dashboards.ndjson").write_text("{}\n", encoding="utf-8")
-            return [("demo-dashboard.yaml", True, "")]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            return _fake_migration_result(dashboard)
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
@@ -1014,12 +920,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 "transform_summary": {"total": 0, "by_complexity": {}},
                 "alert_summary": {"total": 0, "by_kibana_type": {}},
             },
-        ), mock.patch.object(
-            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli, "compile_all", side_effect=_fake_compile_all,
-        ), mock.patch.object(
-            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
         ), mock.patch.object(
             grafana_cli, "detect_space_id_from_kibana_url", return_value="",
         ), mock.patch.object(
@@ -1076,14 +976,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo-dashboard"
-            compiled_leaf.mkdir(parents=True, exist_ok=True)
-            (compiled_leaf / "compiled_dashboards.ndjson").write_text("{}\n", encoding="utf-8")
-            return [("demo-dashboard.yaml", True, "")]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            return _fake_migration_result(dashboard)
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
@@ -1104,12 +998,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 "transform_summary": {"total": 0, "by_complexity": {}},
                 "alert_summary": {"total": 0, "by_kibana_type": {}},
             },
-        ), mock.patch.object(
-            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli, "compile_all", side_effect=_fake_compile_all,
-        ), mock.patch.object(
-            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
         ), mock.patch.object(
             grafana_cli, "detect_space_id_from_kibana_url", return_value="",
         ), mock.patch.object(
@@ -1164,14 +1052,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "error": "",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
-
-        def _fake_compile_all(_yaml_dir, compiled_dir):
-            compiled_leaf = compiled_dir / "demo-dashboard"
-            compiled_leaf.mkdir(parents=True, exist_ok=True)
-            (compiled_leaf / "compiled_dashboards.ndjson").write_text("{}\n", encoding="utf-8")
-            return [("demo-dashboard.yaml", True, "")]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            return _fake_migration_result(dashboard)
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli, "_load_configured_rule_pack", return_value=rule_pack,
@@ -1192,12 +1074,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 "transform_summary": {"total": 0, "by_complexity": {}},
                 "alert_summary": {"total": 0, "by_kibana_type": {}},
             },
-        ), mock.patch.object(
-            grafana_cli, "lint_dashboard_yaml", return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli, "compile_all", side_effect=_fake_compile_all,
-        ), mock.patch.object(
-            grafana_cli, "validate_compiled_layout", return_value=(True, ""),
         ), mock.patch.object(
             grafana_cli, "detect_space_id_from_kibana_url", return_value="",
         ), mock.patch.object(
@@ -1232,7 +1108,7 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
         self.assertTrue(summary_md_exists)
         self.assertFalse(schema_report_exists)
 
-    def test_native_upload_routes_through_kibana_target_adapter_even_if_legacy_compile_fails(self):
+    def test_native_upload_routes_through_kibana_target_adapter(self):
         rule_pack = SimpleNamespace(
             logs_index="",
             native_promql=False,
@@ -1259,11 +1135,12 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             "kibana_url": "https://kibana.example/s/shadow",
         }
 
-        def _fake_translate_dashboard(dashboard, output_dir=None, **_kwargs):
-            return _fake_migration_result(dashboard), None
+        translated_results = []
 
-        def _fake_compile_all(_yaml_dir, _compiled_dir):
-            return [("demo_dashboard.yaml", False, "legacy compile failed")]
+        def _fake_translate_dashboard(dashboard, **_kwargs):
+            result = _fake_migration_result(dashboard)
+            translated_results.append(result)
+            return result
 
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
             grafana_cli,
@@ -1303,18 +1180,6 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 "transform_summary": {"total": 0, "by_complexity": {}},
                 "alert_summary": {"total": 0, "by_kibana_type": {}},
             },
-        ), mock.patch.object(
-            grafana_cli,
-            "lint_dashboard_yaml",
-            return_value=(True, ""),
-        ), mock.patch.object(
-            grafana_cli,
-            "compile_all",
-            side_effect=_fake_compile_all,
-        ), mock.patch.object(
-            grafana_cli,
-            "validate_compiled_layout",
-            return_value=(True, ""),
         ), mock.patch.object(
             grafana_cli,
             "detect_space_id_from_kibana_url",
@@ -1371,92 +1236,19 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
                 ]
             )
 
-            compiled_dir = Path(tmpdir) / "dashboards" / "compiled" / "demo_dashboard"
-
-        # The native path uploads the in-memory payload: no YAML file exists, so
-        # the adapter is handed None plus the artifact stem for reporting.
+        # Upload routes through the Kibana target adapter with the in-memory
+        # native payload this run translated, plus the artifact stem for
+        # reporting. Nothing is read back from disk.
+        self.assertEqual(len(translated_results), 1)
         adapter.upload_dashboard.assert_called_once_with(
-            None,
-            compiled_dir,
             artifact_label="demo_dashboard",
             kibana_url="https://kibana.example",
             space_id="shadow",
             kibana_api_key="secret",
             verify=True,
-            use_dashboards_api=True,
-            native_dashboard=mock.ANY,
-            native_dashboard_stats=mock.ANY,
+            native_dashboard=translated_results[0].native_dashboard,
+            native_dashboard_stats=translated_results[0].native_dashboard_stats,
         )
-
-    def test_lint_failure_skips_only_failing_yaml_before_compile(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_dir = Path(tmpdir) / "yaml"
-            compiled_dir = Path(tmpdir) / "compiled"
-            yaml_dir.mkdir()
-            good_yaml = yaml_dir / "good.yaml"
-            bad_yaml = yaml_dir / "bad.yaml"
-            other_good_yaml = yaml_dir / "other-good.yaml"
-            for yaml_path in (good_yaml, bad_yaml, other_good_yaml):
-                yaml_path.write_text("dashboards: []\n", encoding="utf-8")
-
-            lint_results = {
-                good_yaml.name: (True, ""),
-                bad_yaml.name: (False, "bad threshold order"),
-                other_good_yaml.name: (True, ""),
-            }
-            compile_calls = []
-
-            def _fake_compile_yaml(yaml_path, output_dir):
-                compile_calls.append((Path(yaml_path).name, Path(output_dir).name))
-                return True, f"compiled {Path(yaml_path).name}"
-
-            with mock.patch.object(grafana_cli, "compile_yaml", side_effect=_fake_compile_yaml):
-                compile_results = grafana_cli._compile_linted_yaml_files(
-                    sorted(yaml_dir.glob("*.yaml")),
-                    lint_results,
-                    compiled_dir,
-                )
-
-        self.assertEqual(
-            compile_calls,
-            [("good.yaml", "good"), ("other-good.yaml", "other-good")],
-        )
-        self.assertEqual(
-            compile_results,
-            [
-                ("bad.yaml", False, "Dashboard YAML lint failed before compile.\nbad threshold order"),
-                ("good.yaml", True, "compiled good.yaml"),
-                ("other-good.yaml", True, "compiled other-good.yaml"),
-            ],
-        )
-
-    def test_layout_validation_runs_when_partial_lint_batch_still_compiles_dashboards(self):
-        results = [
-            MigrationResult("Bad", "bad-uid"),
-            MigrationResult("Good", "good-uid"),
-        ]
-        compile_results = [
-            ("bad.yaml", False, "Dashboard YAML lint failed before compile."),
-            ("good.yaml", True, "compiled good.yaml"),
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                grafana_cli,
-                "validate_compiled_layout",
-                return_value=(True, ""),
-            ) as mock_validate:
-                layout_ok, layout_output = grafana_cli._validate_compiled_layout_after_compile(
-                    results,
-                    compile_results,
-                    Path(tmpdir),
-                )
-
-        self.assertTrue(layout_ok)
-        self.assertEqual(layout_output, "")
-        mock_validate.assert_called_once()
-        self.assertTrue(all(result.layout_validated for result in results))
-        self.assertTrue(all(result.layout_error == "" for result in results))
 
 
 class TestTranslateDashboardResilient(unittest.TestCase):
@@ -1488,7 +1280,7 @@ class TestTranslateDashboardResilient(unittest.TestCase):
             "observability_migration.adapters.source.grafana.cli.translate_dashboard",
             side_effect=RuntimeError("simulated crash"),
         ):
-            result, yaml_path = grafana_cli._translate_dashboard_resilient(
+            result = grafana_cli._translate_dashboard_resilient(
                 dashboard,
                 datasource_index="metrics-*",
                 esql_index="metrics-*",
@@ -1496,7 +1288,6 @@ class TestTranslateDashboardResilient(unittest.TestCase):
                 resolver=None,
             )
 
-        self.assertIsNone(yaml_path)
         self.assertEqual(result.dashboard_title, "Exploding Dashboard")
         self.assertIn("simulated crash", result.translation_error)
         self.assertEqual(result.migrated, 0)
@@ -1509,9 +1300,9 @@ class TestTranslateDashboardResilient(unittest.TestCase):
 
         with patch(
             "observability_migration.adapters.source.grafana.cli.translate_dashboard",
-            return_value=(fake_result, None),
+            return_value=fake_result,
         ):
-            result, yaml_path = grafana_cli._translate_dashboard_resilient(
+            result = grafana_cli._translate_dashboard_resilient(
                 dashboard,
                 datasource_index="metrics-*",
                 esql_index="metrics-*",
@@ -1520,40 +1311,6 @@ class TestTranslateDashboardResilient(unittest.TestCase):
             )
 
         self.assertEqual(result, fake_result)
-        # Translation writes no YAML, so there is no path to pass through.
-        self.assertIsNone(yaml_path)
-
-    def test_stub_result_does_not_crash_yaml_path_lookups(self):
-        """Stub results from failed translation must not crash any code that iterates dashboard_outputs."""
-        bad_dashboard = self._make_minimal_dashboard("Bad")
-        bad_dashboard["uid"] = "bad123"
-
-        # Stub the bad dashboard
-        bad_result = MigrationResult(
-            dashboard_title="Bad",
-            dashboard_uid="bad123",
-            translation_error="Traceback:\n  RuntimeError: boom",
-        )
-
-        # dashboard_outputs format: [(result, yaml_path, raw_dashboard)]
-        dashboard_outputs = [
-            (bad_result, None, bad_dashboard),
-        ]
-
-        # Simulate the lint loop — this should not raise
-        yaml_lint_results = {}  # empty, no yaml produced for failed dashboard
-        for result, yaml_path, _dashboard in dashboard_outputs:
-            if yaml_path is None:
-                continue
-            result.yaml_linted = True
-            lint_ok, lint_output = yaml_lint_results.get(
-                Path(yaml_path).name, (False, "missing")
-            )
-            result.yaml_lint_error = "" if lint_ok else lint_output
-
-        # Verify the stub result was not modified and translation_error intact
-        self.assertEqual(bad_result.translation_error, "Traceback:\n  RuntimeError: boom")
-        self.assertFalse(getattr(bad_result, "yaml_linted", False))
 
 
 class TestLabelReplaceTranslation(unittest.TestCase):

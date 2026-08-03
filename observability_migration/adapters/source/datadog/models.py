@@ -465,19 +465,16 @@ class DashboardResult:
     preflight_issues: list[dict[str, str]] = field(default_factory=list)
     validation_summary: dict[str, int] = field(default_factory=dict)
     # Filename stem shared by this dashboard's artifacts
-    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``,
-    # ``compiled/<stem>/``).
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``).
     artifact_stem: str = ""
-    compiled_path: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of
     # `native_dashboard`/`dashboard_ir`, written before upload so the exact
     # typed API payload can be reviewed and later deployed with
-    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    # `obs-migrate upload --artifact-dir ...`.
     native_artifact_path: str = ""
     ir_artifact_path: str = ""
-    compiled: bool = False
-    compile_error: str = ""
+    # Set by the post-upload smoke layout check (not by any compile step).
     layout_checked: bool = False
     layout_error: str = ""
     upload_attempted: bool = False
@@ -568,11 +565,6 @@ class DashboardResult:
                 "error": self.browser_audit_error or "",
             }
         return {
-            "yaml_lint": {"status": "not_run", "error": ""},
-            "compile": {
-                "status": "pass" if self.compiled else "fail" if self.compile_error else "not_run",
-                "error": self.compile_error or "",
-            },
             "layout": layout_status,
             "upload": upload_status,
             "smoke": smoke_status,

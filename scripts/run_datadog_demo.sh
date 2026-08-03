@@ -431,7 +431,6 @@ validate_cmd=(
   --data-view "$DATA_VIEW"
   --logs-index "$LOGS_INDEX"
   --preflight
-  --compile
   --validate
   --upload
   --smoke

@@ -61,10 +61,6 @@ class TestDatadogImportParity(unittest.TestCase):
 
 
 class TestTargetImportParity(unittest.TestCase):
-    def test_compile_via_shared_path(self):
-        from observability_migration.targets.kibana.compile import compile_yaml
-        self.assertTrue(callable(compile_yaml))
-
     def test_comparators_via_shared_path(self):
         from observability_migration.core.verification.comparators import ComparisonResult
         self.assertTrue(ComparisonResult is not None)

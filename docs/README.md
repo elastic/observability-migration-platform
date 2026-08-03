@@ -19,7 +19,7 @@ reference and the source/target pages for your environment.
 | `command-contract.md` | You want the canonical `obs-migrate` command reference: subcommands, flags, and safe invocation examples |
 | `sources/grafana.md` | You are migrating from Grafana: adapter capabilities, flags, and workflow boundaries |
 | `sources/datadog.md` | You are migrating from Datadog: adapter capabilities, flags, and workflow boundaries |
-| `targets/kibana.md` | You want what lands in Kibana: native API / YAML emit / compile / upload runtime |
+| `targets/kibana.md` | You want what lands in Kibana: the native Dashboards API mapping, review artifacts, and upload runtime |
 | `../SUPPORT.md` | You want help via issues and what context to include |
 
 ## Contributor Docs
@@ -43,7 +43,7 @@ setup and PR expectations.
 | `contributing/import-paths.md` | You need the canonical Python import paths |
 | `contributing/add-source.md` | You are adding a new source adapter |
 | `contributing/add-asset-type.md` | You are adding a new shared asset type |
-| `dashboards/README.md` | You want the (deprecated) dashboard YAML schema, lint, and layout validation tooling that `obs-migrate compile` and `--legacy-import` still consume |
+| `dashboards/README.md` | You want the dashboard schema-refresh tooling, and what became of the removed YAML lint / compiled-layout stages |
 | `../scripts/README.md` | You want an inventory of repo-maintained helper scripts and where they fit |
 
 ### Testing And Verification

@@ -162,12 +162,6 @@ def _runtime_rollups(
         _append_unique(rollups, "empty_result")
     if dashboard_result:
         runtime_summary = build_runtime_summary(dashboard_result)
-        if runtime_summary["yaml_lint"]["status"] == "fail":
-            _append_unique(rollups, "yaml_lint_failed")
-        if runtime_summary["compile"]["status"] == "fail":
-            _append_unique(rollups, "compile_failed")
-        if runtime_summary["layout"]["status"] == "fail":
-            _append_unique(rollups, "layout_failed")
         if runtime_summary["upload"]["status"] == "fail":
             _append_unique(rollups, "upload_failed")
     return rollups
@@ -183,9 +177,6 @@ def _runtime_state(
     smoke_status = "fail" if "smoke_failed" in rollups else "empty_result" if "empty_result" in rollups else "not_runtime_checked" if "not_runtime_checked" in rollups else "not_run"
     browser_status = "fail" if "browser_failed" in rollups else "not_run"
     return {
-        "yaml_lint": dashboard_runtime.get("yaml_lint", {"status": "not_run", "error": ""}),
-        "compile": dashboard_runtime.get("compile", {"status": "not_run", "error": ""}),
-        "layout": dashboard_runtime.get("layout", {"status": "not_run", "error": ""}),
         "upload": dashboard_runtime.get("upload", {"status": "not_run", "error": ""}),
         "validation": {
             "status": validation_record.get("status", "not_run") if validation_record else "not_run",

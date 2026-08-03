@@ -210,7 +210,6 @@ run_synthetic_scenario() {
   phase "$scenario_id: upload reviewed native artifact"
   "$PY" -m observability_migration.app.cli upload \
     --artifact-dir "$final_artifacts" \
-    --artifact-format native \
     --kibana-url "$KIBANA_URL" \
     --kibana-api-key "$KIBANA_API_KEY"
 }

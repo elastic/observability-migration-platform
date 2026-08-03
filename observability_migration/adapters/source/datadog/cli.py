@@ -19,7 +19,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +37,7 @@ from observability_migration.core.cli_contract import (
     alert_output_dir,
     dashboard_output_dir,
     normalize_requested_assets,
+    reject_removed_surfaces,
 )
 from observability_migration.core.http import resolve_tls
 from observability_migration.core.interfaces.registries import target_registry
@@ -53,10 +53,6 @@ from observability_migration.core.verification.disposition import (
     SELF_HEAL_SEMANTIC_LOSS,
     missing_target_field_warning,
     validation_failure_self_heals,
-)
-from observability_migration.targets.kibana.compile import (
-    validate_compiled_layout,
-    write_dashboard_yaml,
 )
 from observability_migration.targets.kibana.dashboards_api import upload_warnings_from_reasons
 from observability_migration.targets.kibana.native_artifacts import (
@@ -129,7 +125,6 @@ def main(argv: list[str] | None = None) -> None:
         _handle_delete_dashboards(args, target_adapter, verify=verify)
         return
 
-    compile_requested = False
     if selection.dashboards:
         if (args.browser_audit or args.capture_screenshots) and not args.smoke:
             print("  ERROR: --browser-audit and --capture-screenshots require --smoke")
@@ -137,7 +132,6 @@ def main(argv: list[str] | None = None) -> None:
         if args.smoke and not args.upload:
             args.upload = True
             auto_enabled_upload = True
-        compile_requested = args.compile or (args.upload and args.legacy_import)
 
         if args.upload and not args.kibana_url:
             print("  ERROR: --kibana-url is required when --upload is set")
@@ -160,8 +154,6 @@ def main(argv: list[str] | None = None) -> None:
         )
     if auto_enabled_upload:
         print("  Smoke requested: auto-enabling upload step\n")
-    if selection.dashboards and args.upload and args.legacy_import and not args.compile:
-        print("  Legacy import requested: auto-enabling compile step\n")
     try:
         field_map = _load_configured_field_map(args)
     except ValueError as exc:
@@ -181,7 +173,6 @@ def main(argv: list[str] | None = None) -> None:
             output_dir=dashboards_dir,
             dd_creds=dd_creds,
             target_adapter=target_adapter,
-            compile_requested=compile_requested,
             verify=verify,
         )
 
@@ -206,26 +197,29 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _clear_dashboard_artifacts(
-    compiled_dir: Path,
+    base_dir: Path,
     *,
     native_dir: Path | None = None,
     ir_dir: Path | None = None,
 ) -> int:
     """Remove a previous run's dashboard artifacts from the output directory.
 
-    Also sweeps a ``yaml/`` sibling left behind by a pre-native release: the
-    pipeline no longer produces one, and leaving stale YAML next to fresh
-    ``native/`` artifacts would make ``upload --artifact-format auto`` see
-    mixed artifacts and refuse the upload.
+    Also sweeps the ``yaml/`` and ``compiled/`` directories a pre-native
+    release left behind. The pipeline no longer produces either, and leaving
+    stale artifacts next to fresh ``native/`` ones invites an operator to
+    upload something this run never generated.
     """
     removed = 0
-    legacy_yaml_dir = compiled_dir.parent / "yaml"
-    if legacy_yaml_dir.is_dir():
-        for yaml_file in legacy_yaml_dir.glob("*.yaml"):
-            yaml_file.unlink()
+    for legacy_dir in (base_dir / "yaml", base_dir / "compiled"):
+        if not legacy_dir.is_dir():
+            continue
+        for child in legacy_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
             removed += 1
-        if not any(legacy_yaml_dir.iterdir()):
-            legacy_yaml_dir.rmdir()
+        legacy_dir.rmdir()
     for artifact_dir, pattern in ((native_dir, "*.native.json"), (ir_dir, "*.ir.json")):
         if artifact_dir is not None and artifact_dir.exists():
             for artifact_file in artifact_dir.glob(pattern):
@@ -235,13 +229,6 @@ def _clear_dashboard_artifacts(
             if index_file.exists():
                 index_file.unlink()
                 removed += 1
-    if compiled_dir.exists():
-        for child in compiled_dir.iterdir():
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-            removed += 1
     return removed
 
 
@@ -281,7 +268,6 @@ def _run_dashboard_pipeline(
     output_dir: Path,
     dd_creds: dict[str, str],
     target_adapter: Any,
-    compile_requested: bool,
     verify: bool | str = True,
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
@@ -315,7 +301,7 @@ def _run_dashboard_pipeline(
     native_dir = output_dir / "native"
     ir_dir = output_dir / "ir"
     removed_stale_artifacts = _clear_dashboard_artifacts(
-        output_dir / "compiled", native_dir=native_dir, ir_dir=ir_dir,
+        output_dir, native_dir=native_dir, ir_dir=ir_dir,
     )
     if removed_stale_artifacts:
         print(f"  Removed {removed_stale_artifacts} stale dashboard artifact(s) from {output_dir}")
@@ -426,39 +412,15 @@ def _run_dashboard_pipeline(
         write_native_artifact_index(native_dir, native_index_entries)
     print(f"  {len(native_index_entries)} dashboard(s) written to {native_dir}")
 
-    # kb-dashboard-cli compile and the legacy `_import` upload are the only
-    # remaining consumers that need a YAML *file*. Render it from each
-    # dashboard's IR into a scratch directory that is removed again before the
-    # run ends, so a migration never produces a `yaml/` artifact directory.
-    yaml_scratch_dir: Path | None = None
-    yaml_paths_by_stem: dict[str, Path] = {}
-    if compile_requested or getattr(args, "legacy_import", False):
-        yaml_scratch_dir = Path(tempfile.mkdtemp(prefix="obs-migrate-yaml-"))
-        for dashboard_result, _dashboard in dashboard_outputs:
-            if not dashboard_result.artifact_stem or dashboard_result.dashboard_ir is None:
-                continue
-            yaml_paths_by_stem[dashboard_result.artifact_stem] = write_dashboard_yaml(
-                dashboard_result.dashboard_ir,
-                yaml_scratch_dir,
-                dashboard_result.artifact_stem,
-            )
-    try:
-        if compile_requested:
-            _compile_all_dashboards(all_results, output_dir, target_adapter, yaml_paths_by_stem)
-        if args.upload and args.ensure_data_views:
-            _ensure_data_views(args, target_adapter, field_map, verify=verify)
-        if args.upload:
-            _upload_all_dashboards(
-                all_results,
-                output_dir,
-                args,
-                target_adapter,
-                verify=verify,
-                yaml_paths=yaml_paths_by_stem,
-            )
-    finally:
-        if yaml_scratch_dir is not None:
-            shutil.rmtree(yaml_scratch_dir, ignore_errors=True)
+    if args.upload and args.ensure_data_views:
+        _ensure_data_views(args, target_adapter, field_map, verify=verify)
+    if args.upload:
+        _upload_all_dashboards(
+            all_results,
+            args,
+            target_adapter,
+            verify=verify,
+        )
 
     smoke_payload: dict[str, Any] = {}
     if args.smoke:
@@ -754,47 +716,6 @@ def _preflight_issue_to_dict(issue: Any) -> dict[str, str]:
         "widget_id": issue.widget_id,
         "field_name": issue.field_name,
     }
-
-
-def _compile_all_dashboards(
-    results: list[DashboardResult],
-    output_dir: Path,
-    target_adapter: Any,
-    yaml_paths: dict[str, Path],
-) -> None:
-    """Compile YAML to NDJSON using the shared Kibana target runtime.
-
-    ``yaml_paths`` maps each dashboard's artifact stem to the transient YAML file
-    rendered from its IR for the external compiler (the migration itself writes
-    no YAML).
-    """
-    compiled_dir = output_dir / "compiled"
-    compiled_dir.mkdir(parents=True, exist_ok=True)
-
-    for dr in results:
-        stem = dr.artifact_stem
-        yaml_path = yaml_paths.get(stem) if stem else None
-        if yaml_path is None:
-            continue
-        out_dir = compiled_dir / stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        success, output = target_adapter.compile_dashboard(yaml_path, out_dir)
-        if success:
-            dr.compiled = True
-            dr.compiled_path = str(out_dir)
-            print(f"    Compiled: {stem}")
-            layout_ok, layout_output = validate_compiled_layout(out_dir)
-            dr.layout_checked = True
-            if layout_ok:
-                dr.layout_error = ""
-                print(f"    Layout validated: {stem}")
-            else:
-                dr.layout_error = layout_output[:500]
-                print(f"    LAYOUT FAILED: {stem}: {layout_output[:200]}")
-        else:
-            dr.compile_error = output[:500]
-            print(f"    COMPILE FAILED: {stem}: {output[:200]}")
 
 
 class _DatadogValidationResolver:
@@ -1223,33 +1144,25 @@ def _ensure_data_views(
 
 def _upload_all_dashboards(
     results: list[DashboardResult],
-    output_dir: Path,
     args: argparse.Namespace,
     target_adapter: Any,
     *,
     verify: bool | str | None = None,
-    yaml_paths: dict[str, Path] | None = None,
 ) -> None:
     """Upload dashboards to Kibana via the shared target runtime.
 
-    The default typed Dashboards API path uploads the in-memory native payload.
-    ``yaml_paths`` (artifact stem -> transient YAML file) is only needed by the
-    ``--legacy-import`` path, which compiles YAML through kb-dashboard-cli.
+    Uploads the in-memory native payload each dashboard already carries through
+    the typed Kibana Dashboards API; nothing is read back off disk.
     """
-    yaml_paths = yaml_paths or {}
     from observability_migration.targets.kibana.compile import (
         detect_space_id_from_kibana_url,
         kibana_url_for_space,
     )
 
-    compiled_dir = output_dir / "compiled"
-    compiled_dir.mkdir(parents=True, exist_ok=True)
     verify = _resolve_tls_from_args(args) if verify is None else verify
     target_space = detect_space_id_from_kibana_url(args.kibana_url) or "default"
     upload_space = args.space_id or ""
     upload_kibana_url = kibana_url_for_space(args.kibana_url, upload_space)
-
-    use_dashboards_api = not getattr(args, "legacy_import", False)
 
     print(f"\n  Uploading dashboards to {upload_kibana_url}")
     for dr in results:
@@ -1261,52 +1174,14 @@ def _upload_all_dashboards(
             dr.upload_error = "Upload skipped because no dashboard artifact was generated."
             print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
             continue
-        if not use_dashboards_api and dr.artifact_stem not in yaml_paths:
-            dr.uploaded = False
-            dr.upload_error = (
-                "Upload skipped because --legacy-import needs a compiled YAML "
-                "artifact and none was rendered for this dashboard."
-            )
-            print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
-            continue
-        if not use_dashboards_api and not dr.compiled:
-            dr.uploaded = False
-            dr.upload_error = (
-                "Upload skipped because compile failed."
-                if dr.compile_error
-                else "Upload skipped because compile did not run."
-            )
-            print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error}")
-            continue
-        # Legacy ``kb-dashboard-cli`` layout validation inspects the compiled
-        # NDJSON layout, which only the legacy ``--legacy-import`` path
-        # produces/uses. The native Dashboards API upload maps straight from
-        # the YAML/NativeDashboard IR and never touches that compiled output,
-        # so a (possibly stale) legacy layout error must not block it --
-        # mirrors the Grafana CLI's own ``not use_dashboards_api`` gate.
-        if not use_dashboards_api and dr.layout_error:
-            dr.uploaded = False
-            dr.upload_error = f"Upload skipped because compiled layout validation failed: {dr.layout_error}"
-            print(f"    UPLOAD SKIPPED: {stem}: {dr.upload_error[:200]}")
-            continue
-
-        out_dir = compiled_dir / dr.artifact_stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        upload_kwargs: dict[str, Any] = {
-            "kibana_url": args.kibana_url,
-            "space_id": upload_space,
-            "kibana_api_key": args.kibana_api_key,
-            "verify": verify,
-            "use_dashboards_api": use_dashboards_api,
-            "artifact_label": dr.artifact_stem,
-        }
-        if use_dashboards_api and dr.native_dashboard is not None:
-            upload_kwargs["native_dashboard"] = dr.native_dashboard
-            upload_kwargs["native_dashboard_stats"] = dr.native_dashboard_stats
         upload_result = target_adapter.upload_dashboard(
-            yaml_paths.get(dr.artifact_stem),
-            out_dir,
-            **upload_kwargs,
+            kibana_url=args.kibana_url,
+            space_id=upload_space,
+            kibana_api_key=args.kibana_api_key,
+            verify=verify,
+            native_dashboard=dr.native_dashboard,
+            native_dashboard_stats=dr.native_dashboard_stats,
+            artifact_label=dr.artifact_stem,
         )
         dr.uploaded = upload_result["success"]
         dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
@@ -1550,7 +1425,7 @@ def _allocate_artifact_stem(
     """Allocate a unique artifact filename stem to avoid collisions.
 
     The stem names every artifact for one dashboard
-    (``native/<stem>.native.json``, ``ir/<stem>.ir.json``, ``compiled/<stem>/``).
+    (``native/<stem>.native.json``, ``ir/<stem>.ir.json``).
     """
     base = _safe_filename(title)
     if base not in used_stems:
@@ -1575,6 +1450,9 @@ def _allocate_artifact_stem(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    reject_removed_surfaces(
+        list(sys.argv[1:] if argv is None else argv), prog="datadog-migrate"
+    )
     parser = argparse.ArgumentParser(
         description="Migrate Datadog dashboards to Kibana",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1653,21 +1531,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated Datadog dashboard IDs to fetch (API mode)",
     )
     parser.add_argument(
-        "--compile",
-        dest="compile",
-        action="store_true",
-        default=False,
-        help="Compile YAML to NDJSON using kb-dashboard-cli",
-    )
-    parser.add_argument(
-        "--no-compile",
-        dest="compile",
-        action="store_false",
-        help="Skip dashboard YAML compilation (default; retained for compatibility)",
-    )
-    parser.add_argument(
         "--validate", action="store_true",
-        help="Validate emitted ES|QL against Elasticsearch before compile/upload",
+        help="Validate emitted ES|QL against Elasticsearch before upload",
     )
     parser.add_argument(
         "--translation-mode",
@@ -1692,22 +1557,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--upload", action="store_true",
-        help="Upload dashboards to Kibana after a successful compile pass",
-    )
-    parser.add_argument(
-        "--legacy-import",
-        dest="legacy_import",
-        action="store_true",
-        help=(
-            "Force the legacy kb-dashboard-cli saved-objects import instead of the "
-            "default typed Kibana Dashboards API (POST /api/dashboards)."
-        ),
-    )
-    parser.add_argument(
-        "--use-dashboards-api",
-        dest="use_dashboards_api",
-        action="store_true",
-        help=argparse.SUPPRESS,
+        help="Upload dashboards to Kibana via the typed Dashboards API",
     )
     parser.add_argument(
         "--smoke", action="store_true",

@@ -80,9 +80,7 @@ rule packs/plugins/schema setup
   -> optional metadata polish (rebuild DashboardIR; re-derive native payload)
   -> optional emitted-query validation and IR sync (same IR rebuild)
   -> persist native/IR review artifacts
-  -> optional (--compile/--legacy-import only) scratch YAML render + lint
-  -> optional compile and layout validation
-  -> optional upload (typed API prefers native_dashboard from IR)
+  -> optional upload (typed API, native_dashboard derived from IR)
   -> optional integrated smoke validation / browser audit / screenshot capture
   -> verification packets and report artifacts
   -> optional preflight probes and schema contract
@@ -97,15 +95,23 @@ rule packs/plugins/schema setup
 | Feature-gap extraction | `links.py`, `annotations.py`, `alerts.py`, `transforms.py` | Collect reviewer-facing artifacts for non-query surfaces |
 | Optional validate | `esql_validate.py` | Validate emitted target queries against Elasticsearch, auto-fix safe cases, and manualize broken ones |
 | Native/IR review artifacts | `targets/kibana/native_artifacts.py` | Persist `dashboards/native/*.native.json`, `dashboards/ir/*.ir.json`, and `dashboards/native/index.json` after final IR/native regeneration so review artifacts match an immediate upload |
-| Lint / compile / layout | `targets/kibana/compile.py` | Only with `--compile`/`--legacy-import`: render each dashboard's kb-dashboard YAML from its IR into a scratch directory, lint it, compile NDJSON, validate compiled layout, then delete the scratch directory |
-| Optional upload | `targets/kibana/compile.py`, `dashboards_api.py`, `native_artifacts.py` | Typed API upload prefers in-memory `native_dashboard` from IR; standalone `obs-migrate upload --artifact-dir` prefers the persisted native artifact when present, rejects mixed native/YAML artifact roots, and falls back to YAML only when native artifacts are absent or YAML is selected |
+| Optional upload | `targets/kibana/adapter.py`, `dashboards_api.py`, `native_artifacts.py` | Typed API upload of the in-memory `native_dashboard` derived from the IR; standalone `obs-migrate upload --artifact-dir` uploads the persisted `native/*.native.json` byte-for-byte. There is no YAML input and no fallback renderer |
 | Optional integrated smoke | `cli.py`, `targets/kibana/smoke.py`, `smoke_integration.py` | Validate uploaded dashboards, optionally run browser audit / screenshots, then merge post-upload smoke results back into the migration evidence |
 | Verification + reporting | `verification.py`, `report.py`, `manifest.py`, `rollout.py` | Build semantic gates, save reports/manifests/verification packets, and generate rollout guidance |
 | Optional preflight mode | `preflight.py` | Probe source inventory, target readiness, and required target contract for readiness assessment |
 
 Important detail: Grafana `translate_dashboard()` is a broad stage. It already
 includes layout normalization, variable/control translation, `DashboardIR`
-assembly, and derived native/YAML emission, not just query translation.
+assembly, and the derived native payload, not just query translation. It writes
+nothing to disk and returns just the `MigrationResult` (it no longer takes an
+`output_dir` or returns a YAML path).
+
+The console pipeline is **5 stages**, not 7: `[1/5] Extracting dashboards`,
+`[2/5] Translating dashboards`, `[3/5] Verification-packet ES|QL validation`,
+`[4/5] Writing native Dashboard-as-Code review artifacts`, `[5/5] Generating
+report`, followed by an unnumbered `Rollout plan & feature summaries` step. The
+old `[4/7] Linting generated dashboard YAML` and `[5/7] Compiling YAML ->
+Kibana NDJSON via kb-dashboard-cli` stages were removed.
 
 ## Schema Resolution and Field Naming
 
@@ -563,7 +569,7 @@ Important modules:
 - `adapter.py`: adapter registration for the unified CLI.
 - `cli.py`: end-to-end migration orchestration.
 - `extract.py`: dashboard extraction from files or the Grafana API.
-- `panels.py`: panel translation, layout normalization, `DashboardIR` assembly, and derived native/YAML emission.
+- `panels.py`: panel translation, layout normalization, `DashboardIR` assembly, and the derived native payload.
 - `translate.py`, `promql.py`, `rules.py`, `schema.py`: query translation core.
 - `preflight.py`, `verification.py`: readiness and verification artifacts.
 - `observability_migration/adapters/source/grafana/smoke.py` and `observability_migration/adapters/source/grafana/validate_uploaded_dashboards.py`: post-upload saved-object validation.

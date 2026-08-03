@@ -7,7 +7,7 @@ Claude-specific guidance. For automation/agent rules see `AGENTS.md`. For public
 This repo (the **Observability Migration Platform**, CLI `obs-migrate`) is the
 canonical source for the migration **engine** — `grafana-migrate`,
 `datadog-migrate`, PromQL/Datadog translation, and the shared Kibana
-YAML/compile path. Treat this repository as the single source of truth.
+native-payload/upload path. Treat this repository as the single source of truth.
 (See the Naming note in `AGENTS.md`.)
 
 - Engine fixes and features belong in **Issues/PRs on this repo**, not in downstream forks.
@@ -26,11 +26,11 @@ YAML/compile path. Treat this repository as the single source of truth.
 - Canonical CLI commands: `docs/command-contract.md`
 - Build / test / lint: see `AGENTS.md` (use `make test`, `make lint`, `make typecheck`).
 - Keep docs in the same PR as operator-visible behavior changes. Update
-  `docs/command-contract.md` for CLI/env/upload/compile/smoke changes,
+  `docs/command-contract.md` for CLI/env/upload/smoke changes,
   `docs/architecture/asset-model.md` for shared IR/result contracts,
   `docs/architecture.md` and `docs/pipeline-trace.tpl.md` for package maps or
   cross-source pipeline structure,
-  `docs/targets/kibana.md` for Kibana target/native API/YAML artifact behavior,
+  `docs/targets/kibana.md` for Kibana target/native API/review-artifact behavior,
   `docs/sources/grafana.md` or `docs/sources/datadog.md` for source-specific
   behavior, `docs/contributing/import-paths.md` for public helper/module moves,
   `docs/testing.md` for verifier/gate changes, and
@@ -40,13 +40,14 @@ YAML/compile path. Treat this repository as the single source of truth.
   must be updated through their templates/generators.
 - Preserve "degrade gracefully" behavior for unsupported translations — do not silently hide semantic gaps.
 - Do not commit secrets or generated local artifacts.
-- Dashboard migration fixes must be checked against the schema, compiled saved
-  object, and uploaded Kibana behavior. Do not infer YAML support from Kibana UI
-  controls alone: Lens XY YAML supports one `breakdown`, while multi-breakdown
-  arrays are for schemas such as datatable/pie/treemap unless
-  `docs/dashboards/schema.json` and the compiler prove otherwise.
+- Dashboard migration fixes must be checked against the schema, the uploaded
+  saved object, and uploaded Kibana behavior. Do not infer schema support from
+  Kibana UI controls alone: a Lens XY panel supports one `breakdown`, while
+  multi-breakdown arrays are for schemas such as datatable/pie/treemap unless
+  `docs/dashboards/schema.json` and the mapper prove otherwise.
 - Before claiming migrated dashboards render correctly, validate real artifacts:
-  generated YAML, compiled NDJSON/saved object, scoped smoke or direct `_query`,
+  `native/*.native.json` and `ir/*.ir.json`, the uploaded saved object, scoped
+  smoke or direct `_query`,
   and a clean view-mode browser session. Clear stale dashboard edit state before
   trusting browser observations.
 - For dashboard-regression work, use the layered verifier gates documented in

@@ -33,8 +33,6 @@ def _clean_view() -> SummaryView:
             green=10,
             yellow=0,
             red=0,
-            compiled_ok=2,
-            compiled_total=2,
             uploaded_ok=0,
             upload_attempted=0,
         ),
@@ -46,8 +44,6 @@ def _clean_view() -> SummaryView:
                 warnings=0,
                 manual=0,
                 not_feasible=0,
-                compiled=True,
-                compile_error="",
                 risk_score=0,
                 rollout_state="report_only",
             ),
@@ -58,8 +54,6 @@ def _clean_view() -> SummaryView:
                 warnings=0,
                 manual=0,
                 not_feasible=0,
-                compiled=True,
-                compile_error="",
                 risk_score=0,
                 rollout_state="report_only",
             ),
@@ -76,7 +70,9 @@ class RenderCleanRunTests(unittest.TestCase):
         # Title + verdict
         self.assertIn("# Migration Summary — Grafana → Kibana", md)
         self.assertIn("✅", md)
-        self.assertIn("2/2 compiled", md)  # per-dashboard compiled count in header
+        # Drift guard: the dashboard-YAML compile path is gone, so the summary
+        # must not carry a compiled count in the Run line or a Compiled column.
+        self.assertNotIn("compiled", md.lower())
         # Scorecard present
         self.assertIn("Migrated", md)
         self.assertIn("10", md)
@@ -106,8 +102,6 @@ def _mixed_view() -> SummaryView:
             green=5,
             yellow=111,
             red=4,
-            compiled_ok=1,
-            compiled_total=1,
             uploaded_ok=0,
             upload_attempted=0,
         ),
@@ -119,8 +113,6 @@ def _mixed_view() -> SummaryView:
                 warnings=111,
                 manual=2,
                 not_feasible=2,
-                compiled=True,
-                compile_error="",
                 risk_score=353,
                 rollout_state="report_only",
             )
@@ -211,15 +203,6 @@ class RenderMixedRunTests(unittest.TestCase):
         self.assertIn("_(medium)_", md)
 
 
-class RenderErrorRunTests(unittest.TestCase):
-    def test_compile_failure_yields_blocking_verdict(self):
-        view = _clean_view()
-        view.totals.compiled_ok = 1  # of 2 -> one failed
-        md = render_markdown(view)
-        self.assertIn("❌", md)
-        self.assertIn("Blocking errors", md)
-
-
 class RenderNounTests(unittest.TestCase):
     def test_widget_noun_used_for_datadog(self):
         view = _clean_view()
@@ -240,7 +223,6 @@ class GrafanaAdapterTests(unittest.TestCase):
 
         r = MigrationResult("Alpha", "alpha-uid")
         r.source_file = "alpha.json"
-        r.compiled = True
         ok = PanelResult("CPU", "timeseries", "xy", "migrated", 1.0)
         ok.verification_packet = {"semantic_gate": "Green"}
         nf = PanelResult("Ratio", "timeseries", "xy", "not_feasible", 0.0)
@@ -268,7 +250,6 @@ class GrafanaAdapterTests(unittest.TestCase):
         )
 
         results = [self._result()]
-        compile_results = [("alpha.yaml", True, "")]
         review_queue = [
             {
                 "dashboard": "Alpha",
@@ -281,7 +262,6 @@ class GrafanaAdapterTests(unittest.TestCase):
         ]
         view = build_grafana_summary_view(
             results,
-            compile_results,
             review_queue=review_queue,
             gap_data={},
             run_id="r1",
@@ -293,8 +273,6 @@ class GrafanaAdapterTests(unittest.TestCase):
         self.assertEqual(view.totals.not_feasible, 1)
         self.assertEqual(view.totals.green, 1)
         self.assertEqual(view.totals.red, 1)
-        self.assertEqual(view.totals.compiled_ok, 1)
-        self.assertEqual(view.totals.compiled_total, 1)
         # Attention has the not-feasible panel; rows never appear
         nf_panels = [a for a in view.attention if a.status == "not_feasible"]
         self.assertEqual(len(nf_panels), 1)

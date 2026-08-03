@@ -13,11 +13,9 @@ canary is the fixture the live render-audit gate will upload.
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import jsonschema
-import yaml
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.core.coverage import supported_types as st
@@ -38,13 +36,12 @@ def _migrate_canary():
     rp = rules.RulePackConfig()
     resolver = schema.SchemaResolver(rp)
     canary = build_grafana_canary()
-    with tempfile.TemporaryDirectory() as td:
-        result, yaml_path = panels.translate_dashboard(
-            canary, Path(td),
-            datasource_index="metrics-*", esql_index="metrics-*",
-            rule_pack=rp, resolver=resolver,
-        )
-        payload = yaml.safe_load(yaml_path.read_text())
+    result = panels.translate_dashboard(
+        canary,
+        datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rp, resolver=resolver,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, payload
 
 
@@ -54,13 +51,12 @@ def _migrate_late_bound_grouping_canary(default_grouping="transport"):
     rp = rules.RulePackConfig()
     resolver = schema.SchemaResolver(rp)
     canary = build_late_bound_grouping_canary(default_grouping=default_grouping)
-    with tempfile.TemporaryDirectory() as td:
-        result, yaml_path = panels.translate_dashboard(
-            canary, Path(td),
-            datasource_index="metrics-*", esql_index="metrics-*",
-            rule_pack=rp, resolver=resolver,
-        )
-        payload = yaml.safe_load(yaml_path.read_text())
+    result = panels.translate_dashboard(
+        canary,
+        datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rp, resolver=resolver,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, payload
 
 
@@ -69,13 +65,12 @@ def _migrate_label_matcher_param_canary(default_instance="localhost:8888"):
     rp = rules.RulePackConfig()
     resolver = schema.SchemaResolver(rp)
     canary = build_label_matcher_param_canary(default_instance=default_instance)
-    with tempfile.TemporaryDirectory() as td:
-        result, yaml_path = panels.translate_dashboard(
-            canary, Path(td),
-            datasource_index="metrics-*", esql_index="metrics-*",
-            rule_pack=rp, resolver=resolver,
-        )
-        payload = yaml.safe_load(yaml_path.read_text())
+    result = panels.translate_dashboard(
+        canary,
+        datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rp, resolver=resolver,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, payload
 
 

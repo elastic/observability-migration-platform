@@ -21,7 +21,6 @@ from observability_migration.core.reporting.report import (
     recompute_result_counts,
 )
 from observability_migration.core.verification.field_capabilities import assess_field_usage
-from observability_migration.targets.kibana.compile import write_dashboard_yaml
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
     clean_template_variables,
@@ -8808,21 +8807,16 @@ def _translate_panel_group(
     return yaml_panels, panel_results
 
 
-def translate_dashboard(dashboard, output_dir=None, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
+def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
                         llm_endpoint="", llm_model="", llm_api_key="", output_stem=None):
     """Translate one Grafana dashboard into a :class:`MigrationResult`.
 
-    Returns ``(result, yaml_path)``. The migration pipeline passes no
-    ``output_dir`` and gets ``yaml_path=None``: the artifacts it writes are
+    Returns the :class:`MigrationResult`. The artifacts the pipeline writes are
     ``native/*.native.json`` and ``ir/*.ir.json``, both derived from
-    ``result.dashboard_ir``, and no dashboard YAML is written at all.
-
-    Passing ``output_dir`` additionally materializes the derived kb-dashboard
-    YAML document there and returns its path. That bridge exists for callers
-    that explicitly need the (deprecated) YAML document shape -- the structural
-    equivalence guards, and the ``kb-dashboard-cli`` compile / legacy ``_import``
-    path, which take a YAML *file*. It is always rendered from the same IR, so
-    it cannot drift from the native payload.
+    ``result.dashboard_ir``; nothing is written to disk here. Callers that need
+    the kb-dashboard-core dict shape (for example a structural cross-check of
+    the native payload) build it in memory with
+    ``result.dashboard_ir.to_yaml_dict()``.
     """
     rule_pack = rule_pack or RulePackConfig()
     title = dashboard.get("title", "Untitled Dashboard")
@@ -9157,10 +9151,7 @@ def translate_dashboard(dashboard, output_dir=None, datasource_index="metrics-*"
     native_counts_dict, native_reasons = native_counts.as_dicts()
     result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
 
-    if output_dir is None:
-        return result, None
-    safe_name = output_stem or _dashboard_output_stem(title)
-    return result, write_dashboard_yaml(dashboard_ir, output_dir, safe_name)
+    return result
 
 
 __all__ = [

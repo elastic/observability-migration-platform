@@ -1,104 +1,29 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""YAML compilation, upload, and post-validation sync helpers.
+"""Kibana space-URL helpers and post-validation IR sync.
+
+The YAML *artifact* surfaces this module used to host -- rendering a
+kb-dashboard YAML document, shelling out to ``kb-dashboard-cli compile``, and
+the legacy saved-objects ``_import`` upload -- have been removed. A migration
+writes ``native/*.native.json`` + ``ir/*.ir.json`` and uploads through the
+typed Kibana Dashboards API; nothing produces or consumes dashboard YAML.
+
+The ``*_yaml_*`` names that remain here (``YAML_ROUND_TRIPPED_IR_FIELDS``,
+``carry_over_non_yaml_ir_fields``) describe the internal ``DashboardIR``
+*dict* shape that ``native_dashboard_from_ir`` maps through -- not a file
+format. See ``docs/architecture/asset-model.md``.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
-import os
 import re
-import shlex
-import subprocess
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import yaml
-
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.core.http import apply_subprocess_tls_env
-from observability_migration.targets.kibana import layout as layout_module
-from observability_migration.targets.kibana import lint as lint_module
-from observability_migration.targets.kibana._kbtool import tool_argv
 from observability_migration.targets.kibana.emit.esql_utils import extract_esql_columns
-
-COMMAND_TIMEOUT_SECONDS = 90
-VALIDATION_TIMEOUT_SECONDS = 120
-
-
-def _run_command(cmd, timeout, env=None):
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return False, f"Command timed out after {timeout}s: {shlex.join(str(part) for part in cmd)}"
-    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
-
-
-def dashboard_yaml_text(dashboard_ir) -> str:
-    """Render one dashboard IR as a kb-dashboard YAML document.
-
-    The migration pipeline no longer writes YAML artifacts: ``native/`` and
-    ``ir/`` are the artifacts it produces. This renderer exists for the two
-    places that still need the (deprecated) kb-dashboard document shape --
-    ``kb-dashboard-cli compile`` / the legacy ``_import`` upload, which take a
-    YAML *file* path -- and for the structural equivalence guards that
-    cross-check the native payload against the YAML bridge. It is always
-    derived from :class:`DashboardIR`, so it cannot drift from the native
-    payload.
-    """
-    return yaml.dump(
-        {"dashboards": [dashboard_ir.to_yaml_dict()]},
-        default_flow_style=False,
-        allow_unicode=True,
-        sort_keys=False,
-        width=120,
-    )
-
-
-def write_dashboard_yaml(dashboard_ir, output_dir, stem) -> Path:
-    """Materialize ``<output_dir>/<stem>.yaml`` from a dashboard IR.
-
-    Callers own the lifetime of ``output_dir``. The migration pipeline points
-    it at a scratch directory it deletes again, so a migration run leaves no
-    YAML behind (see docs/architecture/asset-model.md).
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"{stem}.yaml"
-    path.write_text(dashboard_yaml_text(dashboard_ir), encoding="utf-8")
-    return path
-
-
-def compile_yaml(yaml_path, output_dir):
-    cmd = tool_argv("kb-dashboard-cli") + [
-        "compile",
-        "--input-file",
-        str(yaml_path),
-        "--output-dir",
-        str(output_dir),
-    ]
-    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS)
-
-
-def compile_all(yaml_dir, compiled_dir):
-    Path(compiled_dir).mkdir(parents=True, exist_ok=True)
-    results = []
-    for yaml_file in sorted(Path(yaml_dir).glob("*.yaml")):
-        out_dir = Path(compiled_dir) / yaml_file.stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        success, output = compile_yaml(yaml_file, out_dir)
-        results.append((yaml_file.name, success, output))
-    return results
-
-
-def lint_dashboard_yaml(yaml_dir):
-    return lint_module.lint_dashboard_yaml(yaml_dir)
-
-
-def validate_compiled_layout(compiled_dir):
-    return layout_module.validate_compiled_layout(compiled_dir)
 
 
 def detect_space_id_from_kibana_url(kibana_url):
@@ -126,36 +51,6 @@ def kibana_url_for_space(kibana_url, space_id=""):
         normalized_parts.extend(["s", str(space_id)])
     normalized_path = "/" + "/".join(normalized_parts) if normalized_parts else ""
     return urlunsplit((split.scheme, split.netloc, normalized_path, split.query, split.fragment))
-
-
-def upload_yaml(
-    yaml_path,
-    output_dir,
-    kibana_url,
-    space_id="",
-    kibana_api_key="",
-    verify: bool | str = True,
-):
-    upload_url = kibana_url_for_space(kibana_url, space_id)
-    cmd = tool_argv("kb-dashboard-cli") + [
-        "compile",
-        "--input-file",
-        str(yaml_path),
-        "--output-dir",
-        str(output_dir),
-        "--upload",
-        "--kibana-url",
-        str(upload_url),
-        "--no-browser",
-    ]
-    if kibana_api_key:
-        cmd.extend(["--kibana-api-key", str(kibana_api_key)])
-    # The uploader is a Python/aiohttp tool: --insecure (verify is False) only
-    # takes effect via its own flag, not the Node TLS env vars.
-    if verify is False:
-        cmd.append("--kibana-no-ssl-verify")
-    env = apply_subprocess_tls_env(verify, env=os.environ.copy())
-    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS, env=env)
 
 
 def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
@@ -517,11 +412,9 @@ def sync_result_queries_to_ir(result):
     Validation mutates ``panel_result.esql_query`` (auto-fixes) and can
     manualize a panel into a markdown placeholder. Those fixes have to reach
     the artifacts the run actually writes (``native/``, ``ir/``), so this walks
-    the dashboard document derived from the IR, applies the fixes to it, and
-    rebuilds both the IR and the native payload from the mutated document.
-
-    Previously this also rewrote the dashboard's ``yaml/`` file; the pipeline no
-    longer produces one, so nothing is written here.
+    the dashboard dict derived from the IR, applies the fixes to it, and
+    rebuilds both the IR and the native payload from the mutated dict. Nothing
+    is written to disk here.
     """
     dashboard_ir = getattr(result, "dashboard_ir", None)
     if dashboard_ir is None:
@@ -595,18 +488,10 @@ def sync_result_queries_to_ir(result):
 
 
 __all__ = [
-    "COMMAND_TIMEOUT_SECONDS",
     "IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD",
     "YAML_ROUND_TRIPPED_IR_FIELDS",
     "carry_over_non_yaml_ir_fields",
-    "compile_all",
-    "compile_yaml",
-    "dashboard_yaml_text",
     "detect_space_id_from_kibana_url",
     "kibana_url_for_space",
-    "lint_dashboard_yaml",
     "sync_result_queries_to_ir",
-    "upload_yaml",
-    "validate_compiled_layout",
-    "write_dashboard_yaml",
 ]

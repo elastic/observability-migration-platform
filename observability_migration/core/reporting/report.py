@@ -58,18 +58,12 @@ class MigrationResult:
     # PanelResult-style tracking of their own, so this is dashboard-scoped
     # rather than per-panel.
     control_warnings: list = field(default_factory=list)
-    compiled: bool = False
-    compile_error: str = ""
     source_file: str = ""
     folder_title: str = ""
     inventory: dict = field(default_factory=dict)
     metadata_polish: dict = field(default_factory=dict)
     verification_summary: dict = field(default_factory=dict)
     review_explanations: dict = field(default_factory=dict)
-    yaml_linted: bool | None = None
-    yaml_lint_error: str = ""
-    layout_validated: bool | None = None
-    layout_error: str = ""
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
@@ -82,15 +76,14 @@ class MigrationResult:
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     # Filename stem shared by this dashboard's artifacts
-    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``,
-    # ``compiled/<stem>/``). Empty when translation failed.
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``). Empty when
+    # translation failed.
     artifact_stem: str = ""
-    compiled_path: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of
     # `native_dashboard`/`dashboard_ir`, written before upload so the exact
     # typed API payload can be reviewed and later deployed with
-    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    # `obs-migrate upload --artifact-dir ...`.
     native_artifact_path: str = ""
     ir_artifact_path: str = ""
     runtime_summary: dict = field(default_factory=dict)
@@ -278,12 +271,6 @@ def recompute_result_counts(result):
     result.skipped = sum(1 for item in result.panel_results if item.status == "skipped")
 
 
-def _stage_summary(completed, error):
-    if completed is None:
-        return {"status": "not_run", "error": ""}
-    return {"status": "pass" if completed and not error else "fail", "error": error or ""}
-
-
 def build_runtime_summary(result):
     upload_status = {"status": "not_run", "error": "", "warnings": [], "dropped_panels": []}
     if getattr(result, "upload_attempted", False) or getattr(result, "upload_error", ""):
@@ -297,12 +284,6 @@ def build_runtime_summary(result):
             "dropped_panels": list(getattr(result, "upload_dropped_panels", []) or []),
         }
     return {
-        "yaml_lint": _stage_summary(getattr(result, "yaml_linted", None), getattr(result, "yaml_lint_error", "")),
-        "compile": {
-            "status": "pass" if getattr(result, "compiled", False) else "fail" if getattr(result, "compile_error", "") else "not_run",
-            "error": getattr(result, "compile_error", "") or "",
-        },
-        "layout": _stage_summary(getattr(result, "layout_validated", None), getattr(result, "layout_error", "")),
         "upload": upload_status,
     }
 
@@ -442,7 +423,7 @@ def print_field_discovery_warning(field_discovery):
     )
 
 
-def print_report(results, compile_results, field_discovery=None):
+def print_report(results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
     # from _flatten_dashboard_panels). The user-facing "renderable panels"
@@ -457,7 +438,6 @@ def print_report(results, compile_results, field_discovery=None):
     # The remainder is genuine panel skips (variable-expansion warnings, L4
     # repeat caps, non-normalized group panels, etc.).
     total_panel_skipped = sum(r.skipped for r in results) - total_rows
-    compiled_ok = sum(1 for _, ok, _ in compile_results if ok)
     total_green = sum(
         1
         for r in results
@@ -500,7 +480,6 @@ def print_report(results, compile_results, field_discovery=None):
     print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
         print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
-    print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
@@ -511,31 +490,21 @@ def print_report(results, compile_results, field_discovery=None):
     # (Panels = OK + Warn + Man + NF + Skip; Rows is informational).
     print(
         f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} "
-        f"{'NF':>5} {'Skip':>5} {'Rows':>5} {'Compiled':>10}"
+        f"{'NF':>5} {'Skip':>5} {'Rows':>5}"
     )
     print("─" * 70)
 
     for r in results:
-        comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "?"
         rows_for_dashboard = _row_count(r)
         panels_for_dashboard = r.total_panels - rows_for_dashboard
         skip_for_dashboard = r.skipped - rows_for_dashboard
         print(
             f"{r.dashboard_title[:39]:<40} {panels_for_dashboard:>6} {r.migrated:>5} "
             f"{r.migrated_with_warnings:>5} {r.requires_manual:>5} {r.not_feasible:>5} "
-            f"{skip_for_dashboard:>5} {rows_for_dashboard:>5} {comp_status:>10}"
+            f"{skip_for_dashboard:>5} {rows_for_dashboard:>5}"
         )
 
     print("─" * 70)
-
-    if any(not ok for _, ok, _ in compile_results):
-        print("\nCOMPILATION ERRORS:")
-        for name, ok, output in compile_results:
-            if not ok:
-                print(f"\n  {name}:")
-                for line in output.strip().split("\n"):
-                    if "error" in line.lower() or "validation" in line.lower():
-                        print(f"    {line.strip()}")
 
     not_feasible_panels = [(r.dashboard_title, pr) for r in results for pr in r.panel_results if pr.status == "not_feasible"]
     if not_feasible_panels:
@@ -599,7 +568,7 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
+def save_detailed_report(results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
     runtime_features = {}
     for result in results:
         runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
@@ -612,14 +581,11 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "requires_manual": sum(r.requires_manual for r in results),
             "not_feasible": sum(r.not_feasible for r in results),
             "skipped": sum(r.skipped for r in results),
-            "compiled_ok": sum(1 for _, ok, _ in compile_results if ok),
             "uploaded_ok": sum(1 for r in results if r.uploaded),
             "upload_attempted": sum(1 for r in results if r.upload_attempted),
             # Leaf panels Kibana dropped behind an HTTP 200 upload. Any non-zero
             # value means at least one "uploaded" dashboard is incomplete.
             "upload_panels_dropped": len(upload_panel_loss_rows(results)),
-            "yaml_lint_ok": sum(1 for r in results if build_runtime_summary(r)["yaml_lint"]["status"] == "pass"),
-            "layout_ok": sum(1 for r in results if build_runtime_summary(r)["layout"]["status"] == "pass"),
             "total_alerts": sum(len(getattr(r, "alert_results", [])) for r in results),
             "alerts_automated": sum(
                 sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated")
@@ -656,8 +622,6 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "uid": r.dashboard_uid,
             "source_file": r.source_file,
             "folder_title": r.folder_title,
-            "compiled": r.compiled,
-            "compile_error": r.compile_error,
             "runtime_summary": runtime_summary,
             "inventory": r.inventory,
             "metadata_polish": r.metadata_polish,
@@ -747,7 +711,6 @@ def _gap_tasks_from_grafana(gap_data: dict) -> list[GapTask]:
 
 def build_summary_view(
     results,
-    compile_results,
     *,
     review_queue=None,
     gap_data=None,
@@ -788,8 +751,6 @@ def build_summary_view(
         green=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Green")),
         yellow=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Yellow")),
         red=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Red")),
-        compiled_ok=sum(1 for _, ok, _ in compile_results if ok),
-        compiled_total=len(compile_results),
         uploaded_ok=sum(1 for r in results if r.uploaded),
         upload_attempted=sum(1 for r in results if r.upload_attempted),
         native_promql=sum(
@@ -819,8 +780,6 @@ def build_summary_view(
                 warnings=r.migrated_with_warnings,
                 manual=r.requires_manual,
                 not_feasible=r.not_feasible,
-                compiled=r.compiled,
-                compile_error=r.compile_error,
                 risk_score=risk_by_title.get(r.dashboard_title),
                 rollout_state="",
                 native_promql=prov.count(PanelProvenance.NATIVE),

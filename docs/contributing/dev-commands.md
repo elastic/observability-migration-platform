@@ -38,9 +38,10 @@ python3 -m venv .venv
 ```
 
 `.venv/bin/pip install -e ".[datadog]"` installs just the Datadog client extra
-when you do not want the full `[all]` set;
-`.venv/bin/pip install -e ".[kibana]"` installs `kb-dashboard-cli` in-venv for
-the legacy compile/import path (requires Python 3.12+).
+when you do not want the full `[all]` set. The `[kibana]` extra still pins the
+`kb-dashboard-*` tools (Python 3.12+), but **no command invokes them any more**:
+the dashboard-YAML compile/lint path was removed, and `obs-migrate doctor` no
+longer treats a missing `kb-dashboard-*` tool as a blocking gap.
 
 ## Verification And Benchmark Gates
 
@@ -56,7 +57,7 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
-| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); without field caps absence is unconfirmable and it stays `render_error` | no `render_error` |
+| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
@@ -85,7 +86,7 @@ baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
 Examples:
 
 ```bash
-# Runtime ES|QL oracle: catches invalid emitted ES|QL that compile/lint miss.
+# Runtime ES|QL oracle: catches invalid emitted ES|QL that static checks miss.
 PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
   --migration-out migration_output/dashboards \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
@@ -158,12 +159,19 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
 
-# ALWAYS pass --es-url (+ --es-index / --es-api-key) on a partially-seeded
-# cluster. Field caps are the only evidence that lets the audit downgrade a
-# panel whose error names absent columns to `field_gap` (warn); without them
-# absence is unconfirmable and every such panel stays `render_error` (fail) --
+# ALWAYS pass --es-url (+ --es-api-key) on a partially-seeded cluster. Field caps
+# are the only evidence that lets the audit downgrade a panel whose error names
+# absent columns to `field_gap` (warn), or an empty panel whose metric column is
+# absent to `data_gap` (warn); without them absence is unconfirmable, so such an
+# error stays `render_error` (fail) and such an empty stays `unexpected_empty` --
 # by design, so a missing-evidence run cannot silently pass. This applies to the
 # --elements section too, which shares the same classifier.
+#
+# --es-index is only the FALLBACK for panels whose query names no index: every
+# panel that does is resolved against the index its own ES|QL `FROM` names (one
+# cached `_field_caps` call per distinct index). You do NOT need to hand-union
+# patterns; a dashboard mixing `metrics-*` and `FROM logs-*` panels resolves each
+# against its own.
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --migration-out migration_output/dashboards \
@@ -289,7 +297,6 @@ you want the destructive round-trip `verify_alert_rule_uploads.py` path:
 set -a && source serverless_creds.env && set +a
 .venv/bin/obs-migrate upload \
   --artifact-dir examples/alerting/generated/grafana/dashboards \
-  --artifact-format yaml \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY"
 
@@ -304,6 +311,16 @@ set -a && source serverless_creds.env && set +a
 ```
 
 This sequence regenerates the curated Grafana and Datadog alert comparison artifacts, uploads the generated `Legacy Alert Examples` dashboard, round-trips the emitted rules through Kibana, and then audits the migrated rules present in Kibana. `scripts/verify_alert_rule_uploads.py` deletes its verification rules unless `--keep-rules` is passed.
+
+Two caveats on the `upload` step above. The `--artifact-format yaml` flag it used
+to pass was **removed** — `obs-migrate upload` now takes only `--artifact-dir`,
+pointed at a dashboard artifact directory holding `native/`. And
+`generate_alert_support_report.py` runs both source CLIs with `--assets alerts`,
+which skips dashboard migration, so it writes no
+`examples/alerting/generated/grafana/dashboards/native/` for `upload` to read.
+Migrate `examples/alerting/grafana/legacy_dashboard_alert.json` with
+`--assets all` first if you need that dashboard in Kibana; otherwise `upload`
+exits `1` with `no_native_artifacts_found`.
 
 `scripts/audit_migrated_rules.py` and `scripts/verify_alert_rule_uploads.py` are
 the repo-checkout equivalents of the packaged `obs-migrate audit-rules` and
@@ -360,48 +377,26 @@ bash scripts/generate_dashboard_schema.sh
 KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
 ```
 
-`generate_dashboard_schema.sh` refreshes the legacy/debug `kb-dashboard-core`
-YAML schema. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
+`generate_dashboard_schema.sh` refreshes the `kb-dashboard-core` dashboard JSON
+schema (`docs/dashboards/schema.json`), which is still the reference for the
+internal `DashboardIR.to_yaml_dict()` dict shape even though no YAML file is
+ever written. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
 Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
 Dashboards API bundle while the API remains technical preview, because the
 standard Kibana bundle may contain redirect-only shells.
 
-Dashboard YAML lint and compiled-layout validation run automatically inside
-`obs-migrate compile` and inside `migrate --compile`/`--legacy-import` (which
-render the YAML into a scratch directory they delete afterwards -- a migration
-writes no `yaml/` directory). To run them ad hoc, call the in-process modules:
+**The dashboard-YAML lint and compiled-layout stages were removed**, together
+with `obs-migrate compile` and `migrate --compile` / `--legacy-import`. The
+previous recipe here (render YAML with `compile.write_dashboard_yaml`, then run
+`lint.lint_dashboard_yaml` / `layout.validate_compiled_layout`) no longer works:
+`write_dashboard_yaml` is gone, and no migration writes a `yaml/` or `compiled/`
+directory to point the other two at. `lint.py` and `layout.py` themselves are
+kept as library code, but nothing user-facing calls
+`lint_dashboard_yaml` / `validate_compiled_layout`.
 
-```python
-# Render the deprecated YAML document from a run's IR artifacts first, since the
-# migration does not write one.
-import json
-from pathlib import Path
-from observability_migration.core.assets.dashboard import DashboardIR
-from observability_migration.targets.kibana.compile import write_dashboard_yaml
-
-yaml_dir = Path("/tmp/yaml-lint-input")
-for artifact in sorted(Path("migration_output/dashboards/ir").glob("*.ir.json")):
-    payload = json.loads(artifact.read_text())
-    write_dashboard_yaml(
-        DashboardIR.from_dict(payload["dashboard_ir"]),
-        yaml_dir,
-        artifact.name[: -len(".ir.json")],
-    )
-
-from observability_migration.targets.kibana.lint import lint_dashboard_yaml
-ok, output = lint_dashboard_yaml(str(yaml_dir))
-
-from observability_migration.targets.kibana.layout import validate_compiled_layout
-ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
-```
-
-The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
-`elastic-observability-migration[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
-
-`lint_dashboard_yaml` belongs to the deprecated YAML compile path. The
-artifact-oriented equivalent, used by the interaction audit, reads the IR
-export instead and keeps the `?param`/`??param` binding gate (issues #131 /
-#282):
+The check that survived is the `?param`/`??param` binding gate (issues #131 /
+#282). It reads the IR export instead of YAML and is what the interaction audit
+runs:
 
 ```python
 from observability_migration.targets.kibana.interaction_audit_local import (

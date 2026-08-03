@@ -5,9 +5,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.adapters.source.grafana.runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
@@ -68,15 +65,13 @@ def test_late_bound_canary_migrates_with_live_style_missing_dims():
     real.is_aggregatable_field = resolver.is_aggregatable_field  # type: ignore[method-assign]
     real._discovery_attempted = True
 
-    with tempfile.TemporaryDirectory() as td:
-        result, _ = panels.translate_dashboard(
-            canary,
-            Path(td),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rp,
-            resolver=real,
-        )
+    result = panels.translate_dashboard(
+        canary,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rp,
+        resolver=real,
+    )
     pure = next(pr for pr in result.panel_results if pr.title == "spans by grouping")
     assert pure.status in {"migrated", "migrated_with_warnings"}, (pure.status, pure.reasons)
     assert "??grouping" in (pure.esql_query or "")

@@ -180,8 +180,6 @@ def _runtime_rollups(
         _append_unique(rollups, "empty_result")
     if dashboard_result:
         runtime_summary = dashboard_result.build_runtime_summary()
-        if runtime_summary.get("compile", {}).get("status") == "fail":
-            _append_unique(rollups, "compile_failed")
         if runtime_summary.get("layout", {}).get("status") == "fail":
             _append_unique(rollups, "layout_failed")
         if runtime_summary.get("upload", {}).get("status") == "fail":
@@ -196,7 +194,6 @@ def _runtime_state(
 ) -> dict[str, Any]:
     dashboard_runtime = dashboard_result.build_runtime_summary() if dashboard_result else {}
     return {
-        "compile": dashboard_runtime.get("compile", {"status": "not_run", "error": ""}),
         "layout": dashboard_runtime.get("layout", {"status": "not_run", "error": ""}),
         "upload": dashboard_runtime.get("upload", {"status": "not_run", "error": ""}),
         "validation": {

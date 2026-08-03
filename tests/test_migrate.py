@@ -655,19 +655,17 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }],
             }],
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            result, path = migrate.translate_dashboard(
-                dashboard,
-                tmp,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(path).read_text())
-            # The fields control binds the ??grouping identifier, so the
-            # unbound-parameter lint gate must stay clean (issue #131 gate).
-            self.assertEqual(_lint._unbound_param_findings(path), [])
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        # The fields control binds the ??grouping identifier, so the
+        # unbound-parameter lint gate must stay clean (issue #131 gate).
+        self.assertEqual(_lint.unbound_param_findings(doc), [])
 
         dash = doc["dashboards"][0]
         field_controls = [c for c in (dash.get("controls") or []) if c.get("variable_type") == "fields"]
@@ -750,17 +748,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmp:
-            result, path = migrate.translate_dashboard(
-                dashboard,
-                tmp,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(path).read_text())
-            self.assertEqual(_lint._unbound_param_findings(path), [])
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        self.assertEqual(_lint.unbound_param_findings(doc), [])
 
         dash = doc["dashboards"][0]
         panels_by_title = {panel["title"]: panel for panel in dash["panels"]}
@@ -1222,16 +1218,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by host")
         # Gap A binds every emitted ``$var`` matcher (including hidden templating
@@ -1274,16 +1268,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         # query_result() cannot populate a Kibana control from Grafana's query,
         # but Gap A still synthesizes a values binding for the emitted ``?host``
@@ -1327,10 +1319,9 @@ class TranslatorRegressionTests(unittest.TestCase):
                 ],
             }
 
-            with self.subTest(expr=expr), tempfile.TemporaryDirectory() as tmpdir:
-                result, _yaml_path = migrate.translate_dashboard(
+            with self.subTest(expr=expr):
+                result = migrate.translate_dashboard(
                     dashboard,
-                    pathlib.Path(tmpdir),
                     datasource_index="metrics-*",
                     esql_index="metrics-*",
                     rule_pack=self.rule_pack,
@@ -1384,15 +1375,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
 
         panel_result = next(pr for pr in result.panel_results if pr.title == "Logs by term")
         self.assertEqual(panel_result.status, "migrated_with_warnings")
@@ -1422,16 +1411,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         controls = payload["dashboards"][0].get("controls", [])
         self.assertEqual(controls[0]["variable_name"], "host")
@@ -1514,16 +1501,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         rule_pack = rules.RulePackConfig(native_promql=True)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("controls:", rendered)
@@ -8164,16 +8149,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         # ``host`` is multi=True, so it binds through MV_CONTAINS and the
@@ -8230,16 +8213,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         self.assertIn("?host", yaml.dump(doc))
         controls = doc["dashboards"][0].get("controls", [])
@@ -8285,16 +8266,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         controls = doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
@@ -8359,16 +8338,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         # Must fall through to ES|QL even when PROMQL_LABEL_MATCHER_PARAMS is
@@ -8417,16 +8394,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertNotIn("PROMQL", rendered)
@@ -8474,16 +8449,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("== ?host", rendered)
@@ -8536,16 +8509,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("?health_status", rendered)
@@ -8624,16 +8595,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         emitted = panels._collect_emitted_param_names(doc["dashboards"][0]["panels"])
         controls = doc["dashboards"][0].get("controls", [])
@@ -9082,26 +9051,6 @@ class TranslatorRegressionTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
                 parse_args(["--no-native-promql"])
-
-    def test_parse_args_skips_legacy_compile_by_default(self):
-        """The default native Dashboards API path never needs the compiled
-        NDJSON, so kb-dashboard-cli compilation is off unless asked (matches
-        datadog-migrate)."""
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        args = parse_args([])
-
-        self.assertFalse(args.compile)
-
-    def test_parse_args_compile_opts_into_legacy_compile(self):
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        self.assertTrue(parse_args(["--compile"]).compile)
-
-    def test_parse_args_can_disable_default_compile(self):
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        self.assertFalse(parse_args(["--no-compile"]).compile)
 
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -10303,16 +10252,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.5.0")
         self.assertEqual(
@@ -10354,16 +10301,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         # Grafana y=0 -> Kibana y=0 (after min-y normalisation)
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -10389,16 +10334,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panel = payload["dashboards"][0]["panels"][0]
         self.assertEqual(panel["size"]["w"], 4, "narrow metric tiles are enforced to MIN_PANEL_WIDTH")
 
@@ -10421,9 +10364,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
+            result = migrate.translate_dashboard(
                 dashboard,
-                pathlib.Path(tmpdir),
                 datasource_index="metrics-*",
                 esql_index="metrics-*",
                 rule_pack=self.rule_pack,
@@ -10499,16 +10441,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         content = payload["dashboards"][0]["panels"][0]["markdown"]["content"]
         self.assertEqual(result.panel_results[0].kibana_type, "markdown")
         self.assertEqual(result.panel_results[0].query_language, "text")
@@ -10550,16 +10490,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         self.assertEqual(
             panels[0]["markdown"]["content"],
@@ -10596,7 +10534,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        result, _yaml_path = migrate.translate_dashboard(
+        result = migrate.translate_dashboard(
             dashboard,
             datasource_index="metrics-*",
             esql_index="metrics-*",
@@ -10848,15 +10786,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         packet = result.panel_results[0].verification_packet
         self.assertEqual(verification["summary"]["green"], 1)
@@ -10887,15 +10823,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         dashboard = {"title": "Warn", "uid": "warn-1", "panels": [panel]}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         migrate.annotate_results_with_verification([result], [])
         packet = result.panel_results[0].verification_packet
         self.assertEqual(packet["semantic_gate"], "Yellow")
@@ -10980,15 +10914,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         validation_records = [
             {
                 "dashboard": "Failure",
@@ -11038,13 +10970,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(first.verification_packet["semantic_gate"], "Green")
         self.assertEqual(second.verification_packet["semantic_gate"], "Red")
 
-    def test_verification_packet_includes_compile_and_upload_rollups(self):
-        result = migrate.MigrationResult("Compile Failure", "compile-1")
-        result.compiled = False
-        result.compile_error = "kb-dashboard-cli compile failed"
+    def test_verification_packet_includes_upload_rollup(self):
+        result = migrate.MigrationResult("Upload Failure", "upload-1")
         result.upload_attempted = True
         result.uploaded = False
-        result.upload_error = "Upload skipped because one or more dashboards failed to compile."
+        result.upload_error = "Kibana rejected the dashboard import."
         panel = migrate.PanelResult("CPU Busy", "graph", "line", "migrated", 0.85)
         panel.source_panel_id = "1"
         panel.query_language = "promql"
@@ -11054,7 +10984,6 @@ class TranslatorRegressionTests(unittest.TestCase):
         migrate.annotate_results_with_verification([result], [])
 
         packet = panel.verification_packet
-        self.assertIn("compile_failed", packet["runtime_rollups"])
         self.assertIn("upload_failed", packet["runtime_rollups"])
         self.assertEqual(packet["semantic_gate"], "Red")
 
@@ -11072,15 +11001,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         summary = migrate.apply_review_explanations([result], verification, enable_ai=False)
         explanation = result.panel_results[0].review_explanation
@@ -11102,15 +11029,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         migrate.apply_review_explanations([result], verification, enable_ai=False)
         explanation = result.panel_results[0].review_explanation
@@ -11131,15 +11056,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification(
             [result],
             [
@@ -11188,15 +11111,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification(
             [result],
             [
@@ -12396,7 +12317,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path)
+        save_detailed_report([result], path)
         with open(path) as f:
             data = json.load(f)
         panel = data["dashboards"][0]["panels"][0]
@@ -12421,7 +12342,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path)
+        save_detailed_report([result], path)
         with open(path) as f:
             data = json.load(f)
         self.assertEqual(data["runtime_features"], result.runtime_features)
@@ -12442,7 +12363,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path, field_discovery=field_discovery)
+        save_detailed_report([result], path, field_discovery=field_discovery)
         with open(path) as f:
             data = json.load(f)
         self.assertEqual(data["field_discovery"], field_discovery)
@@ -13116,13 +13037,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         top_panels = yaml_doc["dashboards"][0]["panels"]
         table_panel = top_panels[0]
         self.assertGreaterEqual(
@@ -13187,15 +13106,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
 
-            self.assertTrue(path.exists())
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         dashboard_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in dashboard_panels if "section" in p]
@@ -13300,13 +13216,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         self.assertEqual(result.total_panels, 2)
         top_panels = yaml_doc["dashboards"][0]["panels"]
@@ -13367,13 +13281,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 ]
             },
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         self.assertEqual([panel["title"] for panel in top_panels], ["CPU Cores"])
@@ -13411,14 +13323,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  ]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
 
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13601,13 +13511,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "targets": [{"expr": "rate(foo_total[5m])", "refId": "A"}]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13632,13 +13540,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "targets": [{"expr": "rate(node_network_receive_bytes_total[5m])", "refId": "A"}]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13763,13 +13669,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 ],
             },
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         controls = yaml_doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
         self.assertEqual(controls[0]["label"], "Instance")
@@ -13800,11 +13704,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "gridPos": {"x": 0, "y": 13, "w": 24, "h": 4}},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
         self.assertEqual(result.total_panels, 4)
         self.assertGreaterEqual(result.skipped, 2, "row + news should be skipped")
         self.assertGreaterEqual(result.migrated, 1, "graph or text should be migrated")
@@ -14062,16 +13965,14 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         }
 
     def _translate(self, resolver):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                self.dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, doc["dashboards"][0]
 
     def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
@@ -14263,41 +14164,35 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
         }
 
     def test_log_volume_panel_is_bar_chart(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         self.assertEqual(log_volume["esql"]["type"], "bar",
                          "Log volume graph panel with bars:true should become a bar chart")
 
     def test_log_volume_panel_title_is_log_volume(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         self.assertEqual(log_volume["title"], "Log Volume")
 
     def test_log_volume_panel_legend_hidden(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         legend = log_volume["esql"].get("legend", {})
@@ -14305,14 +14200,12 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                          "Legend should be hidden matching Grafana's legend.show=false")
 
     def test_logs_panel_is_datatable(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         logs_panel = dash["panels"][1]
         self.assertEqual(logs_panel["title"], "Logs Panel")
@@ -14320,28 +14213,24 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
         self.assertIn("SORT @timestamp DESC", logs_panel["esql"]["query"])
 
     def test_text_panel_preserves_content(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         text_panel = dash["panels"][2]
         self.assertIn("markdown", text_panel)
         self.assertIn("Synthetic log search example", text_panel["markdown"]["content"])
 
     def test_controls_generated_for_query_variables(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         controls = dash.get("controls", [])
         control_ids = [
@@ -14359,26 +14248,23 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                         f"Expected a pod control, got: {controls}")
 
     def test_layout_preserves_full_width(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         for panel in dash["panels"]:
             self.assertEqual(panel["size"]["w"], 48,
                              f"Panel '{panel['title']}' should be full width (48 cols)")
 
     def test_panel_count_matches_source(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
         self.assertEqual(result.total_panels, 3)
         self.assertEqual(result.skipped, 0)
 
@@ -14549,16 +14435,14 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
     def _translate_dashboard(self, filename):
         with open(self.dashboard_dir / filename) as f:
             dashboard = json.load(f)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, yaml_doc
 
     def test_node_exporter_full_panel_count(self):
@@ -14621,16 +14505,14 @@ class PrometheusDashboardIntegrationTests(unittest.TestCase):
     def _translate_dashboard(self, filename):
         with open(self.dashboard_dir / filename) as f:
             dashboard = json.load(f)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, yaml_doc
 
     def _walk_panels(self, panels):
@@ -15336,17 +15218,14 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana import (
             panels as panels_mod,
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = panels_mod.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(yaml_path) as f:
-                doc = yaml.safe_load(f)
+        result = panels_mod.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, doc["dashboards"][0]
 
     def _walk_leaves(self, panels):
@@ -15583,17 +15462,14 @@ class L3RowAwareSectioningTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana import (
             panels as panels_mod,
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = panels_mod.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(yaml_path) as f:
-                doc = yaml.safe_load(f)
+        result = panels_mod.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return doc["dashboards"][0]["panels"]
 
     def test_titled_row_becomes_section(self):
@@ -16902,40 +16778,36 @@ class NativePromqlTests(unittest.TestCase):
                 },
             ],
         }
-        import pathlib
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        native_panels = [
+            pr for pr in result.panel_results
+            if pr.query_ir.get("family") == "native_promql"
+        ]
+        self.assertGreaterEqual(len(native_panels), 2, "CPU Rate and Up Count should use native PROMQL")
+        for pr in native_panels:
+            self.assertIn("PROMQL", pr.esql_query)
+            self.assertEqual(pr.query_ir.get("source_language"), "promql")
+
+        topk_panels = [pr for pr in result.panel_results if "TopK" in pr.title]
+        if topk_panels:
+            # Ungrouped topk now translates via single-bucket fallback
+            self.assertNotEqual(
+                topk_panels[0].status, "skipped",
+                "topk panel should not be skipped",
             )
-            native_panels = [
-                pr for pr in result.panel_results
-                if pr.query_ir.get("family") == "native_promql"
-            ]
-            self.assertGreaterEqual(len(native_panels), 2, "CPU Rate and Up Count should use native PROMQL")
-            for pr in native_panels:
-                self.assertIn("PROMQL", pr.esql_query)
-                self.assertEqual(pr.query_ir.get("source_language"), "promql")
 
-            topk_panels = [pr for pr in result.panel_results if "TopK" in pr.title]
-            if topk_panels:
-                # Ungrouped topk now translates via single-bucket fallback
-                self.assertNotEqual(
-                    topk_panels[0].status, "skipped",
-                    "topk panel should not be skipped",
-                )
-
-            yaml_doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
-            esql_panels = [
-                p for p in yaml_doc["dashboards"][0]["panels"]
-                if "esql" in p and "PROMQL" in p["esql"].get("query", "")
-            ]
-            self.assertGreaterEqual(len(esql_panels), 2)
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        esql_panels = [
+            p for p in yaml_doc["dashboards"][0]["panels"]
+            if "esql" in p and "PROMQL" in p["esql"].get("query", "")
+        ]
+        self.assertGreaterEqual(len(esql_panels), 2)
 
     # ── RulePackConfig default ──
 
@@ -16971,7 +16843,7 @@ class TestMigrationResultTranslationError(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
         self.addCleanup(os.unlink, path)
-        report.save_detailed_report([result], [], path)
+        report.save_detailed_report([result], path)
         with open(path) as f:
             data = json.loads(f.read())
         dashboard_entry = data["dashboards"][0]
