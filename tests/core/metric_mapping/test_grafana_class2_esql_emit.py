@@ -212,6 +212,11 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         assert result.esql_query is not None
         self.assertIn("container.cpu.usage", result.esql_query)
         self.assertNotIn("RATE(", result.esql_query)
+        # drop_rate on a non-TSDS gauge must use FROM, not TS.
+        self.assertTrue(
+            result.esql_query.startswith("FROM "),
+            f"Expected FROM source for topk drop_rate non-TSDS gauge, got: {result.esql_query[:60]}",
+        )
 
     def test_drop_rate_strips_rate_when_target_kind_unknown(self) -> None:
         """drop_rate must strip RATE even when metric_kinds/caps are silent.
@@ -385,6 +390,32 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         self.assertNotIn("SUM_OVER_TIME(k8s.container.cpu_request", merged["query"])
         self.assertNotIn("BUCKET(@timestamp", merged["query"])
 
+    def test_drop_rate_range_agg_uses_from_source_when_target_not_in_tsds(self) -> None:
+        """sum(rate(metric[5m])) with drop_rate to a non-TSDS gauge must use FROM
+        source, not TS.  Using TS on a non-TSDS gauge inflates AVG by aggregating
+        across all samples in the bucket rather than the latest per-series value."""
+        result = self._translate_result(
+            "sum(rate(source_bytes[5m])) by (job)",
+            {
+                "source_bytes": {
+                    "target": "target.bytes",
+                    "transform": "drop_rate",
+                }
+            },
+            metric_kinds={"target.bytes": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertNotIn("RATE(", result.esql_query)
+        self.assertIn("target.bytes", result.esql_query)
+        # drop_rate on a non-TSDS gauge must use FROM (not TS) so the query
+        # does not fail on non-time-series data and computes SUM over document
+        # values, not inflated per-sample AVG.
+        self.assertTrue(
+            result.esql_query.startswith("FROM "),
+            f"Expected FROM source for drop_rate non-TSDS gauge, got: {result.esql_query[:60]}",
+        )
+
     def test_to_rate_unknown_kind_warns_and_does_not_invent_rate(self) -> None:
         result = self._translate_result(
             "sum(source_bytes)",
@@ -426,6 +457,32 @@ class GrafanaClass2EsqlEmitTests(unittest.TestCase):
         self.assertIn("metrics-*", result.esql_query)
         self.assertNotIn("metrics-a-*", result.esql_query)
         self.assertNotIn("metrics-b-*", result.esql_query)
+
+    def test_drop_rate_inside_scaled_agg_uses_from_source(self) -> None:
+        """sum(rate(metric[5m])) * scalar with drop_rate gauge must use FROM, not TS.
+
+        Reproduces the scaled_agg_family_rule needs_ts tautology: before the fix,
+        drop_rate cleared esql_inner but _scaled_source stayed "TS", causing the
+        gauge to be queried under the TSDB source which fails on non-TSDS indices.
+        """
+        result = self._translate_result(
+            "sum(rate(container_cpu_usage_seconds_total[5m])) by (pod) * 1000",
+            {
+                "container_cpu_usage_seconds_total": {
+                    "target": "container.cpu.usage",
+                    "transform": "drop_rate",
+                }
+            },
+            metric_kinds={"container.cpu.usage": "gauge"},
+        )
+        self.assertEqual(result.feasibility, "feasible", result.warnings)
+        assert result.esql_query is not None
+        self.assertIn("container.cpu.usage", result.esql_query)
+        self.assertNotIn("RATE(", result.esql_query)
+        self.assertTrue(
+            result.esql_query.startswith("FROM "),
+            f"Expected FROM source for scaled_agg drop_rate non-TSDS gauge, got: {result.esql_query[:60]}",
+        )
 
 
 if __name__ == "__main__":

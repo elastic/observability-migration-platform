@@ -599,9 +599,11 @@ class TestFailureHonesty(unittest.TestCase):
         content = yaml_panel["markdown"]["content"]
         self.assertIn("histogram_quantile", content, "Original query must be in report")
 
-    def test_bottomk_is_not_feasible(self):
+    def test_bottomk_translates_with_ascending_sort(self):
         ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertIn("| SORT value ASC", ctx.esql_query)
+        self.assertIn("| LIMIT 3", ctx.esql_query)
 
     def test_count_values_is_not_feasible(self):
         ctx = _translate('count_values("version", build_info)')
@@ -2918,6 +2920,58 @@ class TestWarningPatternHonesty(unittest.TestCase):
         # 0.5 * 100 == 50
         self.assertIn("50", esql)
 
+    # --- label_join translation -----------------------------------------------
+    def test_label_join_src_in_by_clause_translates(self):
+        # When all src labels appear in the inner expression's by() clause,
+        # label_join translates to a post-STATS EVAL CONCAT.
+        expr = (
+            'label_join(sum by (destination_workload, destination_service)'
+            ' (rate(istio_requests_total[5m])), "dst_var", ".", "destination_workload")'
+        )
+        ctx = _translate(expr)
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("CONCAT(", esql)
+        self.assertIn("dst_var", esql)
+        self.assertIn("| EVAL dst_var", esql)
+        # The EVAL must come after the STATS, before the SORT
+        stats_pos = esql.find("STATS")
+        eval_pos = esql.find("| EVAL dst_var")
+        sort_pos = esql.find("| SORT")
+        self.assertLess(stats_pos, eval_pos, "EVAL must follow STATS")
+        if sort_pos != -1:
+            self.assertLess(eval_pos, sort_pos, "EVAL must precede SORT")
+        self.assertIn("dst_var", ctx.output_group_fields,
+                      "dst label must be in output_group_fields for downstream KEEP")
+
+    def test_label_join_missing_src_from_by_clause_stays_not_feasible(self):
+        # A src label absent from the inner by() clause cannot be translated;
+        # the panel must stay not_feasible with an informative message.
+        expr = (
+            'label_join(rate(istio_requests_total[5m]),'
+            ' "dst_var", ".", "destination_workload")'
+        )
+        ctx = _translate(expr)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertTrue(
+            any("label_join" in w.lower() for w in ctx.warnings),
+            f"Expected label_join warning, got: {ctx.warnings}",
+        )
+
+    def test_label_join_multi_src_all_in_by_translates(self):
+        # Two src labels, both present in the inner by() clause → feasible.
+        expr = (
+            'label_join(sum by (ns, pod) (rate(kube_pod_container_restarts_total[5m])),'
+            ' "ns_pod", "/", "ns", "pod")'
+        )
+        ctx = _translate(expr)
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn('CONCAT(ns, "/", pod)', esql)
+        self.assertIn("ns_pod", esql)
+        self.assertIn("ns_pod", ctx.output_group_fields,
+                      "dst label must be in output_group_fields for downstream KEEP")
+
     # --- elementwise math / trig wrappers: exact ES|QL function maps -------
     def test_math_trig_functions_translate_exactly(self):
         # Each PromQL math/trig wrapper maps to an exact ES|QL function/expression.
@@ -3617,6 +3671,51 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertIsNotNone(frag)
         self.assertFalse(frag.extra.get("not_feasible_reasons"))
         self.assertTrue(frag.extra.get("has_sgn"))
+
+    # --- aggregation OUTER wrapping math INNER (regression for math_fns drop) --
+
+    def test_agg_outer_abs_inner_promotes_math_fns(self):
+        # sum(abs(rate(...))) by (job) — math key must surface on the top-level
+        # fragment so value_wrapper_transforms_rule emits | EVAL … = ABS(…).
+        ctx = self._translate("sum(abs(rate(http_requests_total[5m]))) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertIn("abs", frag.extra.get("math_fns") or [])
+        esql = ctx.esql_query or ""
+        self.assertIn("ABS(", esql)
+
+    def test_agg_outer_ceil_inner_promotes_math_fns(self):
+        ctx = self._translate("max(ceil(node_memory_MemAvailable_bytes)) by (host)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertIn("ceil", frag.extra.get("math_fns") or [])
+        self.assertIn("CEIL(", ctx.esql_query or "")
+
+    def test_agg_outer_sgn_inner_promotes_has_sgn(self):
+        ctx = self._translate("sum(sgn(metric)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_sgn"))
+        self.assertIn("SIGNUM(", ctx.esql_query or "")
+
+    def test_agg_outer_clamp_min_inner_promotes_clamp_min_value(self):
+        ctx = self._translate("sum(clamp_min(rate(http_requests_total[5m]), 0)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
+        self.assertIn("GREATEST(", ctx.esql_query or "")
+
+    def test_agg_outer_round_inner_promotes_has_round(self):
+        ctx = self._translate("avg(round(rate(http_requests_total[5m]), 0.01)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertIn("ROUND(", ctx.esql_query or "")
 
 
 class TestGaugeSeriesFidelity(unittest.TestCase):

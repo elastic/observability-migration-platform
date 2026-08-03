@@ -1,0 +1,11 @@
+source: label_join(sum by (destination_workload,destination_workload_namespace,destination_service) (rate(istio_requests_total{reporter=~"source|waypoint"}[5m])), "destination_workload_var", ".", "destination_workload", "destination_workload_namespace")
+feasibility: feasible
+warning: label_join('destination_workload_var') approximated as ES|QL EVAL CONCAT
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE reporter RLIKE "source|waypoint"
+| WHERE istio_requests_total IS NOT NULL
+| STATS istio_requests_total = SUM(RATE(istio_requests_total)) BY time_bucket = TBUCKET(5 minute), destination_workload, destination_workload_namespace, destination_service
+| EVAL destination_workload_var = CONCAT(destination_workload, ".", destination_workload_namespace)
+| SORT time_bucket ASC

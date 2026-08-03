@@ -900,3 +900,201 @@ def test_drop_only_names_columns_that_exist_at_that_point():
     # the DROP -- splitting the BY clause on bare commas reached inside the call
     # and produced `DROP ?_tstart`, which failed every such query.
     assert "?_tstart" not in out.replace("TBUCKET(1, ?_tstart, ?_tend)", ""), out
+
+
+def test_label_join_multi_target_fuses_with_single_eval_concat():
+    """Two targets both using label_join produce ONE shared EVAL CONCAT (not two).
+
+    The formula-plan path unwraps label_join to its inner fragment for STATS
+    building, then injects a single EVAL CONCAT (deduplicated by expression) and
+    extends output_group_fields so the KEEP clause retains the derived column.
+
+    Regression for the bug where destination_workload_var was dropped from KEEP.
+    """
+    panel = {
+        "id": 1,
+        "type": "timeseries",
+        "title": "TCP Bytes (Istio)",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": (
+                    'label_join('
+                    'sum by (destination_workload, destination_workload_namespace, destination_service)'
+                    ' (irate(istio_tcp_received_bytes_total{reporter=~"source|waypoint"}[1m])),'
+                    ' "destination_workload_var", ".", "destination_workload",'
+                    ' "destination_workload_namespace")'
+                ),
+                "legendFormat": "{{destination_workload_var}} Received",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'label_join('
+                    'sum by (destination_workload, destination_workload_namespace, destination_service)'
+                    ' (irate(istio_tcp_sent_bytes_total{reporter=~"source|waypoint"}[1m])),'
+                    ' "destination_workload_var", ".", "destination_workload",'
+                    ' "destination_workload_namespace")'
+                ),
+                "legendFormat": "{{destination_workload_var}} Sent",
+                "refId": "B",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, (
+        f"Expected migrated, got {result.status}: {result.reasons}"
+    )
+    query = yaml_panel["esql"]["query"]
+
+    # Exactly one EVAL CONCAT — deduplication by expression must fire.
+    concat_count = query.count("CONCAT(destination_workload, ")
+    assert concat_count == 1, (
+        f"Expected exactly one EVAL CONCAT, found {concat_count}:\n{query}"
+    )
+
+    # The derived column must be in the KEEP clause.
+    assert "destination_workload_var" in query.split("| KEEP", 1)[-1], (
+        f"destination_workload_var missing from KEEP:\n{query}"
+    )
+
+    # EVAL must appear after STATS and before SORT.
+    stats_pos = query.find("| STATS")
+    eval_pos = query.find("| EVAL destination_workload_var")
+    sort_pos = query.find("| SORT")
+    assert stats_pos != -1, "STATS missing"
+    assert eval_pos != -1, "EVAL destination_workload_var missing"
+    assert stats_pos < eval_pos < sort_pos, (
+        f"Wrong stage order: STATS@{stats_pos} EVAL@{eval_pos} SORT@{sort_pos}"
+    )
+
+    # Both metric series must appear in KEEP.
+    keep_section = query.split("| KEEP", 1)[-1]
+    metric_fields = yaml_panel["esql"]["metrics"]
+    for m in metric_fields:
+        assert m["field"] in keep_section, (
+            f"Metric field {m['field']!r} missing from KEEP:\n{query}"
+        )
+
+    assert structural_errors(check_esql_structure(query)) == [], query
+
+
+def test_label_join_multi_target_group_fields_include_derived_column():
+    """The derived label_join column is returned in group_fields of the fused result.
+
+    This ensures downstream KEEP/column handling (including the panel's
+    output_group_fields) carries the computed column through to Kibana.
+    """
+    from observability_migration.adapters.source.grafana.panels import (
+        _build_multi_target_series_query,
+    )
+    from observability_migration.adapters.source.grafana.translate import (
+        translate_promql_to_esql,
+    )
+
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+
+    exprs = [
+        (
+            'label_join(sum by (ns, pod) (rate(kube_pod_restarts_total[5m])),'
+            ' "ns_pod", "/", "ns", "pod")'
+        ),
+        (
+            'label_join(sum by (ns, pod) (rate(kube_pod_oom_kills_total[5m])),'
+            ' "ns_pod", "/", "ns", "pod")'
+        ),
+    ]
+    translations = [
+        translate_promql_to_esql(
+            e, datasource_index="metrics-*", panel_type="timeseries",
+            rule_pack=rule_pack, resolver=resolver,
+        )
+        for e in exprs
+    ]
+    merged = _build_multi_target_series_query(translations)
+    assert merged is not None, "Multi-target fusion returned None"
+
+    # Derived column in group_fields.
+    assert "ns_pod" in merged["group_fields"], (
+        f"ns_pod missing from group_fields: {merged['group_fields']}"
+    )
+
+    # Derived column appears in KEEP.
+    keep_section = merged["query"].split("| KEEP", 1)[-1]
+    assert "ns_pod" in keep_section, (
+        f"ns_pod missing from KEEP:\n{merged['query']}"
+    )
+
+    # Only one EVAL CONCAT (same dst and expression → deduplicated).
+    assert merged["query"].count("CONCAT(ns, ") == 1, (
+        f"Expected one CONCAT, got multiple:\n{merged['query']}"
+    )
+
+
+def test_label_join_mixed_with_plain_target_fuses_correctly():
+    """One label_join target and one plain target fuse via the formula-plan path.
+
+    The EVAL CONCAT must appear only for the label_join target's derived column;
+    the plain target contributes normally to the shared STATS without an EVAL.
+    """
+    panel = {
+        "id": 1,
+        "type": "timeseries",
+        "title": "Requests (labelled) + Total",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": (
+                    'label_join(sum by (destination_workload, namespace)'
+                    ' (rate(istio_requests_total[5m])), "workload_ns", "/", "destination_workload",'
+                    ' "namespace")'
+                ),
+                "legendFormat": "{{workload_ns}}",
+                "refId": "A",
+            },
+            {
+                "expr": "sum by (destination_workload, namespace) (rate(istio_errors_total[5m]))",
+                "legendFormat": "errors",
+                "refId": "B",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, (
+        f"Expected migrated, got {result.status}: {result.reasons}"
+    )
+    query = yaml_panel["esql"]["query"]
+
+    # The derived label_join column must be in KEEP.
+    keep_section = query.split("| KEEP", 1)[-1]
+    assert "workload_ns" in keep_section, (
+        f"workload_ns missing from KEEP:\n{query}"
+    )
+
+    # EVAL CONCAT must be present exactly once.
+    assert query.count("CONCAT(destination_workload") == 1, (
+        f"Expected one CONCAT, got:\n{query}"
+    )
+
+    # Both metrics must be in the query.
+    assert "istio_requests_total" in query
+    assert "istio_errors_total" in query
+
+    assert structural_errors(check_esql_structure(query)) == [], query

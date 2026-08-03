@@ -482,7 +482,7 @@ CASES: list[tuple[str, str, str]] = [
         "timeseries",
     ),
     (
-        "bottomk_grouped_not_feasible",
+        "bottomk_grouped",
         "bottomk(3, sum by (job) (rate(foo_total[5m])))",
         "timeseries",
     ),
@@ -716,6 +716,19 @@ CASES: list[tuple[str, str, str]] = [
         "vector_scalar_not_feasible",
         "vector(1)",
         "stat",
+    ),
+    # --- label_join → post-STATS EVAL CONCAT ------------------------------------
+    # All src labels are in the inner sum by() — translates to EVAL CONCAT.
+    (
+        "label_join_src_in_by_feasible",
+        'label_join(sum by (destination_workload,destination_workload_namespace,destination_service) (rate(istio_requests_total{reporter=~"source|waypoint"}[5m])), "destination_workload_var", ".", "destination_workload", "destination_workload_namespace")',
+        "table",
+    ),
+    # src label missing from by() — cannot CONCAT a non-existent column.
+    (
+        "label_join_missing_src_not_feasible",
+        'label_join(sum by (destination_workload,destination_service) (rate(istio_requests_total[5m])), "dst", ".", "destination_workload", "destination_workload_namespace")',
+        "table",
     ),
 ]
 

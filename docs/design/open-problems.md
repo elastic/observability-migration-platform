@@ -850,3 +850,38 @@ enrichment join" warning.  The Erlang `count(join == threshold)` pattern (3
 panels) remains not_feasible because the join is inside a comparison, which
 creates a `binary_expr` child rather than a `join` child — a distinct and harder
 case.
+
+---
+
+## 0m. ~~`label_join(v, dst, sep, src1, src2)` always not_feasible~~ FIXED
+
+**Status:** FIXED (`promql.py` `_ast_call_fragment`, `translate.py` `label_join_family_rule`).
+
+`label_join` was in `HARD_UNSUPPORTED_CALL_REASONS` and unconditionally marked
+panels not_feasible.  But the common Istio Mesh Dashboard pattern is:
+
+```promql
+label_join(
+  sum by (destination_workload, destination_workload_namespace, destination_service) (
+    rate(istio_requests_total{...}[5m])
+  ),
+  "destination_workload_var", ".", "destination_workload", "destination_workload_namespace"
+)
+```
+
+All source labels (`destination_workload`, `destination_workload_namespace`) are
+already present in the outer `sum by (...)` clause, so they are columns in the
+ES|QL `STATS` output.  The joined label is simply `CONCAT` of two existing
+columns, expressible as a post-STATS `EVAL`.
+
+**Fix:** `_ast_call_fragment` (`promql.py`) checks whether all source labels are
+present in the inner fragment's `group_labels`.  If so, the fragment is tagged
+with `family="label_join"` and the extras `lj_dst`, `lj_sep`, `lj_src`.  If any
+source label is absent, it falls through to the existing not_feasible path with a
+more informative reason.  `label_join_family_rule` (`translate.py`) translates the
+inner expression via sub-context, then inserts `| EVAL dst = CONCAT(src1, "sep",
+src2, ...)` before `| SORT`.
+
+Result: 2 Istio Mesh Dashboard panels ("HTTP/gRPC Workloads", "TCP Workloads")
+now translate instead of rendering as markdown placeholders.  `label_join` where
+any source label is absent from the by() clause remains not_feasible.

@@ -16229,6 +16229,20 @@ class NativePromqlTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertFalse(can_use_native_promql("foo unless bar"))
 
+    def test_rejects_or_binary_op(self):
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(can_use_native_promql("foo or bar"))
+        self.assertFalse(can_use_native_promql(
+            "rate(http_requests_total[5m]) or vector(0)"
+        ))
+
+    def test_rejects_and_binary_op(self):
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(can_use_native_promql("foo and bar > 0"))
+        self.assertFalse(can_use_native_promql(
+            "up and on(instance) rate(http_requests_total[5m])"
+        ))
+
     def test_accepts_without_modifier(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertTrue(can_use_native_promql("sum without (instance) (rate(foo_total[5m]))"))

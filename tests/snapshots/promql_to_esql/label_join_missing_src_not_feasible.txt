@@ -1,0 +1,5 @@
+source: label_join(sum by (destination_workload,destination_service) (rate(istio_requests_total[5m])), "dst", ".", "destination_workload", "destination_workload_namespace")
+feasibility: not_feasible
+warning: label_join: source labels must all be present in the inner expression's by() clause to translate to CONCAT — requires manual redesign
+---
+

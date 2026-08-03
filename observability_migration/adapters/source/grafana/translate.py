@@ -1145,6 +1145,7 @@ def family_classifier_rule(context):
         "binary_expr",
         "topk",
         "label_replace",
+        "label_join",
     }
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
@@ -2172,6 +2173,12 @@ def topk_family_rule(context):
         )
         for warning in map_rate_warnings:
             _append_unique(context.warnings, warning)
+        # If drop_rate cleared esql_inner, downgrade to FROM so a non-TSDS gauge
+        # is not queried under TS (which would inflate AVG across all samples).
+        if not esql_inner and not is_counter:
+            source = "FROM"
+            time_filter = rp.from_time_filter
+            bucket = rp.from_bucket
         # Prefer gauge field after drop_rate / mapped-gauge strip.
         if not is_counter and prefer == "counter":
             physical_metric = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
@@ -2206,6 +2213,9 @@ def topk_family_rule(context):
             resolver,
         )
     limit = int(frag.extra.get("topk_limit") or 10)
+    sort_asc = frag.extra.get("topk_sort_asc", False)
+    sort_dir = "ASC" if sort_asc else "DESC"
+    topk_label = "bottomk" if sort_asc else "topk"
 
     context.parser_backend = "fragment"
     context.source_type = source
@@ -2224,18 +2234,20 @@ def topk_family_rule(context):
                 f"| STATS _bucket_value = {stats_expr} BY {bucket}",
                 "| SORT time_bucket ASC",
                 "| STATS value = LAST(_bucket_value, time_bucket)",
-                "| SORT value DESC",
+                f"| SORT value {sort_dir}",
                 f"| LIMIT {limit}",
             ]
         )
         context.translation_complete = True
+        n_label = "bottom N" if sort_asc else "top N"
         _append_unique(
             context.warnings,
-            "topk() without group labels: collapsed to single-series top N; "
+            f"{topk_label}() without group labels: collapsed to single-series {n_label}; "
             "add preferred_group_labels hint for per-series breakdown",
         )
-        return "translated ungrouped topk as single-bucket top N"
+        return f"translated ungrouped {topk_label} as single-bucket {n_label}"
 
+    n_label = "bottom N" if sort_asc else "top N"
     context.output_group_fields = group_fields
     context.esql_query = "\n".join(
         [
@@ -2247,13 +2259,13 @@ def topk_family_rule(context):
             "| SORT time_bucket ASC",
             f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
             f"| KEEP {', '.join(group_fields + ['value'])}",
-            "| SORT value DESC",
+            f"| SORT value {sort_dir}",
             f"| LIMIT {limit}",
         ]
     )
     context.translation_complete = True
-    _append_unique(context.warnings, "Translated grouped topk() as latest-bucket ES|QL top N")
-    return "translated grouped topk expression"
+    _append_unique(context.warnings, f"Translated grouped {topk_label}() as latest-bucket ES|QL {n_label}")
+    return f"translated grouped {topk_label} expression"
 
 
 # Characters that carry special meaning in a regex. If a label_replace regex's
@@ -2399,11 +2411,88 @@ def label_replace_family_rule(context):
     context.esql_query = "\n".join(lines)
     context.metric_name = sub.metric_name
     context.output_metric_field = sub.output_metric_field
-    context.output_group_fields = sub.output_group_fields
+    # Include the computed label as a group decoration field so downstream KEEP
+    # clauses retain the column (mirrors label_join_family_rule).
+    _lr_existing = list(sub.output_group_fields or [])
+    context.output_group_fields = _lr_existing + ([dst] if dst and dst not in _lr_existing else [])
     context.source_type = sub.source_type
     context.parser_backend = "fragment"
     context.translation_complete = True
     return f"translated label_replace({dst!r})"
+
+
+@QUERY_TRANSLATORS.register("label_join_family", priority=6)
+def label_join_family_rule(context):
+    """Translate label_join(v, dst, sep, src1, ...) via post-STATS ES|QL EVAL CONCAT."""
+    frag = context.fragment
+    if not frag or frag.family != "label_join":
+        return None
+
+    inner_frag = frag.extra.get("lj_inner_frag")
+    if not inner_frag:
+        return None
+
+    dst = frag.extra.get("lj_dst", "")
+    sep = frag.extra.get("lj_sep", "")
+    src_labels = frag.extra.get("lj_src") or []
+
+    sub = TranslationContext(
+        promql_expr=inner_frag.raw_expr or context.promql_expr,
+        data_view=context.data_view,
+        index=context.index,
+        rule_pack=context.rule_pack,
+        resolver=context.resolver,
+        metadata=dict(context.metadata),
+    )
+    sub.fragment = inner_frag
+    sub.metadata["fragment_family"] = inner_frag.family
+    QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+    QUERY_POSTPROCESSORS.apply(sub)
+
+    if not sub.esql_query or sub.feasibility == "not_feasible":
+        return None
+
+    # Build CONCAT interleaving the separator literal between source labels.
+    sep_literal = f'"{sep}"'
+    concat_parts = []
+    for i, src in enumerate(src_labels):
+        if i > 0:
+            concat_parts.append(sep_literal)
+        concat_parts.append(_esql_identifier(src))
+    eval_clause = f"| EVAL {_esql_identifier(dst)} = CONCAT({', '.join(concat_parts)})"
+
+    lines = sub.esql_query.splitlines()
+    # Insert EVAL before the first | KEEP or | SORT so that src labels are
+    # still available (an inner KEEP from scaled_agg would drop them first).
+    insert_idx = next(
+        (i for i, ln in enumerate(lines)
+         if ln.strip().startswith("| SORT") or ln.strip().startswith("| KEEP")),
+        len(lines),
+    )
+    lines.insert(insert_idx, eval_clause)
+    # If we inserted before a | KEEP, also extend that KEEP to include dst so
+    # the new column is not immediately dropped.
+    keep_idx = insert_idx + 1
+    if keep_idx < len(lines) and lines[keep_idx].strip().startswith("| KEEP"):
+        dst_id = _esql_identifier(dst)
+        if dst_id not in lines[keep_idx]:
+            lines[keep_idx] = lines[keep_idx].rstrip() + f", {dst_id}"
+
+    _append_unique(context.warnings, f"label_join({dst!r}) approximated as ES|QL EVAL CONCAT")
+    for w in sub.warnings:
+        _append_unique(context.warnings, w)
+
+    context.esql_query = "\n".join(lines)
+    context.metric_name = sub.metric_name
+    context.output_metric_field = sub.output_metric_field
+    # Include the new derived label as an output group field so downstream KEEP
+    # clauses and multi-target fusion retain the computed column.
+    existing = list(sub.output_group_fields or [])
+    context.output_group_fields = existing + ([dst] if dst and dst not in existing else [])
+    context.source_type = sub.source_type
+    context.parser_backend = "fragment"
+    context.translation_complete = True
+    return f"translated label_join({dst!r})"
 
 
 @QUERY_TRANSLATORS.register("scaled_agg_family", priority=6)
@@ -2445,6 +2534,15 @@ def scaled_agg_family_rule(context):
     )
     for warning in map_rate_warnings:
         _append_unique(context.warnings, warning)
+    # If drop_rate cleared esql_inner, downgrade to FROM so a non-TSDS gauge
+    # is not queried under TS.  Recompute bucket and group_by_parts with the
+    # FROM bucket expression so the STATS BY clause is valid.
+    if not esql_inner and not is_counter:
+        bucket = rp.from_bucket
+        group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
+        _scaled_source = "FROM"
+    else:
+        _scaled_source = "TS"
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
     cast_needed = _counter_unsafe_cast_needed(physical_metric, resolver)
@@ -2469,13 +2567,14 @@ def scaled_agg_family_rule(context):
         inner_windowed = inner_arg
 
     context.parser_backend = "fragment"
-    context.source_type = "TS"
+    context.source_type = _scaled_source
     context.metric_name = frag.metric
     context.output_metric_field = final_alias
     context.output_group_fields = output_group
+    _scaled_time_filter = rp.ts_time_filter if _scaled_source == "TS" else rp.from_time_filter
     parts = [
-        f"TS {context.index}",
-        f"| WHERE {rp.ts_time_filter}",
+        f"{_scaled_source} {context.index}",
+        f"| WHERE {_scaled_time_filter}",
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
@@ -2997,8 +3096,12 @@ def range_agg_family_rule(context):
         resolver, frag.metric, source_labels=_frag_source_labels(frag)
     ):
         _append_unique(context.warnings, note)
-    needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
-    source = "TS" if needs_ts else "FROM"
+    # When _plan_metric_map_rate_transform clears esql_inner_name (drop_rate),
+    # no counter/rate function is emitted; use FROM so non-TSDS gauges are
+    # queried correctly.  frag.range_func in AGG_FUNCTION_MAP is always True
+    # here (the guard above returned None when the key was absent), so using
+    # it would force TS even in the drop_rate case.
+    source = "TS" if (bool(esql_inner_name) or is_counter) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"

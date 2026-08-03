@@ -842,7 +842,6 @@ HARD_UNSUPPORTED_AST_REASONS = {
 HARD_UNSUPPORTED_CALL_REASONS = {
     "absent": "absent() checks metric existence and has no ES|QL equivalent",
     "absent_over_time": "absent_over_time() checks metric existence and has no ES|QL equivalent",
-    "bottomk": "bottomk requires manual redesign",
     "changes": "changes() counts value transitions and has no ES|QL equivalent",
     "count_values": "count_values requires manual redesign",
     "group": (
@@ -850,7 +849,8 @@ HARD_UNSUPPORTED_CALL_REASONS = {
         "ES|QL has no equivalent and aggregating the metric value instead would "
         "change the result, so it requires manual redesign"
     ),
-    "label_join": "label_join requires manual redesign",
+    # label_join handled below in _ast_call_fragment when all src labels are
+    # present in the inner expression's by() clause.
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "stdvar": (
         "stdvar() is population variance; ES|QL has no variance aggregation and "
@@ -2189,6 +2189,10 @@ def _ast_call_fragment(node, expr):
             for key in ("left_frag", "right_frag"):
                 if key in child.extra:
                     wrapped.extra[key] = child.extra[key]
+            for _k in ("math_fns", "has_round", "round_precision", "has_sgn",
+                       "clamp_min_value", "clamp_max_value"):
+                if child.extra.get(_k) is not None and _k not in wrapped.extra:
+                    wrapped.extra[_k] = child.extra[_k]
             wrapped.extra["wrapped_scalar"] = True
             return wrapped
 
@@ -2375,6 +2379,31 @@ def _ast_call_fragment(node, expr):
             frag.extra["quantile_phi"] = float(phi_frag.scalar_value)
             return frag
 
+    # label_join(v, dst_label, separator, src_label1[, src_label2, ...])
+    # All src_labels must be present in the inner expression's by() group_labels.
+    # Translates to a post-STATS: | EVAL dst = CONCAT(src1, "sep", src2, ...)
+    if func_name == "label_join" and len(child_frags) >= 4:
+        value_frag = child_frags[0]
+        string_args = [f.extra.get("string_value") for f in child_frags[1:]]
+        if (
+            not value_frag.extra.get("not_feasible_reasons")
+            and all(s is not None for s in string_args)
+        ):
+            dst_label = string_args[0]
+            separator = string_args[1]
+            src_labels = string_args[2:]
+            inner_dims = set(value_frag.group_labels or [])
+            missing = [lbl for lbl in src_labels if lbl not in inner_dims]
+            if not missing:
+                result = _copy_fragment_summary(
+                    _new_fragment(expr, family="label_join"), value_frag
+                )
+                result.extra["lj_dst"] = dst_label
+                result.extra["lj_sep"] = separator
+                result.extra["lj_src"] = src_labels
+                result.extra["lj_inner_frag"] = value_frag
+                return result
+
     frag = _new_fragment(expr)
     for child in child_frags:
         _copy_fragment_summary(frag, child)
@@ -2383,6 +2412,12 @@ def _ast_call_fragment(node, expr):
 
     if func_name in HARD_UNSUPPORTED_CALL_REASONS:
         _append_not_feasible_reason(frag, HARD_UNSUPPORTED_CALL_REASONS[func_name])
+    elif func_name == "label_join":
+        _append_not_feasible_reason(
+            frag,
+            "label_join: source labels must all be present in the inner expression's by() "
+            "clause to translate to CONCAT — requires manual redesign",
+        )
     elif func_name:
         _append_not_feasible_reason(frag, f"{func_name}() requires manual redesign")
     if func_name == "time" and args:
@@ -2607,10 +2642,17 @@ def _join_rhs_not_plain_selector_reason(right_frag):
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
+    # _copy_fragment_summary uses a fixed allowlist that omits math/transform
+    # modifier keys. Promote them explicitly so value_wrapper_transforms_rule
+    # sees them when an aggregation wraps a math function: sum(abs(rate(...))).
+    for _k in ("math_fns", "has_round", "round_precision", "has_sgn",
+               "clamp_min_value", "clamp_max_value"):
+        if child.extra.get(_k) is not None and _k not in frag.extra:
+            frag.extra[_k] = child.extra[_k]
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if frag.outer_agg == "topk" and not child.extra.get("not_feasible_reasons"):
+    if frag.outer_agg in {"topk", "bottomk"} and not child.extra.get("not_feasible_reasons"):
         topk_source = child if child.metric else _find_summary_fragment(child)
         if not topk_source or not topk_source.metric:
             return frag
@@ -2626,6 +2668,7 @@ def _ast_aggregate_fragment(node, expr):
         except (TypeError, ValueError):
             topk_frag.extra["topk_limit"] = 10
         topk_frag.extra["topk_value_expr"] = child.raw_expr
+        topk_frag.extra["topk_sort_asc"] = frag.outer_agg == "bottomk"
         return topk_frag
 
     # quantile(phi, expr) by (..) == ES|QL PERCENTILE(expr, phi*100). Capture the
@@ -4249,8 +4292,13 @@ def _build_measure_spec(
             frag, resolver, esql_inner, is_counter
         )
         warnings.extend(map_rate_warnings)
-        needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
-        source = "TS" if needs_ts else "FROM"
+        # When _plan_metric_map_rate_transform clears esql_inner (drop_rate to
+        # gauge), no counter/rate function is emitted and TS source is not
+        # required; fall back to FROM so non-TSDS gauges are queried correctly.
+        # frag.range_func in AGG_FUNCTION_MAP is always True here (the guard
+        # above already returned None when the key is absent), so using it
+        # instead of bool(esql_inner) would force TS even in the drop_rate case.
+        source = "TS" if (bool(esql_inner) or is_counter) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
@@ -5893,9 +5941,11 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
-        if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
-            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        _lj_warn = "Dropped group_left label enrichment; kept primary metric series only"
+        if plan and _lj_warn not in (plan.warnings or []):
+            plan.warnings.append(_lj_warn)
         return plan
 
     # A bare group_left/group_right vector-matching join without an outer
@@ -5940,13 +5990,11 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
-        if (
-            plan
-            and not enrichment_labels
-            and "Dropped group_left label enrichment" not in (plan.warnings or [])
-        ):
-            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        _lj_warn2 = "Dropped group_left label enrichment; kept primary metric series only"
+        if plan and not enrichment_labels and _lj_warn2 not in (plan.warnings or []):
+            plan.warnings.append(_lj_warn2)
         return plan
 
     if frag and frag.family == "binary_expr":
@@ -6101,14 +6149,12 @@ def _build_formula_plan(
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
-                    if (
-                        f"Grafana variable ${var_name} dropped"
-                        not in (plan.warnings or [])
-                    ):
-                        plan.warnings.append(
-                            f"Grafana variable ${var_name} used as scalar "
-                            f"multiplier/divisor was dropped; chart values unscaled"
-                        )
+                    _gv_warn = (
+                        f"Grafana variable ${var_name} used as scalar "
+                        f"multiplier/divisor was dropped; chart values unscaled"
+                    )
+                    if _gv_warn not in (plan.warnings or []):
+                        plan.warnings.append(_gv_warn)
                     return plan
 
         # A caller-supplied ``alias_hint`` (e.g. a multi-target ``target_ref_id``
@@ -6280,6 +6326,33 @@ def _build_formula_plan(
             expr=_esql_binary_expr(left_plan.expr, frag.binary_op, right_plan.expr),
             warnings=warnings,
         )
+
+    # label_join(v, dst, sep, src1, ...) — the outer label-join is a pure
+    # post-STATS decoration; unwrap to the inner fragment so the formula-plan
+    # path can build the STATS spec correctly.  _build_multi_target_series_query
+    # injects the EVAL CONCAT and extends the KEEP/group_fields afterwards.
+    if frag and frag.family == "label_join":
+        inner_frag = frag.extra.get("lj_inner_frag")
+        if inner_frag is not None:
+            inner_plan = _build_formula_plan(
+                inner_frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                allow_direct_ts_gauge=allow_direct_ts_gauge,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                drop_legend_labels=drop_legend_labels,
+            )
+            if inner_plan:
+                lj_dst = frag.extra.get("lj_dst", "")
+                if lj_dst:
+                    msg = f"label_join({lj_dst!r}) approximated as ES|QL EVAL CONCAT"
+                    if msg not in inner_plan.warnings:
+                        inner_plan.warnings.append(msg)
+            return inner_plan
 
     spec = _build_measure_spec(
         frag,

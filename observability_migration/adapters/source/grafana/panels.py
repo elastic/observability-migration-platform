@@ -2250,7 +2250,7 @@ def _translate_panel_native_promql(
     # placeholders, or has multiple targets. A true scalar stays native.
     if panel_type == "bargauge":
         _, shape_groups = _native_promql_result_shape(expr)
-        if legend_labels or len(targets_with_expr) > 1 or shape_groups == ["_timeseries"]:
+        if legend_labels or shape_groups == ["_timeseries"]:
             return None
     # Instant tables without an explicit ``by (...)`` (or legend placeholders)
     # would emit only a ``value`` column and drop Prometheus label columns
@@ -2576,6 +2576,12 @@ def _translate_multi_target_native_promql(
             f'label_replace({emit_cleaned}, "__series", "{legend}", "", "")'
         )
 
+    # Each individual expression has already passed can_use_native_promql (line
+    # 2532), which rejects user-level `or`/`and`/`unless` binary ops via
+    # _promql_has_known_server_bug.  The `or` injected here is a structural
+    # multi-series join between label_replace() wrappers, not a user binary op;
+    # applying _promql_has_known_server_bug to combined_expr would always block
+    # this path.  The live validator at line 2594 provides the production safety net.
     combined_expr = " or ".join(parts)
     # #272 / #318: bind the overlay to the dashboard time range at view time, or
     # honor an explicit Grafana panel ``interval`` as ``step=``.
@@ -4490,6 +4496,41 @@ def _build_multi_target_series_query(translations):
                 _updated = re.sub(rf"\b{re.escape(_old)}\b", _new, _updated)
             if _updated != _part:
                 parts[_i] = _updated
+
+    # Inject EVAL CONCAT for label_join targets.  The label_join wrapper is
+    # unwrapped in _build_formula_plan so the shared STATS is built from the
+    # inner fragment; here we restore the post-STATS CONCAT and extend
+    # output_group_fields so the KEEP clause retains the derived column.
+    # Deduplicate by (dst, concat_expr) pair: two targets with the same dst AND
+    # the same expression share one EVAL; different dst names always get their
+    # own EVAL (skipping the EVAL while adding the dst to KEEP would cause an
+    # ES|QL "Unknown column" error).
+    _lj_extra_group: list[str] = []
+    _lj_seen: set[tuple] = set()
+    for _tr, _ in plans:
+        _frag = getattr(_tr, "fragment", None)
+        if _frag is None or _frag.family != "label_join":
+            continue
+        _lj_dst = _frag.extra.get("lj_dst") or ""
+        _lj_sep = _frag.extra.get("lj_sep") or ""
+        _lj_src = _frag.extra.get("lj_src") or []
+        if not _lj_dst or not _lj_src:
+            continue
+        _sep_lit = f'"{_lj_sep}"'
+        _concat_args = []
+        for _i2, _src in enumerate(_lj_src):
+            if _i2 > 0:
+                _concat_args.append(_sep_lit)
+            _concat_args.append(_esql_identifier(_src))
+        _concat_expr = f"CONCAT({', '.join(_concat_args)})"
+        _lj_key = (_lj_dst, _concat_expr)
+        if _lj_key not in _lj_seen:
+            _lj_seen.add(_lj_key)
+            parts.append(f"| EVAL {_esql_identifier(_lj_dst)} = {_concat_expr}")
+        if _lj_dst not in output_group_fields and _lj_dst not in _lj_extra_group:
+            _lj_extra_group.append(_lj_dst)
+    if _lj_extra_group:
+        output_group_fields = list(output_group_fields) + _lj_extra_group
 
     summary_mode = all(_summary_mode_from_metadata(translation.metadata) for translation, _ in plans)
     collapsed = None

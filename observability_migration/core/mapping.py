@@ -704,14 +704,19 @@ def _grafana_unified_exact_topk_bottomk_spec(ir: AlertingIR) -> dict[str, Any] |
         return None
 
     fragment = _parse_fragment(expr)
-    agg_name = (
-        "topk"
-        if str(getattr(fragment, "family", "") or "") == "topk"
-        else str(getattr(fragment, "outer_agg", "") or "").strip().lower()
-    )
+    if str(getattr(fragment, "family", "") or "") == "topk":
+        # bottomk is now translated through the same topk_frag path with
+        # topk_sort_asc=True; family is "topk" for both.
+        agg_name = "bottomk" if fragment.extra.get("topk_sort_asc") else "topk"
+    else:
+        agg_name = str(getattr(fragment, "outer_agg", "") or "").strip().lower()
     if agg_name not in {"topk", "bottomk"}:
         return None
-    if agg_name != "topk" and getattr(fragment, "group_labels", None):
+    # For the topk_frag path (family=="topk"), group_labels reflects the inner
+    # agg's by() clause — needed for correct translation, not a rejection signal.
+    # Only guard the legacy outer-agg path where group_labels meant explicit
+    # grouping on the bottomk itself.
+    if agg_name == "bottomk" and not fragment.extra.get("topk_sort_asc") and getattr(fragment, "group_labels", None):
         return None
 
     inner_fragment = fragment.extra.get("inner_frag")
