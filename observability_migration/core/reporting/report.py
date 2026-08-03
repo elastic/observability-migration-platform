@@ -94,6 +94,7 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    curated_pack: str = ""        # non-empty when a curated pack was applied (e.g. "grafana_763_redis_exporter")
     # Semantic DashboardIR -- the primary working artifact of the IR-first
     # pipeline. `native_dashboard` and the on-disk YAML are both *derived*
     # from this (see targets.kibana.dashboards_api.native_dashboard_from_ir /

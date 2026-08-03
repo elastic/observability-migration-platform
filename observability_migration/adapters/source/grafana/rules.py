@@ -332,6 +332,7 @@ def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
     if plugin_py.exists():
         load_python_plugins([str(plugin_py)], pack)
 
+    pack._curated_pack_name = str(entry.get("name") or "")
     return pack
 
 
@@ -392,6 +393,9 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.native_promql_validator = user.native_promql_validator
     result.native_validation_stats = user.native_validation_stats
     result.runtime_features = {**result.runtime_features, **user.runtime_features}
+
+    # Propagate curated pack identity so callers can surface it in the manifest.
+    result._curated_pack_name = getattr(curated, "_curated_pack_name", "")
 
     return result
 

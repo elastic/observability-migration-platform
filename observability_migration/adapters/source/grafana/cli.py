@@ -2339,6 +2339,9 @@ def main(argv: list[str] | None = None):
             resolver=dashboard_resolver,
             output_stem=output_stem,
         )
+        curated_pack_name = getattr(dashboard_pack, "_curated_pack_name", "")
+        if curated_pack_name:
+            result.curated_pack = curated_pack_name
         if result.translation_error:
             results.append(result)
             dashboard_outputs.append((result, yaml_path, dashboard))

@@ -195,6 +195,23 @@ def test_resolve_pack_no_gnet_id_uses_title_fallback():
     assert resolved.metric_kinds.get("redis_commands_total") == "counter"
 
 
+def test_resolve_pack_stamps_curated_pack_name():
+    """Resolved curated pack carries _curated_pack_name for manifest reporting."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
+    base = RulePackConfig()
+    resolved = resolve_pack_for_dashboard(dashboard, base)
+    assert getattr(resolved, "_curated_pack_name", "") == "grafana_763_redis_exporter"
+
+
+def test_resolve_pack_base_has_no_curated_pack_name():
+    """Base pack returned for unknown dashboards has no _curated_pack_name."""
+    dashboard = {"gnetId": 99999, "title": "Unknown", "tags": []}
+    base = RulePackConfig()
+    resolved = resolve_pack_for_dashboard(dashboard, base)
+    assert resolved is base
+    assert getattr(resolved, "_curated_pack_name", "") == ""
+
+
 # ---------------------------------------------------------------------------
 # redis_memory_ratio_rule — gauge query correctness
 # ---------------------------------------------------------------------------

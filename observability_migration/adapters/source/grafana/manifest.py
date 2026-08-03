@@ -298,6 +298,7 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),
             "uploaded_kibana_url": getattr(result, "uploaded_kibana_url", ""),
+            "curated_pack": getattr(result, "curated_pack", "") or "",
             "runtime_summary": runtime_summary,
             "inventory": getattr(result, "inventory", {}) or {},
             "metadata_polish": getattr(result, "metadata_polish", {}) or {},
