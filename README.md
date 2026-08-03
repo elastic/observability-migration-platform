@@ -96,8 +96,6 @@ To go further:
   reference (env-file setup, live API extraction, alerts, and upload). Reach
   for it as the reference once the example above works, not as the starting
   point.
-- [`docs/known-limitations.md`](docs/known-limitations.md): what the tool
-  can't translate yet.
 
 ## Compatibility
 
@@ -113,7 +111,6 @@ To go further:
 
 - Docs index — [`docs/README.md`](docs/README.md)
 - Canonical commands — [`docs/command-contract.md`](docs/command-contract.md)
-- Known limitations — [`docs/known-limitations.md`](docs/known-limitations.md)
 - Architecture — [`docs/architecture.md`](docs/architecture.md)
 - Grafana source — [`docs/sources/grafana.md`](docs/sources/grafana.md)
 - Datadog source — [`docs/sources/datadog.md`](docs/sources/datadog.md)
