@@ -52,14 +52,19 @@ from observability_migration.targets.kibana.render_audit import (
     expected_kind_by_panel,
     expects_data_by_panel,
     interaction_regression,
+    metric_fields_by_panel,
     segment_panels,
+    source_indices_by_panel,
 )
 
 # A DOM fetcher takes a URL and returns the rendered DOM HTML.
 DomFetcher = Callable[[str], str]
-# A field fetcher returns the set of field names present in the target index
-# (or None when unavailable), used to attribute render markers to field gaps.
-FieldFetcher = Callable[[], "set[str] | None"]
+# A field fetcher maps ONE index pattern to the set of field names present in it
+# (or None when unavailable), used to attribute render markers to field gaps and
+# empty panels to metric gaps. It takes the index pattern because a dashboard
+# mixes them: a ``FROM logs-*`` panel's columns are not in ``metrics-*``, so a
+# single dashboard-wide lookup answers a question about the wrong index.
+FieldFetcher = Callable[[str], "set[str] | None"]
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +303,44 @@ def fetch_available_fields(
         return None
 
 
+def fetch_panel_field_caps(
+    report: dict,
+    *,
+    fetch: FieldFetcher,
+    cache: dict[str, set[str] | None] | None = None,
+) -> dict[str, set[str] | None]:
+    """Target field caps per panel, resolved against the index that panel reads.
+
+    ``--es-index`` names ONE pattern, but a dashboard mixes them. Nine panels in
+    the Datadog corpus are ``FROM logs-*``; looking their columns up in
+    ``metrics-*`` answers a question about an index that cannot contain them, and
+    every verdict drawn from that answer is unfounded — "absent" invents a gap
+    that is not there, "present" would excuse a real bug.
+
+    ``cache`` is keyed by index pattern, so a dashboard of forty ``metrics-*``
+    panels and two ``logs-*`` panels costs two ``_field_caps`` calls, not
+    forty-two. Pass one in (pre-seeded with the default index) to reuse it.
+
+    A panel maps to ``None`` — schema unknown, which keeps it in the stricter
+    class — as soon as ANY index it reads could not be read. A partial union
+    would let a column absent from the unreadable half look confirmed.
+    """
+    caps = cache if cache is not None else {}
+    out: dict[str, set[str] | None] = {}
+    for title, indices in source_indices_by_panel(report).items():
+        resolved: set[str] | None = set()
+        for index in indices:
+            if index not in caps:
+                caps[index] = fetch(index)
+            available = caps[index]
+            if available is None:
+                resolved = None
+                break
+            resolved = (resolved or set()) | available
+        out[title] = resolved
+    return out
+
+
 def build_render_audit_command(
     chrome_binary: str,
     url: str,
@@ -418,13 +461,17 @@ def run_audit_cli(
 
     When ``--migration-out`` is supplied, the render is classified **per panel**
     against the emitted migration metadata (panel segments, breakdown fields,
-    query-bearing panels) via ``classify_render_per_panel`` — so a data-readiness
-    finding (``field_gap``/``data_gap``/``unexpected_empty``) is a ``warn`` and
-    only a genuine ``render_error`` (or console/5xx error) is a hard ``fail``.
-    Field-gap attribution additionally needs the target field set, fetched from
-    ``--es-url`` (``_field_caps``) when available; without it a render marker
-    stays a ``render_error``. Without ``--migration-out`` it falls back to the
-    whole-dashboard ``classify_render``.
+    metric columns, query-bearing panels) via ``classify_render_per_panel`` — so a
+    data-readiness finding (``field_gap``/``data_gap``/``unexpected_empty``) is a
+    ``warn`` and only a genuine ``render_error`` (or console/5xx error) is a hard
+    ``fail``. Field- and metric-gap attribution additionally needs the target
+    field set, fetched from ``--es-url`` (``_field_caps``) when available;
+    without it a render marker stays a ``render_error`` and an empty panel stays
+    ``unexpected_empty``. Field caps are fetched **per index**: each panel is
+    judged against the index its own ES|QL ``FROM`` names, because a
+    ``FROM logs-*`` panel's columns cannot be in ``metrics-*`` and any conclusion
+    from looking there is unfounded. Without ``--migration-out`` it falls back to
+    the whole-dashboard ``classify_render``.
 
     With ``--elements`` it also runs the per-panel element audit (chart kind /
     legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
@@ -460,8 +507,12 @@ def run_audit_cli(
     report: dict | None = None
     # Target field caps, needed by BOTH the per-panel render classification and
     # the --elements audit to confirm a field absence. None == unknown schema, in
-    # which case every render marker stays a hard render_error.
+    # which case every render marker stays a hard render_error. ``available_fields``
+    # covers panels whose query names no index; ``fields_by_title`` carries the
+    # per-panel caps for every panel that does name one.
     available_fields: set[str] | None = None
+    fields_by_title: dict[str, set[str] | None] = {}
+    metrics_by_title: dict[str, list[str]] = {}
     migration_out = getattr(args, "migration_out", "")
     if migration_out:
         report_path = Path(migration_out) / "migration_report.json"
@@ -493,20 +544,32 @@ def run_audit_cli(
         kinds = expected_kind_by_panel(report)
         segments, unmatched = segment_panels(snapshot, kinds.keys())
         fetch_fields = field_fetcher or (
-            lambda: fetch_available_fields(
+            lambda index: fetch_available_fields(
                 getattr(args, "es_url", "") or "",
                 getattr(args, "es_api_key", "") or "",
-                getattr(args, "es_index", "") or "metrics-*",
+                index,
                 verify=not getattr(args, "insecure", False),
             )
         )
-        available_fields = fetch_fields()
+        # --es-index is the fallback for panels whose query names no index (a
+        # markdown panel, or an unrecognized source command); every panel that
+        # names one is resolved against THAT index instead. One shared cache, so
+        # each distinct index pattern is fetched once per dashboard.
+        default_index = getattr(args, "es_index", "") or "metrics-*"
+        caps_by_index: dict[str, set[str] | None] = {default_index: fetch_fields(default_index)}
+        available_fields = caps_by_index[default_index]
+        fields_by_title = fetch_panel_field_caps(
+            report, fetch=fetch_fields, cache=caps_by_index
+        )
+        metrics_by_title = metric_fields_by_panel(report)
         verdict = classify_render_per_panel(
             segments,
             breakdown_by_title=breakdown_fields_by_panel(report),
             expects_data_titles=expects_data_by_panel(report),
+            metrics_by_title=metrics_by_title,
             available_fields=available_fields,
             available_metrics=available_fields,
+            target_fields_by_title=fields_by_title,
         )
         whole_verdict = classify_render(snapshot)
         segmented_text = "\n".join(chunk for _title, chunk in segments)
@@ -563,6 +626,8 @@ def run_audit_cli(
             breakdown_by_title=breakdowns,
             available_fields=available_fields,
             expects_data_titles=expects_data_by_panel(report),
+            metrics_by_title=metrics_by_title,
+            target_fields_by_title=fields_by_title,
         )
         output["elements"] = elements.to_dict()
 
@@ -599,12 +664,16 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--es-url", default="",
         help="Elasticsearch URL for target field caps (attributes render markers to "
-             "field gaps so missing-breakdown panels warn instead of failing).",
+             "field gaps so missing-breakdown panels warn instead of failing, and "
+             "empty panels to metric gaps).",
     )
     parser.add_argument("--es-api-key", default="", help="API key for --es-url.")
     parser.add_argument(
         "--es-index", default="metrics-*",
-        help="Index pattern for --es-url field-caps discovery (default: metrics-*).",
+        help="FALLBACK index pattern for --es-url field-caps discovery, used only for "
+             "panels whose query names no index (default: metrics-*). Every panel that "
+             "does is resolved against the index its own ES|QL FROM names, so a "
+             "FROM logs-* panel is never judged against metrics-*.",
     )
     parser.add_argument(
         "--insecure", action="store_true",

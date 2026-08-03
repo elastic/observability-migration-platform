@@ -20,7 +20,7 @@ Grafana and Datadog dashboards alike.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 # Reuse the DOM error markers the smoke validator already trusts, so the live
@@ -225,6 +225,13 @@ class PanelRenderResult:
     gaps), an unreadable problem list, a column that does exist, or absent field
     caps all keep the panel a ``render_error`` — with ``detail`` recording why,
     including when absence could not be confirmed.
+
+    ``data_gap`` (an *empty* panel whose metric column is confirmed absent) is
+    held to the same standard: no attributable metric, or no field caps to check
+    it against, leaves the panel in the stricter ``unexpected_empty`` with
+    ``detail`` saying which evidence was missing. "We don't know why this is
+    empty" is a weaker claim than "your target has no such metric", so it is
+    what we report when we do not know.
     """
     title: str
     status: str
@@ -426,6 +433,25 @@ def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tupl
     return segments, unmatched
 
 
+def _panel_target_fields(
+    title: str,
+    target_fields_by_title: dict[str, set[str] | None] | None,
+    fallback: Iterable[str] | None,
+) -> Iterable[str] | None:
+    """The field set to judge ``title`` against: its own index's, else ``fallback``.
+
+    A dashboard mixes index patterns (``metrics-*`` panels beside ``FROM logs-*``
+    ones), and a column's presence is only meaningful in the index the panel
+    actually reads. A panel with a per-panel entry uses it — including a ``None``
+    entry, which means that index's caps could not be read and so keeps the panel
+    in the stricter class. Panels with no entry (a markdown panel, or a query
+    whose source command names no index) fall back to the dashboard-wide set.
+    """
+    if target_fields_by_title is not None and title in target_fields_by_title:
+        return target_fields_by_title[title]
+    return fallback
+
+
 def audit_dashboard_elements(
     snapshot_text: str,
     *,
@@ -434,6 +460,8 @@ def audit_dashboard_elements(
     breakdown_by_title: dict[str, list[str]] | None = None,
     available_fields: Iterable[str] | None = None,
     expects_data_titles: Iterable[str] | None = None,
+    metrics_by_title: dict[str, list[str]] | None = None,
+    target_fields_by_title: dict[str, set[str] | None] | None = None,
 ) -> RenderVerdict:
     """Per-panel element audit of a whole-dashboard snapshot.
 
@@ -449,10 +477,13 @@ def audit_dashboard_elements(
     absence, and without them an error stays a hard ``render_error``. This section
     used to stamp every errored panel ``render_error`` with an empty
     ``missing_fields``, which reported a fully-explained data-readiness gap as a
-    translator bug even when field caps were supplied.
+    translator bug even when field caps were supplied. ``metrics_by_title`` and
+    ``target_fields_by_title`` carry the rest of that contract — the metric a
+    panel reads, and the field caps of the index it reads them from.
     """
     expected_kind_by_title = expected_kind_by_title or {}
     breakdown_by_title = breakdown_by_title or {}
+    metrics_by_title = metrics_by_title or {}
     breakdown = set(breakdown_titles) if breakdown_titles is not None else set(breakdown_by_title)
     segments, unmatched = segment_panels(snapshot_text, expected_kind_by_title)
     verdict = RenderVerdict()
@@ -462,13 +493,18 @@ def audit_dashboard_elements(
         if el.status in ("error", "empty"):
             # Unknown query-bearingness (no ``expects_data_titles``) must not
             # weaken the signal, so assume the panel expects data.
+            panel_fields = _panel_target_fields(
+                title, target_fields_by_title, available_fields
+            )
             classified = classify_panel(
                 title, chunk,
                 breakdown_fields=breakdown_by_title.get(title, []),
-                available_fields=available_fields,
+                available_fields=panel_fields,
                 expects_data=(
                     True if expects_data_titles is None else title in set(expects_data_titles)
                 ),
+                referenced_metrics=metrics_by_title.get(title, []),
+                available_metrics=panel_fields,
             )
             el.detail = classified.detail or el.detail
             verdict.panels.append(
@@ -585,6 +621,34 @@ def classify_render(
     return verdict
 
 
+def _no_metric_gap_reason(
+    referenced_metrics: list[str], available_metrics: Iterable[str] | None
+) -> str:
+    """Why an empty panel could NOT be called a ``data_gap``.
+
+    An operator reads ``data_gap`` as "your target has no such metric" and
+    ``unexpected_empty`` as "we don't know why this is empty". Silently reporting
+    the second when the first was merely unprovable hides which evidence was
+    missing, so the missing evidence is named instead — the same discipline that
+    keeps an unconfirmable field absence a ``render_error``.
+    """
+    if available_metrics is None:
+        return (
+            "target field caps were unavailable, so a metric gap could not be "
+            "confirmed or ruled out"
+        )
+    if not referenced_metrics:
+        return (
+            "no source metric could be attributed to this panel (e.g. COUNT(*) "
+            "reads no column), so a metric gap could not be confirmed"
+        )
+    return (
+        f"referenced metric(s) {referenced_metrics} DO exist in the index this "
+        "panel reads, so the emptiness is not a metric gap (check the filter "
+        "values and the time window)"
+    )
+
+
 def classify_panel(
     title: str,
     panel_text: str,
@@ -684,20 +748,22 @@ def classify_panel(
             title=title, status="error", error_class="render_error", detail=markers[0]
         )
     if _EMPTY_STATE_RE.search(text.strip()):
-        if referenced_metrics and available_metrics is not None:
-            missing_metrics = [
-                m for m in referenced_metrics if m and m not in set(available_metrics)
-            ]
+        metrics = list(dict.fromkeys(m for m in referenced_metrics if m))
+        if metrics and available_metrics is not None:
+            missing_metrics = [m for m in metrics if m not in set(available_metrics)]
             if missing_metrics:
                 return PanelRenderResult(
                     title=title, status="empty", error_class="data_gap",
-                    missing_fields=list(dict.fromkeys(missing_metrics)),
+                    missing_fields=missing_metrics,
                     detail=f"empty: referenced metric(s) absent from target: {missing_metrics}",
                 )
         if expects_data:
             return PanelRenderResult(
                 title=title, status="empty", error_class="unexpected_empty",
-                detail="query panel rendered no data (verify data/time window or query)",
+                detail=(
+                    "query panel rendered no data (verify data/time window or query); "
+                    + _no_metric_gap_reason(metrics, available_metrics)
+                ),
             )
         return PanelRenderResult(
             title=title, status="empty", detail="empty (no query / no data expected)"
@@ -718,6 +784,7 @@ def classify_render_per_panel(
     expects_data_titles: Iterable[str] | None = None,
     metrics_by_title: dict[str, list[str]] | None = None,
     available_metrics: Iterable[str] | None = None,
+    target_fields_by_title: dict[str, set[str] | None] | None = None,
     console_errors: Iterable[str] = (),
     failed_requests: Iterable[str] = (),
 ) -> RenderVerdict:
@@ -727,19 +794,29 @@ def classify_render_per_panel(
     follows live_validate's philosophy: an unexplained ``render_error`` (or a
     render-error console message / 5xx) is a hard ``fail``; data-readiness
     findings — ``field_gap``, ``data_gap``, ``unexpected_empty`` — are ``warn``.
+
+    ``target_fields_by_title`` supplies the field caps of the index *each* panel
+    reads (see :func:`source_indices_by_panel`) and, where present, replaces both
+    ``available_fields`` and ``available_metrics`` for that panel: both ask the
+    one question "does this column exist in the index this panel queries?", and
+    answering it from another index is unfounded either way — it can excuse a
+    real bug as a gap, or invent a gap for a column that is right there.
     """
     breakdown_by_title = breakdown_by_title or {}
     metrics_by_title = metrics_by_title or {}
     expects = set(expects_data_titles or ())
     verdict = RenderVerdict()
     for title, text in panels:
+        panel_fields = _panel_target_fields(title, target_fields_by_title, available_fields)
         result = classify_panel(
             title, text,
             breakdown_fields=breakdown_by_title.get(title, []),
-            available_fields=available_fields,
+            available_fields=panel_fields,
             expects_data=title in expects,
             referenced_metrics=metrics_by_title.get(title, []),
-            available_metrics=available_metrics,
+            available_metrics=_panel_target_fields(
+                title, target_fields_by_title, available_metrics
+            ),
         )
         verdict.panels.append(result)
 
@@ -796,6 +873,242 @@ def breakdown_fields_by_panel(report: dict) -> dict[str, list[str]]:
             if fields:
                 out[title] = list(dict.fromkeys(fields))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# What a panel reads: its source index, and the columns it reads from it
+# --------------------------------------------------------------------------- #
+#
+# Both answers come from the panel's own ES|QL, and both feed the classifier:
+# the index decides WHICH field caps a column's presence must be judged against,
+# and the columns are the metric whose absence makes an empty panel a
+# ``data_gap`` instead of an unexplained ``unexpected_empty``.
+
+# An ES|QL identifier: a column name, possibly dotted (``log.level``), starting
+# with ``@`` (``@timestamp``), or quoted in backticks.
+_ESQL_IDENT = r"(?:`[^`]+`|[A-Za-z_@][\w@.]*)"
+_ESQL_IDENT_RE = re.compile(_ESQL_IDENT)
+# String literals are stripped before any column parsing, so a service name or a
+# KQL fragment inside quotes is never mistaken for a column.
+_TRIPLE_QUOTED_RE = re.compile(r'"""(?:.|\n)*?"""')
+_QUOTED_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'")
+
+# A query string is only ES|QL if it starts with an ES|QL source command. The
+# guard keeps a Datadog/PromQL *source* expression (which also lives in the
+# report) from being parsed as if it were the emitted target query.
+_ESQL_SOURCE_COMMAND_RE = re.compile(
+    r"^(?:FROM|TS|ROW|SHOW|PROMQL|LENS|CONTROL|FILTER|RANGE)\b", re.IGNORECASE
+)
+# ``FROM <indices>`` / ``TS <indices>``, stopping at the first pipe so only the
+# source command is read. Non-``FROM`` commands carry ``index=<pattern>``.
+_FROM_CLAUSE_RE = re.compile(r"^(?:FROM|TS)\s+([^|\n]+)", re.IGNORECASE)
+_INDEX_OPTION_RE = re.compile(r"\bindex=(\S+)", re.IGNORECASE)
+_METADATA_RE = re.compile(r"\bMETADATA\b", re.IGNORECASE)
+
+# Aggregations whose argument is a column read from the index. The alias the
+# result is assigned to (``value``, ``count``, ``query1``) is an OUTPUT name that
+# exists in no index, so aliases are subtracted below — reporting one as a
+# missing metric would send an operator hunting for a column we invented.
+_METRIC_AGG_FUNCTIONS = (
+    "AVERAGE", "AVG", "AVG_OVER_TIME", "COUNT", "COUNT_DISTINCT",
+    "FIRST_OVER_TIME", "INCREASE", "IRATE", "LAST_OVER_TIME", "MAX",
+    "MAX_OVER_TIME", "MEDIAN", "MEDIAN_ABSOLUTE_DEVIATION", "MIN",
+    "MIN_OVER_TIME", "PERCENTILE", "RATE", "STD_DEV", "SUM", "SUM_OVER_TIME",
+    "TOP", "VALUES", "WEIGHTED_AVG",
+)
+# Alternated longest-first, so ``AVG_OVER_TIME(`` is never read as ``AVG``.
+_METRIC_AGG_RE = re.compile(
+    rf"\b(?:{'|'.join(sorted(_METRIC_AGG_FUNCTIONS, key=len, reverse=True))})\s*\(",
+    re.IGNORECASE,
+)
+# Tokens that sit where a column would but name none.
+_ESQL_RESERVED = frozenset({
+    "AND", "AS", "ASC", "BY", "DESC", "FALSE", "IN", "IS", "LIKE", "METADATA",
+    "NOT", "NULL", "ON", "OR", "RLIKE", "TRUE", "WHERE", "WITH",
+})
+# ``<name> =`` (an EVAL/STATS/BY alias) but never a comparison (``==``, ``>=``).
+_ALIAS_ASSIGNMENT_RE = re.compile(rf"({_ESQL_IDENT})\s*=(?!=)")
+_RENAME_ALIAS_RE = re.compile(rf"\bAS\s+({_ESQL_IDENT})", re.IGNORECASE)
+_STATS_COMMAND_RE = re.compile(r"\|\s*(?:INLINE)?STATS\b", re.IGNORECASE)
+_KEEP_COMMAND_RE = re.compile(r"\|\s*KEEP\s+([^|\n]+)", re.IGNORECASE)
+
+
+def _collect_esql_queries(node: object, out: list[str]) -> None:
+    """Collect every ES|QL query string under ``node``, in document order.
+
+    Where a panel keeps its query depends on the chart family, exactly as it does
+    for a *stored* Kibana panel (see ``_stored_panel_query`` in the verifier's
+    collectors): single-series panels hold one query at ``esql.query`` /
+    ``data_source.query``, while an ``xy`` panel has no ``data_source`` at the
+    config root at all and holds one per layer under ``layers[*]``. Reading only
+    the root found nothing for those, and a panel with no query then silently
+    fell back to the CLI's default index — so walk the whole shape.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "query" and isinstance(value, str):
+                text = value.strip()
+                if text and _ESQL_SOURCE_COMMAND_RE.match(text) and text not in out:
+                    out.append(text)
+                continue
+            _collect_esql_queries(value, out)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _collect_esql_queries(item, out)
+
+
+def panel_esql_queries(panel: dict) -> list[str]:
+    """Every ES|QL query one migration-report panel emitted (usually one)."""
+    out: list[str] = []
+    _collect_esql_queries(panel.get("yaml_panel"), out)
+    direct = str(panel.get("esql_query") or "").strip()
+    if direct and _ESQL_SOURCE_COMMAND_RE.match(direct) and direct not in out:
+        out.append(direct)
+    return out
+
+
+def esql_source_indices(query: str) -> list[str]:
+    """The index pattern(s) an ES|QL query reads, named by its source command."""
+    first_line = next(
+        (line.strip() for line in str(query or "").splitlines() if line.strip()), ""
+    )
+    match = _FROM_CLAUSE_RE.match(first_line)
+    if match:
+        clause = _METADATA_RE.split(match.group(1), maxsplit=1)[0]
+    else:
+        option = _INDEX_OPTION_RE.search(first_line)
+        if not option:
+            return []
+        clause = option.group(1)
+    out: list[str] = []
+    for part in clause.split(","):
+        name = part.strip().strip('"').strip("`")
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _balanced_argument(text: str, open_paren: int) -> str:
+    """The text inside the parentheses opening at ``open_paren``.
+
+    Balanced, so a field after a nested call — ``AVG(CASE((..), node_x, 0))`` —
+    is still inside the argument instead of being cut at the first ``)``.
+    """
+    depth = 0
+    for index in range(open_paren, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren + 1:index]
+    return text[open_paren + 1:]
+
+
+def _column_candidates(text: str) -> list[str]:
+    """Identifiers in ``text`` that name a column (not a function, param or keyword)."""
+    out: list[str] = []
+    for match in _ESQL_IDENT_RE.finditer(text):
+        if text[max(match.start() - 1, 0):match.start()] == "?":
+            continue  # a bound ES|QL parameter (?_tstart, ?instance)
+        if text[match.end():].lstrip().startswith("("):
+            continue  # a function call, not a column
+        name = match.group(0).strip("`")
+        if not name or name.upper() in _ESQL_RESERVED or name in out:
+            continue
+        out.append(name)
+    return out
+
+
+def metric_fields_from_query(query: str) -> list[str]:
+    """The index columns an ES|QL query reads as its metric.
+
+    Aggregated columns first (``AVG(redis_keys)`` -> ``redis_keys``), minus every
+    EVAL/STATS/RENAME alias. A projection-only panel — a log table with no
+    ``STATS`` at all — reads its columns straight from the index, so its ``KEEP``
+    list names them.
+
+    Returns ``[]`` when nothing is attributable (``COUNT(*)`` reads no column).
+    That is a real answer, not a shrug: an empty list means the audit will not
+    claim a metric gap it cannot point at.
+    """
+    text = _QUOTED_RE.sub('""', _TRIPLE_QUOTED_RE.sub('""', str(query or "")))
+    aliases = {m.group(1).strip("`") for m in _ALIAS_ASSIGNMENT_RE.finditer(text)}
+    aliases |= {m.group(1).strip("`") for m in _RENAME_ALIAS_RE.finditer(text)}
+    fields: list[str] = []
+    for match in _METRIC_AGG_RE.finditer(text):
+        argument = _balanced_argument(text, match.end() - 1)
+        for name in _column_candidates(argument):
+            if name not in aliases and name not in fields:
+                fields.append(name)
+    if fields or _STATS_COMMAND_RE.search(text):
+        return fields
+    for match in _KEEP_COMMAND_RE.finditer(text):
+        for name in _column_candidates(match.group(1)):
+            if name not in aliases and name not in fields:
+                fields.append(name)
+    return fields
+
+
+def _by_panel_title(
+    report: dict, extract: Callable[[dict], list[str]]
+) -> dict[str, list[str]]:
+    """Apply ``extract`` to every non-skipped report panel, keyed by title.
+
+    Titles are the only join key the render audit has (it segments the DOM by
+    them), and two panels can share one. Their results are UNIONED rather than
+    overwritten: a union can only make a column look *present*, which keeps a
+    render error hard and an empty panel unexplained — the strict direction. An
+    arbitrary last-write-wins would instead guess.
+    """
+    out: dict[str, list[str]] = {}
+    for dashboard in report.get("dashboards", []):
+        for panel in dashboard.get("panels", []):
+            if not isinstance(panel, dict) or panel.get("status") == "skipped":
+                continue
+            values = extract(panel)
+            if not values:
+                continue
+            title = str(panel.get("title") or "")
+            merged = out.setdefault(title, [])
+            merged.extend(value for value in values if value not in merged)
+    return out
+
+
+def source_indices_by_panel(report: dict) -> dict[str, list[str]]:
+    """Each panel's target index pattern(s), from its own ES|QL source command.
+
+    The render audit used to judge every panel's columns against ONE
+    ``--es-index`` pattern. Nine panels in the Datadog corpus are ``FROM logs-*``
+    (``Log Events``, ``Consul Logs``, ``Error Logs``, ...), so their columns were
+    looked up in ``metrics-*`` — an index that cannot hold them. Every verdict
+    that follows from such a lookup is unfounded in both directions: absent
+    "proves" a gap that is not there, and the reverse excuses a real bug.
+    """
+    return _by_panel_title(
+        report,
+        lambda panel: [
+            index
+            for query in panel_esql_queries(panel)
+            for index in esql_source_indices(query)
+        ],
+    )
+
+
+def metric_fields_by_panel(report: dict) -> dict[str, list[str]]:
+    """Each panel's metric columns — what an empty panel would be missing.
+
+    Panels with nothing attributable are absent from the result, so the caller
+    passes no metric for them and the classifier keeps them ``unexpected_empty``.
+    """
+    return _by_panel_title(
+        report,
+        lambda panel: [
+            name
+            for query in panel_esql_queries(panel)
+            for name in metric_fields_from_query(query)
+        ],
+    )
 
 
 _RENDER_RANK = {"rendered": 3, "empty": 2, "error": 1}
