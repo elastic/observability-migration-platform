@@ -14,8 +14,8 @@ from scripts.audit_pipeline import (
     _section_dashboard_summary,
     _section_panel_type_summary,
     _section_per_dashboard_traces,
-    _verdict,
     _to_json,
+    _verdict,
     generate_pipeline_trace_md,
 )
 

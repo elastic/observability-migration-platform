@@ -66,13 +66,13 @@ from observability_migration.targets.kibana.native_artifacts import (
 )
 from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
 
+from .curated_packs import load_curated_pack
 from .extract import (
     extract_dashboards_from_api,
     extract_dashboards_from_files,
     load_credentials_from_env,
     selection_metadata_from_datadog_dashboard,
 )
-from .curated_packs import load_curated_pack
 from .field_map import FieldMapProfile, load_profile
 from .generate import generate_dashboard_artifacts
 from .manifest import save_migration_manifest

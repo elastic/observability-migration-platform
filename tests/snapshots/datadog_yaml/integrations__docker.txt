@@ -4,7 +4,7 @@ widgets: 28
 panels: 28
 controls: 0
 filters: 0
-statuses: {'not_feasible': 2, 'ok': 6, 'requires_manual': 1, 'warning': 19}
+statuses: {'not_feasible': 2, 'ok': 25, 'requires_manual': 1}
 - title='Running containers by image'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=
 - title='Most RAM-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=
 - title='Most CPU-intensive containers'; kind=esql; type=datatable; dimension=; metrics=['value']; breakdowns=['container.name']; primary=; metric=

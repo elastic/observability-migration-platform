@@ -4,7 +4,7 @@ widgets: 22
 panels: 22
 controls: 1
 filters: 0
-statuses: {'ok': 12, 'requires_manual': 1, 'warning': 9}
+statuses: {'ok': 18, 'requires_manual': 1, 'warning': 3}
 - title='Datadog image 0'; kind=markdown
 - title='Datadog note 1'; kind=markdown
 - title='Rate of requests'; kind=esql; type=line; dimension=time_bucket; metrics=['value']; breakdowns=[]; primary=; metric=

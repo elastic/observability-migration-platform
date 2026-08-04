@@ -12885,7 +12885,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(result.kibana_type, "metric")
         self.assertEqual(yaml_panel["esql"]["type"], "metric")
 
-    def test_grouped_xy_promql_uses_esql_metric_field_label(self):
+    def test_grouped_xy_promql_uses_current_metric_contract(self):
         rule_pack = migrate.RulePackConfig()
         rule_pack.native_promql = True
         resolver = migrate.SchemaResolver(rule_pack)
@@ -12910,9 +12910,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         )
         self.assertIsNotNone(yaml_panel)
         self.assertEqual(yaml_panel["esql"]["type"], "line")
-        self.assertNotIn("PROMQL", yaml_panel["esql"]["query"])
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "prometheus_tsdb_head_chunks")
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Prometheus Tsdb Head Chunks")
+        self.assertIn("PROMQL", yaml_panel["esql"]["query"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Head chunks count")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "instance")
 
     def test_heatmap_panel_emits_native_heatmap(self):
         # A histogram-bucket heatmap (BY time, le) maps to a native Kibana
@@ -15908,21 +15909,22 @@ class NativePromqlTests(unittest.TestCase):
         self.assertIn("PROMQL", result.esql_query)
         self.assertIn("rate(http_requests_total[5m])", result.esql_query)
 
-    def test_sum_by_chart_uses_esql_for_breakdown_projection(self):
+    def test_sum_by_chart_uses_current_breakdown_contract(self):
         panel = self._make_panel('sum by (instance) (rate(http_requests_total[5m]))')
-        _yaml_panel, result = self.translate_panel(panel)
-        self.assertNotIn("PROMQL", result.esql_query)
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIn("PROMQL", result.esql_query)
         self.assertIn("instance", result.esql_query)
-        self.assertEqual(result.query_ir["output_shape"], "time_series")
-        self.assertEqual(result.query_ir["output_group_fields"], ["time_bucket", "service.instance.id"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "instance")
 
-    def test_grouped_promql_uses_esql_to_project_breakdown_column(self):
+    def test_grouped_promql_uses_current_breakdown_contract(self):
         panel = self._make_panel('sum by (service) (rate(envoy_http_downstream_rq_total[1m]))')
         yaml_panel, result = self.translate_panel(panel)
 
-        self.assertNotIn("PROMQL", result.esql_query)
+        self.assertIn("PROMQL", result.esql_query)
         self.assertIn("service", result.esql_query)
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service")
 
     def test_avg_over_time_uses_native_promql(self):
         panel = self._make_panel("avg_over_time(cpu_usage[10m])")
@@ -16517,7 +16519,7 @@ class NativePromqlTests(unittest.TestCase):
     def test_native_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum by (job) (rate(http_requests_total[5m]))")
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "job")
 
     def test_native_postfix_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum(rate(http_requests_total[5m])) by (handler)")

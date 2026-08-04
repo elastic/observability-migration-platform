@@ -4,7 +4,7 @@ widgets: 11
 panels: 11
 controls: 0
 filters: 0
-statuses: {'warning': 11}
+statuses: {'ok': 10, 'warning': 1}
 - title='MySQL connections'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
 - title='MySQL reads and writes (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=
 - title='MySQL fsync op count (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=

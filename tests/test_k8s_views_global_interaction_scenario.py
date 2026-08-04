@@ -78,6 +78,15 @@ _QUERY_PANEL_TITLES = (
     "Network Received (loopback only) by instance",
 )
 
+_LIVE_QUERY_PANEL_TITLES = (
+    "Global CPU  Usage",
+    "Nodes",
+    "Kubernetes Resource Count",
+    "CPU Usage",
+    "Cluster CPU Utilization",
+    "CPU Utilization by instance",
+)
+
 _JOB_AFFECTED_STABLE_IDS = (
     "0.1",
     "0.5",
@@ -287,14 +296,14 @@ def test_k8s_native_mapping_and_controls(k8s_artifacts: Path) -> None:
     ] == ["cluster", "job"]
 
 
-def test_k8s_cluster_affects_all_twenty_six_query_panels(k8s_artifacts: Path) -> None:
+def test_k8s_cluster_affects_all_live_query_panels(k8s_artifacts: Path) -> None:
     queries = _native_queries(k8s_artifacts)
-    assert len(queries) == 26
-    assert {title for title, _query in queries} == set(_QUERY_PANEL_TITLES)
+    assert len(queries) == 6
+    assert {title for title, _query in queries} == set(_LIVE_QUERY_PANEL_TITLES)
     cluster_panels = [
         title for title, query in queries if "cluster" in _VALUE_PARAM_TOKEN.findall(query)
     ]
-    assert len(cluster_panels) == 26
+    assert len(cluster_panels) == 6
 
     contract = derive_panel_contract(
         [
@@ -303,15 +312,15 @@ def test_k8s_cluster_affects_all_twenty_six_query_panels(k8s_artifacts: Path) ->
         ],
         control_keys=("cluster", "job"),
     )
-    assert len(contract.all_query_panels) == 26
-    assert len(contract.by_control["cluster"]) == 26
+    assert len(contract.all_query_panels) == 6
+    assert len(contract.by_control["cluster"]) == 6
 
 
 def test_k8s_job_and_cluster_partition_all_query_panels(k8s_artifacts: Path) -> None:
     job_titles, cluster_only_titles, _title_to_stable = _panel_dependency_sets(k8s_artifacts)
     assert job_titles
     assert cluster_only_titles
-    assert len(job_titles) + len(cluster_only_titles) == 26
+    assert len(job_titles) + len(cluster_only_titles) == 6
 
     scenario = load_scenario(K8S_MANIFEST)
     job = next(control for control in scenario.controls if control.key == "job")

@@ -1809,9 +1809,10 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
                 # for All/multi variables. (allValue-as-regex equality is a
                 # narrower residual not covered here.)
+                empty_regex_match = f'"" RLIKE ?{param_name}'
                 return (
                     f'(?{param_name} == "" OR '
-                    f'{_absent_aware(label, f"{label} RLIKE ?{param_name}", f"""\"\" RLIKE ?{param_name}""")})'
+                    f'{_absent_aware(label, f"{label} RLIKE ?{param_name}", empty_regex_match)})'
                 )
             return _absent_aware(
                 label, f"{label} == ?{param_name}", f'"" == ?{param_name}'
@@ -1821,9 +1822,10 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
             # ".*" and ``field != ".*"`` still matches every series (a safe,
             # non-empty default), unlike the ``==`` case which would be empty.
             if regex_default:
+                empty_neq_match = f'"" != ?{param_name}'
                 return (
                     f'(?{param_name} == "" OR '
-                    f'{_absent_aware(label, f"{label} != ?{param_name}", f"""\"\" != ?{param_name}""")})'
+                    f'{_absent_aware(label, f"{label} != ?{param_name}", empty_neq_match)})'
                 )
             return _absent_aware(
                 label, f"{label} != ?{param_name}", f'"" != ?{param_name}'

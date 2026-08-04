@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import sys
 import tempfile
 import unittest
@@ -515,7 +514,7 @@ class MigrateIndexForwardingTests(unittest.TestCase):
 class MigrateEmissionConsistencyTests(unittest.TestCase):
     """Real Grafana CLI migrate (offline) with divergent index flags."""
 
-    def test_grafana_cli_migrate_emits_esql_index_for_native_and_fallback(self):
+    def test_grafana_cli_migrate_emits_esql_index_for_native_grouped_and_simple(self):
         dashboard = {
             "uid": "idx-consistency",
             "title": "Index Consistency Fixture",
@@ -537,7 +536,7 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
                 {
                     "id": 2,
                     "type": "timeseries",
-                    "title": "HTTP rate grouped esql",
+                    "title": "HTTP rate grouped",
                     "targets": [
                         {
                             "refId": "A",
@@ -604,11 +603,15 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
                 text,
                 f"native panel must PROMQL against concrete index:\n{text}",
             )
-            # Grouped panel falls back to ES|QL; YAML may fold the query string.
-            self.assertRegex(
+            # Grouped native PROMQL must also use the concrete query index.
+            self.assertIn(
+                '"title": "HTTP rate grouped"',
                 text,
-                rf"(TS|FROM) {re.escape(CONCRETE_INDEX)}\b",
-                msg=f"grouped panel must ES|QL against concrete index:\n{text}",
+            )
+            self.assertIn(
+                f"PROMQL index={CONCRETE_INDEX} start=?_tstart end=?_tend buckets=50 value=(sum by (instance) (rate(http_requests_total[5m])))",
+                text,
+                f"grouped panel must query against concrete index:\n{text}",
             )
 
 

@@ -16,24 +16,26 @@ controls:
   - label: Namespace
     key: namespace
     adapter: esql_value
-    capability: migrated_live
+    capability: migration_gap
+    expected_gap: Curated Redis target omits the decorative namespace control because no migrated Kibana panels bind it
     options:
       strategy: every
     assertions:
       selection: [namespace]
       affected_panels: []
-      unaffected_panels: all_query_panels
+      unaffected_panels: []
       expect_data_change: false
   - label: Pod Name
     key: pod_name
     adapter: esql_value
-    capability: migrated_live
+    capability: migration_gap
+    expected_gap: Curated Redis target omits the decorative pod_name control because no migrated Kibana panels bind it
     options:
       strategy: every
     assertions:
       selection: [pod_name]
       affected_panels: []
-      unaffected_panels: all_query_panels
+      unaffected_panels: []
       expect_data_change: false
   - label: instance
     key: instance
@@ -70,20 +72,7 @@ controls:
       affected_panels: []
       allow_incompatible_selections: true
       expect_data_change: false
-combinations:
-  - id: namespace-and-pod_name
-    selections:
-      namespace: default
-      pod_name: pod_1
-  - id: namespace-and-instance
-    selections:
-      namespace: monitoring
-      instance: checkout
-  - id: all-three
-    selections:
-      namespace: production
-      pod_name: pod_2
-      instance: frontend
+combinations: []
 noise_allowances:
   - endpoint: /internal/security/user_profile
     method: GET

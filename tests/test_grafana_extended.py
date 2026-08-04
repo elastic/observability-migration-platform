@@ -2511,11 +2511,10 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("step=", query)
 
     def test_multi_target_overlay_is_windowless_and_stepless(self):
-        """The multi-target native overlay path (the ``label_replace + or``
-        fallback) also emits adaptive resolution: no ``step=`` (#272), windowless
-        rate for ``$__rate_interval`` targets, and explicit windows preserved
-        (#273). Exercised directly because the overlay is only reached as a
-        fallback when the ES|QL merge is not_feasible."""
+        """As of August 4, 2026 the multi-target native overlay path stays
+        disabled because Elasticsearch 9.5 still rejects ``label_replace()`` at
+        runtime, so translation must fall back instead of emitting a native
+        PROMQL panel that Kibana cannot render."""
         panel = {
             "id": 1, "type": "timeseries", "title": "Overlay", "targets": [],
             "fieldConfig": {"defaults": {}, "overrides": []},
@@ -2534,15 +2533,7 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             {"type": "prometheus"}, "metrics-*", self.rp, [], {},
             targets_with_expr, resolver=self.resolver,
         )
-        self.assertIsNotNone(out)
-        yaml_panel, _ = out
-        query = yaml_panel["esql"]["query"]
-        self.assertTrue(query.startswith("PROMQL index=metrics-*"), query)
-        self.assertNotIn("step=", query)
-        self.assertNotIn("$__rate_interval", query)
-        # $__rate_interval target -> windowless; explicit [5m] target -> kept.
-        self.assertIn('label_replace(rate(http_requests_total), "__series"', query)
-        self.assertIn('label_replace(rate(http_errors_total[5m]), "__series"', query)
+        self.assertIsNone(out)
 
     def test_multi_series_bargauge_defers_native_promql_to_bar_chart(self):
         """Native PROMQL must not short-circuit multi-series bargauge into a

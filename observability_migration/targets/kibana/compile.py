@@ -61,7 +61,6 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
     esql_config = yaml_panel.get("esql")
     if not isinstance(esql_config, dict):
         return False
-    old_shape = extract_esql_shape(old_query or "")
     new_shape = extract_esql_shape(new_query or "")
     old_metric, old_by_cols = extract_esql_columns(old_query or "")
     new_metric, new_by_cols = extract_esql_columns(new_query or "")

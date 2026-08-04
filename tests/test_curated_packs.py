@@ -6,7 +6,6 @@
 import json
 from pathlib import Path
 
-
 from observability_migration.adapters.source.grafana.curated_packs import (
     find_curated_pack,
     load_curated_registry,

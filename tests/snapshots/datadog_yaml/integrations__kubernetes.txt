@@ -4,7 +4,7 @@ widgets: 57
 panels: 47
 controls: 9
 filters: 0
-statuses: {'ok': 2, 'requires_manual': 4, 'skipped': 10, 'warning': 41}
+statuses: {'ok': 41, 'requires_manual': 4, 'skipped': 10, 'warning': 2}
 - title='Datadog note 24'; kind=markdown
 - title='Datadog note 6152894268304392'; kind=markdown
 - title='Clusters'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

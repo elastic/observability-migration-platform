@@ -1245,6 +1245,8 @@ class GrafanaAssetIsolationTests(unittest.TestCase):
             kibana_url="https://kibana.example",
             space_id="shadow",
             kibana_api_key="secret",
+            es_url="",
+            es_api_key="",
             verify=True,
             native_dashboard=translated_results[0].native_dashboard,
             native_dashboard_stats=translated_results[0].native_dashboard_stats,

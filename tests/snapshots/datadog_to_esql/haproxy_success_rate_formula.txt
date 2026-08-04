@@ -3,10 +3,9 @@ source: query2 = sum:haproxy.backend.response.3xx{*,*,$backend} by {haproxy_serv
 source: query3 = sum:haproxy.backend.response.2xx{*,*,$backend} by {haproxy_service}
 source: query4 = sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service}
 formula: (query3 + query1 + query2) / (query3 + query1 + query2 + query4) * 100
-status: warning
+status: ok
 backend: esql
 kibana_type: xy
-warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
