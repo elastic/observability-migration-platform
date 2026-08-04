@@ -2252,6 +2252,41 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             warnings,
         )
 
+    def test_long_form_series_group_xy_uses_value_metric_and_breakdown(self):
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS cpu = AVG(system.cpu.total.norm.pct) BY time_bucket = TBUCKET(5 minute)\n"
+                "| EVAL series_group = \"CPU Busy\", value = cpu\n"
+                "| KEEP time_bucket, series_group, value\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="series_group",
+            by_cols=["time_bucket"],
+        )
+
+        self.assertEqual(panel["metrics"], [{"field": "value"}])
+        self.assertEqual(panel["breakdown"]["field"], "series_group")
+
+    def test_long_form_series_group_multi_series_xy_degrades_to_breakdown_chart(self):
+        panel = panels._build_esql_multi_series_xy(
+            (
+                "TS metrics-*\n"
+                "| STATS recv = AVG(system.network.in.bytes) BY time_bucket = TBUCKET(5 minute), host.name\n"
+                "| EVAL series_group = CONCAT(host.name, \" / recv\"), value = recv\n"
+                "| KEEP time_bucket, series_group, value\n"
+                "| SORT time_bucket ASC"
+            ),
+            "area",
+            metric_fields=["series_group", "value"],
+            by_cols=["time_bucket"],
+            mode="stacked",
+        )
+
+        self.assertEqual(panel["metrics"], [{"field": "value"}])
+        self.assertEqual(panel["breakdown"]["field"], "series_group")
+
     def test_topk_without_labels_translates_with_warnings(self):
         # Ungrouped topk now uses single-bucket fallback (not not_feasible)
         panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")

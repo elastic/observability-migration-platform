@@ -509,8 +509,12 @@ equivalent:
   so `available_values` is provenance rather than an enforced static
   allow-list in the emitted control.
 - `$scope` represents an entire Datadog scope expression rather than one tag
-  field. It is omitted with an explicit manual-recreation warning; the
-  migration does not claim that a nonexistent single control replaces it.
+  field. A real scoped default or user-selectable scope is omitted with an
+  explicit manual-recreation warning; the migration does not claim that a
+  nonexistent single control replaces it. A no-op source default
+  (`$scope == "*"`, with no available values) is treated as the dashboard's
+  unfiltered baseline and does not fan out the same warning across every
+  migrated panel.
 - Template variables inside Datadog log filters are removed from executable
   ES|QL because the substitution cannot be bound exactly. The panel is marked
   with a warning and the filter must be recreated in Kibana rather than being
@@ -596,6 +600,8 @@ Important modules:
 - `curated_packs/`: per-dashboard curated Kibana layout packs, auto-matched by
   dashboard title (see
   [Layout Derivation And Curated Layout Packs](#layout-derivation-and-curated-layout-packs)).
+  When one matches, its bundled pack name is recorded as `curated_pack` in
+  `migration_report.json` and `migration_manifest.json`.
 
 ---
 

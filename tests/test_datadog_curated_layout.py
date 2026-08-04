@@ -57,6 +57,7 @@ def _generated_sections(doc: dict) -> dict[str, list[dict]]:
 def test_load_redis_overview_pack():
     pack = load_curated_pack("Redis - Overview")
     assert pack is not None
+    assert pack["_curated_pack_name"] == "datadog_redis_overview"
     assert "sections" in pack
     titles = [s["title"] for s in pack["sections"]]
     assert "Overview" in titles
@@ -154,6 +155,30 @@ def test_generated_redis_dashboard_has_no_layout_overlaps():
     assert _layout_violations(doc) == []
 
 
+def test_generated_redis_dashboard_uses_polished_curated_titles():
+    doc, _results = _generate_redis_dashboard()
+    titles = {
+        str(leaf.get("title", ""))
+        for panels in _generated_sections(doc).values()
+        for leaf in panels
+    }
+
+    assert "Dashboard overview" in titles
+    assert "Further reading" in titles
+    assert "Replication note" in titles
+    assert "Latency note" in titles
+    assert "Cache hit rate trend" in titles
+    assert "Memory note" in titles
+    assert "Fragmentation ratio trend" in titles
+    assert "Activity note" in titles
+    assert "Blocked clients trend" in titles
+    assert "Keyspace note" in titles
+    assert all("Datadog note" not in title for title in titles)
+    assert "Cache hit rate (widget 21)" not in titles
+    assert "Fragmentation ratio (widget 27)" not in titles
+    assert "Blocked clients (widget 29)" not in titles
+
+
 def test_kind_selector_matches_markdown_regardless_of_generated_title():
     # Note titles are generated (widget-id or ordinal based) and unstable, so a
     # pack must be able to say "the nth markdown panel in this section".
@@ -221,6 +246,57 @@ def test_kind_selector_matches_markdown_regardless_of_generated_title():
     # Full coverage means the safety net never fires.
     assert [w for r in results for w in r.warnings] == []
     assert _layout_violations(doc) == []
+
+
+def test_curated_pack_display_title_polishes_visible_title_and_result():
+    doc = {
+        "dashboards": [
+            {
+                "name": "Sec Dashboard",
+                "panels": [
+                    {
+                        "title": "Sec",
+                        "section": {
+                            "collapsed": False,
+                            "panels": [
+                                {
+                                    "title": "Datadog note 18",
+                                    "_curated_match_title": "Datadog note 18",
+                                    "markdown": {"content": "note"},
+                                    "size": {"w": 16, "h": 10},
+                                    "position": {"x": 0, "y": 0},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    pack = {
+        "sections": [
+            {
+                "title": "Sec",
+                "panels": [
+                    {
+                        "kind": "markdown",
+                        "nth": 0,
+                        "display_title": "Polished note",
+                        "size": {"w": 24, "h": 8},
+                        "position": {"x": 0, "y": 0},
+                    }
+                ],
+            }
+        ]
+    }
+    result = TranslationResult(widget_id="a", title="Datadog note 18")
+
+    _apply_curated_layout(doc, pack, [result])
+
+    leaf = doc["dashboards"][0]["panels"][0]["section"]["panels"][0]
+    assert leaf["title"] == "Polished note"
+    assert leaf["_curated_match_title"] == "Datadog note 18"
+    assert result.title == "Polished note"
 
 
 def test_incomplete_pack_warns_and_still_avoids_overlaps():

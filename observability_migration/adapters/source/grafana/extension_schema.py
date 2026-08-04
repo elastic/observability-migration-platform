@@ -67,6 +67,22 @@ class PanelQueryOverrideModel(_StrictModel):
     status_override: str = "migrated"
 
 
+class PanelPositionOverrideModel(_StrictModel):
+    x: int | None = None
+    y: int | None = None
+
+
+class PanelSizeOverrideModel(_StrictModel):
+    w: int | None = None
+    h: int | None = None
+
+
+class PanelLayoutOverrideModel(_StrictModel):
+    title_match: str
+    position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
+    size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
+
+
 class QueryConfigModel(_StrictModel):
     not_feasible_patterns: list[PatternRuleModel] = Field(default_factory=list)
     warning_patterns: list[PatternRuleModel] = Field(default_factory=list)
@@ -120,6 +136,7 @@ class PanelConfigModel(_StrictModel):
     type_map: dict[str, str] = Field(default_factory=dict)
     skip_types: list[str] = Field(default_factory=list)
     query_overrides: list[PanelQueryOverrideModel] = Field(default_factory=list)
+    layout_overrides: list[PanelLayoutOverrideModel] = Field(default_factory=list)
 
 
 class ControlsConfigModel(_StrictModel):
@@ -206,7 +223,10 @@ __all__ = [
     "GrafanaRulePackModel",
     "IndexRewriteRuleModel",
     "PanelConfigModel",
+    "PanelLayoutOverrideModel",
+    "PanelPositionOverrideModel",
     "PanelQueryOverrideModel",
+    "PanelSizeOverrideModel",
     "PatternRuleModel",
     "QueryConfigModel",
     "SchemaConfigModel",

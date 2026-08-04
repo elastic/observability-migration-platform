@@ -345,6 +345,7 @@ def build_telemetry_contract(
     _apply_dimension_evidence(streams)
     _apply_seed_range_metric_precedence(streams)
     _apply_metric_kind_overrides(streams, metric_kind_overrides)
+    _drop_metric_object_prefix_conflicts(streams)
 
     for stream in streams.values():
         seconds = int(stream.pop("_lookback_seconds", 0))
@@ -375,6 +376,44 @@ def build_telemetry_contract(
             "dimension_fields": len(dimension_fields),
         },
     }
+
+
+def _drop_metric_object_prefix_conflicts(streams: dict[str, dict[str, Any]]) -> None:
+    """Drop impossible flat metrics that collide with dotted metric objects.
+
+    Elasticsearch cannot store both a scalar metric ``metrics`` and dotted
+    metrics such as ``metrics.redis_up`` in the same stream: the dotted fields
+    require ``metrics`` to be an object. Some query-shape extraction paths can
+    still surface the object prefix as a bogus metric field even though no panel
+    actually reads it. Remove those impossible flat metrics from both the stream
+    field map and the per-requirement metric lists before the contract drives
+    seeding or template creation.
+    """
+    for stream in streams.values():
+        fields = stream.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        dotted_prefixes: set[str] = set()
+        for field_name, info in fields.items():
+            if not isinstance(info, dict) or info.get("role") != "metric" or "." not in field_name:
+                continue
+            parts = field_name.split(".")
+            for index in range(1, len(parts)):
+                dotted_prefixes.add(".".join(parts[:index]))
+        dropped = {
+            field_name
+            for field_name in dotted_prefixes
+            if isinstance(fields.get(field_name), dict)
+            and fields[field_name].get("role") == "metric"
+        }
+        if not dropped:
+            continue
+        for field_name in dropped:
+            fields.pop(field_name, None)
+        for requirement in stream.get("requirements") or []:
+            metrics = requirement.get("metrics")
+            if isinstance(metrics, list):
+                requirement["metrics"] = [name for name in metrics if name not in dropped]
 
 
 def merge_metric_kind_overrides(*sources: Mapping[str, str] | None) -> dict[str, str]:

@@ -779,10 +779,81 @@ def test_control_values_from_query():
             "variable_name": "instance",
             "variable_type": "values",
             "esql_query": "FROM metrics-* | STATS x",
-            "selected_options": [".*"],
+            "selected_options": [],
             "single_select": True,
         },
     }
+
+
+def test_control_values_from_query_omits_match_all_sentinel_selection():
+    control = {
+        "type": "esql",
+        "label": "instance",
+        "variable_name": "instance",
+        "variable_type": "multi_values",
+        "query": 'FROM metrics-* | EVAL options = MV_APPEND(".*", instance)',
+        "multiple": True,
+        "default": [".*"],
+    }
+    pinned = api.map_yaml_control(control)
+    assert pinned["config"]["selected_options"] == []
+
+
+def test_values_query_controls_hydrate_defaults_in_control_order():
+    payload = {
+        "title": "Redis",
+        "panels": [{"grid": {"x": 0, "y": 0, "w": 24, "h": 8}, "type": "vis", "config": {"type": "metric"}}],
+        "pinned_panels": [
+            {
+                "type": "esql_control",
+                "config": {
+                    "control_type": "VALUES_FROM_QUERY",
+                    "title": "Namespace",
+                    "variable_name": "namespace",
+                    "variable_type": "multi_values",
+                    "esql_query": "FROM metrics-* | KEEP namespace",
+                    "selected_options": [],
+                    "single_select": False,
+                },
+            },
+            {
+                "type": "esql_control",
+                "config": {
+                    "control_type": "VALUES_FROM_QUERY",
+                    "title": "Pod",
+                    "variable_name": "pod",
+                    "variable_type": "values",
+                    "esql_query": (
+                        "FROM metrics-* | WHERE MV_CONTAINS(?namespace, namespace)"
+                        " | KEEP pod"
+                    ),
+                    "selected_options": [],
+                    "single_select": True,
+                },
+            },
+        ],
+    }
+    first = mock.Mock(status_code=200)
+    first.json.return_value = {"values": [[".*"], ["default"], ["monitoring"]]}
+    second = mock.Mock(status_code=200)
+    second.json.return_value = {"values": [["redis-0"], ["redis-1"]]}
+    session = mock.Mock()
+    session.post.side_effect = [first, second]
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        api._hydrate_values_query_control_defaults(
+            payload,
+            es_url="https://es.example",
+            es_api_key="secret",
+        )
+
+    controls = payload["pinned_panels"]
+    assert controls[0]["config"]["selected_options"] == ["default", "monitoring"]
+    assert controls[1]["config"]["selected_options"] == ["redis-0"]
+    first_payload = session.post.call_args_list[0].kwargs["json"]
+    second_payload = session.post.call_args_list[1].kwargs["json"]
+    assert first_payload["query"] == "FROM metrics-* | KEEP namespace"
+    assert second_payload["params"] == [{"namespace": ["default", "monitoring"]}]
 
 
 def test_control_static_values():

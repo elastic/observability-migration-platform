@@ -20,6 +20,7 @@ from observability_migration.core.reporting.report import (
     _panel_query_index,
     recompute_result_counts,
 )
+from observability_migration.core.telemetry_contract import _extract_esql_values_bound_field
 from observability_migration.core.verification.field_capabilities import assess_field_usage
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
 from observability_migration.targets.kibana.emit.display import (
@@ -95,6 +96,7 @@ from .promql import (
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
+    KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
     binds_esql_named_params,
@@ -1993,6 +1995,10 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     return True
 
 
+def _kibana_binds_promql_control_params(runtime_features=None) -> bool:
+    return is_feature_supported(runtime_features, KIBANA_PROMQL_CONTROL_PARAMS)
+
+
 _COUNTER_RANGE_FUNC_PATTERN = re.compile(
     r"\b(?P<func>rate|irate|increase)\s*\(\s*(?P<metric>[A-Za-z_:][A-Za-z0-9_:]*)\b",
     re.IGNORECASE,
@@ -2228,11 +2234,15 @@ def _translate_panel_native_promql(
     # Fall through to ES|QL where the filter lands in ``WHERE … RLIKE ?instance``
     # at the outer ES|QL level, which Kibana DOES bind correctly.
     # Revisit when Kibana forwards control params into PROMQL expressions.
-    if _promql_label_matcher_has_template_variable(expr):
+    if (
+        _promql_label_matcher_has_template_variable(expr)
+        and not _kibana_binds_promql_control_params(runtime_features)
+    ):
         _append_unique(
             panel_notes,
             "Native PROMQL skipped: Kibana does not forward dashboard control params "
-            "into PromQL label matchers (uses ES|QL RLIKE binding instead)",
+            "into PromQL label matchers unless explicitly enabled "
+            "(uses ES|QL RLIKE binding instead)",
         )
         return None
     # Pre-flight type check: if the source PromQL applies a counter-style
@@ -2275,8 +2285,10 @@ def _translate_panel_native_promql(
     )
     _, group_cols = _native_promql_result_shape(expr)
     real_group_cols = [col for col in group_cols if col != "_timeseries"]
-    if real_group_cols and kibana_type in ("line", "bar", "area", "xy", "pie", "heatmap"):
-        return None
+    # Grouped native PromQL XY / pie / heatmap panels are supported below via
+    # ``_native_esql_panel_spec(... override_group_cols=...)``. Keep the
+    # grouped-series rejection only for single-value tiles, which cannot render
+    # one value per real breakdown dimension without changing the panel shape.
     # Parse the macro-resolved form once; reused by the metric/gauge gate below
     # and the QueryIR fields further down (avoids parsing the same expr twice).
     native_fragment = _parse_fragment(cleaned_expr or expr)
@@ -2513,6 +2525,13 @@ def _translate_multi_target_native_promql(
     series appear on one chart with distinct breakdown values.  Only attempted
     for XY chart types (line, bar, area) where overlay makes sense.
     """
+    # As of August 4, 2026, Elasticsearch 9.5 still rejects PROMQL
+    # ``label_replace()`` at runtime with "Function [label_replace] is not yet
+    # implemented". This helper relies on ``label_replace`` to assign a stable
+    # per-target series label, so keep the established ES|QL fusion path until
+    # the target actually implements the function.
+    return None
+
     if kibana_type not in ("line", "bar", "area"):
         return None
 
@@ -2544,9 +2563,14 @@ def _translate_multi_target_native_promql(
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
             return None
-        # Kibana does not forward dashboard control params into the PROMQL
-        # command's PromQL string — fall through to ES|QL RLIKE binding.
-        if _promql_label_matcher_has_template_variable(expr):
+        # Kibana-side forwarding of control params into inner PROMQL expressions
+        # is not probeable through Elasticsearch alone, so keep the safe ES|QL
+        # fallback unless the operator explicitly opts into a verified Kibana
+        # build.
+        if (
+            _promql_label_matcher_has_template_variable(expr)
+            and not _kibana_binds_promql_control_params(runtime_features)
+        ):
             return None
         regex_default = getattr(
             rule_pack, "_regex_default_param_names", frozenset()
@@ -3279,11 +3303,16 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         count=1,
                         flags=re.IGNORECASE,
                     )
+                _curated_query = _materialize_curated_query_override(_curated_query, resolver)
                 if _curated_query:
                     _override_warnings = []
                     _esql_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
                     _native_panel = _native_esql_panel_spec(
-                        _curated_query, kibana_type, mode=_esql_mode, warnings=_override_warnings
+                        _curated_query,
+                        kibana_type,
+                        panel=panel,
+                        mode=_esql_mode,
+                        warnings=_override_warnings,
                     )
                     if _native_panel:
                         yaml_panel["esql"] = _native_panel
@@ -3384,6 +3413,32 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     targets_with_expr = [(target, query_text) for target, query_text in visible_targets if target.get("expr")]
     promql_exprs = [target.get("expr", "") for target, _ in targets_with_expr]
 
+    # Prefer native multi-target PROMQL overlays on capable Kibana builds.
+    # Historically this path was a last-ditch fallback after ES|QL merge
+    # failed, because grouped control-bound label matchers could not bind
+    # inside Kibana's PROMQL command. On 9.5 with the explicit Kibana control-
+    # param opt-in, some real-world overlay charts (for example Redis
+    # receive/transmit and hits/misses) stay source-faithful and upload cleanly
+    # as native PROMQL. Keep ES|QL as the fallback whenever the native combiner
+    # declines the panel.
+    if rule_pack.native_promql and query_language == "promql" and len(targets_with_expr) > 1:
+        multi_native_result = _translate_multi_target_native_promql(
+            panel,
+            yaml_panel,
+            title,
+            panel_type,
+            kibana_type,
+            datasource,
+            query_index,
+            rule_pack,
+            panel_notes,
+            panel_inventory,
+            targets_with_expr,
+            resolver=resolver,
+        )
+        if multi_native_result is not None:
+            return multi_native_result
+
     if not promql_exprs:
         if visible_targets:
             _append_unique(panel_notes, "Visible panel targets did not expose PromQL-compatible expressions")
@@ -3401,6 +3456,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         )
 
     translations = []
+    dropped_live_metric_targets: list[tuple[str, list[str]]] = []
     for idx, (target, _) in enumerate(targets_with_expr, start=1):
         expr = target.get("expr", "")
         negate_target = False
@@ -3444,6 +3500,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             )
             t.feasibility = "not_feasible"
             t.warnings.append(f"Translation crashed: {type(exc).__name__}: {exc}")
+        missing_live_metrics = _live_missing_metrics_for_expr(expr, target_resolver)
+        if missing_live_metrics:
+            t.metadata["missing_live_metrics"] = list(missing_live_metrics)
+            dropped_live_metric_targets.append((str(target.get("refId") or f"series_{idx}"), missing_live_metrics))
+            continue
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
         # Keep the target's own expression: ``promql_expr`` is overwritten with
         # the merged " ||| " join below, but per-target provenance (and the
@@ -3452,6 +3513,27 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         if negate_target:
             t.metadata["negate_result"] = True
         translations.append(t)
+
+    if dropped_live_metric_targets and not translations:
+        missing_metrics: list[str] = []
+        for _target_name, metrics in dropped_live_metric_targets:
+            for metric in metrics:
+                _append_unique(missing_metrics, metric)
+        missing_panel, panel_result = _make_missing_telemetry_panel(
+            yaml_panel,
+            title,
+            panel_type,
+            missing_metrics,
+        )
+        return missing_panel, _enrich_panel_result(
+            panel_result,
+            panel=panel,
+            datasource=datasource,
+            query_language=query_language,
+            notes=panel_notes,
+            inventory=panel_inventory,
+            yaml_panel=missing_panel,
+        )
 
     if len(translations) > 1:
         all_source_exprs = [t.promql_expr for t in translations if getattr(t, "promql_expr", "")]
@@ -3493,6 +3575,17 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         feasible_translations = [collapsed]
 
     primary = feasible_translations[0] if feasible_translations else translations[0]
+    if dropped_live_metric_targets:
+        dropped_metrics: list[str] = []
+        for _target_name, metrics in dropped_live_metric_targets:
+            for metric in metrics:
+                _append_unique(dropped_metrics, metric)
+        if dropped_metrics:
+            _append_unique(
+                primary.warnings,
+                "Dropped series whose live target metrics are absent: "
+                + ", ".join(sorted(dropped_metrics)),
+            )
     fused_extra = []
     fused_series = [primary] if feasible_translations else []
     if len(feasible_translations) > 1:
@@ -4795,6 +4888,10 @@ _extract_esql_columns = _extract_esql_columns_canonical
 
 
 _TIME_DIMENSION_FIELDS = {"time_bucket", "timestamp_bucket", "step"}
+_CURATED_QUERY_TOKEN_RE = re.compile(
+    r"\{\{\s*(?P<kind>control|label|metric):(?P<name>[A-Za-z0-9_.-]+)"
+    r"(?::(?P<prefer>counter|gauge))?\s*\}\}"
+)
 
 
 def _dimension_field(field_name):
@@ -4802,6 +4899,83 @@ def _dimension_field(field_name):
     if field_name in _TIME_DIMENSION_FIELDS:
         dimension["data_type"] = "date"
     return dimension
+
+
+def _materialize_curated_query_override(query, resolver):
+    if not query:
+        return query
+
+    def _replace(match):
+        kind = match.group("kind")
+        name = match.group("name")
+        prefer = match.group("prefer") or None
+        if resolver is None:
+            return name
+        try:
+            if kind == "control":
+                resolve = getattr(resolver, "resolve_control_field", None)
+                resolved = resolve(name) if callable(resolve) else None
+                return resolved or name
+            if kind == "label":
+                resolve = getattr(resolver, "resolve_label", None)
+                resolved = resolve(name) if callable(resolve) else None
+                return resolved or name
+            if kind == "metric":
+                resolve = getattr(resolver, "resolve_metric_field", None)
+                resolved = resolve(name, prefer=prefer) if callable(resolve) else None
+                return resolved or name
+        except Exception:
+            return name
+        return name
+
+    return _CURATED_QUERY_TOKEN_RE.sub(_replace, query)
+
+
+def _live_missing_metrics_for_expr(expr, resolver):
+    if not expr or not resolver:
+        return []
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return []
+
+    missing: list[str] = []
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    field_exists = getattr(resolver, "field_exists", None)
+    if not callable(field_exists):
+        return []
+
+    for metric in sorted(_metrics_in_expr(expr)):
+        candidates = [metric]
+        if callable(resolve_metric):
+            for prefer in ("gauge", "counter"):
+                resolved = resolve_metric(metric, prefer=prefer)
+                if resolved and resolved not in candidates:
+                    candidates.append(resolved)
+        statuses = [field_exists(candidate) for candidate in candidates if candidate]
+        if any(status is True for status in statuses):
+            continue
+        if any(status is None for status in statuses):
+            continue
+        _append_unique(missing, metric)
+    return missing
+
+
+def _make_missing_telemetry_panel(yaml_panel, title, panel_type, missing_metrics):
+    metrics_text = ", ".join(sorted(dict.fromkeys(missing_metrics)))
+    yaml_panel["markdown"] = {
+        "content": (
+            f"**{title}**\n\n"
+            f"*(Telemetry missing in target: {metrics_text}. Re-upload after ingesting those metrics.)*"
+        )
+    }
+    return yaml_panel, PanelResult(
+        title,
+        panel_type,
+        "markdown",
+        "migrated_with_warnings",
+        0.4,
+        reasons=[f"Target telemetry missing: {metrics_text}"],
+    )
 
 
 def _panel_field_defaults(panel):
@@ -5818,6 +5992,15 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         by_cols = extracted_by_cols
     if time_fields is None:
         time_fields = shape.time_fields
+    projected_fields = set(shape.projected_fields or [])
+    if "series_group" in projected_fields and "value" in projected_fields:
+        metric_col = "value"
+        merged_by_cols = list(by_cols or [])
+        if not merged_by_cols:
+            merged_by_cols.extend(extracted_by_cols or [])
+        if "series_group" not in merged_by_cols:
+            merged_by_cols.append("series_group")
+        by_cols = merged_by_cols
     dimension_field, breakdown_field = _select_xy_dimension_fields(by_cols, time_fields=time_fields)
     if dimension_field is None:
         # The query collapses to a single row (no time dimension, no group
@@ -5880,6 +6063,24 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
     esql = _ensure_bucket_sort(esql)
     shape = _extract_esql_shape(esql)
     _, extracted_by_cols = _extract_esql_columns(esql)
+    projected_fields = set(shape.projected_fields or [])
+    if "series_group" in projected_fields and "value" in projected_fields:
+        merged_by_cols = list(by_cols or [])
+        if not merged_by_cols:
+            merged_by_cols.extend(extracted_by_cols or [])
+        if "series_group" not in merged_by_cols:
+            merged_by_cols.append("series_group")
+        return _build_esql_xy_panel(
+            esql,
+            chart_type,
+            metric_col="value",
+            by_cols=merged_by_cols,
+            time_fields=time_fields if time_fields is not None else shape.time_fields,
+            mode=mode,
+            legend_format_template=legend_format_template,
+            legend_labels=legend_labels,
+            warnings=warnings,
+        )
     # Recover group columns from the query on an empty/None caller value (see
     # _build_esql_xy_panel) so a grouped multi-series query is not mistaken for a
     # dimensionless one and degraded to a summary table.
@@ -7155,6 +7356,14 @@ def _query_param_names(query):
 
 
 _ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
+_ESQL_VALUE_PARAM_FIELD_PATTERNS = (
+    lambda name: re.compile(
+        rf"MV_CONTAINS\(\s*\?{re.escape(name)}\s*,\s*(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_.]*)\s*\)"
+    ),
+    lambda name: re.compile(
+        rf"(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_.]*)\s+(?:RLIKE|LIKE|==|!=|>=|<=|>|<)\s+\?{re.escape(name)}\b"
+    ),
+)
 
 
 def _collect_emitted_field_control_vars(panels):
@@ -7175,6 +7384,89 @@ def _collect_emitted_field_control_vars(panels):
         unquoted = _ESQL_QUOTED_RE.sub('""', query)
         names |= {match.group("name") for match in _ESQL_FIELD_CONTROL_RE.finditer(unquoted)}
     return names
+
+
+def _normalize_esql_field_token(field_name):
+    text = str(field_name or "").strip()
+    if text.startswith("`") and text.endswith("`") and len(text) >= 2:
+        text = text[1:-1]
+    return text
+
+
+def _collect_value_param_bound_fields(query):
+    """Map each ES|QL value parameter to the field(s) that bind it.
+
+    Controls must populate from the same field panel queries filter on. Query
+    variables can otherwise diverge when the variable's own source metric
+    resolves a label field differently from the dashboard panels that consume
+    ``?var`` (for example ``labels.instance`` vs ``instance``), which leaves
+    the uploaded dashboard visually empty even though the queries parse.
+    """
+    if not isinstance(query, str):
+        return {}
+    unquoted = _ESQL_QUOTED_RE.sub('""', query)
+    bound: dict[str, set[str]] = {}
+    for name in _query_param_names(query):
+        fields: set[str] = set()
+        for pattern_factory in _ESQL_VALUE_PARAM_FIELD_PATTERNS:
+            for match in pattern_factory(name).finditer(unquoted):
+                field_name = _normalize_esql_field_token(match.group("field"))
+                if field_name:
+                    fields.add(field_name)
+        if fields:
+            bound[name] = fields
+    return bound
+
+
+def _retarget_esql_param_controls_to_panel_bindings(controls, panels):
+    """Align ES|QL values controls with the field panel queries actually bind.
+
+    When every panel using ``?var`` binds it to one concrete field, retarget the
+    control's values query to that same field. This keeps the Dashboard API
+    source-to-target contract coherent and avoids UI-only empties caused by a
+    control populating from one field while panels filter on another.
+    """
+    if not controls or not panels:
+        return controls
+    bound_fields: dict[str, set[str]] = {}
+    for panel in panels:
+        if not isinstance(panel, dict):
+            continue
+        esql_cfg = panel.get("esql")
+        query = esql_cfg.get("query") if isinstance(esql_cfg, dict) else None
+        for name, bound_names in _collect_value_param_bound_fields(query).items():
+            bucket = bound_fields.setdefault(name, set())
+            bucket.update(bound_names)
+    if not bound_fields:
+        return controls
+
+    for control in controls:
+        if not isinstance(control, dict) or control.get("type") != "esql":
+            continue
+        if str(control.get("variable_type") or "") == "fields":
+            continue
+        variable_name = str(control.get("variable_name") or "")
+        target_fields = bound_fields.get(variable_name) or set()
+        if len(target_fields) != 1:
+            continue
+        target_field = next(iter(target_fields))
+        current_field = str(
+            control.get(_CONTROL_RESOLVED_FIELD_NAME)
+            or _extract_esql_values_bound_field(str(control.get("query") or ""))
+            or ""
+        )
+        if not current_field or current_field == target_field:
+            if target_field:
+                control[_CONTROL_RESOLVED_FIELD_NAME] = target_field
+            continue
+        current_identifier = _esql_identifier(current_field)
+        target_identifier = _esql_identifier(target_field)
+        query = str(control.get("query") or "")
+        if current_identifier not in query:
+            continue
+        control["query"] = query.replace(current_identifier, target_identifier)
+        control[_CONTROL_RESOLVED_FIELD_NAME] = target_field
+    return controls
 
 
 def _apply_late_bound_group_controls(controls, field_vars, rule_pack):
@@ -8706,6 +8998,52 @@ def _panels_overlap(left, right):
     return lx < rx + rw and lx + lw > rx and ly < ry + rh and ly + lh > ry
 
 
+def _iter_leaf_panels(panels: list[dict]):
+    for panel in panels:
+        section = panel.get("section")
+        if isinstance(section, dict):
+            inner = section.get("panels")
+            if isinstance(inner, list):
+                yield from _iter_leaf_panels(inner)
+            continue
+        yield panel
+
+
+def _apply_panel_layout_overrides_recursively(panels: list[dict], overrides: list[dict]) -> None:
+    if not panels or not overrides:
+        return
+
+    override_map = {
+        str(override.get("title_match") or "").strip().casefold(): override
+        for override in overrides
+        if str(override.get("title_match") or "").strip()
+    }
+    if not override_map:
+        return
+
+    for panel in _iter_leaf_panels(panels):
+        title_key = str(panel.get("title") or "").strip().casefold()
+        override = override_map.get(title_key)
+        if not override:
+            continue
+        position_override = override.get("position") or {}
+        if position_override:
+            position = dict(panel.get("position", {}))
+            for key in ("x", "y"):
+                value = position_override.get(key)
+                if value is not None:
+                    position[key] = int(value)
+            panel["position"] = position
+        size_override = override.get("size") or {}
+        if size_override:
+            size = dict(panel.get("size", {}))
+            for key in ("w", "h"):
+                value = size_override.get(key)
+                if value is not None:
+                    size[key] = int(value)
+            panel["size"] = size
+
+
 def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:
     """Walk the panel tree, calling :func:`_resolve_panel_overlaps` on
     every section's leaf-panel list (and on the top-level non-section
@@ -9013,13 +9351,7 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
             top_level_panels.extend(translated)
         dashboard_y_cursor += group_height
 
-    flat_panels: list[dict] = []
-    for panel in top_level_panels:
-        if "section" in panel:
-            for inner in panel["section"].get("panels", []):
-                flat_panels.append(inner)
-        else:
-            flat_panels.append(panel)
+    flat_panels = list(_iter_leaf_panels(top_level_panels))
 
     # Parameters (``?var``) actually emitted by panel queries drive control
     # completeness: every one needs a binding control, and any variable that
@@ -9055,6 +9387,7 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         rule_pack=rule_pack,
         control_warnings=result.control_warnings,
     )
+    controls = _retarget_esql_param_controls_to_panel_bindings(controls, flat_panels)
     rewritten_panel_results = _rewrite_variable_warnings(
         result.panel_results,
         _covered_control_variable_refs(controls),
@@ -9142,6 +9475,11 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         yaml_doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(yaml_doc)
+    for dashboard in yaml_doc.get("dashboards") or []:
+        _apply_panel_layout_overrides_recursively(
+            dashboard.get("panels") or [],
+            getattr(rule_pack, "panel_layout_overrides", []) or [],
+        )
 
     # Safety net: ``apply_style_guide_layout`` (specifically
     # ``_fill_simple_row``) can rescale a row's widths to total
@@ -9163,6 +9501,9 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     # docs/architecture/asset-model.md).
     for dashboard in yaml_doc.get("dashboards") or []:
         _resolve_section_overlaps_recursively(dashboard.get("panels") or [])
+        final_leaf_panels = list(_iter_leaf_panels(dashboard.get("panels") or []))
+        for panel, panel_result in zip(final_leaf_panels, result.yaml_panel_results):
+            _sync_visual_ir(panel_result, panel)
 
     # IR-first: `DashboardIR` is the primary working artifact from here on.
     # The native Dashboards API payload (`native_dashboard_from_ir`) and the

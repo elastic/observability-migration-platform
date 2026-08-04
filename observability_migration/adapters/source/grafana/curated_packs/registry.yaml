@@ -21,6 +21,15 @@ packs:
     dashboard_sha256: "dcee8585ef010e7569dab8c776e48e3a6ee5ebe9c03a1510891488b714faeb44"
     description: "Redis open-source (oliver006/redis_exporter) — counter/gauge classification, label map, layout"
 
+  - gnet_id: 1860
+    name: grafana_1860_node_exporter_full
+    title_hint: "Node Exporter Full"
+    tags_hint: ["prometheus"]
+    path: grafana_1860_node_exporter_full
+    gnet_revision: 37
+    dashboard_sha256: "d4313569a6a74471de08e3160c674e4b5c015f1385f385170232734f9124ea63"
+    description: "Node Exporter Full — suffix-less counter typing plus a curated process-memory repair for Kibana"
+
   - gnet_id: 18405
     name: grafana_18405_redis_enterprise
     title_hint: "Redis Enterprise: Cluster Status"

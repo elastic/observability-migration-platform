@@ -64,7 +64,7 @@ Options:
   --with-alloy         For local target startup, enable the Alloy profile.
   --recreate-lab       For local target, force a clean local-lab recreate first.
   --input-dir PATH     Optional Datadog dashboard directory instead of the bundled smoke subset.
-  --output-dir PATH    Output directory for generated YAML, reports, and compiled artifacts.
+  --output-dir PATH    Output directory for native dashboard artifacts and reports.
   --field-profile ID   Datadog field profile to use. Default: otel.
   --data-view PATTERN  Metrics data view / index pattern. Default: metrics-*.
   --logs-index PATTERN Logs data view / index pattern. Default: logs-*.
@@ -382,7 +382,7 @@ fi
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-printf 'Preparing Datadog demo YAML\n'
+printf 'Preparing Datadog native dashboard artifacts\n'
 prepare_cmd=(
   "$PYTHON_BIN"
   -m

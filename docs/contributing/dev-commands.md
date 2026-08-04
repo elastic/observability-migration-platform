@@ -399,7 +399,9 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
-.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>
+.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema
+make check-native-schema
+# Optional override when checking a pinned local copy or another bundle:
 KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
 ```
 

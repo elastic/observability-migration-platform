@@ -12,8 +12,10 @@ from scripts.audit_pipeline import (
     DashboardAudit,
     PanelAudit,
     _section_dashboard_summary,
+    _section_panel_type_summary,
     _section_per_dashboard_traces,
     _verdict,
+    _to_json,
     generate_pipeline_trace_md,
 )
 
@@ -61,6 +63,69 @@ class PipelineTraceSummaryTests(unittest.TestCase):
 
         self.assertIn("| datadog | Nested widgets | 4 | 1 | 1 | 1 | 1 | 0 |", trace_doc)
         self.assertIn("**File:** `nested.json` — **Panels:** 4", trace_doc)
+
+    def test_panel_type_summary_tracks_dashboards_api_family(self):
+        audit = DashboardAudit(
+            source="grafana",
+            file_name="types.json",
+            dashboard_title="Types",
+            total_panels=3,
+            panels=[
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="timeseries",
+                    kibana_type="line",
+                    dashboards_api_type="vis:xy",
+                    status="migrated",
+                ),
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="timeseries",
+                    kibana_type="line",
+                    dashboards_api_type="vis:xy",
+                    status="migrated_with_warnings",
+                ),
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="text",
+                    kibana_type="markdown",
+                    dashboards_api_type="markdown",
+                    status="skipped",
+                ),
+            ],
+        )
+
+        summary = _section_panel_type_summary([audit])
+
+        self.assertIn(
+            "| grafana | `timeseries` | `line` | `vis:xy` | 2 | 1 | 1 | 0 | 0 | 0 | 0 |",
+            summary,
+        )
+        self.assertIn(
+            "| grafana | `text` | `markdown` | `markdown` | 1 | 0 | 0 | 0 | 0 | 1 | 0 |",
+            summary,
+        )
+
+    def test_json_audit_emits_dashboards_api_type(self):
+        audit = DashboardAudit(
+            source="datadog",
+            file_name="types.json",
+            dashboard_title="Types",
+            panels=[
+                PanelAudit(
+                    source_type="datadog",
+                    source_panel_type="query_value",
+                    kibana_type="metric",
+                    dashboards_api_type="vis:metric",
+                    status="ok",
+                )
+            ],
+        )
+
+        payload = _to_json([audit])
+
+        self.assertIn('"source_type": "datadog"', payload)
+        self.assertIn('"dashboards_api_type": "vis:metric"', payload)
 
     def test_omitted_or_unbound_template_filter_is_not_classified_correct(self):
         for warning in (

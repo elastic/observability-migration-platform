@@ -1716,7 +1716,7 @@ def _param_is_multi_select(resolver, param_name):
     return bool(names) and param_name in names
 
 
-def _mv_contains_filter(label, param_name, negate=False):
+def _mv_contains_filter(label, param_name, negate=False, allow_empty_match_all=False):
     """Multi-value label filter for a Grafana multi-select variable.
 
     ``RLIKE ?var`` is a scalar parameter position, so it can bind only one
@@ -1734,10 +1734,16 @@ def _mv_contains_filter(label, param_name, negate=False):
     computed one, so ``RLIKE MV_CONCAT(?var, "|")`` -- which would have
     rebuilt Grafana's own ``(a|b)`` alternation -- is not expressible.
     """
-    expr = (
-        f'(MV_CONTAINS(?{param_name}, ".*")'
-        f" OR MV_CONTAINS(?{param_name}, {label}))"
-    )
+    clauses = []
+    if allow_empty_match_all:
+        # Kibana leaves an unselected multi-values control bound as an empty
+        # list. For Grafana includeAll variables that empty state must behave
+        # like the source default All selection ([".*"]), not like "match
+        # nothing" which blanks the dashboard on first load.
+        clauses.append(f"MV_COUNT(?{param_name}) == 0")
+    clauses.append(f'MV_CONTAINS(?{param_name}, ".*")')
+    clauses.append(f"MV_CONTAINS(?{param_name}, {label})")
+    expr = "(" + " OR ".join(clauses) + ")"
     return f"NOT {expr}" if negate else expr
 
 
@@ -1783,13 +1789,17 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
         # ES|QL named parameter bound by an esqlControl, instead of silently
         # dropping it (issues #64 / #131). The matching control is guaranteed
         # by ``_ensure_param_controls`` during dashboard assembly.
+        regex_default = _param_binds_regex_default(resolver, param_name)
         if _param_is_multi_select(resolver, param_name) and op in {"=", "=~", "!=", "!~"}:
             # Grafana multi-select: bind the whole selection, not one value.
             return _mv_contains_filter(
-                label, param_name, negate=op in {"!=", "!~"}
+                label,
+                param_name,
+                negate=op in {"!=", "!~"},
+                allow_empty_match_all=regex_default,
             )
         if op == "=":
-            if _param_binds_regex_default(resolver, param_name):
+            if regex_default:
                 # The binding control defaults this param to the regex
                 # match-all (".*") because the Grafana variable is All/multi
                 # with no single ``current`` value. ES|QL ``==`` would compare
@@ -1799,8 +1809,9 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
                 # for All/multi variables. (allValue-as-regex equality is a
                 # narrower residual not covered here.)
-                return _absent_aware(
-                    label, f"{label} RLIKE ?{param_name}", f'"" RLIKE ?{param_name}'
+                return (
+                    f'(?{param_name} == "" OR '
+                    f'{_absent_aware(label, f"{label} RLIKE ?{param_name}", f"""\"\" RLIKE ?{param_name}""")})'
                 )
             return _absent_aware(
                 label, f"{label} == ?{param_name}", f'"" == ?{param_name}'
@@ -1809,19 +1820,30 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
             # Left as ``!=``: with the match-all default the param resolves to
             # ".*" and ``field != ".*"`` still matches every series (a safe,
             # non-empty default), unlike the ``==`` case which would be empty.
+            if regex_default:
+                return (
+                    f'(?{param_name} == "" OR '
+                    f'{_absent_aware(label, f"{label} != ?{param_name}", f"""\"\" != ?{param_name}""")})'
+                )
             return _absent_aware(
                 label, f"{label} != ?{param_name}", f'"" != ?{param_name}'
             )
         if op == "=~":
-            return _absent_aware(
+            predicate = _absent_aware(
                 label, f"{label} RLIKE ?{param_name}", f'"" RLIKE ?{param_name}'
             )
+            if regex_default:
+                return f'(?{param_name} == "" OR {predicate})'
+            return predicate
         if op == "!~":
-            return _absent_aware(
+            predicate = _absent_aware(
                 label,
                 f"NOT ({label} RLIKE ?{param_name})",
                 f'NOT ("" RLIKE ?{param_name})',
             )
+            if regex_default:
+                return f'(?{param_name} != "" AND {predicate})'
+            return predicate
         return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid

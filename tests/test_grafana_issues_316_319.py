@@ -9,6 +9,7 @@ import unittest
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
 from observability_migration.adapters.source.grafana.runtime_features import (
+    KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_LABEL_MATCHER_PARAMS,
 )
 
@@ -182,6 +183,105 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         self.assertTrue(query.startswith("TS "), query)
         self.assertFalse(query.startswith("PROMQL"))
 
+    def test_user_opt_in_keeps_native_when_both_es_and_kibana_support_are_present(self):
+        features = {
+            PROMQL_LABEL_MATCHER_PARAMS: {
+                "supported": True,
+                "source": "probe",
+                "confidence": "verified",
+            },
+            KIBANA_PROMQL_CONTROL_PARAMS: {
+                "supported": True,
+                "source": "user",
+                "confidence": "assumed",
+            },
+        }
+        yaml_panel, _ = _translate(
+            _make_panel(
+                'rate(redis_commands_processed_total{instance=~"$instance"}[1m])',
+                legend="",
+            ),
+            runtime_features=features,
+            regex_default_params={"instance"},
+        )
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertIn("{instance=~?instance}", query)
+
+    def test_user_opt_in_keeps_grouped_native_series_when_controls_are_bound(self):
+        features = {
+            PROMQL_LABEL_MATCHER_PARAMS: {
+                "supported": True,
+                "source": "probe",
+                "confidence": "verified",
+            },
+            KIBANA_PROMQL_CONTROL_PARAMS: {
+                "supported": True,
+                "source": "user",
+                "confidence": "assumed",
+            },
+        }
+        yaml_panel, _ = _translate(
+            _make_panel(
+                'sum(rate(redis_commands_total{instance=~"$instance"}[1m])) by (cmd)',
+                legend="{{cmd}}",
+            ),
+            runtime_features=features,
+            regex_default_params={"instance"},
+        )
+        self.assertIsNotNone(yaml_panel)
+        esql = yaml_panel["esql"]
+        query = esql["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertIn("{instance=~?instance}", query)
+        self.assertEqual((esql.get("breakdown") or {}).get("field"), "cmd")
+
+    def test_user_opt_in_still_falls_back_for_multi_target_overlay(self):
+        features = {
+            PROMQL_LABEL_MATCHER_PARAMS: {
+                "supported": True,
+                "source": "probe",
+                "confidence": "verified",
+            },
+            KIBANA_PROMQL_CONTROL_PARAMS: {
+                "supported": True,
+                "source": "user",
+                "confidence": "assumed",
+            },
+        }
+        panel = {
+            "id": 2,
+            "type": "timeseries",
+            "title": "Hits / Misses per Sec",
+            "targets": [
+                {
+                    "expr": 'irate(redis_keyspace_hits_total{instance=~"$instance"}[5m])',
+                    "refId": "A",
+                    "legendFormat": "Hits",
+                    "datasource": {"type": "prometheus"},
+                },
+                {
+                    "expr": 'irate(redis_keyspace_misses_total{instance=~"$instance"}[5m])',
+                    "refId": "B",
+                    "legendFormat": "Misses",
+                    "datasource": {"type": "prometheus"},
+                },
+            ],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        }
+        yaml_panel, _ = _translate(
+            panel,
+            runtime_features=features,
+            regex_default_params={"instance"},
+        )
+        self.assertIsNotNone(yaml_panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("TS "), query)
+        self.assertIn("redis_keyspace_hits_total", query)
+        self.assertIn("redis_keyspace_misses_total", query)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -301,6 +401,7 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
     def test_multi_select_emits_mv_contains_with_all_sentinel(self):
         doc = self._translate(multi=True)
         query = doc["panels"][0]["esql"]["query"]
+        self.assertIn("MV_COUNT(?instance) == 0", query)
         self.assertIn("MV_CONTAINS(?instance", query)
         self.assertIn('MV_CONTAINS(?instance, ".*")', query)
         self.assertNotIn("RLIKE ?instance", query)

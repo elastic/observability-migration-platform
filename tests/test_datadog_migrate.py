@@ -1360,6 +1360,53 @@ class TestTranslation(unittest.TestCase):
             result.warnings,
         )
 
+    def test_metric_template_variable_with_control_does_not_warn(self):
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{host:$host}",
+            force_esql=True,
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(
+            any("template variable" in warning.lower() for warning in result.warnings),
+            result.warnings,
+        )
+
+    def test_log_template_variable_warning_only_lists_unresolved_scope(self):
+        raw_query = "source:redis $host $scope status:error"
+        widget = NormalizedWidget(
+            id="logs",
+            widget_type="log_stream",
+            title="Logs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="logs",
+                    raw_query=raw_query,
+                    log_query=parse_log_query(raw_query),
+                    query_type="log",
+                )
+            ],
+        )
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(
+            any(
+                "Log filter with template variable '$scope' was omitted" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+        self.assertFalse(
+            any(
+                "Log filter with" in warning and "$host" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+
     def test_negated_filter_translated(self):
         result = self._translate_metric_widget("avg:system.cpu.user{!env:staging}", force_esql=True)
         self.assertIn("!=", result.esql_query)
@@ -1488,7 +1535,7 @@ class TestTranslation(unittest.TestCase):
     def test_metric_template_variable_becomes_broad_match(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:$host}", force_esql=True)
         self.assertNotIn("$host", result.esql_query)
-        self.assertTrue(any("template variable" in w.lower() for w in result.warnings))
+        self.assertFalse(any("template variable" in w.lower() for w in result.warnings), result.warnings)
 
     def test_boolean_scope_or_is_translated_safely(self):
         result = self._translate_metric_widget(
@@ -1497,7 +1544,7 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("response_code LIKE \"2%\"", result.esql_query)
         self.assertIn("OR", result.esql_query)
         self.assertNotIn("`(response_code`", result.esql_query)
-        self.assertTrue(any("template variable" in w.lower() for w in result.warnings), result.warnings)
+        self.assertFalse(any("template variable" in w.lower() for w in result.warnings), result.warnings)
 
     def test_boolean_scope_or_across_keys_is_preserved(self):
         result = self._translate_metric_widget(
@@ -2343,13 +2390,9 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertNotIn("$svc", result.esql_query)
         self.assertNotIn("service.name ==", result.esql_query)
-        self.assertEqual(result.status, "warning")
-        self.assertTrue(
-            any(
-                "log filter with template variable '$svc' was omitted"
-                in warning.lower()
-                for warning in result.warnings
-            ),
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(
+            any("log filter with template variable" in warning.lower() for warning in result.warnings),
             result.warnings,
         )
 
@@ -4009,6 +4052,191 @@ class TestFieldMap(unittest.TestCase):
                 result.warnings,
             )
 
+    def test_mixed_metric_log_template_variable_skips_warning_when_field_matches(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        metric_query_text = "avg:system.cpu.user{host:$host}"
+        metric_query = parse_metric_query(metric_query_text)
+        log_query_text = "host:$host"
+        dashboard = NormalizedDashboard(
+            id="mixed-host-controls",
+            title="Mixed host controls",
+            template_variables=[TemplateVariable(name="host", tag="host")],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="timeseries",
+                    title="Metric",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="metrics",
+                            raw_query=metric_query_text,
+                            metric_query=metric_query,
+                            query_type="metric",
+                        )
+                    ],
+                ),
+                NormalizedWidget(
+                    id="log",
+                    widget_type="log_stream",
+                    title="Logs",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="logs",
+                            raw_query=log_query_text,
+                            log_query=parse_log_query(log_query_text),
+                            query_type="log",
+                        )
+                    ],
+                ),
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id=widget.id,
+                title=widget.title,
+                status="ok",
+                backend="markdown",
+                kibana_type="markdown",
+            )
+            for widget in dashboard.widgets
+        ]
+
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(dashboard_ir.controls[0].data_view, "metrics-*")
+        for result in results:
+            self.assertEqual(result.status, "ok")
+            self.assertFalse(
+                any(
+                    "used by both metric and log widgets" in warning
+                    for warning in result.warnings
+                ),
+                result.warnings,
+            )
+
+    def test_noop_scope_template_variable_suppresses_panel_warnings(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        dashboard = NormalizedDashboard(
+            id="noop-scope",
+            title="No-op scope",
+            template_variables=[TemplateVariable(name="scope", default="*", available_values=[])],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="query_value",
+                    title="Metric",
+                    queries=[],
+                ),
+                NormalizedWidget(
+                    id="log",
+                    widget_type="log_stream",
+                    title="Logs",
+                    queries=[],
+                ),
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id="metric",
+                title="Metric",
+                status="warning",
+                backend="esql",
+                kibana_type="metric",
+                warnings=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+                semantic_losses=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+            ),
+            TranslationResult(
+                widget_id="log",
+                title="Logs",
+                status="warning",
+                backend="esql_with_kql",
+                kibana_type="table",
+                warnings=[
+                    "Log filter with template variable '$scope' was omitted because Datadog log template substitutions cannot be bound exactly in the translated query; recreate the filter in Kibana"
+                ],
+                semantic_losses=[
+                    "Log filter with template variable '$scope' was omitted because Datadog log template substitutions cannot be bound exactly in the translated query; recreate the filter in Kibana"
+                ],
+            ),
+        ]
+
+        _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(results[0].status, "ok")
+        self.assertEqual(results[0].warnings, [])
+        self.assertEqual(results[0].semantic_losses, [])
+        self.assertEqual(results[1].status, "ok")
+        self.assertEqual(results[1].warnings, [])
+        self.assertEqual(results[1].semantic_losses, [])
+
+    def test_nondefault_scope_template_variable_keeps_panel_warnings(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        dashboard = NormalizedDashboard(
+            id="real-scope",
+            title="Real scope",
+            template_variables=[TemplateVariable(name="scope", default="service:web", available_values=[])],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="query_value",
+                    title="Metric",
+                    queries=[],
+                )
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id="metric",
+                title="Metric",
+                status="warning",
+                backend="esql",
+                kibana_type="metric",
+                warnings=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+                semantic_losses=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+            )
+        ]
+
+        _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(results[0].status, "warning")
+        self.assertEqual(
+            results[0].warnings,
+            [
+                "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+            ],
+        )
+
     def test_otel_tag_map_prefers_otel_kubernetes_semconv_fields(self):
         self.assertEqual(OTEL_PROFILE.map_tag("pod_name"), "k8s.pod.name")
         self.assertEqual(OTEL_PROFILE.map_tag("kube_namespace"), "k8s.namespace.name")
@@ -5474,6 +5702,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_title="Infra",
             source_file="infra.json",
             artifact_stem="infra",
+            curated_pack_name="datadog_redis_overview",
             native_artifact_path="native/infra.native.json",
             ir_artifact_path="ir/infra.ir.json",
             uploaded=True,
@@ -5502,6 +5731,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         manifest_entry = manifest["dashboards"][0]
         self.assertEqual(manifest_entry["kibana_saved_object_id"], "kb-1")
         self.assertEqual(manifest_entry["artifact_stem"], "infra")
+        self.assertEqual(manifest_entry["curated_pack"], "datadog_redis_overview")
         # Drift guard: the compile/upload YAML path is gone, so a manifest entry
         # must never advertise a YAML or compiled artifact again.
         self.assertNotIn("yaml_path", manifest_entry)
@@ -5530,6 +5760,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         dr = DashboardResult(
             dashboard_id="dash-1",
             dashboard_title="Test",
+            curated_pack_name="datadog_redis_overview",
             smoke_attempted=True,
             smoke_status="fail",
             smoke_error="1 panel runtime error(s)",
@@ -5554,6 +5785,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
 
         self.assertIn("smoke", payload)
         self.assertIn("verification", payload)
+        self.assertEqual(payload["dashboards"][0]["curated_pack"], "datadog_redis_overview")
         self.assertEqual(payload["dashboards"][0]["smoke"]["status"], "fail")
         self.assertEqual(payload["dashboards"][0]["verification_summary"]["red"], 1)
 

@@ -25,7 +25,7 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - xpack.security.http.ssl.enabled=false
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
       - xpack.license.self_generated.type=trial
     ports:
       - "9201:9200"
@@ -89,9 +89,9 @@ services:
       - |
         while true; do
           for i in $(seq 1 50); do
-            redis-cli -h redis SET "key:$i" "value:$i" EX 300 > /dev/null
-            redis-cli -h redis GET "key:$i" > /dev/null
-            redis-cli -h redis GET "key:missing:$i" > /dev/null
+            redis-cli -h redis SET "key:$$i" "value:$$i" EX 300 > /dev/null
+            redis-cli -h redis GET "key:$$i" > /dev/null
+            redis-cli -h redis GET "key:missing:$$i" > /dev/null
           done
           sleep 5
         done

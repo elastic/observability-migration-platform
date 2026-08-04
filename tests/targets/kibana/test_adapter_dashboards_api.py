@@ -299,12 +299,16 @@ class TestUploadDashboardNativePath(unittest.TestCase):
             result = KibanaTargetAdapter().upload_dashboard(
                 kibana_url="https://kibana.example",
                 kibana_api_key="secret",
+                es_url="https://es.example",
+                es_api_key="es-secret",
                 native_dashboard=native_dashboard,
                 native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
             )
 
         native_api.assert_called_once()
         self.assertIs(native_api.call_args.args[0], native_dashboard)
+        self.assertEqual(native_api.call_args.kwargs["es_url"], "https://es.example")
+        self.assertEqual(native_api.call_args.kwargs["es_api_key"], "es-secret")
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "updated")
         self.assertEqual(result["dashboard_ids"], ["direct-ir"])
@@ -341,6 +345,29 @@ class TestUploadDashboardNativePath(unittest.TestCase):
             native_api.call_args.kwargs["data_view_ids"],
             {"metrics-*": "generated-id"},
         )
+
+    def test_upload_passes_es_credentials_to_native_artifact_upload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = _artifact_dir_with_one_dashboard(tmpdir)
+
+            with mock.patch(
+                "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+                return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+            ), mock.patch(
+                "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_artifact",
+                return_value=UploadResult(dashboard="Dash", dashboard_id="d1", status="created", mapped=1),
+            ) as api:
+                KibanaTargetAdapter().upload(
+                    artifact_dir,
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    es_url="https://es.example",
+                    es_api_key="es-secret",
+                )
+
+        api.assert_called_once()
+        self.assertEqual(api.call_args.kwargs["es_url"], "https://es.example")
+        self.assertEqual(api.call_args.kwargs["es_api_key"], "es-secret")
 
 
 if __name__ == "__main__":

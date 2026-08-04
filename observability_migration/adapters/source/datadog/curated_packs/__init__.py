@@ -34,5 +34,7 @@ def load_curated_pack(dashboard_title: str) -> dict[str, Any] | None:
         match = pack.get("match", {})
         title_contains = match.get("title_contains", "")
         if title_contains and title_contains.lower() in dashboard_title.lower():
+            pack = dict(pack)
+            pack["_curated_pack_name"] = entry.name
             return pack
     return None

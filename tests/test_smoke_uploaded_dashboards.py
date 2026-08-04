@@ -1138,6 +1138,40 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         )
         self.assertTrue(issues)
 
+    def test_browser_audit_detects_empty_placeholder(self):
+        issues = smoke._browser_audit_issues(
+            """
+            <html><body>
+              <div data-test-subj="emptyPlaceholder">
+                <p>No results found</p>
+              </div>
+            </body></html>
+            """
+        )
+        self.assertTrue(issues)
+
+    def test_browser_audit_detects_metric_na_value(self):
+        issues = smoke._browser_audit_issues(
+            """
+            <html><body>
+              <p class="echMetricText__value" title="N/A">N/A</p>
+            </body></html>
+            """
+        )
+        self.assertTrue(issues)
+
+    def test_browser_audit_ignores_markdown_no_results_text(self):
+        issues = smoke._browser_audit_issues(
+            """
+            <html><body>
+              <div data-test-subj="markdownRenderer">
+                <p>No results found after this migration. Re-upload later.</p>
+              </div>
+            </body></html>
+            """
+        )
+        self.assertFalse(issues)
+
     def test_capture_dashboard_screenshot_writes_png(self):
         saved_object = {
             "id": "dashboard-123",

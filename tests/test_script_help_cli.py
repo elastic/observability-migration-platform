@@ -136,7 +136,19 @@ class ScriptHelpCliTests(unittest.TestCase):
 
         self.assertIn("check-native-schema:", makefile)
         self.assertIn("fetch_dashboards_api_schema.py", makefile)
-        self.assertIn("KIBANA_DASHBOARDS_API_SCHEMA_URL", makefile)
+        self.assertIn("--require-full-schema", makefile)
+
+    def test_datadog_entry_points_describe_native_artifacts_not_yaml(self):
+        datadog_cli_text = (
+            ROOT / "observability_migration" / "adapters" / "source" / "datadog" / "cli.py"
+        ).read_text(encoding="utf-8")
+        datadog_demo_text = (ROOT / "scripts" / "run_datadog_demo.sh").read_text(encoding="utf-8")
+
+        self.assertIn("Output directory for native dashboard artifacts and reports", datadog_cli_text)
+        self.assertNotIn("Output directory for generated YAML and reports", datadog_cli_text)
+        self.assertIn("Preparing Datadog native dashboard artifacts", datadog_demo_text)
+        self.assertNotIn("Preparing Datadog demo YAML", datadog_demo_text)
+        self.assertNotIn("generated YAML, reports, and compiled artifacts", datadog_demo_text)
 
 
 if __name__ == "__main__":

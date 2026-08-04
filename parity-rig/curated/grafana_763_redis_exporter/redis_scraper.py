@@ -40,6 +40,188 @@ TARGETS = [
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
 _TYPE_RE = re.compile(r"^#\s*TYPE\s+(\S+)\s+(\S+)")
 
+# node_exporter marks several cumulative kernel/netstat families as ``untyped``.
+# The Node Exporter Full dashboard legitimately applies rate()/irate() to these
+# metrics, and Kibana/Elasticsearch require counter typing for IRATE/RATE.
+_METRIC_TYPE_OVERRIDES = {
+    "node.prometheus": {
+        "node_netstat_Icmp_InErrors": "counter",
+        "node_netstat_Icmp_InMsgs": "counter",
+        "node_netstat_Icmp_OutMsgs": "counter",
+        "node_netstat_IpExt_InOctets": "counter",
+        "node_netstat_IpExt_OutOctets": "counter",
+        "node_netstat_Ip_Forwarding": "counter",
+        "node_netstat_TcpExt_ListenDrops": "counter",
+        "node_netstat_TcpExt_ListenOverflows": "counter",
+        "node_netstat_TcpExt_SyncookiesFailed": "counter",
+        "node_netstat_TcpExt_SyncookiesRecv": "counter",
+        "node_netstat_TcpExt_SyncookiesSent": "counter",
+        "node_netstat_TcpExt_TCPOFOQueue": "counter",
+        "node_netstat_TcpExt_TCPSynRetrans": "counter",
+        "node_netstat_Tcp_ActiveOpens": "counter",
+        "node_netstat_Tcp_InErrs": "counter",
+        "node_netstat_Tcp_InSegs": "counter",
+        "node_netstat_Tcp_OutRsts": "counter",
+        "node_netstat_Tcp_OutSegs": "counter",
+        "node_netstat_Tcp_PassiveOpens": "counter",
+        "node_netstat_Tcp_RetransSegs": "counter",
+        "node_netstat_UdpLite_InErrors": "counter",
+        "node_netstat_Udp_InDatagrams": "counter",
+        "node_netstat_Udp_InErrors": "counter",
+        "node_netstat_Udp_NoPorts": "counter",
+        "node_netstat_Udp_OutDatagrams": "counter",
+        "node_netstat_Udp_RcvbufErrors": "counter",
+        "node_netstat_Udp_SndbufErrors": "counter",
+        "node_vmstat_oom_kill": "counter",
+        "node_vmstat_pgfault": "counter",
+        "node_vmstat_pgmajfault": "counter",
+        "node_vmstat_pgpgin": "counter",
+        "node_vmstat_pgpgout": "counter",
+        "node_vmstat_pswpin": "counter",
+        "node_vmstat_pswpout": "counter",
+    },
+}
+
+
+def render_node_exporter_extras(_instance: str) -> str:
+    """Synthetic node-exporter series missing from the Redis validation rig.
+
+    The curated Redis rig runs a stripped-down node_exporter container whose
+    host/kernel view cannot expose several collectors that the Node Exporter
+    Full dashboard expects. Appending these metrics to the scraped exposition
+    keeps the rig useful for panel-by-panel validation without changing the
+    translator or pretending the underlying exporter can emit them.
+    """
+    now = time.time()
+    elapsed = max(0.0, now)
+    lines: list[str] = []
+
+    lines.append("# HELP node_memory_DirectMap1G_bytes /proc/meminfo DirectMap1G")
+    lines.append("# TYPE node_memory_DirectMap1G_bytes gauge")
+    lines.append(f"node_memory_DirectMap1G_bytes {2 * 1024 * 1024 * 1024}")
+    lines.append("# HELP node_memory_DirectMap2M_bytes /proc/meminfo DirectMap2M")
+    lines.append("# TYPE node_memory_DirectMap2M_bytes gauge")
+    lines.append(f"node_memory_DirectMap2M_bytes {6 * 1024 * 1024 * 1024}")
+    lines.append("# HELP node_memory_DirectMap4k_bytes /proc/meminfo DirectMap4k")
+    lines.append("# TYPE node_memory_DirectMap4k_bytes gauge")
+    lines.append(f"node_memory_DirectMap4k_bytes {128 * 1024 * 1024}")
+
+    lines.append("# HELP node_cpu_scaling_frequency_hertz CPU current scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_hertz gauge")
+    lines.append("# HELP node_cpu_scaling_frequency_max_hertz CPU max scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_max_hertz gauge")
+    lines.append("# HELP node_cpu_scaling_frequency_min_hertz CPU min scaling frequency")
+    lines.append("# TYPE node_cpu_scaling_frequency_min_hertz gauge")
+    for cpu in (0, 1, 2, 3):
+        current = 2_000_000_000 + (cpu * 50_000_000) + int(100_000_000 * ((elapsed % 30) / 30))
+        lines.append(
+            f'node_cpu_scaling_frequency_hertz{{cpu="{cpu}"}} {current}'
+        )
+        lines.append(
+            f'node_cpu_scaling_frequency_max_hertz{{cpu="{cpu}"}} 3000000000'
+        )
+        lines.append(
+            f'node_cpu_scaling_frequency_min_hertz{{cpu="{cpu}"}} 1000000000'
+        )
+
+    lines.append("# HELP node_schedstat_waiting_seconds_total /proc/schedstat waiting")
+    lines.append("# TYPE node_schedstat_waiting_seconds_total counter")
+    lines.append("# HELP node_schedstat_running_seconds_total /proc/schedstat running")
+    lines.append("# TYPE node_schedstat_running_seconds_total counter")
+    lines.append("# HELP node_schedstat_timeslices_total /proc/schedstat timeslices")
+    lines.append("# TYPE node_schedstat_timeslices_total counter")
+    for cpu in (0, 1, 2, 3):
+        lines.append(
+            f'node_schedstat_waiting_seconds_total{{cpu="{cpu}"}} '
+            f'{elapsed * (0.001 + 0.0002 * cpu)}'
+        )
+        lines.append(
+            f'node_schedstat_running_seconds_total{{cpu="{cpu}"}} '
+            f'{elapsed * (0.02 + 0.005 * cpu)}'
+        )
+        lines.append(
+            f'node_schedstat_timeslices_total{{cpu="{cpu}"}} '
+            f'{int(elapsed * (100 + 10 * cpu))}'
+        )
+
+    lines.append("# HELP node_interrupts_total Interrupt counts by CPU")
+    lines.append("# TYPE node_interrupts_total counter")
+    for cpu in (0, 1, 2, 3):
+        lines.append(
+            f'node_interrupts_total{{cpu="{cpu}",interrupt="timer"}} '
+            f'{int(elapsed * (400 + 25 * cpu))}'
+        )
+
+    lines.append("# HELP node_hwmon_chip_names Hardware monitor chip names")
+    lines.append("# TYPE node_hwmon_chip_names gauge")
+    lines.append("# HELP node_hwmon_temp_celsius Hardware monitor temperature")
+    lines.append("# TYPE node_hwmon_temp_celsius gauge")
+    lines.append("# HELP node_hwmon_temp_crit_celsius Hardware monitor critical temperature")
+    lines.append("# TYPE node_hwmon_temp_crit_celsius gauge")
+    for chip, chip_name, label, base in (
+        ("coretemp-isa-0000", "coretemp", "Core 0", 45.0),
+        ("coretemp-isa-0000", "coretemp", "Core 1", 47.0),
+        ("nct6775-isa-0290", "nct6775", "Package id 0", 50.0),
+    ):
+        cycle = 5.0 * ((elapsed % 60) / 60)
+        metric_labels = (
+            f'chip="{chip}",chip_name="{chip_name}",sensor="temp1",label="{label}"'
+        )
+        lines.append(f"node_hwmon_chip_names{{{metric_labels}}} 1")
+        lines.append(f"node_hwmon_temp_celsius{{{metric_labels}}} {base + cycle:.2f}")
+        lines.append(f"node_hwmon_temp_crit_celsius{{{metric_labels}}} 90.0")
+
+    lines.append("# HELP node_cooling_device_cur_state Linux thermal cooling current state")
+    lines.append("# TYPE node_cooling_device_cur_state gauge")
+    lines.append("# HELP node_cooling_device_max_state Linux thermal cooling max state")
+    lines.append("# TYPE node_cooling_device_max_state gauge")
+    for zone in (0, 1):
+        labels = f'name="thermal_zone{zone}",type="Processor"'
+        lines.append(f"node_cooling_device_cur_state{{{labels}}} {zone}")
+        lines.append(f"node_cooling_device_max_state{{{labels}}} 4")
+
+    lines.append("# HELP node_power_supply_online Power supply online state")
+    lines.append("# TYPE node_power_supply_online gauge")
+    for supply in ("AC0", "BAT0"):
+        value = 1 if supply.startswith("AC") else 0
+        lines.append(f'node_power_supply_online{{power_supply="{supply}"}} {value}')
+
+    lines.append("# HELP node_systemd_units Number of systemd units")
+    lines.append("# TYPE node_systemd_units gauge")
+    for state, count in (("activating", 1), ("active", 92), ("deactivating", 0), ("failed", 0), ("inactive", 14)):
+        lines.append(f'node_systemd_units{{state="{state}"}} {count}')
+
+    lines.append("# HELP node_systemd_socket_current_connections Current systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_current_connections gauge")
+    lines.append("# HELP node_systemd_socket_accepted_connections_total Accepted systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_accepted_connections_total counter")
+    lines.append("# HELP node_systemd_socket_refused_connections_total Refused systemd socket connections")
+    lines.append("# TYPE node_systemd_socket_refused_connections_total counter")
+    for sock in ("dbus.socket", "ssh.socket", "syslog.socket"):
+        current = hash(sock) % 5
+        accepted = int(elapsed * 0.02 + (hash(sock) % 7))
+        refused = int(elapsed * 0.001)
+        lines.append(
+            f'node_systemd_socket_current_connections{{name="{sock}"}} {current}'
+        )
+        lines.append(
+            f'node_systemd_socket_accepted_connections_total{{name="{sock}"}} {accepted}'
+        )
+        lines.append(
+            f'node_systemd_socket_refused_connections_total{{name="{sock}"}} {refused}'
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _scrape_text(url: str, dataset: str, instance: str) -> str:
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    text = resp.text
+    if dataset == "node.prometheus":
+        text = f"{text.rstrip()}\n{render_node_exporter_extras(instance)}"
+    return text
+
 
 def parse_metric_types(text: str) -> dict:
     """Metric name -> Prometheus type, from the exposition's ``# TYPE`` lines.
@@ -59,6 +241,19 @@ def parse_metric_types(text: str) -> dict:
         if m:
             out[m.group(1)] = m.group(2).lower()
     return out
+
+
+def apply_metric_type_overrides(dataset: str, metric_types: dict) -> dict:
+    """Promote known untyped exporter metrics to their dashboard-contract kind."""
+    overrides = _METRIC_TYPE_OVERRIDES.get(dataset) or {}
+    if not overrides:
+        return metric_types
+    merged = dict(metric_types)
+    for name, kind in overrides.items():
+        observed = str(merged.get(name, "")).strip().lower()
+        if observed in ("", "untyped"):
+            merged[name] = kind
+    return merged
 
 
 def parse_label_names(text: str) -> set:
@@ -157,6 +352,29 @@ def ensure_index_template(dataset: str, metric_types: dict, label_names=()) -> N
         print(f"  template {dataset}: {exc}", flush=True)
 
 
+def ensure_data_stream(dataset: str) -> None:
+    """Create the metrics data stream explicitly before the first bulk write.
+
+    Relying on auto-creation is brittle across Elasticsearch builds: some local
+    stacks create a plain index for ``metrics-<dataset>-<namespace>`` even when
+    the matching template advertises ``data_stream`` + ``index.mode=time_series``.
+    Once that happens every ``TS`` query fails with "is not a time series index"
+    and the dashboards validate against placeholders instead of real panels.
+    """
+    name = f"metrics-{dataset}-{NAMESPACE}"
+    try:
+        resp = requests.put(f"{ES_URL}/_data_stream/{name}", timeout=20)
+        if resp.status_code in (200, 201):
+            print(f"  data stream {dataset}: ready", flush=True)
+            return
+        if resp.status_code == 400 and "resource_already_exists_exception" in resp.text:
+            print(f"  data stream {dataset}: already exists", flush=True)
+            return
+        print(f"  data stream {dataset}: HTTP {resp.status_code} {resp.text[:160]}", flush=True)
+    except Exception as exc:
+        print(f"  data stream {dataset}: {exc}", flush=True)
+
+
 def parse_prometheus(text: str) -> dict:
     """Parse Prometheus text format. Returns {(labels_frozen): {metric: value}}."""
     groups: dict = defaultdict(dict)
@@ -237,6 +455,40 @@ def bulk_index(body: str) -> tuple[int, int]:
     # A document rejected into the failure store still reports 201, so counting
     # only HTTP status hides real data loss. Count it separately and loudly.
     diverted = sum(1 for item in items if item.get("failure_store") == "used")
+    if diverted:
+        for item in items:
+            if item.get("failure_store") != "used":
+                continue
+            reason = ((item.get("error") or {}).get("reason") or "").strip()
+            doc = item.get("data") or {}
+            labels = (doc.get("labels") or {}) if isinstance(doc, dict) else {}
+            metrics = sorted(((doc.get("metrics") or {}) if isinstance(doc, dict) else {}).keys())
+            print(
+                "  failure_store:",
+                {
+                    "labels": labels,
+                    "metrics": metrics,
+                    "reason": reason,
+                },
+                flush=True,
+            )
+    for item in items:
+        if item.get("status", 0) in (200, 201):
+            continue
+        reason = ((item.get("error") or {}).get("reason") or "").strip()
+        doc = item.get("data") or {}
+        labels = (doc.get("labels") or {}) if isinstance(doc, dict) else {}
+        metrics = sorted(((doc.get("metrics") or {}) if isinstance(doc, dict) else {}).keys())
+        print(
+            "  bulk_error:",
+            {
+                "status": item.get("status"),
+                "labels": labels,
+                "metrics": metrics,
+                "reason": reason,
+            },
+            flush=True,
+        )
     err = len(items) - ok
     return ok - diverted, err + diverted
 
@@ -263,11 +515,13 @@ def main() -> None:
     # before the first document creates the data stream with inferred mappings.
     for url, dataset, _job, _instance in TARGETS:
         try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
+            text = _scrape_text(url, dataset, _instance)
             ensure_index_template(
-                dataset, parse_metric_types(resp.text), parse_label_names(resp.text)
+                dataset,
+                apply_metric_type_overrides(dataset, parse_metric_types(text)),
+                parse_label_names(text),
             )
+            ensure_data_stream(dataset)
         except Exception as exc:
             print(f"  template {dataset}: could not scrape for types: {exc}", flush=True)
     for url, dataset, _job, _instance in TARGETS:
@@ -279,9 +533,8 @@ def main() -> None:
             # validated from this same rig and cannot regress because a
             # secondary exporter is unhealthy.
             try:
-                resp = requests.get(url, timeout=10)
-                resp.raise_for_status()
-                groups = parse_prometheus(resp.text)
+                text = _scrape_text(url, dataset, instance)
+                groups = parse_prometheus(text)
                 body = build_bulk_body(groups, ts, dataset, job, instance)
                 ok, err = bulk_index(body)
                 print(f"{ts} {dataset}: {len(groups)} series → indexed {ok}, errors {err}", flush=True)

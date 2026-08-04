@@ -74,6 +74,66 @@ _DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>[smhdw])$", re.IGNORECAS
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
+_UNRESOLVABLE_TEMPLATE_VARS = {"scope"}
+
+
+def _template_var_name(template_var: str) -> str:
+    return str(template_var or "").strip().lstrip("$").lstrip("@")
+
+
+def _log_template_var_requires_manual_filter(
+    template_var: str,
+    field_map: FieldMapProfile,
+) -> bool:
+    name = _template_var_name(template_var)
+    if not name:
+        return True
+    if name.lower() in _UNRESOLVABLE_TEMPLATE_VARS:
+        return True
+    return not bool(field_map.map_tag(name, context="log"))
+
+
+def _scope_template_vars_requiring_manual_controls(
+    scope_item: Any,
+    field_map: FieldMapProfile,
+    *,
+    context: str,
+) -> set[str]:
+    if isinstance(scope_item, TagFilter):
+        manual_vars: set[str] = set()
+        key_value = str(scope_item.value or "").strip()
+        for template_var in _TEMPLATE_VAR_RE.finditer(scope_item.key or ""):
+            token = template_var.group(0)
+            name = _template_var_name(token)
+            if not name or name.lower() in _UNRESOLVABLE_TEMPLATE_VARS:
+                manual_vars.add(token)
+                continue
+            if key_value not in {"", "*"}:
+                manual_vars.add(token)
+                continue
+            if not field_map.map_tag(name, context=context):
+                manual_vars.add(token)
+        for template_var in _TEMPLATE_VAR_RE.finditer(scope_item.value or ""):
+            token = template_var.group(0)
+            name = _template_var_name(token)
+            if not name or name.lower() in _UNRESOLVABLE_TEMPLATE_VARS:
+                manual_vars.add(token)
+                continue
+            if not field_map.map_tag(name, context=context):
+                manual_vars.add(token)
+        return manual_vars
+    if isinstance(scope_item, ScopeBoolOp):
+        manual_vars: set[str] = set()
+        for child in scope_item.children:
+            manual_vars.update(
+                _scope_template_vars_requiring_manual_controls(
+                    child,
+                    field_map,
+                    context=context,
+                )
+            )
+        return manual_vars
+    return set()
 
 
 class _RequiresManualError(ValueError):
@@ -194,13 +254,20 @@ def translate_widget(
             for match in _TEMPLATE_VAR_RE.finditer(query.raw_query or "")
         }
     )
-    if log_template_vars:
+    unresolved_log_template_vars = [
+        template_var
+        for template_var in log_template_vars
+        if _log_template_var_requires_manual_filter(template_var, field_map)
+    ]
+    if unresolved_log_template_vars:
         variable_label = (
             "template variable"
-            if len(log_template_vars) == 1
+            if len(unresolved_log_template_vars) == 1
             else "template variables"
         )
-        variables = ", ".join(repr(variable) for variable in log_template_vars)
+        variables = ", ".join(
+            repr(variable) for variable in unresolved_log_template_vars
+        )
         detail = (
             f"Log filter with {variable_label} {variables} was omitted because "
             "Datadog log template substitutions cannot be bound exactly in the "
@@ -1013,9 +1080,13 @@ def _build_metric_query_spec(
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
-        template_vars = _scope_item_template_vars(filt)
-        if template_vars:
-            if any(variable.lower() == "$scope" for variable in template_vars):
+        manual_template_vars = _scope_template_vars_requiring_manual_controls(
+            filt,
+            field_map,
+            context="metric",
+        )
+        if manual_template_vars:
+            if any(variable.lower() == "$scope" for variable in manual_template_vars):
                 _append_unique_warning(
                     result,
                     "Datadog $scope template variable cannot be represented by a "
@@ -1029,7 +1100,9 @@ def _build_metric_query_spec(
                     "apply specific values via Kibana dashboard controls",
                 )
         if isinstance(filt, TagFilter):
-            if _has_template_vars(filt.value):
+            if manual_template_vars & {
+                match.group(0) for match in _TEMPLATE_VAR_RE.finditer(filt.value or "")
+            }:
                 _append_unique_warning(
                     result,
                     "Scope filter with template variable broadened to LIKE pattern; "

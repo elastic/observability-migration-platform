@@ -19,6 +19,8 @@ match:
 #          (skipped when omitted)
 #   nth    0-based index among the panels that matched title/kind, in section
 #          order (defaults to 0)
+#   display_title  optional polished title to show in Kibana after a match is
+#          found; matching still keys off the stable emitted title above
 #
 # Emitted titles, not Datadog source titles, are the keys here: the generator
 # de-duplicates and back-fills titles before this pack is applied, so a repeated
@@ -38,10 +40,12 @@ sections:
     panels:
       - kind: markdown
         nth: 0
+        display_title: "Dashboard overview"
         size: {w: 24, h: 8}
         position: {x: 0, y: 0}
       - kind: markdown
         nth: 1
+        display_title: "Further reading"
         size: {w: 24, h: 8}
         position: {x: 24, y: 0}
 
@@ -67,6 +71,7 @@ sections:
         position: {x: 0, y: 6}
       - kind: markdown
         nth: 0
+        display_title: "Replication note"
         size: {w: 24, h: 8}
         position: {x: 24, y: 6}
 
@@ -79,6 +84,7 @@ sections:
         position: {x: 0, y: 0}
       - kind: markdown
         nth: 0
+        display_title: "Latency note"
         size: {w: 12, h: 12}
         position: {x: 36, y: 0}
       # Row 1: Cache hit rate stat + line side-by-side
@@ -86,6 +92,7 @@ sections:
         size: {w: 12, h: 6}
         position: {x: 0, y: 12}
       - title: "Cache hit rate (widget 21)"
+        display_title: "Cache hit rate trend"
         size: {w: 36, h: 12}
         position: {x: 12, y: 12}
       # Row 2: Slowlog tables side-by-side
@@ -113,6 +120,7 @@ sections:
         position: {x: 0, y: 0}
       - kind: markdown
         nth: 0
+        display_title: "Memory note"
         size: {w: 12, h: 12}
         position: {x: 36, y: 0}
       # Row 1: Evictions + Total allocated side-by-side
@@ -127,6 +135,7 @@ sections:
         size: {w: 12, h: 6}
         position: {x: 0, y: 24}
       - title: "Fragmentation ratio (widget 27)"
+        display_title: "Fragmentation ratio trend"
         size: {w: 36, h: 12}
         position: {x: 12, y: 24}
 
@@ -136,6 +145,7 @@ sections:
       # Row 0: explanatory note (full width)
       - kind: markdown
         nth: 0
+        display_title: "Activity note"
         size: {w: 48, h: 6}
         position: {x: 0, y: 0}
       # Row 1: Commands/sec stat + Connected clients line
@@ -147,6 +157,7 @@ sections:
         position: {x: 12, y: 6}
       # Row 2: Blocked clients + Connected replicas
       - title: "Blocked clients (widget 29)"
+        display_title: "Blocked clients trend"
         size: {w: 24, h: 12}
         position: {x: 0, y: 18}
       - title: "Connected replicas"
@@ -163,6 +174,7 @@ sections:
       # Row 0: note (full width)
       - kind: markdown
         nth: 0
+        display_title: "Keyspace note"
         size: {w: 48, h: 6}
         position: {x: 0, y: 0}
       # Row 1: Current total stat + Total keys line

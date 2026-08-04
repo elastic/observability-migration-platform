@@ -117,6 +117,7 @@ from .rollout import build_rollout_plan, generate_review_queue, save_rollout_pla
 from .rules import build_rule_catalog, load_python_plugins, load_rule_pack_files, resolve_pack_for_dashboard
 from .runtime_features import (
     ESQL_NAMED_PARAM_BINDING,
+    KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_COMMAND_V0,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
@@ -263,6 +264,17 @@ def parse_args(argv: list[str] | None = None):
             "(emits queries that error against a cluster lacking the command); "
             "'esql' disables native PROMQL entirely so every panel uses the ES|QL "
             "translator."
+        ),
+    )
+    parser.add_argument(
+        "--kibana-promql-control-params",
+        action="store_true",
+        help=(
+            "Opt into native PROMQL for Grafana panels whose label matchers bind "
+            "dashboard controls inside the PromQL expression "
+            "(for example {instance=~\"$instance\"}). Use only on Kibana builds "
+            "you have verified to forward control values into inner PROMQL "
+            "expressions; the default remains the safer ES|QL fallback."
         ),
     )
     parser.add_argument(
@@ -1480,6 +1492,20 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
             "  Target ES|QL named-parameter binding: "
             f"{_runtime_feature_status_label(esql_state)}"
         )
+    if getattr(args, "kibana_promql_control_params", False):
+        set_runtime_feature(
+            rule_pack,
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            supported=True,
+            source="user",
+            confidence="assumed",
+            level="runtime",
+            reason=(
+                "user opted into Kibana forwarding dashboard control params into "
+                "inner PROMQL expressions"
+            ),
+        )
+        print("  Kibana inner-PROMQL control params: enabled by user override")
 
     native = _resolve_native_promql(args, runtime_profile)
     if native:
@@ -2535,6 +2561,8 @@ def main(argv: list[str] | None = None):
                 kibana_url=args.kibana_url,
                 space_id=upload_space,
                 kibana_api_key=args.kibana_api_key,
+                es_url=args.es_url,
+                es_api_key=args.es_api_key,
                 verify=verify,
                 native_dashboard=native_dashboard,
                 native_dashboard_stats=getattr(result, "native_dashboard_stats", None),

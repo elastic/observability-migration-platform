@@ -23,7 +23,11 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.targets.kibana.emit.esql_utils import extract_esql_columns
+from observability_migration.targets.kibana.emit.esql_utils import (
+    extract_esql_columns,
+    extract_esql_shape,
+    is_time_like_output_field,
+)
 
 
 def detect_space_id_from_kibana_url(kibana_url):
@@ -57,6 +61,8 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
     esql_config = yaml_panel.get("esql")
     if not isinstance(esql_config, dict):
         return False
+    old_shape = extract_esql_shape(old_query or "")
+    new_shape = extract_esql_shape(new_query or "")
     old_metric, old_by_cols = extract_esql_columns(old_query or "")
     new_metric, new_by_cols = extract_esql_columns(new_query or "")
     changed = False
@@ -69,6 +75,66 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
             container["field"] = new_value
             changed = True
 
+    def _sync_dimension(field_name):
+        nonlocal changed
+        if not field_name:
+            return
+        dimension = esql_config.get("dimension")
+        if not isinstance(dimension, dict):
+            esql_config["dimension"] = {"field": field_name}
+            dimension = esql_config["dimension"]
+            changed = True
+        elif dimension.get("field") != field_name:
+            dimension["field"] = field_name
+            changed = True
+        if is_time_like_output_field(field_name):
+            if dimension.get("data_type") != "date":
+                dimension["data_type"] = "date"
+                changed = True
+        elif "data_type" in dimension:
+            dimension.pop("data_type", None)
+            changed = True
+
+    # Long-form XY queries keep a single numeric metric column (`value`) plus a
+    # synthetic series identity column (`series_group`). When post-validation
+    # swaps a panel's query to that shape, field-by-field replacement mutates
+    # the existing multi-metric config into an invalid/weak XY contract
+    # (`series_group` becomes a y-metric). Rebuild the panel surface explicitly.
+    projected = list(new_shape.projected_fields or [])
+    new_time_field = next((field for field in (new_shape.time_fields or []) if field in projected), "")
+    if (
+        esql_config.get("type") in {"line", "area", "bar"}
+        and "series_group" in projected
+        and "value" in projected
+        and new_time_field
+    ):
+        _sync_dimension(new_time_field)
+        breakdown = esql_config.get("breakdown")
+        if not isinstance(breakdown, dict):
+            esql_config["breakdown"] = {"field": "series_group"}
+            changed = True
+        elif breakdown.get("field") != "series_group":
+            breakdown["field"] = "series_group"
+            changed = True
+        format_cfg = None
+        metrics = esql_config.get("metrics")
+        if isinstance(metrics, list):
+            for item in metrics:
+                if isinstance(item, dict) and isinstance(item.get("format"), dict):
+                    format_cfg = copy.deepcopy(item["format"])
+                    break
+        new_metric_item = {"field": "value"}
+        if format_cfg:
+            new_metric_item["format"] = format_cfg
+        if esql_config.get("metrics") != [new_metric_item]:
+            esql_config["metrics"] = [new_metric_item]
+            changed = True
+        breakdowns = esql_config.get("breakdowns")
+        if isinstance(breakdowns, list) and breakdowns != [{"field": "series_group"}]:
+            esql_config["breakdowns"] = [{"field": "series_group"}]
+            changed = True
+        return changed
+
     for key in ("primary", "metric"):
         _replace_field(esql_config.get(key), old_metric, new_metric)
 
@@ -78,16 +144,7 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
             _replace_field(item, old_metric, new_metric)
 
     if old_by_cols and new_by_cols:
-        dimension = esql_config.get("dimension")
-        _replace_field(dimension, old_by_cols[0], new_by_cols[0])
-        if isinstance(dimension, dict):
-            if dimension.get("field") == "time_bucket":
-                if dimension.get("data_type") != "date":
-                    dimension["data_type"] = "date"
-                    changed = True
-            elif "data_type" in dimension:
-                dimension.pop("data_type", None)
-                changed = True
+        _sync_dimension(new_by_cols[0])
 
     if len(old_by_cols) > 1:
         breakdown = esql_config.get("breakdown")

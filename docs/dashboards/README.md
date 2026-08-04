@@ -10,7 +10,7 @@ Dashboard authoring flow for local migration work:
   mappers accept.
   If `npx` is available, it also writes `docs/dashboards/schema.toon` for easier schema browsing.
 
-- `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>`
+- `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema`
   Fetches/checks the typed Kibana Dashboards API OpenAPI bundle for
   `/api/dashboards`. This is the native API schema refresh path — and the one
   that governs what actually ships. It is separate
@@ -20,10 +20,11 @@ Dashboard authoring flow for local migration work:
   1,000 top-level dashboard items, 1,000 panels per section, 100 pinned
   controls, and 1,000 total panels/sections/controls.
 
-- `KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema`
-  CI-friendly wrapper around the same native schema check. It requires the URL
-  or local path explicitly so ordinary lint/test runs do not depend on live
-  network availability.
+- `make check-native-schema`
+  CI-friendly wrapper around the same native schema check. By default it checks
+  the live external Dashboards API bundle. Override
+  `KIBANA_DASHBOARDS_API_SCHEMA_URL` when you want to validate against a pinned
+  local copy or a different external bundle.
 
 - **The dashboard-YAML lint stage and the compiled-layout validation stage were
   removed**, along with `obs-migrate compile` and `migrate

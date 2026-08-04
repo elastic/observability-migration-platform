@@ -71,7 +71,38 @@ panel:
     - title_match: "Memory Usage"
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE labels.instance RLIKE ?instance
-        | STATS value = MAX(LAST_OVER_TIME(metrics.redis_memory_used_bytes)) / MAX(LAST_OVER_TIME(metrics.redis_memory_max_bytes)) * 100.0
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
+        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL value = (used / max) * 100.0
+        | STATS value = LAST(value, time_bucket)
+        | KEEP value
       status_override: migrated
+    # Network I/O is a simple two-counter panel: input and output are display
+    # aliases, not real labels, so the curated query keeps them as two value
+    # columns rather than a phantom breakdown field.
+    - title_match: "Network I/O"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?instance == "" OR ({{control:instance}} RLIKE ?instance OR ({{control:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
+        | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | KEEP time_bucket, input, output
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    - title_match: "Uptime"
+      position: {x: 0, y: 0}
+      size: {w: 6}
+    - title_match: "Clients"
+      position: {x: 6, y: 0}
+      size: {w: 6}
+    - title_match: "Memory Usage"
+      position: {x: 12, y: 0}
+      size: {w: 8}
+    - title_match: "Commands Executed / sec"
+      position: {x: 20, y: 0}
+      size: {w: 14}
+    - title_match: "Hits / Misses per Sec"
+      position: {x: 34, y: 0}
+      size: {w: 14}

@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-DEFAULT_SCHEMA_URL = "https://www.elastic.co/docs/api/doc/kibana.yaml"
+DEFAULT_SCHEMA_URL = "https://dashboardsapispec.kibana.dev/dashboards-openapi.yaml"
 DEFAULT_OUTPUT = Path("docs/dashboards/kibana_dashboards_api.openapi.yaml")
 
 
@@ -117,7 +117,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("KIBANA_DASHBOARDS_API_SCHEMA_URL", DEFAULT_SCHEMA_URL),
         help=(
             "OpenAPI URL or local file path. Defaults to %(default)s; override with "
-            "KIBANA_DASHBOARDS_API_SCHEMA_URL or this flag for the external full Dashboards API bundle."
+            "KIBANA_DASHBOARDS_API_SCHEMA_URL or this flag when checking a pinned local copy "
+            "or a different external Dashboards API bundle."
         ),
     )
     parser.add_argument(

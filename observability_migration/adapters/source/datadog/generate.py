@@ -44,6 +44,7 @@ from .models import (
 GRID_COLUMNS = 48
 KIBANA_MIN_VERSION = "9.5.0"
 MIN_PANEL_WIDTH = 8
+_UNRESOLVABLE_TEMPLATE_VARS = {"scope"}
 
 CHART_TYPE_MAP: dict[str, str] = {
     "xy": "line",
@@ -75,7 +76,18 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
     "_dd_type",
     "_dd_display_type",
     "_dd_widget_id",
+    "_curated_match_title",
     "_markdown_role",
+)
+_NOOP_SCOPE_METRIC_WARNING = (
+    "Datadog $scope template variable cannot be represented by a "
+    "single Kibana control and was omitted; recreate the scope "
+    "filters manually in Kibana"
+)
+_NOOP_SCOPE_LOG_WARNING = (
+    "Log filter with template variable '$scope' was omitted because "
+    "Datadog log template substitutions cannot be bound exactly in the "
+    "translated query; recreate the filter in Kibana"
 )
 
 
@@ -105,12 +117,18 @@ def _curated_spec_candidates(
     the presentation kind when ``kind`` is given; an omitted selector matches
     anything, so ``kind: markdown`` + ``nth: 1`` means "the second markdown panel
     in this section" regardless of its generated title.
+
+    Curated packs may later polish a matched panel's visible title, so title
+    matching keys off the stable pre-polish emitted title when present.
     """
     want_title = str(layout_entry.get("title", "") or "")
+    display_title = str(layout_entry.get("display_title", "") or "")
     want_kind = str(layout_entry.get("kind", "") or "")
     candidates: list[dict[str, Any]] = []
     for leaf in _iter_leaf_panels(sec_panels):
-        if want_title and leaf.get("title", "") != want_title:
+        match_title = str(leaf.get("_curated_match_title") or leaf.get("title", "") or "")
+        visible_title = str(leaf.get("title", "") or "")
+        if want_title and match_title != want_title and visible_title != display_title:
             continue
         if want_kind and _panel_presentation_kind(leaf) != want_kind:
             continue
@@ -160,7 +178,7 @@ def _apply_curated_layout(
     pack: dict[str, Any],
     results: list[TranslationResult] | None = None,
 ) -> None:
-    """Apply size/position overrides from a curated Datadog pack.
+    """Apply size/position/title overrides from a curated Datadog pack.
 
     Each ``sections[].panels[]`` spec selects one leaf panel by ``title`` and/or
     ``kind`` plus ``nth`` (see :func:`_curated_spec_candidates`). Panels no spec
@@ -195,10 +213,20 @@ def _apply_curated_layout(
                 if nth < 0 or nth >= len(candidates):
                     continue
                 leaf = candidates[nth]
+                current_title = str(leaf.get("title", "") or "")
+                result = title_to_result.get(current_title)
                 if "size" in layout_entry:
                     leaf["size"] = dict(layout_entry["size"])
                 if "position" in layout_entry:
                     leaf["position"] = dict(layout_entry["position"])
+                display_title = str(layout_entry.get("display_title", "") or "").strip()
+                if display_title:
+                    leaf["title"] = display_title
+                    if result is not None:
+                        result.title = display_title
+                        if title_to_result.get(current_title) is result:
+                            title_to_result.pop(current_title, None)
+                        title_to_result[display_title] = result
                 covered.add(id(leaf))
             _warn_uncovered_curated_panels(
                 dashboard_name,
@@ -227,7 +255,8 @@ def _build_dashboard_yaml_doc(
     """
     panels = []
     result_map = {r.widget_id: r for r in results}
-    _warn_mixed_template_variable_usage(dashboard, result_map)
+    _suppress_noop_scope_warnings(dashboard, result_map)
+    _warn_mixed_template_variable_usage(dashboard, result_map, field_map)
 
     for widget in dashboard.widgets:
         result = result_map.get(widget.id)
@@ -255,7 +284,6 @@ def _build_dashboard_yaml_doc(
             p.pop("position", None)
 
     _resolve_overlaps(non_section)
-    _strip_datadog_private_keys(panels)
 
     doc: dict[str, Any] = {
         "dashboards": [
@@ -294,6 +322,8 @@ def _build_dashboard_yaml_doc(
     curated_pack = load_curated_pack(dashboard.title)
     if curated_pack:
         _apply_curated_layout(doc, curated_pack, results)
+
+    _strip_datadog_private_keys(panels)
 
     return doc
 
@@ -481,6 +511,7 @@ def _ensure_unique_leaf_panel_titles(
 
         used.add(title)
         panel["title"] = title
+        panel["_curated_match_title"] = title
         if result is not None:
             result.title = title
 
@@ -524,15 +555,9 @@ def _build_controls_from_template_vars(
     Maps each template variable's tag to an ES field via the field map and
     emits an ``options`` control that Kibana applies as a dashboard-level filter.
     """
-    _UNRESOLVABLE_VARS = {"scope"}
-
     controls: list[dict[str, Any]] = []
     for tv in template_vars:
-        tag = tv.tag or tv.prefix
-        if not tag:
-            if tv.name.lower() in _UNRESOLVABLE_VARS:
-                continue
-            tag = tv.name
+        tag = _resolved_template_variable_tag(tv)
         if not tag:
             continue
         # A template-variable prefix can use Datadog's "@tag" facet syntax
@@ -541,7 +566,6 @@ def _build_controls_from_template_vars(
         # to a literal "@host" field that doesn't exist, leaving an empty
         # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
         # is a real field name in the log-query path.)
-        tag = tag.lstrip("@")
         context = _template_variable_query_context(tv.name, widgets or [])
         control_data_view = logs_data_view if context == "log" else data_view
         es_field = field_map.map_tag(tag, context=context) if field_map else tag
@@ -575,6 +599,29 @@ def _tag_was_remapped(source_tag: str, control_field: str) -> bool:
     if not source or not field:
         return False
     return field not in {source, f"{source}.keyword"}
+
+
+def _resolved_template_variable_tag(variable: TemplateVariable) -> str | None:
+    tag = str(variable.tag or variable.prefix or "").strip()
+    if not tag:
+        if variable.name.lower() in _UNRESOLVABLE_TEMPLATE_VARS:
+            return None
+        tag = str(variable.name or "").strip()
+    tag = tag.lstrip("@")
+    return tag or None
+
+
+def _template_variable_control_field(
+    variable: TemplateVariable,
+    field_map: FieldMapProfile | None,
+    *,
+    context: str,
+) -> str | None:
+    tag = _resolved_template_variable_tag(variable)
+    if not tag:
+        return None
+    es_field = field_map.map_tag(tag, context=context) if field_map else tag
+    return _options_list_field_name(es_field)
 
 
 def _template_variable_query_context(
@@ -618,6 +665,7 @@ def _template_variable_usage(
 def _warn_mixed_template_variable_usage(
     dashboard: NormalizedDashboard,
     result_map: dict[str, TranslationResult],
+    field_map: FieldMapProfile | None = None,
 ) -> None:
     for variable in dashboard.template_variables:
         log_widget_ids, metric_widget_ids = _template_variable_usage(
@@ -626,11 +674,24 @@ def _warn_mixed_template_variable_usage(
         )
         if not log_widget_ids or not metric_widget_ids:
             continue
+        metric_field = _template_variable_control_field(
+            variable,
+            field_map,
+            context="metric",
+        )
+        log_field = _template_variable_control_field(
+            variable,
+            field_map,
+            context="log",
+        )
+        if metric_field == log_field:
+            continue
         detail = (
             f"Template variable '${variable.name}' is used by both metric and "
-            "log widgets; the migrated options-list control targets the metrics "
-            "data view because one Kibana control cannot target both data views. "
-            "Recreate a separate logs control or filter in Kibana"
+            f"log widgets and maps to different Kibana fields ({metric_field} "
+            f"for metrics, {log_field} for logs); the migrated options-list "
+            "control targets the metrics data view. Recreate a separate logs "
+            "control or filter in Kibana"
         )
         for widget_id in log_widget_ids | metric_widget_ids:
             result = result_map.get(widget_id)
@@ -642,6 +703,37 @@ def _warn_mixed_template_variable_usage(
                 result.semantic_losses.append(detail)
             if result.status == "ok":
                 result.status = "warning"
+
+
+def _template_variable_is_noop_scope(variable: TemplateVariable) -> bool:
+    if str(variable.name or "").lower() != "scope":
+        return False
+    if str(variable.default or "").strip() != "*":
+        return False
+    if any(str(value or "").strip() not in {"", "*"} for value in variable.defaults):
+        return False
+    return not any(str(value or "").strip() for value in variable.available_values)
+
+
+def _suppress_noop_scope_warnings(
+    dashboard: NormalizedDashboard,
+    result_map: dict[str, TranslationResult],
+) -> None:
+    if not any(_template_variable_is_noop_scope(variable) for variable in dashboard.template_variables):
+        return
+    for result in result_map.values():
+        result.warnings = [
+            warning
+            for warning in result.warnings
+            if warning not in {_NOOP_SCOPE_METRIC_WARNING, _NOOP_SCOPE_LOG_WARNING}
+        ]
+        result.semantic_losses = [
+            loss
+            for loss in result.semantic_losses
+            if loss not in {_NOOP_SCOPE_METRIC_WARNING, _NOOP_SCOPE_LOG_WARNING}
+        ]
+        if result.status == "warning" and not result.warnings:
+            result.status = "ok"
 
 
 def _template_var_preselected(tv: TemplateVariable) -> list[str]:

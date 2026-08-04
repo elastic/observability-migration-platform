@@ -23,6 +23,7 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "title": getattr(result, "dashboard_title", ""),
             "source_file": getattr(result, "source_file", ""),
             "artifact_stem": getattr(result, "artifact_stem", ""),
+            "curated_pack": getattr(result, "curated_pack_name", ""),
             "native_artifact_path": getattr(result, "native_artifact_path", ""),
             "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),

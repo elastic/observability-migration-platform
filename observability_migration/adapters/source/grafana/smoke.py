@@ -41,6 +41,10 @@ BROWSER_ERROR_PATTERNS = (
     r"No matching data view",
     r"Embeddable factory",
 )
+BROWSER_EMPTY_STATE_PATTERNS = (
+    r'data-test-subj=["\']emptyPlaceholder["\'][^>]*>.*?<p>\s*No results found\s*</p>',
+    r'class=["\'][^"\']*echMetricText__value[^"\']*["\'][^>]*>\s*N/A\s*<',
+)
 
 
 def parse_args():
@@ -749,7 +753,14 @@ def capture_segmented_screenshots(saved_object, args):
 def _browser_audit_issues(html):
     issues = []
     for pattern in BROWSER_ERROR_PATTERNS:
-        match = re.search(pattern, html, flags=re.IGNORECASE)
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
+        if snippet:
+            issues.append(snippet[:240])
+    for pattern in BROWSER_EMPTY_STATE_PATTERNS:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
         if not match:
             continue
         snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()

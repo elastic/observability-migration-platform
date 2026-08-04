@@ -435,6 +435,48 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertNotIn("service:redis", fields)
         self.assertNotIn("status:error", fields)
 
+    def test_contract_drops_flat_metric_that_conflicts_with_dotted_metric_object(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "verification_packets.json").write_text(
+                json.dumps(
+                    {
+                        "packets": [
+                            {
+                                "dashboard": "Redis",
+                                "panel": "Memory Usage",
+                                "source_query": "",
+                                "query_ir": {
+                                    "source_language": "promql",
+                                    "target_index": "metrics-prometheus-default",
+                                    "target_query": (
+                                        "TS metrics-prometheus-default\n"
+                                        "| WHERE metrics.redis_memory_used_bytes IS NOT NULL "
+                                        "OR metrics.redis_memory_max_bytes IS NOT NULL\n"
+                                        "| STATS used = AVG(LAST_OVER_TIME(metrics.redis_memory_used_bytes)), "
+                                        "max = AVG(LAST_OVER_TIME(metrics.redis_memory_max_bytes)) "
+                                        "BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n"
+                                        "| EVAL value = (used / max) * 100.0\n"
+                                        "| STATS value = LAST(value, time_bucket)\n"
+                                        "| KEEP value"
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        stream = contract["streams"]["metrics-prometheus-default"]
+        self.assertIn("metrics.redis_memory_used_bytes", stream["fields"])
+        self.assertIn("metrics.redis_memory_max_bytes", stream["fields"])
+        self.assertNotIn("metrics", stream["fields"])
+        self.assertNotIn("metrics", stream["requirements"][0]["metrics"])
+
     def test_promql_discovery_handles_bare_metrics_ranges_and_negative_matchers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = Path(tmpdir) / "dashboards"

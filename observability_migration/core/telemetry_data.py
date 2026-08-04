@@ -457,11 +457,22 @@ def _metric_families(
 
     # Union the dimensions each metric co-occurs with across all requirements.
     metric_dims: dict[str, set[str]] = {name: set() for name in metric_fields}
+    stream_fields = stream.get("fields") or {}
     for requirement in requirements:
-        dims = set(requirement.get("dimensions") or []) | set(requirement.get("group_fields") or [])
+        raw_dims = (
+            set(requirement.get("dimensions") or [])
+            | set(requirement.get("group_fields") or [])
+            | set(requirement.get("control_fields") or [])
+            | set((requirement.get("required_values") or {}).keys())
+            | set((requirement.get("required_patterns") or {}).keys())
+        )
+        dims: set[str] = set()
+        for field_name in raw_dims:
+            dims.update(_requirement_dimension_targets(field_name, stream_fields, metric_fields))
         for metric_name in requirement.get("metrics") or []:
-            if metric_name in metric_dims:
-                metric_dims[metric_name] |= dims
+            matched = _requirement_metric_targets(metric_name, metric_fields)
+            for target_name in matched:
+                metric_dims[target_name] |= dims
     # A ratio numerator must travel with its denominator (same document) and
     # share its dimensions so the bound holds per series.
     for metric_name, info in metric_fields.items():
@@ -530,6 +541,60 @@ def _metric_families(
         combos = _dimension_combinations(scoped, max_combinations=max_combinations)
         families.append((family_metrics, combos, _sorted_le_values(combos)))
     return families
+
+
+def _requirement_metric_targets(
+    metric_name: str,
+    metric_fields: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Metric field(s) in ``metric_fields`` that satisfy one requirement name.
+
+    Requirements may carry source-side metric names (for example
+    ``redis_commands_total``) while the seeded stream holds the translated target
+    field (for example ``metrics.redis_commands_total``). When a direct match is
+    absent, try the conservative target-side aliases first and only then a
+    unique dotted-suffix match.
+    """
+    name = str(metric_name or "").strip()
+    if not name:
+        return []
+    matches: list[str] = []
+    if name in metric_fields:
+        matches.append(name)
+    for candidate in (f"metrics.{name}", f"prometheus.metrics.{name}"):
+        if candidate in metric_fields:
+            matches.append(candidate)
+    if matches:
+        return _unique(matches)
+    suffix = f".{name}"
+    matches = sorted(field_name for field_name in metric_fields if field_name.endswith(suffix))
+    return matches[:1] if len(matches) == 1 else []
+
+
+def _requirement_dimension_targets(
+    field_name: str,
+    stream_fields: dict[str, dict[str, Any]],
+    metric_fields: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Dimension field(s) in ``stream_fields`` that satisfy one requirement name."""
+    name = str(field_name or "").strip()
+    if not name:
+        return []
+    matches: list[str] = []
+    if name in stream_fields and name not in metric_fields:
+        matches.append(name)
+    for candidate in (f"labels.{name}", f"prometheus.labels.{name}"):
+        if candidate in stream_fields and candidate not in metric_fields:
+            matches.append(candidate)
+    if matches:
+        return _unique(matches)
+    suffix = f".{name}"
+    matches = sorted(
+        actual_name
+        for actual_name in stream_fields
+        if actual_name not in metric_fields and actual_name.endswith(suffix)
+    )
+    return matches[:1] if len(matches) == 1 else []
 
 
 def _scoped_stream(stream: dict[str, Any], dimensions: frozenset[str], metrics: set[str]) -> dict[str, Any]:

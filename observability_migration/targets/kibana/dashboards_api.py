@@ -72,6 +72,7 @@ import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
@@ -105,6 +106,8 @@ _MAX_DASHBOARD_ITEMS = MAX_DASHBOARD_ITEMS
 _MAX_SECTION_PANELS = MAX_SECTION_PANELS
 _MAX_PINNED_CONTROLS = MAX_PINNED_CONTROLS
 _MAX_TOTAL_ITEMS = MAX_TOTAL_ITEMS
+_CONTROL_QUERY_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)([A-Za-z_][A-Za-z0-9_]*)")
+_CONTROL_QUERY_WINDOW = timedelta(hours=1)
 
 # Partition charts (pie/treemap/waffle) reject a ``group_by`` with more than 3
 # non-collapsed dimensions: "The number of non-collapsed group_by dimensions
@@ -1785,6 +1788,25 @@ def _selected_options(control: dict[str, Any]) -> list[str | int | float]:
     return []
 
 
+def _api_selected_options(control: dict[str, Any]) -> list[str | int | float]:
+    """Selected options to serialize into Kibana's Dashboard API payload.
+
+    Grafana query variables use ``.*`` as the source-side "All" sentinel. The
+    translator keeps that default so offline artifacts and parity helpers can
+    still reason about the intended matcher semantics. Kibana's control group,
+    however, treats ``selected_options: [".*"]`` as a literal option
+    selection, which filters the dashboard to zero rows for values controls.
+
+    For the native Dashboard API payload we therefore omit that one sentinel and
+    let the control start unselected instead of encoding an exact-match filter
+    that empties the dashboard on first render.
+    """
+    defaults = _selected_options(control)
+    if len(defaults) == 1 and defaults[0] == ".*":
+        return []
+    return defaults
+
+
 def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
     """Map a YAML dashboard ``control`` to a native ``pinned_panels`` item.
 
@@ -1796,7 +1818,7 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
         return None
     control_type = str(control.get("type") or "").lower()
     title = str(control.get("label") or control.get("title") or control.get("field") or control.get("variable_name") or "")
-    defaults = _selected_options(control)
+    defaults = _api_selected_options(control)
     if control_type in {"options", "option", "options_list", "options_list_control"}:
         data_view_id = str(control.get("data_view_id") or control.get("data_view") or "")
         field_name = str(control.get("field_name") or control.get("field") or "")
@@ -2345,6 +2367,183 @@ def _session(api_key: str = "", verify: bool | str = True) -> requests.Session:
     return session
 
 
+def _iso_z(moment: datetime) -> str:
+    text = moment.astimezone(UTC).isoformat(timespec="milliseconds")
+    return text.replace("+00:00", "Z")
+
+
+def _control_param_default(name: str, query: str, control_configs: dict[str, dict[str, Any]]) -> Any:
+    if name in {"_tstart", "_tend"}:
+        end = datetime.now(UTC)
+        start = end - _CONTROL_QUERY_WINDOW
+        return _iso_z(start if name == "_tstart" else end)
+    hinted = control_configs.get(name) or {}
+    if hinted.get("variable_type") == "multi_values":
+        return []
+    param = re.escape(name)
+    if re.search(rf"\bRLIKE\s+\?{param}\b", query, re.IGNORECASE):
+        return ".*"
+    if re.search(rf"(?:[+\-*/]\s*\?{param}\b|\?{param}\b\s*[+\-*/])", query):
+        return 0
+    return ""
+
+
+def _control_selected_options(config: dict[str, Any]) -> list[str | int | float]:
+    raw = config.get("selected_options")
+    if not isinstance(raw, list):
+        return []
+    return [
+        item for item in raw
+        if isinstance(item, str | int | float) and not isinstance(item, bool)
+    ]
+
+
+def _control_is_multi_value(config: dict[str, Any]) -> bool:
+    variable_type = str(config.get("variable_type") or "")
+    if variable_type == "multi_values":
+        return True
+    return config.get("single_select") is False
+
+
+def _control_binding_value(config: dict[str, Any]) -> Any:
+    selected = _control_selected_options(config)
+    if not selected:
+        return None
+    if _control_is_multi_value(config):
+        return list(selected)
+    return selected[0]
+
+
+def _control_query_params(
+    query: str,
+    bound_values: dict[str, Any],
+    control_configs: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    names: list[str] = []
+    for name in _CONTROL_QUERY_PARAM_RE.findall(query or ""):
+        if name not in names:
+            names.append(name)
+    params: list[dict[str, Any]] = []
+    for name in names:
+        if name in bound_values:
+            value = bound_values[name]
+        else:
+            value = _control_param_default(name, query, control_configs)
+        params.append({name: value})
+    return params
+
+
+def _query_control_options(
+    session: requests.Session,
+    es_url: str,
+    query: str,
+    *,
+    bound_values: dict[str, Any],
+    control_configs: dict[str, dict[str, Any]],
+    timeout: int,
+) -> list[str | int | float]:
+    if not es_url or not query:
+        return []
+    payload: dict[str, Any] = {"query": str(query).strip()}
+    params = _control_query_params(query, bound_values, control_configs)
+    if params:
+        payload["params"] = params
+    try:
+        response = session.post(
+            f"{es_url.rstrip('/')}/_query",
+            json=payload,
+            params={"format": "json"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return []
+        body = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+    options: list[str | int | float] = []
+    for row in body.get("values") or []:
+        if not isinstance(row, list) or not row:
+            continue
+        value = row[0]
+        if not isinstance(value, str | int | float) or isinstance(value, bool):
+            continue
+        if value not in options:
+            options.append(value)
+    return options
+
+
+def _hydrated_selected_options(
+    options: list[str | int | float],
+    config: dict[str, Any],
+) -> list[str | int | float]:
+    if not options:
+        return []
+    concrete = [option for option in options if option != ".*"]
+    if _control_is_multi_value(config):
+        return concrete or options[:1]
+    if concrete:
+        return [concrete[0]]
+    return [options[0]]
+
+
+def _hydrate_values_query_control_defaults(
+    payload: dict[str, Any],
+    *,
+    es_url: str = "",
+    es_api_key: str = "",
+    verify: bool | str = True,
+    timeout: int = 15,
+) -> None:
+    """Populate empty ES|QL values-query defaults from live Elasticsearch data.
+
+    Kibana's Dashboard API cleanly stores ES|QL controls, but an empty
+    ``selected_options`` on first render does not reliably mean "unfiltered" for
+    values-query controls. For chained Grafana-style variables this leaves the
+    control bar blank and downstream panels empty even though the source
+    dashboard expected "All" or a concrete current value.
+
+    When live ES access is available, walk the controls in order, execute each
+    values-query control against ``/_query`` with the already-resolved earlier
+    control values bound as params, and seed ``selected_options`` with concrete
+    options before upload. Multi-value controls get every concrete option (the
+    Kibana-safe replacement for Grafana's ``.*`` all-sentinel); single-select
+    controls get the first concrete option.
+    """
+    controls = payload.get("pinned_panels")
+    if not es_url or not isinstance(controls, list):
+        return
+    bound_values: dict[str, Any] = {}
+    control_configs: dict[str, dict[str, Any]] = {}
+    session = _session(es_api_key, verify=verify)
+    for control in controls:
+        if not isinstance(control, dict):
+            continue
+        if control.get("type") != "esql_control":
+            continue
+        config = control.get("config")
+        if not isinstance(config, dict):
+            continue
+        variable_name = str(config.get("variable_name") or "")
+        if config.get("control_type") == "VALUES_FROM_QUERY" and not _control_selected_options(config):
+            query = str(config.get("esql_query") or "").strip()
+            options = _query_control_options(
+                session,
+                es_url,
+                query,
+                bound_values=bound_values,
+                control_configs=control_configs,
+                timeout=timeout,
+            )
+            selected = _hydrated_selected_options(options, config)
+            if selected:
+                config["selected_options"] = selected
+        if variable_name:
+            control_configs[variable_name] = config
+            bound = _control_binding_value(config)
+            if bound is not None:
+                bound_values[variable_name] = bound
+
+
 def upload_report(
     report: dict[str, Any],
     kibana_url: str,
@@ -2807,6 +3006,8 @@ def _upload_native_api_payload(
     title: str,
     kibana_url: str,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
@@ -2838,6 +3039,13 @@ def _upload_native_api_payload(
         mapped=mapped,
         unmapped=unmapped,
         unmapped_reasons=dict(reasons or {}),
+    )
+    _hydrate_values_query_control_defaults(
+        payload,
+        es_url=es_url,
+        es_api_key=es_api_key,
+        verify=verify,
+        timeout=min(timeout, 15),
     )
     res.unresolved_data_views = _resolve_pinned_panel_data_view_ids(
         payload, data_view_ids, data_view_inventory=data_view_inventory,
@@ -2879,6 +3087,8 @@ def upload_native_dashboard(
     kibana_url: str,
     *,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
@@ -2913,6 +3123,8 @@ def upload_native_dashboard(
         title=dashboard.title,
         kibana_url=kibana_url,
         api_key=api_key,
+        es_url=es_url,
+        es_api_key=es_api_key,
         space_id=space_id,
         verify=verify,
         timeout=timeout,
@@ -2969,6 +3181,8 @@ def upload_native_artifact(
     kibana_url: str,
     *,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
@@ -3018,6 +3232,8 @@ def upload_native_artifact(
         title=title,
         kibana_url=kibana_url,
         api_key=api_key,
+        es_url=es_url,
+        es_api_key=es_api_key,
         space_id=space_id,
         verify=verify,
         timeout=timeout,

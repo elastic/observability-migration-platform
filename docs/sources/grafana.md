@@ -106,6 +106,13 @@ assembly, and the derived native payload, not just query translation. It writes
 nothing to disk and returns just the `MigrationResult` (it no longer takes an
 `output_dir` or returns a YAML path).
 
+Bundled Grafana curated packs can change query semantics, variable/control
+behavior, and final Kibana geometry. Query fixes land through
+`panel.query_overrides`; scope-only or misleading variable controls can be
+suppressed or rewritten through curated-pack plugins; layout fixes land through
+`panel.layout_overrides` after the standard Kibana layout transform and before
+final overlap cleanup.
+
 The console pipeline is **5 stages**, not 7: `[1/5] Extracting dashboards`,
 `[2/5] Translating dashboards`, `[3/5] Verification-packet ES|QL validation`,
 `[4/5] Writing native Dashboard-as-Code review artifacts`, `[5/5] Generating
@@ -429,6 +436,12 @@ parameter (issue #131 / #132).
   matchers and warns — that path has no controls to bind.
 - A verified-unsupported probe state is never overridden: no unbound `?var` is
   uploaded.
+- Native `PROMQL` stays conservative by default even when Elasticsearch accepts
+  `?var` inside PromQL label matchers, because Kibana builds differ in whether
+  they forward dashboard control values into the *inner* PromQL expression. If
+  you have verified a Kibana build that does forward them, pass
+  `--kibana-promql-control-params` to keep those panels on the native `PROMQL`
+  path instead of the ES|QL `RLIKE ?var` fallback.
 
 Exercised by `build_label_matcher_param_canary` (also uploaded by
 `scripts/run_render_audit_local.sh`).

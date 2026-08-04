@@ -240,6 +240,8 @@ def print_report(results: list[DashboardResult]) -> None:
 
         print(f"\n  Dashboard: {dr.dashboard_title}")
         print(f"    Source:  {dr.source_file}")
+        if dr.curated_pack_name:
+            print(f"    Curated pack: {dr.curated_pack_name}")
         print(f"    Elements: {_elements_phrase(renderable_widgets, groups)}")
         print(f"    Renderable widgets: {renderable_widgets}")
         print(f"    OK: {dr.migrated}  Warning: {dr.migrated_with_warnings}  "
@@ -381,6 +383,7 @@ def save_detailed_report(
             "skipped": dr.skipped,
             "blocked": dr.blocked,
             "artifact_stem": dr.artifact_stem,
+            "curated_pack": dr.curated_pack_name,
             "native_artifact_path": dr.native_artifact_path,
             "ir_artifact_path": dr.ir_artifact_path,
             "runtime_summary": dr.build_runtime_summary(),

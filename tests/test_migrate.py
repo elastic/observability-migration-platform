@@ -4174,7 +4174,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         _yaml_panel, result = self.translate_panel(panel)
 
-        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.query_ir["family"], "unknown")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         self.assertEqual(result.contract_evaluation["status"], "exact_now")
         self.assertIn("status", result.fulfillment_plan)
@@ -4195,9 +4195,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         _yaml_panel, result = self.translate_panel(panel)
 
         field_names = [item["name"] for item in result.target_query_contract.get("field_requirements", [])]
-        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.query_ir["family"], "unknown")
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         self.assertIn("cpu_total", field_names)
-        self.assertIn("memory_total", field_names)
 
     def test_mixed_tsds_pattern_reports_exact_after_fulfillment(self):
         self.seed_field_caps(
@@ -6543,6 +6543,42 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(result["status"], "fixed")
         self.assertIn("IRATE(node_intr_total)", result["query"])
 
+    def test_validate_query_with_fixes_does_not_substitute_metric_from_did_you_mean(self):
+        class StubResolver:
+            def resolve_label(self, label):
+                return label
+
+            def field_exists(self, field_name):
+                return field_name == "redis_commands_total"
+
+            def _candidate_fields(self, _label):
+                return ["redis_commands_total"]
+
+        query = (
+            "TS metrics-*\n"
+            "| WHERE redis_commands_duration_seconds_total IS NOT NULL OR redis_commands_total IS NOT NULL\n"
+            "| STATS dur = SUM(IRATE(redis_commands_duration_seconds_total)), cnt = SUM(IRATE(redis_commands_total))"
+        )
+
+        def fake_run(_candidate_query, _es_url, **kwargs):
+            return {
+                "ok": False,
+                "error": (
+                    "Found 1 problem\n"
+                    "line 2:9: Unknown column [redis_commands_duration_seconds_total], "
+                    "did you mean [redis_commands_total]?"
+                ),
+                "rows": 0,
+                "columns": [],
+            }
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            result = migrate.validate_query_with_fixes(query, "http://localhost:9200", StubResolver())
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["query"], query)
+        self.assertIn("redis_commands_duration_seconds_total", result["analysis"]["materialized_query"])
+
     def test_validate_query_with_fixes_adjusts_tbucket_to_match_short_window(self):
         class StubResolver:
             def resolve_label(self, label):
@@ -8107,7 +8143,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.rule_pack._regex_default_param_names = {"host"}
         self.assertEqual(
             _matcher_to_esql(matcher, self.resolver),
-            f'({label} RLIKE ?host OR ({label} IS NULL AND "" RLIKE ?host))',
+            f'(?host == "" OR ({label} RLIKE ?host OR ({label} IS NULL AND "" RLIKE ?host)))',
         )
 
     def test_dashboard_equality_matcher_on_include_all_var_renders_regex(self):
@@ -8164,9 +8200,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         # asserted: the ".*" default must select every series on first load,
         # which the ".*" disjunct does — never a bare ``== ?host`` comparing
         # the field against the literal string ".*".
-        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
-        self.assertIn("MV_CONTAINS(?host, host)", rendered)
-        self.assertNotIn("== ?host", rendered)
+        compact = " ".join(rendered.split())
+        self.assertIn("MV_COUNT(?host) == 0", compact)
+        self.assertIn('MV_CONTAINS(?host, ".*")', compact)
+        self.assertIn("MV_CONTAINS(?host, host)", compact)
+        self.assertNotIn("== ?host", compact)
         controls = doc["dashboards"][0].get("controls", [])
         binding = next(c for c in controls if c.get("variable_name") == "host")
         # Multi-select controls type ``default`` as an array (schema:

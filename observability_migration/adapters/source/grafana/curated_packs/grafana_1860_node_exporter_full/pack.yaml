@@ -1,0 +1,189 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 1860
+# https://grafana.com/grafana/dashboards/1860-node-exporter-full/
+#
+# Source: rfmoz/node-exporter-full
+# Panels: 133 total
+#
+# This pack pins the suffix-less kernel/netstat counters that node_exporter
+# exposes as ``untyped`` and repairs the "Processes Memory" panel for Kibana by
+# treating the process-memory metrics as gauges and plotting their current
+# values directly.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    node_netstat_Icmp_InErrors: counter
+    node_netstat_Icmp_InMsgs: counter
+    node_netstat_Icmp_OutMsgs: counter
+    node_netstat_IpExt_InOctets: counter
+    node_netstat_IpExt_OutOctets: counter
+    node_netstat_Ip_Forwarding: counter
+    node_netstat_TcpExt_ListenDrops: counter
+    node_netstat_TcpExt_ListenOverflows: counter
+    node_netstat_TcpExt_SyncookiesFailed: counter
+    node_netstat_TcpExt_SyncookiesRecv: counter
+    node_netstat_TcpExt_SyncookiesSent: counter
+    node_netstat_TcpExt_TCPOFOQueue: counter
+    node_netstat_TcpExt_TCPSynRetrans: counter
+    node_netstat_Tcp_ActiveOpens: counter
+    node_netstat_Tcp_InErrs: counter
+    node_netstat_Tcp_InSegs: counter
+    node_netstat_Tcp_OutRsts: counter
+    node_netstat_Tcp_OutSegs: counter
+    node_netstat_Tcp_PassiveOpens: counter
+    node_netstat_Tcp_RetransSegs: counter
+    node_netstat_UdpLite_InErrors: counter
+    node_netstat_Udp_InDatagrams: counter
+    node_netstat_Udp_InErrors: counter
+    node_netstat_Udp_NoPorts: counter
+    node_netstat_Udp_OutDatagrams: counter
+    node_netstat_Udp_RcvbufErrors: counter
+    node_netstat_Udp_SndbufErrors: counter
+    node_vmstat_oom_kill: counter
+    node_vmstat_pgfault: counter
+    node_vmstat_pgmajfault: counter
+    node_vmstat_pgpgin: counter
+    node_vmstat_pgpgout: counter
+    node_vmstat_pswpin: counter
+    node_vmstat_pswpout: counter
+    process_virtual_memory_bytes: gauge
+    process_virtual_memory_max_bytes: gauge
+    process_resident_memory_bytes: gauge
+
+  label_candidates:
+    instance:
+      - labels.instance
+      - service.instance.id
+      - host.name
+    job:
+      - labels.job
+      - service.name
+
+panel:
+  query_overrides:
+    - title_match: "Processes Memory"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:process_virtual_memory_bytes:gauge}} IS NOT NULL OR {{metric:process_resident_memory_bytes:gauge}} IS NOT NULL OR {{metric:process_virtual_memory_max_bytes:gauge}} IS NOT NULL
+        | STATS Processes_virtual_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_bytes:gauge}})), Resident_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_resident_memory_bytes:gauge}})), Maximum_amount_of_virtual_memory_available_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | EVAL series_group = CONCAT(COALESCE(TO_STRING(`{{label:instance}}`), ""), " / ", COALESCE(TO_STRING(`{{label:job}}`), ""))
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Sys Load"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_load1:gauge}} IS NOT NULL OR {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS node_load1 = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(cpu_cores > 0, ((node_load1 * 100) / cpu_cores), NULL)
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+        | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85
+      status_override: migrated
+    - title_match: "Root FS Used"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE (labels.mountpoint == "/" OR labels.mountpoint == "/oldroot")
+        | WHERE (labels.fstype != "rootfs" OR (labels.fstype IS NULL AND "" != "rootfs"))
+        | WHERE {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
+        | STATS avail = MAX(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), size = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(size > 0, (100 - ((avail * 100) / size)), NULL)
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+        | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80
+      status_override: migrated
+    - title_match: "RootFS Total"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE (labels.mountpoint == "/" OR labels.mountpoint == "/oldroot")
+        | WHERE (labels.fstype != "rootfs" OR (labels.fstype IS NULL AND "" != "rootfs"))
+        | WHERE {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
+        | STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)
+        | KEEP node_filesystem_size_bytes
+      status_override: migrated
+    - title_match: "CPU Basic"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS node_cpu_seconds_total_A_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((labels.mode RLIKE ".*irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((labels.mode != "idle" OR (labels.mode IS NULL AND "" != "idle"))) and ((labels.mode != "user" OR (labels.mode IS NULL AND "" != "user"))) and ((labels.mode != "system" OR (labels.mode IS NULL AND "" != "system"))) and ((labels.mode != "iowait" OR (labels.mode IS NULL AND "" != "iowait"))) and ((labels.mode != "irq" OR (labels.mode IS NULL AND "" != "irq"))) and ((labels.mode != "softirq" OR (labels.mode IS NULL AND "" != "softirq"))), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL Busy_System = (node_cpu_seconds_total_A_lhs / node_cpu_seconds_total_A_rhs)
+        | EVAL Busy_User = (node_cpu_seconds_total_B_lhs / node_cpu_seconds_total_B_rhs)
+        | EVAL Busy_Iowait = (node_cpu_seconds_total_C_lhs / node_cpu_seconds_total_C_rhs)
+        | EVAL Busy_IRQs = (node_cpu_seconds_total_D_lhs / node_cpu_seconds_total_D_rhs)
+        | EVAL Busy_Other = (node_cpu_seconds_total_E_lhs / node_cpu_seconds_total_E_rhs)
+        | EVAL Idle = (node_cpu_seconds_total_F_lhs / node_cpu_seconds_total_F_rhs)
+        | EVAL __labels_ab = MV_APPEND("Busy System", "Busy User"), __labels_cd = MV_APPEND("Busy Iowait", "Busy IRQs")
+        | EVAL __labels = MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND("Busy Other", "Idle"))
+        | EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(Busy_System), ""), COALESCE(TO_STRING(Busy_User), "")), __values_cd = MV_APPEND(COALESCE(TO_STRING(Busy_Iowait), ""), COALESCE(TO_STRING(Busy_IRQs), ""))
+        | EVAL __values = MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(COALESCE(TO_STRING(Busy_Other), ""), COALESCE(TO_STRING(Idle), "")))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Memory Basic"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Cached_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Buffers_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SReclaimable_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemFree_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapFree_bytes:gauge}} IS NOT NULL
+        | STATS RAM_Total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), node_memory_Cached_bytes_B_rhs_lhs_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), node_memory_Buffers_bytes_B_rhs_lhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), node_memory_SReclaimable_bytes_B_rhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), node_memory_Cached_bytes_C_lhs_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), node_memory_Buffers_bytes_C_lhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), node_memory_SReclaimable_bytes_C_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), RAM_Free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), node_memory_SwapTotal_bytes_E_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), node_memory_SwapFree_bytes_E_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | EVAL RAM_Used = ((RAM_Total - RAM_Free) - ((node_memory_Cached_bytes_B_rhs_lhs_lhs + node_memory_Buffers_bytes_B_rhs_lhs_rhs) + node_memory_SReclaimable_bytes_B_rhs_rhs))
+        | EVAL RAM_Cache_Buffer = ((node_memory_Cached_bytes_C_lhs_lhs + node_memory_Buffers_bytes_C_lhs_rhs) + node_memory_SReclaimable_bytes_C_rhs)
+        | EVAL SWAP_Used = (node_memory_SwapTotal_bytes_E_lhs - node_memory_SwapFree_bytes_E_rhs)
+        | EVAL __labels_ab = MV_APPEND("RAM Used", "RAM Cache + Buffer"), __labels_cd = MV_APPEND("RAM Free", "SWAP Used")
+        | EVAL __labels = MV_APPEND(__labels_ab, __labels_cd)
+        | EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(RAM_Used), ""), COALESCE(TO_STRING(RAM_Cache_Buffer), "")), __values_cd = MV_APPEND(COALESCE(TO_STRING(RAM_Free), ""), COALESCE(TO_STRING(SWAP_Used), ""))
+        | EVAL __values = MV_APPEND(__values_ab, __values_cd)
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL metric_label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | EVAL series_group = metric_label
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic Basic"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS recv = AVG(IRATE({{metric:node_network_receive_bytes_total:counter}})), trans = AVG(IRATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
+        | EVAL recv = (recv * 8)
+        | EVAL trans = (trans * 8)
+        | EVAL __labels = MV_APPEND("recv", "trans"), __values = MV_APPEND(COALESCE(TO_STRING(recv), ""), COALESCE(TO_STRING(trans), ""))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL direction = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.device`), ""), " / ", direction)
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Disk Space Used Basic"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE (NOT (labels.device RLIKE "rootfs") OR (labels.device IS NULL AND NOT ("" RLIKE "rootfs")))
+        | WHERE {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
+        | STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint
+        | EVAL value = (100 - ((node_filesystem_avail_bytes_device_rootfs * 100) / node_filesystem_size_bytes_device_rootfs))
+        | EVAL series_group = COALESCE(TO_STRING(`labels.mountpoint`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated

@@ -268,6 +268,96 @@ class ControlOnlyDimensionSeedingTests(unittest.TestCase):
         seeded = {d.get("nodename") for d in docs if d.get("nodename")}
         self.assertTrue(seeded, "nodename was never seeded with a value")
 
+    def test_filter_only_dimension_scopes_metric_family(self):
+        # A label that appears only in the query filter (not BY) must still
+        # travel with the metric family; otherwise the seeded docs cannot match
+        # the dashboard control that filters on it.
+        stream = {
+            "fields": {
+                "metrics.redis_commands_duration_seconds_total": {
+                    "role": "metric",
+                    "metric_kind": "counter",
+                },
+                "labels.cmd": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+                "labels.instance": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+            },
+            "control_fields": ["labels.instance"],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "verification_packet:Redis:Total Time Spent by Command / sec",
+                    "index": "metrics-*",
+                    "metrics": ["metrics.redis_commands_duration_seconds_total"],
+                    "dimensions": ["labels.cmd"],
+                    "control_fields": [],
+                    "group_fields": ["labels.cmd"],
+                    "required_values": {},
+                    "required_patterns": {"labels.instance": ["labels_instance_.*"]},
+                }
+            ],
+        }
+        contract = {"streams": {"metrics-*": stream}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        docs = [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+        metric_docs = [d for d in docs if "metrics.redis_commands_duration_seconds_total" in d]
+        self.assertTrue(metric_docs, "metric was never seeded")
+        self.assertTrue(
+            all(d.get("labels.instance") for d in metric_docs),
+            f"filter-only dimension was dropped from seeded docs: {metric_docs[:3]}",
+        )
+        self.assertTrue(
+            all(d.get("labels.cmd") for d in metric_docs),
+            f"group dimension was dropped from seeded docs: {metric_docs[:3]}",
+        )
+
+    def test_source_metric_requirement_matches_prefixed_target_metric(self):
+        # Contract requirements can still carry the source metric name while the
+        # target stream stores the translated metrics.<name> field and labels.<x>
+        # dimensions. Family scoping must match both the metric and dimension
+        # names so the prefixed target metric gets the source-side dimensions it
+        # co-occurs with.
+        stream = {
+            "fields": {
+                "metrics.redis_commands_duration_seconds_total": {
+                    "role": "metric",
+                    "metric_kind": "counter",
+                },
+                "labels.cmd": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+                "labels.instance": {"role": "dimension", "type_family": "keyword", "metric_kind": ""},
+            },
+            "control_fields": ["labels.instance"],
+            "group_fields": [],
+            "required_values": {},
+            "required_patterns": {},
+            "requirements": [
+                {
+                    "source": "verification_packet:Redis:Average Time Spent by Command / sec",
+                    "index": "metrics-*",
+                    "metrics": ["redis_commands_duration_seconds_total"],
+                    "dimensions": ["cmd", "instance"],
+                    "control_fields": [],
+                    "group_fields": ["cmd"],
+                    "required_values": {},
+                    "required_patterns": {},
+                }
+            ],
+        }
+        contract = {"streams": {"metrics-*": stream}}
+        now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+        docs = [d for _, d in generate_documents(contract, now=now, data_hours=1, interval_sec=3600)]
+        metric_docs = [d for d in docs if "metrics.redis_commands_duration_seconds_total" in d]
+        self.assertTrue(metric_docs, "prefixed target metric was never seeded")
+        self.assertTrue(
+            all(d.get("labels.instance") for d in metric_docs),
+            f"source metric requirement did not scope the prefixed target metric: {metric_docs[:3]}",
+        )
+        self.assertTrue(
+            all(d.get("labels.cmd") for d in metric_docs),
+            f"source metric requirement lost the group dimension: {metric_docs[:3]}",
+        )
+
 
 class DimensionlessMetricSeedingTests(unittest.TestCase):
     def test_dimensionless_metric_seeds_identity_dimensions(self):

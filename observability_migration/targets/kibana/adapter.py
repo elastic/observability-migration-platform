@@ -404,6 +404,8 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url: str,
         space_id: str,
         kibana_api_key: str,
+        es_url: str,
+        es_api_key: str,
         verify: bool | str,
         upload_kibana_url: str,
         target_space: str,
@@ -429,6 +431,8 @@ class KibanaTargetAdapter(TargetAdapter):
                 native_dashboard,
                 kibana_url,
                 api_key=kibana_api_key,
+                es_url=es_url,
+                es_api_key=es_api_key,
                 space_id=space_id,
                 verify=verify,
                 native_stats=native_dashboard_stats,
@@ -517,6 +521,8 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url: str,
         space_id: str,
         kibana_api_key: str,
+        es_url: str,
+        es_api_key: str,
         verify: bool | str,
         upload_kibana_url: str,
         target_space: str,
@@ -554,6 +560,8 @@ class KibanaTargetAdapter(TargetAdapter):
             artifact,
             kibana_url,
             api_key=kibana_api_key,
+            es_url=es_url,
+            es_api_key=es_api_key,
             space_id=space_id,
             verify=verify,
             data_view_ids=data_view_ids,
@@ -616,6 +624,8 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url = str(kwargs.get("kibana_url", "") or "")
         space_id = str(kwargs.get("space_id", "") or "")
         kibana_api_key = str(kwargs.get("kibana_api_key", "") or "")
+        es_url = str(kwargs.get("es_url", "") or "")
+        es_api_key = str(kwargs.get("es_api_key", "") or "")
         verify = kwargs.get("verify", True)
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
@@ -654,6 +664,8 @@ class KibanaTargetAdapter(TargetAdapter):
                 kibana_url=kibana_url,
                 space_id=space_id,
                 kibana_api_key=kibana_api_key,
+                es_url=es_url,
+                es_api_key=es_api_key,
                 verify=verify,
                 upload_kibana_url=upload_kibana_url,
                 target_space=target_space,
@@ -685,6 +697,8 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url: str,
         space_id: str = "",
         kibana_api_key: str = "",
+        es_url: str = "",
+        es_api_key: str = "",
         verify: bool | str = True,
         native_dashboard: Any,
         native_dashboard_stats: dict[str, Any] | None = None,
@@ -716,6 +730,8 @@ class KibanaTargetAdapter(TargetAdapter):
             kibana_url=kibana_url,
             space_id=space_id,
             kibana_api_key=kibana_api_key,
+            es_url=es_url,
+            es_api_key=es_api_key,
             verify=verify,
             upload_kibana_url=upload_kibana_url,
             target_space=target_space,

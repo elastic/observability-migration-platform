@@ -72,6 +72,7 @@ from .extract import (
     load_credentials_from_env,
     selection_metadata_from_datadog_dashboard,
 )
+from .curated_packs import load_curated_pack
 from .field_map import FieldMapProfile, load_profile
 from .generate import generate_dashboard_artifacts
 from .manifest import save_migration_manifest
@@ -330,6 +331,10 @@ def _run_dashboard_pipeline(
             dashboard_title=dashboard.title,
             source_file=dashboard.source_file,
             total_widgets=total_count,
+        )
+        curated_pack = load_curated_pack(dashboard.title)
+        dashboard_result.curated_pack_name = str(
+            (curated_pack or {}).get("_curated_pack_name") or ""
         )
         preflight_result = _run_dashboard_preflight(dashboard, field_map, args)
         if preflight_result is not None:
@@ -1200,6 +1205,8 @@ def _upload_all_dashboards(
             kibana_url=args.kibana_url,
             space_id=upload_space,
             kibana_api_key=args.kibana_api_key,
+            es_url=getattr(args, "es_url", ""),
+            es_api_key=getattr(args, "es_api_key", ""),
             verify=verify,
             native_dashboard=dr.native_dashboard,
             native_dashboard_stats=dr.native_dashboard_stats,
@@ -1509,7 +1516,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir", default="datadog_migration_output",
-        help="Output directory for generated YAML and reports",
+        help="Output directory for native dashboard artifacts and reports",
     )
     parser.add_argument(
         "--assets",

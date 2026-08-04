@@ -665,9 +665,10 @@ def _try_fix_esql_field_error(query, error_msg, resolver):
         resolved = resolver.resolve_label(bad_field) if resolver else ""
         if resolved and resolved != bad_field:
             _append_unique(candidates, resolved)
-        for suggested in entry.get("suggested_fields", []) or []:
-            if suggested and suggested != bad_field:
-                _append_unique(candidates, suggested)
+        if entry.get("role") == "label":
+            for suggested in entry.get("suggested_fields", []) or []:
+                if suggested and suggested != bad_field:
+                    _append_unique(candidates, suggested)
         for candidate in candidates:
             fixed = _replace_exact_field(query, bad_field, candidate)
             if fixed != query:

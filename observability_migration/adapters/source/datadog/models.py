@@ -467,6 +467,8 @@ class DashboardResult:
     # Filename stem shared by this dashboard's artifacts
     # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``).
     artifact_stem: str = ""
+    # Name of the bundled curated layout pack applied to this dashboard, if any.
+    curated_pack_name: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of
     # `native_dashboard`/`dashboard_ir`, written before upload so the exact

@@ -3,16 +3,26 @@
 
 """Tests for the curated dashboard pack registry and resolution engine."""
 
+import json
+from pathlib import Path
+
 
 from observability_migration.adapters.source.grafana.curated_packs import (
     find_curated_pack,
     load_curated_registry,
 )
-from observability_migration.adapters.source.grafana.panels import translate_panel
+from observability_migration.adapters.source.grafana.panels import (
+    _apply_panel_layout_overrides_recursively,
+    _materialize_curated_query_override,
+    _retarget_esql_param_controls_to_panel_bindings,
+    translate_dashboard,
+    translate_panel,
+)
 from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
     resolve_pack_for_dashboard,
 )
+from observability_migration.adapters.source.grafana.schema import SchemaResolver
 
 # ---------------------------------------------------------------------------
 # Registry loader
@@ -50,6 +60,13 @@ def test_find_18405_by_gnet_id():
     assert entry is not None
     assert entry["gnet_id"] == 18405
     assert entry["name"] == "grafana_18405_redis_enterprise"
+
+
+def test_find_1860_by_gnet_id():
+    entry = find_curated_pack(gnet_id=1860, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 1860
+    assert entry["name"] == "grafana_1860_node_exporter_full"
 
 
 def test_find_18406_by_gnet_id():
@@ -91,6 +108,16 @@ def test_find_18405_by_title_fallback():
     )
     assert entry is not None
     assert entry["gnet_id"] == 18405
+
+
+def test_find_1860_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Node Exporter Full",
+        tags=["prometheus"],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 1860
 
 
 def test_find_18406_by_title_fallback():
@@ -145,6 +172,23 @@ def test_resolve_pack_18405_merges_metric_kinds():
     # no rate() is applied in the source PromQL so we classify it as gauge.
     assert resolved.metric_kinds.get("bdb_total_req") == "gauge"
     assert resolved.metric_kinds.get("bdb_used_memory") == "gauge"
+
+
+def test_resolve_pack_1860_merges_metric_kinds_and_query_override():
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    base = RulePackConfig()
+    resolved = resolve_pack_for_dashboard(dashboard, base)
+    assert resolved.metric_kinds.get("node_vmstat_pgpgin") == "counter"
+    assert resolved.metric_kinds.get("process_virtual_memory_bytes") == "gauge"
+    override_titles = {override.get("title_match") for override in resolved.panel_query_overrides}
+    assert "Processes Memory" in override_titles
+    assert "Sys Load" in override_titles
+    assert "Root FS Used" in override_titles
+    assert "RootFS Total" in override_titles
+    assert "CPU Basic" in override_titles
+    assert "Memory Basic" in override_titles
+    assert "Network Traffic Basic" in override_titles
+    assert "Disk Space Used Basic" in override_titles
 
 
 def test_resolve_pack_18406_merges_metric_kinds():
@@ -260,9 +304,11 @@ def test_redis_memory_ratio_uses_ts_source():
     # the prometheus_native TSDB layout (vs auto-translation which uses per-doc
     # arithmetic inside SUM, introducing join-faithfulness risk).
     assert query.startswith("TS "), f"query should use TS source: {query[:60]}"
-    assert "LAST_OVER_TIME(metrics.redis_memory_used_bytes)" in query, query
-    assert "LAST_OVER_TIME(metrics.redis_memory_max_bytes)" in query, query
-    assert "RLIKE ?instance" in query, f"should filter by instance via RLIKE: {query}"
+    assert "LAST_OVER_TIME(redis_memory_used_bytes)" in query, query
+    assert "LAST_OVER_TIME(redis_memory_max_bytes)" in query, query
+    assert "STATS value = LAST(value, time_bucket)" in query, query
+    assert "MV_CONTAINS(?instance" in query, f"should preserve multi-select binding: {query}"
+    assert 'MV_CONTAINS(?instance, ".*")' in query, query
     assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
 
 
@@ -329,6 +375,15 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
             )
 
 
+def test_763_pack_pins_labels_instance_for_queries_and_controls():
+    resolved = resolve_pack_for_dashboard(
+        {"gnetId": 763, "title": "Redis...", "tags": ["redis"]},
+        RulePackConfig(),
+    )
+    assert resolved.label_rewrites.get("instance") == "labels.instance"
+    assert resolved.control_field_overrides.get("instance") == "labels.instance"
+
+
 # ---------------------------------------------------------------------------
 # Pack 11835 — Redis Exporter (helm stable/redis-ha)
 # ---------------------------------------------------------------------------
@@ -370,6 +425,72 @@ def test_resolve_pack_11835_stamps_curated_pack_name():
     assert getattr(resolved, "_curated_pack_name", "") == "grafana_11835_redis_exporter_helm"
 
 
+def test_resolve_pack_763_loads_curated_layout_overrides():
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    overrides = {item["title_match"]: item for item in resolved.panel_layout_overrides}
+    assert overrides["Max Uptime"]["size"]["w"] == 6
+    assert overrides["Memory Usage"]["position"]["x"] == 12
+    assert overrides["Hits / Misses per Sec"]["position"]["x"] == 34
+
+
+def test_763_curated_pack_keeps_only_instance_control():
+    dashboard = json.loads(
+        (
+            Path("parity-rig/curated/grafana_763_redis_exporter/grafana_provisioning/dashboards")
+            / "redis_763.json"
+        ).read_text(encoding="utf-8")
+    )
+    rule_pack = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-redis.prometheus-default",
+        esql_index="metrics-redis.prometheus-default",
+        rule_pack=rule_pack,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls", [])
+
+    assert {control.get("variable_name") for control in controls} == {"instance"}
+    assert not any("namespace" in warning for warning in result.control_warnings)
+    instance_control = controls[0]
+    assert instance_control.get("label") == "instance"
+    assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
+    assert (
+        "labels.instance" in str(instance_control.get("query") or "")
+        or " instance " in f" {instance_control.get('query') or ''} "
+    )
+
+
+def test_11835_curated_pack_keeps_only_instance_control():
+    dashboard = json.loads(
+        Path("infra/grafana/dashboards/redis-11835.json").read_text(encoding="utf-8")
+    )
+    rule_pack = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-redis.prometheus-default",
+        esql_index="metrics-redis.prometheus-default",
+        rule_pack=rule_pack,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls", [])
+
+    assert {control.get("variable_name") for control in controls} == {"instance"}
+    assert not any(
+        "namespace" in warning or "pod_name" in warning for warning in result.control_warnings
+    )
+    instance_control = controls[0]
+    assert instance_control.get("label") == "instance"
+    assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
+    assert (
+        "labels.instance" in str(instance_control.get("query") or "")
+        or " instance " in f" {instance_control.get('query') or ''} "
+    )
+
+
 # ---------------------------------------------------------------------------
 # Panel query override — mechanism tests
 # ---------------------------------------------------------------------------
@@ -400,6 +521,42 @@ def test_panel_query_override_fires_for_matching_title():
     assert result.status == "migrated", f"Expected migrated, got {result.status}: {result.reasons}"
     assert yaml_panel is not None and "esql" in yaml_panel, "Expected curated ES|QL panel spec"
     assert result.confidence == 1.0
+
+
+def test_panel_query_override_preserves_gauge_shape_from_source_panel():
+    pack = RulePackConfig()
+    pack.panel_query_overrides = [{
+        "title_match": "Sys Load",
+        "esql_query": _SIMPLE_METRIC_ESQL,
+        "status_override": "migrated",
+    }]
+
+    panel = {
+        "type": "gauge",
+        "title": "Sys Load",
+        "targets": [{"expr": "node_load1", "refId": "A"}],
+        "fieldConfig": {
+            "defaults": {
+                "min": 0,
+                "max": 100,
+                "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                        {"color": "green", "value": None},
+                        {"color": "red", "value": 85},
+                    ],
+                },
+            }
+        },
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=pack)
+
+    assert result.status == "migrated"
+    assert yaml_panel is not None and "esql" in yaml_panel
+    assert yaml_panel["esql"].get("appearance", {}).get("shape") == "arc"
+    assert yaml_panel["esql"].get("maximum") == {"field": "_gauge_max"}
+    assert yaml_panel["esql"].get("goal") == {"field": "_gauge_goal"}
 
 
 def test_panel_query_override_case_insensitive():
@@ -490,6 +647,193 @@ def test_panel_query_override_merge_keeps_both_different_titles():
     assert titles == {"Memory Usage", "CPU Usage"}
 
 
+def test_panel_layout_override_user_wins_over_curated():
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_layout_overrides = [{
+        "title_match": "Memory Usage",
+        "position": {"x": 12, "y": 0},
+        "size": {"w": 8},
+    }]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_layout_overrides = [{
+        "title_match": "Memory Usage",
+        "position": {"x": 20, "y": 1},
+        "size": {"w": 10, "h": 12},
+    }]
+
+    merged = _merge_curated_into_base(curated, user)
+    assert merged.panel_layout_overrides == user.panel_layout_overrides
+
+
+def test_panel_layout_overrides_apply_inside_sections():
+    panels = [
+        {
+            "title": "Redis",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "Uptime",
+                        "position": {"x": 0, "y": 0},
+                        "size": {"w": 4, "h": 10},
+                    },
+                    {
+                        "title": "Clients",
+                        "position": {"x": 4, "y": 0},
+                        "size": {"w": 4, "h": 10},
+                    },
+                ],
+            },
+        }
+    ]
+    overrides = [
+        {"title_match": "Uptime", "position": {"x": 0, "y": 0}, "size": {"w": 6}},
+        {"title_match": "Clients", "position": {"x": 6, "y": 0}, "size": {"w": 6}},
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    inner = panels[0]["section"]["panels"]
+    assert inner[0]["size"]["w"] == 6
+    assert inner[1]["position"]["x"] == 6
+
+
+def test_curated_query_override_materializes_control_and_metric_placeholders():
+    class _FakeResolver:
+        def resolve_control_field(self, name, metric_field=None):
+            return "instance" if name == "instance" else name
+
+        def resolve_label(self, name, metric_field=None):
+            return f"labels.{name}"
+
+        def resolve_metric_field(self, name, prefer=None, source_labels=None):
+            return f"metrics.{name}"
+
+    query = (
+        "TS metrics-*\n"
+        '| WHERE MV_CONTAINS(?instance, "{{control:instance}}")\n'
+        "| WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL\n"
+    )
+    rendered = _materialize_curated_query_override(query, _FakeResolver())
+    assert "{{" not in rendered
+    assert "MV_CONTAINS(?instance, \"instance\")" in rendered
+    assert "metrics.redis_memory_used_bytes IS NOT NULL" in rendered
+
+
+def test_missing_live_metric_target_is_dropped_from_multi_target_panel():
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "redis_connected_clients": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "Connected/Blocked Clients",
+        "targets": [
+            {"expr": 'sum(redis_connected_clients{instance=~"$instance"})', "refId": "A"},
+            {"expr": 'sum(redis_blocked_clients{instance=~"$instance"})', "refId": "B"},
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "redis_connected_clients" in query
+    assert "redis_blocked_clients" not in query
+    assert result.status == "migrated_with_warnings"
+    assert any("Dropped series whose live target metrics are absent" in reason for reason in result.reasons)
+
+
+def test_missing_live_metric_single_target_becomes_non_error_markdown():
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "redis_commands_total": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "Total Time Spent by Command / sec",
+        "targets": [
+            {
+                "expr": 'sum(irate(redis_commands_duration_seconds_total{instance=~"$instance"}[1m])) by (cmd) != 0',
+                "refId": "A",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+    assert "markdown" in (yaml_panel or {})
+    assert "redis_commands_duration_seconds_total" in yaml_panel["markdown"]["content"]
+    assert result.status == "migrated_with_warnings"
+
+
+def test_esql_param_control_retargets_to_single_panel_bound_field():
+    controls = [
+        {
+            "type": "esql",
+            "label": "instance",
+            "variable_name": "instance",
+            "variable_type": "values",
+            "query": (
+                "FROM metrics-* | WHERE redis_up IS NOT NULL AND `labels.instance` IS NOT NULL "
+                '| STATS count = COUNT(*) BY `labels.instance` | EVAL options = MV_APPEND(".*", `labels.instance`) '
+                '| MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options '
+                '| RENAME options AS `labels.instance` | SORT `labels.instance` ASC | LIMIT 1000'
+            ),
+            "_resolved_field_name": "labels.instance",
+        }
+    ]
+    panels = [
+        {
+            "esql": {
+                "query": (
+                    "TS metrics-* | WHERE (instance RLIKE ?instance OR (instance IS NULL AND \"\" RLIKE ?instance)) "
+                    "| WHERE redis_up IS NOT NULL | STATS value = COUNT(*)"
+                )
+            }
+        }
+    ]
+
+    rewritten = _retarget_esql_param_controls_to_panel_bindings(controls, panels)
+    query = rewritten[0]["query"]
+    assert "`labels.instance`" not in query
+    assert "BY instance" in query
+    assert "instance IS NOT NULL" in query
+    assert rewritten[0]["_resolved_field_name"] == "instance"
+
+
+def test_esql_param_control_keeps_original_when_panel_bindings_disagree():
+    controls = [
+        {
+            "type": "esql",
+            "label": "instance",
+            "variable_name": "instance",
+            "variable_type": "values",
+            "query": "FROM metrics-* | WHERE `labels.instance` IS NOT NULL | STATS count = COUNT(*) BY `labels.instance` | KEEP `labels.instance` | LIMIT 1000",
+            "_resolved_field_name": "labels.instance",
+        }
+    ]
+    panels = [
+        {"esql": {"query": "TS metrics-* | WHERE instance RLIKE ?instance | STATS value = COUNT(*)"}},
+        {"esql": {"query": "TS metrics-* | WHERE host.name RLIKE ?instance | STATS value = COUNT(*)"}},
+    ]
+
+    rewritten = _retarget_esql_param_controls_to_panel_bindings(controls, panels)
+    assert rewritten[0]["query"] == controls[0]["query"]
+    assert rewritten[0]["_resolved_field_name"] == "labels.instance"
+
+
 def test_11835_memory_usage_panel_uses_curated_override():
     """The 11835 pack's Memory Usage singlestat uses the curated ES|QL, status=migrated."""
     dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
@@ -515,6 +859,137 @@ def test_11835_memory_usage_panel_uses_curated_override():
     assert "redis_memory_used_bytes" in query
     assert "redis_memory_max_bytes" in query
     assert "?instance" in query  # instance filter preserved from original PromQL
+
+
+def test_11835_network_io_panel_uses_curated_override():
+    """The 11835 pack's Network I/O panel must stay a two-series counter-rate query."""
+    dashboard = {"gnetId": 11835, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "graph",
+        "title": "Network I/O",
+        "targets": [
+            {
+                "expr": 'rate(redis_net_input_bytes_total{instance=~"$instance"}[5m])',
+                "legendFormat": "{{input}}",
+                "refId": "A",
+            },
+            {
+                "expr": 'rate(redis_net_output_bytes_total{instance=~"$instance"}[5m])',
+                "legendFormat": "{{output}}",
+                "refId": "B",
+            },
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "redis_net_input_bytes_total" in query
+    assert "redis_net_output_bytes_total" in query
+    assert "AVG(RATE(" not in query
+    assert "labels.input" not in query
+    assert "| KEEP time_bucket, input, output" in query
+
+
+def test_763_network_io_panel_uses_curated_override():
+    """The 763 pack's Network I/O panel must stay a two-series query without phantom breakdowns."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "graph",
+        "title": "Network I/O",
+        "targets": [
+            {
+                "expr": 'sum(rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]))',
+                "legendFormat": "input",
+                "refId": "A",
+            },
+            {
+                "expr": 'sum(rate(redis_net_output_bytes_total{instance=~"$instance"}[5m]))',
+                "legendFormat": "output",
+                "refId": "B",
+            },
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "@timestamp >= ?_tstart" in query
+    assert "TBUCKET(2 minute)" in query
+    assert "redis_net_input_bytes_total" in query
+    assert "redis_net_output_bytes_total" in query
+    assert "labels.input" not in query
+    assert "| KEEP time_bucket, input, output" in query
+
+
+def test_763_average_time_spent_panel_uses_curated_override():
+    """The 763 pack's per-command average latency panel must avoid adaptive null buckets."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "graph",
+        "title": "Average Time Spent by Command / sec",
+        "targets": [
+            {
+                "expr": 'sum(irate(redis_commands_duration_seconds_total{instance =~ "$instance"}[1m])) by (cmd) / sum(irate(redis_commands_total{instance =~ "$instance"}[1m])) by (cmd)',
+                "refId": "A",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "@timestamp >= ?_tstart" in query
+    assert "TBUCKET(2 minute)" in query
+    assert "labels.cmd" in query
+    assert "computed_value" in query
+    assert "redis_commands_duration_seconds_total" in query
+    assert "redis_commands_total" in query
+    assert "SUM(IRATE(" in query
+
+
+def test_763_total_time_spent_panel_uses_curated_override():
+    """The 763 pack's per-command total latency panel must not emit empty adaptive buckets."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "graph",
+        "title": "Total Time Spent by Command / sec",
+        "targets": [
+            {
+                "expr": 'sum(irate(redis_commands_duration_seconds_total{instance=~"$instance"}[1m])) by (cmd) != 0',
+                "refId": "A",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "@timestamp >= ?_tstart" in query
+    assert "TBUCKET(2 minute)" in query
+    assert "labels.cmd" in query
+    assert "redis_commands_duration_seconds_total" in query
+    assert "SUM(IRATE(" in query
 
 
 def test_18405_memory_usage_panel_uses_curated_override():
@@ -588,6 +1063,26 @@ def test_schema_validates_pack_with_query_overrides():
     assert payload.panel.query_overrides[0].status_override == "migrated"
 
 
+def test_schema_validates_pack_with_layout_overrides():
+    from observability_migration.adapters.source.grafana.extension_schema import validate_rule_pack_payload
+
+    raw = {
+        "panel": {
+            "layout_overrides": [
+                {
+                    "title_match": "Memory Usage",
+                    "position": {"x": 12, "y": 0},
+                    "size": {"w": 8},
+                }
+            ]
+        }
+    }
+    payload = validate_rule_pack_payload(raw)
+    assert len(payload.panel.layout_overrides) == 1
+    assert payload.panel.layout_overrides[0].title_match == "Memory Usage"
+    assert payload.panel.layout_overrides[0].size.w == 8
+
+
 def test_panel_query_override_loaded_from_pack_yaml_round_trip():
     """load_rule_pack_files parses query_overrides into RulePackConfig.panel_query_overrides."""
     import os
@@ -618,5 +1113,36 @@ def test_panel_query_override_loaded_from_pack_yaml_round_trip():
         assert override["title_match"] == "Memory Usage"
         assert "some_gauge" in override["esql_query"]
         assert override["status_override"] == "migrated"
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_panel_layout_override_loaded_from_pack_yaml_round_trip():
+    import os
+    import tempfile
+
+    from observability_migration.adapters.source.grafana.rules import load_rule_pack_files
+
+    yaml_content = (
+        "panel:\n"
+        "  layout_overrides:\n"
+        "    - title_match: 'Memory Usage'\n"
+        "      position:\n"
+        "        x: 12\n"
+        "        y: 0\n"
+        "      size:\n"
+        "        w: 8\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_content)
+        tmp_path = f.name
+
+    try:
+        pack = load_rule_pack_files([tmp_path])
+        assert len(pack.panel_layout_overrides) == 1
+        override = pack.panel_layout_overrides[0]
+        assert override["title_match"] == "Memory Usage"
+        assert override["position"]["x"] == 12
+        assert override["size"]["w"] == 8
     finally:
         os.unlink(tmp_path)
