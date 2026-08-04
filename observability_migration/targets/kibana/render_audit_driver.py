@@ -683,9 +683,15 @@ def run_audit_cli(
             verdict.reasons.extend(
                 reason for reason in whole_verdict.reasons if reason not in verdict.reasons
             )
-        elif unmatched and verdict.status == "pass":
-            verdict.status = "warn"
+        # A title with no DOM region of its own is reported WHATEVER the verdict
+        # is. It used to be reported only while the verdict was still "pass", so
+        # any data-readiness warn elsewhere on the dashboard swallowed "this panel
+        # never drew" — and a panel with no chunk is exactly how the prefix
+        # misattribution hid (a zero-length chunk reads as a clean render).
+        if unmatched:
             verdict.reasons.append(f"panel title(s) did not render: {unmatched}")
+            if verdict.status == "pass":
+                verdict.status = "warn"
     else:
         verdict = classify_render(snapshot)
         if scope_note:

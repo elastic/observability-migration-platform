@@ -424,6 +424,41 @@ def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tupl
     surplus is returned as unmatched, which is the honest answer: one of the two
     panels did not draw.
 
+    A title that is a strict PREFIX of a sibling title also matches inside the
+    sibling's rendered title text, so plain report-order search lets whichever
+    panel comes first in the report win. ``_ensure_unique_leaf_panel_titles``
+    makes that the normal case rather than an edge one: it disambiguates a
+    repeated Datadog widget title by appending ``(widget <id>)``, so every
+    duplicated title is by construction a strict prefix of its disambiguated
+    sibling (34 such pairs across the 13-dashboard corpus). The short title then
+    took a ZERO-LENGTH chunk at the long title's offset — which
+    :func:`classify_panel` reads as a clean ``rendered`` panel, so the
+    misattribution surfaced as a phantom green record — while its own region was
+    absorbed by whichever panel preceded it. Live in Docker - Overview:
+    ``Running containers by image`` matched inside ``Running containers by image
+    (widget 27)``.
+
+    Segmentation therefore prefers the MOST SPECIFIC match, in two rules:
+
+    * a hit CONTAINED in any occurrence of a longer title is rejected — it is
+      part of another panel's title text, not this panel's. Every occurrence
+      counts, not just the one that title claimed: the rendered HTML repeats a
+      title in the header ``<span>``, the wrapper's ``data-title`` attribute and
+      the context-menu button's ``aria-label``, and the Docker bare title's
+      second-choice hit landed in the twin's ``data-title``.
+    * a hit OVERLAPPING a span another panel already claimed is rejected, so no
+      two panels can share a DOM offset — which is what makes a zero-length chunk
+      impossible.
+
+    Titles are matched longest-first so the specific one claims its text before
+    its prefix is offered a hit at all. A "boundary after the match" rule cannot
+    replace this: the disambiguator and the sibling titles are separated by a
+    space (``Pods``/``Pods available``), the same character a genuine title
+    boundary ends on, so no delimiter set distinguishes them. The competing
+    titles are the only reliable boundary evidence, which is what the occurrence
+    spans encode. A short title with no occurrence outside its siblings' title
+    text is returned as unmatched — the honest answer, and a visible one.
+
     ``titles`` must be scoped to the dashboard being audited. Passing every title
     of a multi-dashboard migration report lets a stray DOM text match attribute a
     chunk of this dashboard to another dashboard's panel metadata — see
@@ -433,25 +468,74 @@ def segment_panels(snapshot_text: str, titles: Iterable[str]) -> tuple[list[tupl
     # (start offset, arrival order, title) — arrival order only breaks ties so
     # the sort is total and stable for titles found at the same offset.
     positions: list[tuple[int, int, str]] = []
-    unmatched: list[str] = []
+    # (report order, title), so the returned list stays in report order even
+    # though the search runs longest-first.
+    missing: list[tuple[int, str]] = []
     searched_from: dict[str, int] = {}
+    # [start, end) spans already taken by a panel: no two panels share offsets.
+    claimed: list[tuple[int, int]] = []
+    # [start, end) spans of EVERY occurrence of a strictly longer title. A hit
+    # inside one of these is that title's rendered text, not this panel's.
+    longer_title_spans: list[tuple[int, int]] = []
+
+    by_length: dict[int, list[tuple[int, str]]] = {}
+    occurrences: dict[str, list[int]] = {}
     for order, title in enumerate(titles):
         if not title:
             continue
-        idx = text.find(title, searched_from.get(title, 0))
-        if idx < 0:
-            unmatched.append(title)
-            continue
-        # Resume past this hit so a repeated title advances instead of matching
-        # the same offset again.
-        searched_from[title] = idx + len(title)
-        positions.append((idx, order, title))
+        by_length.setdefault(len(title), []).append((order, title))
+        if title not in occurrences:
+            hits: list[int] = []
+            at = text.find(title)
+            while at >= 0:
+                hits.append(at)
+                at = text.find(title, at + 1)
+            occurrences[title] = hits
+
+    def _blocking_end(start: int, end: int) -> int:
+        """End of a span that forbids ``[start, end)``, else -1.
+
+        Returned so the search resumes past the blocker instead of one character
+        on. Containment for a longer title's text (the hit belongs to that
+        title); overlap for a claimed span (two panels cannot share offsets).
+        """
+        for span_start, span_end in longer_title_spans:
+            if span_start <= start and end <= span_end:
+                return span_end
+        for span_start, span_end in claimed:
+            if span_start < end and span_end > start:
+                return span_end
+        return -1
+
+    # Longest first, report order within a length. Equal-length titles cannot
+    # contain one another, so a group never blocks its own members — which keeps
+    # two same-titled panels resolving against successive DOM occurrences.
+    for length in sorted(by_length, reverse=True):
+        group = sorted(by_length[length])
+        for order, title in group:
+            pos = searched_from.get(title, 0)
+            while True:
+                idx = text.find(title, pos)
+                if idx < 0:
+                    missing.append((order, title))
+                    break
+                blocked_until = _blocking_end(idx, idx + length)
+                if blocked_until < 0:
+                    # Resume past this hit so a repeated title advances instead
+                    # of matching the same offset again.
+                    searched_from[title] = idx + length
+                    claimed.append((idx, idx + length))
+                    positions.append((idx, order, title))
+                    break
+                pos = max(idx + 1, blocked_until)
+        for _order, title in group:
+            longer_title_spans += [(at, at + length) for at in occurrences[title]]
     positions.sort()
     segments: list[tuple[str, str]] = []
     for i, (start, _order, title) in enumerate(positions):
         end = positions[i + 1][0] if i + 1 < len(positions) else len(text)
         segments.append((title, text[start:end]))
-    return segments, unmatched
+    return segments, [title for _order, title in sorted(missing)]
 
 
 def _panel_target_fields(
