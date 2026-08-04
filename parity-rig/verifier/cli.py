@@ -114,6 +114,14 @@ def build_argparser() -> argparse.ArgumentParser:
              "(useful as a CI gate).",
     )
     p.add_argument(
+        "--allow-empty-t1",
+        action="store_true",
+        help="Do not fail when T1 (translator ES|QL) is populated for zero "
+             "panels. Only for a source that genuinely translated nothing: "
+             "an empty T1 makes every verdict SKIP and every drift axis a "
+             "vacuous 0 (see vacuous_tier_reason).",
+    )
+    p.add_argument(
         "--verbose",
         action="store_true",
         help="Verbose logging.",
@@ -210,6 +218,11 @@ def main(argv: list[str] | None = None) -> int:
     LOG.info("wrote %s", md_path)
 
     print(_render_console_summary(payload))
+
+    vacuous = vacuous_tier_reason(payload["tier_population"])
+    if vacuous and not args.allow_empty_t1:
+        print(f"\nFAIL: {vacuous}", file=sys.stderr)
+        return 1
 
     error_findings = payload["invariant_summary"].get("error_count", 0)
     if args.fail_on_invariant and error_findings:
@@ -497,6 +510,36 @@ def _collect_records(
         if limit and len(records) >= limit:
             break
     return records
+
+
+def vacuous_tier_reason(tier_population: dict[str, Any]) -> str:
+    """Why this run's verdicts mean nothing, or ``""`` when they mean something.
+
+    T1 is the translator's own output. ``compare_panel_record`` short-circuits an
+    empty T1 to ``SKIP``, so a run whose T1 is populated for **zero** panels
+    reports all-SKIP with 0 drift on all five axes no matter what the translator
+    emitted -- which is indistinguishable from a perfect run.
+
+    That state had a cause (``07e5829``: the collector read Grafana's ``esql`` and
+    never Datadog's ``esql_query``) and the cause was fixed, but nothing stopped
+    the *next* cause from producing the same silence. This turns it into a
+    non-zero exit. Keyed on the denominator being zero while panels exist: a run
+    where some panels translated stays green, and a genuinely empty report is
+    already reported as such.
+    """
+    panels = int(tier_population.get("panels") or 0)
+    if panels <= 0:
+        return ""
+    populated = int((tier_population.get("tiers") or {}).get("t1_translator_esql") or 0)
+    if populated:
+        return ""
+    return (
+        f"T1 (translator ES|QL) is populated for 0 of {panels} panel(s), so every "
+        "verdict is SKIP and every drift axis is vacuously 0. Either the report "
+        "carries no translator output or the collector cannot read the key this "
+        "source writes it under. Re-run with --allow-empty-t1 if the source really "
+        "translated nothing."
+    )
 
 
 def _tier_population(records: list[PanelRecord]) -> dict[str, Any]:

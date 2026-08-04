@@ -104,6 +104,7 @@ against the schema, and is the fixture the live render audit uploads.
 | Kibana-schema gate | `tests/e2e/test_kibana_schema_gate.py` | the document rebuilt from each run's `ir/*.ir.json` validates against the vendored `DashboardConfig` schema (`docs/dashboards/schema.json`) via `jsonschema` | e2e |
 | Invariant linter | `verifier.invariants` | broken Lens accessors, merged series, dropped placeholders (Layer-9) | used by the matrices + scorecard |
 | Mutation self-test | `verifier.mutations` | the invariant verifier catches deliberate corruptions | `tests/test_verifier_mutations.py` |
+| Vacuity harness | `tests/vacuity/registry.py` | every load-bearing guard can still go red, measured something, and executes its interesting branch | `tests/vacuity/` (in `make test`, ~2.5s) |
 
 Baselines: `parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`
 (270 / 426 panels, 0 errors). The ratchet re-migrates the committed corpus with
@@ -114,6 +115,59 @@ the *current* code and fails if ERROR counts rise. → See
 > describes only the engine's internal in-memory dict shape (no YAML file is
 > written or read any more), so passing the schema gate is **necessary but not
 > sufficient** — real Kibana (Tier 4), fed the native payload, is the authority.
+
+### Vacuity harness — guards that cannot fail
+
+A guard is *vacuous* when it is structurally incapable of going red, and a vacuous
+guard is worse than no guard: it reads as evidence. Five shipped in this repo, all
+green, each hiding a defect for an unknown length of time — a test pinning the
+exact palette Kibana rejects (`458f4e2`), a verifier tier whose collector read a
+key no Datadog report writes so every panel short-circuited to SKIP (`07e5829`), a
+payload oracle whose two sides ran the same mapper (`5160d11`), an idempotence
+guard that compared the last physical *line* of a single-line query (`da25a51`),
+and four gates that reported success on a zero denominator (`0c4f3a2`).
+
+They are not one failure mode, so the harness is not one technique. Everything is
+enumerated in **`tests/vacuity/registry.py`** — read that file, it is the whole
+inventory:
+
+| Table | Asserts | Catches |
+|---|---|---|
+| `GUARD_CASES` | each guard passes on a healthy subject, **fails** under every registered mutation of its subject, and examined a non-zero denominator | wrong expectations, tautological comparisons, blind readers |
+| `EMPTY_INPUT_GATES` | each gate refuses empty input **and** still accepts healthy input | gate success on a zero denominator |
+| `FIRING_GUARDS` | each idempotence/dedup/collision guard is observed taking its interesting branch — on the committed corpus, or through the production entry point | dead branches, guards reachable only by hand-setting a field |
+| `tests/vacuity/test_ratio_denominators.py` | every ratio-over-a-count in the gate layer is classified `Guarded` / `Ratcheted` / `DisplayOnly`, with the claim cross-checked | the *next* zero-denominator gate, before it is written |
+
+Deliberately an in-repo harness and not a mutation-testing dependency: a general
+mutant generator reports thousands of survivors, almost all uninteresting, which
+is how mutation reports come to be ignored. Here every entry names the real defect
+it stands for in `catches`, and a red run prints that alongside `why`.
+
+**Adding a guard.** Append a `GuardCase` with a subject built from a committed
+corpus (never a hand-written fixture of the shape under test — that is how
+`458f4e2`'s `_DYNAMIC` fixture pinned an invalid palette across nine assertions),
+at least one mutation that must make it fail, and a `witness` whose floor comes
+from an *independent* route. A `Patch` can replace a function while the mutation
+runs, which is how a mutation reaches inside the code the guard covers; subjects
+are rebuilt under the patch, so per-dashboard builders in
+`tests/vacuity/subjects.py` must stay uncached.
+
+**Scope.** Register a guard when *its silence would let a real defect ship*. Not
+every assertion in the suite qualifies, and the harness is not meant to grow to
+cover the suite.
+
+Known limits, stated rather than papered over:
+
+* A wrong hand-written expectation is only caught where it contradicts an
+  independent oracle. `assert_payload_has_no_kibana_rejections` is that oracle for
+  the native payload, but its rules are empirically sourced from live uploads: the
+  full Dashboards API schema is externally hosted, so offline it can only encode
+  refusals a real upload has already taught us. Run `make check-native-schema`
+  with `KIBANA_DASHBOARDS_API_SCHEMA_URL` for the real thing.
+* A branch that is dead for one *input class* (`da25a51`'s single-line ES|QL) is
+  not caught by the firing counter — the branch still fires on the multi-line
+  majority. That one is caught by the corpus-wide idempotence property instead.
+  The firing counter catches the stronger form: a branch that never fires at all.
 
 ### Grafana ES|QL structural harness (offline)
 
@@ -471,11 +525,27 @@ markers still hard-fail. Duplicate titles inside one dashboard (Kubernetes ships
 `Pods`/`Containers`/`Deployments`/`DaemonSets` twice) resolve against successive
 DOM occurrences instead of collapsing to one record.
 
-Known limitation, not fixed: a title that is a strict *prefix* of another title in
-the same dashboard still matches inside the longer one (`Running containers by
-image` inside `Running containers by image (widget 27)`), which hands its region
-to a neighbouring panel. That is an in-dashboard attribution error, not a
-cross-dashboard one.
+Segmentation also prefers the **most specific** title. A title that is a strict
+*prefix* of a sibling title matches inside the sibling's rendered title text, and
+the Datadog generator makes that the normal case: it disambiguates a repeated
+widget title by appending ` (widget <id>)`, so every duplicated title is by
+construction a prefix of its disambiguated sibling (34 such pairs in the
+13-dashboard corpus). Titles are therefore matched longest-first, a hit contained
+in *any* occurrence of a longer title is rejected (the rendered HTML repeats each
+title in the header `<span>`, the wrapper's `data-title` and the panel menu
+button's `aria-label`, so rejecting only the claimed occurrence is not enough),
+and a hit overlapping a
+span another panel already claimed is rejected too. Consequence: no two panels can
+share a DOM offset, so a **zero-length chunk is impossible** — which matters
+because `classify_panel` reads an empty chunk as a clean `rendered` panel, so the
+old behaviour surfaced as a phantom green record while the real region went to a
+neighbour. Live: `Running containers by image` matched inside `Running containers
+by image (widget 27)` and its region (100347-116809) was credited to `Datadog
+event timeline 10`, which was then reported `field_gap` on
+`docker_image`/`docker_containers_running` — columns belonging to the other panel.
+A title with no occurrence outside its siblings' title text is reported as
+`panel title(s) did not render`, in `render.reasons` whatever the verdict is,
+rather than being handed an empty chunk.
 
 Caveat: a community dashboard renders cleanly only when its metrics are seeded
 and its template-variable controls resolve against the seeded label values;

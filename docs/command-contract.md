@@ -1666,6 +1666,14 @@ provenance, and how many records carry a real Kibana UUID — read it alongside
 the verdict counts, because a verdict distribution alone cannot distinguish
 "checked and agreed" from "never checked".
 
+**A vacuous T1 now fails the run.** T1 is the translator's own output, and an
+empty T1 short-circuits a panel's comparison to `SKIP` — so a run whose T1 is
+populated for *zero* panels reports 0 drift on all five axes no matter what the
+translator emitted. `verify-panels` exits 1 with the count named rather than 0.
+(The underlying `verifier.cli` accepts `--allow-empty-t1` for a source that
+genuinely translated nothing; the operator wrapper deliberately does not expose
+it — a gate should not offer a way to bless a measurement of nothing.)
+
 `--migration-out` may hold one dashboard or a whole run's worth. Every tier is
 joined per dashboard (report `uid`, else `title`), never by panel
 title alone — titles repeat across dashboards, and a title-only join compares

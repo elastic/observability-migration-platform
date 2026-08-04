@@ -183,6 +183,14 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 # reported as "per-panel attribution unavailable" on stderr AND in
 # render.reasons, with "panels": [] -- it never falls back to the run's full
 # title set, and whole-dashboard error markers still hard-fail.
+#
+# Within the dashboard, titles are matched longest-first and a hit inside another
+# panel's title text is rejected, so a title that is a strict prefix of a sibling
+# ("Running containers by image" vs "... (widget 27)", which the Datadog
+# duplicate-title disambiguator produces by construction) cannot take the
+# sibling's offset and a zero-length chunk. Read "panel title(s) did not render"
+# in render.reasons as a real signal: that panel drew no title of its own, and it
+# gets NO panel record rather than a phantom "rendered" one.
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --migration-out migration_output/dashboards \
@@ -265,6 +273,13 @@ Regression-gate guidance:
   it means the run changed config/schema class enough that the gate cannot make
   a fair comparison. By default this exits non-zero in CI; establish a new
   baseline before relying on trend decisions.
+
+`verifier.cli` exits non-zero when T1 (translator ES|QL) is populated for **zero**
+panels while the report describes some. An empty T1 short-circuits every
+comparison to `SKIP`, so that run reports 0 drift on all five axes whatever the
+translator emitted — indistinguishable from a perfect run, and exactly the state
+`07e5829` fixed one cause of. Pass `--allow-empty-t1` only for a source that
+genuinely translated nothing.
 
 The repo-oriented `obs-migrate verify-panels` and `obs-migrate verify-visual`
 wrappers also delegate to `parity-rig/verifier`; their flags are documented with

@@ -155,66 +155,40 @@ class TestDatadogNativeDashboardEmission:
         assert native.to_api_payload() == bridged_payload
 
 
-def test_no_emitted_panel_carries_a_single_step_dynamic_palette():
-    """No integration dashboard may emit a one-step dynamic colour palette.
+def test_no_emitted_panel_carries_a_shape_kibana_refuses():
+    """No integration dashboard may emit a payload Kibana drops a panel over.
 
-    Kibana rejects it with ``[metrics.0.color.0.steps.1]: At least one of
-    "gte", "lt", or "lte" must be provided`` and DROPS the whole panel from the
-    saved dashboard -- silently, because the upload path only reads ``id`` off a
-    2xx response. It cost 6 panels across Apache, Kubernetes (2), MongoDB (2)
-    and Redis before ``_dynamic_palette`` collapsed the single-step case to a
-    static colour. Asserted over the whole corpus rather than one widget so a
-    new emitter path cannot reintroduce the shape somewhere else.
+    The motivating case is a one-step dynamic colour palette: Kibana rejects it
+    with ``[metrics.0.color.0.steps.1]: At least one of "gte", "lt", or "lte"
+    must be provided`` and DROPS the whole panel from the saved dashboard --
+    silently, because the upload path only reads ``id`` off a 2xx response. It
+    cost 6 panels across Apache, Kubernetes (2), MongoDB (2) and Redis before
+    ``_dynamic_palette`` collapsed the single-step case to a static colour.
+
+    The rules live in ``tests/native_payload_guard.py`` so there is one statement
+    of what Kibana refuses, and so the ``colours_examined`` denominator below is
+    asserted: this check used to walk for colour objects and report no offenders,
+    which reads identically whether the payload is clean or the walk found
+    nothing. ``tests/vacuity`` mutation-tests the oracle itself.
     """
-    import glob
-    import json as _json
+    from tests.native_payload_guard import payload_kibana_rejections
+    from tests.vacuity.subjects import datadog_corpus
 
-    from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-    from observability_migration.adapters.source.datadog.generate import (
-        generate_dashboard_artifacts,
-    )
-    from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
-    from observability_migration.adapters.source.datadog.planner import plan_widget
-    from observability_migration.adapters.source.datadog.translate import translate_widget
-
-    def _widgets(widgets):
-        for widget in widgets:
-            yield widget
-            yield from _widgets(widget.children)
-
-    def _colors(node):
-        """Yield every ``color`` object anywhere in the emitted payload."""
-        if isinstance(node, dict):
-            if isinstance(node.get("color"), dict):
-                yield node["color"]
-            for value in node.values():
-                yield from _colors(value)
-        elif isinstance(node, list):
-            for item in node:
-                yield from _colors(item)
-
-    offenders = []
-    sources = sorted(glob.glob("infra/datadog/dashboards/integrations/*.json"))
-    assert sources, "expected Datadog integration dashboards to be present"
-    for path in sources:
-        with open(path, encoding="utf-8") as handle:
-            raw = _json.load(handle)
-        if "widgets" not in raw:
-            continue
-        normalized = normalize_dashboard(raw)
-        results = [
-            translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
-            for widget in _widgets(normalized.widgets)
-        ]
-        native, _stats, _ir = generate_dashboard_artifacts(
-            normalized, results, field_map=OTEL_PROFILE
-        )
-        for color in _colors(native.to_api_payload()):
-            steps = color.get("steps")
-            if isinstance(steps, list) and len(steps) == 1:
-                offenders.append(f"{normalized.title}: {color}")
+    offenders: list[str] = []
+    colours_examined = 0
+    corpus = datadog_corpus()
+    assert corpus, "expected Datadog integration dashboards to be present"
+    for entry in corpus:
+        findings, examined = payload_kibana_rejections(entry.payload)
+        colours_examined += examined["colors"]
+        offenders.extend(f"{entry.name}: {finding}" for finding in findings)
 
     assert not offenders, (
-        "single-step dynamic colour palettes are rejected by Kibana and cause the "
-        f"panel to be dropped from the saved dashboard: {offenders}"
+        "shapes Kibana refuses cause the panel to be dropped from the saved "
+        f"dashboard on an otherwise-successful upload: {offenders}"
+    )
+    assert colours_examined >= 10, (
+        f"only {colours_examined} colour object(s) were examined across "
+        f"{len(corpus)} dashboards, so this check is reporting 'clean' without "
+        f"having looked at the payload family it exists for"
     )
