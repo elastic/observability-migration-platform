@@ -234,6 +234,12 @@ def render_markdown(view: SummaryView) -> str:
             f"> {verdict} **Review recommended** — {t.not_feasible} not-feasible, "
             f"{t.red} Red, {t.warnings} with warnings."
         )
+    elif t.warnings or t.manual or t.not_feasible:
+        lines.append(
+            f"> {verdict} **Mostly migrated** — all {t.elements_total} "
+            f"{_plural(noun, t.elements_total)} translated, with {t.warnings} "
+            f"warning{'' if t.warnings == 1 else 's'}."
+        )
     else:
         lines.append(f"> {verdict} **Clean** — all {t.elements_total} {_plural(noun, t.elements_total)} migrated.")
     lines.append("")

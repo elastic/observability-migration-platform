@@ -53,20 +53,20 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 | grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 11 | 5 | 0 | 0 | 0 |
 | grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 9 | 3 | 0 | 0 | 0 | 0 |
 | datadog | Apache - Overview | 22 | 12 | 9 | 1 | 0 | 0 | 0 |
-| datadog | Celery Overview | 17 | 5 | 6 | 2 | 0 | 4 | 0 |
-| datadog | Consul Overview | 27 | 6 | 12 | 4 | 0 | 5 | 0 |
+| datadog | Celery Overview | 17 | 10 | 1 | 2 | 0 | 4 | 0 |
+| datadog | Consul Overview | 27 | 16 | 2 | 4 | 0 | 5 | 0 |
 | datadog | Docker - Overview | 28 | 6 | 19 | 1 | 2 | 0 | 0 |
-| datadog | HAProxy - Overview | 29 | 9 | 13 | 1 | 0 | 6 | 0 |
-| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 13 | 31 | 1 | 1 | 9 | 0 |
+| datadog | HAProxy - Overview | 29 | 21 | 1 | 1 | 0 | 6 | 0 |
+| datadog | Kafka, Zookeeper and Kafka Consumer Overview | 55 | 38 | 6 | 1 | 1 | 9 | 0 |
 | datadog | Kubernetes - Overview | 57 | 2 | 41 | 4 | 0 | 10 | 0 |
 | datadog | MongoDB - Overview | 43 | 12 | 21 | 1 | 0 | 9 | 0 |
 | datadog | MySQL - Overview | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
-| datadog | NGINX - Overview | 27 | 12 | 6 | 2 | 1 | 6 | 0 |
+| datadog | NGINX - Overview | 27 | 15 | 3 | 2 | 1 | 6 | 0 |
 | datadog | Postgres - Metrics | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 10 | 27 | 3 | 1 | 6 | 0 |
+| datadog | RabbitMQ Overview (OpenMetrics Version) | 47 | 28 | 9 | 3 | 1 | 6 | 0 |
 | datadog | Redis - Overview | 43 | 7 | 29 | 0 | 0 | 7 | 0 |
 | datadog | Datadog Kitchen Sink Canary | 25 | 16 | 5 | 3 | 0 | 1 | 0 |
-| datadog | System Overview - Sample | 11 | 8 | 2 | 1 | 0 | 0 | 0 |
+| datadog | System Overview - Sample | 11 | 9 | 1 | 1 | 0 | 0 | 0 |
 
 **24 dashboards, 717 panels** audited from `infra/grafana/dashboards/` and `infra/datadog/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
@@ -76,8 +76,8 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 48 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 480 | Translated with approximations — review recommended |
+| **CORRECT** | 122 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 406 | Translated with approximations — review recommended |
 | **EXPECTED_LIMITATION** | 212 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
@@ -86,21 +86,21 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Count | Warning |
 |------:|---------|
-| 187 | Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls |
 | 136 | Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana |
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 50 | Template variable '$scope' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
-| 41 | Template variable '$host' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
-| 35 | Grafana panel description is not carried into Kibana YAML automatically |
+| 35 | Grafana panel description is not carried into the migrated Kibana panel automatically |
 | 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
 | 22 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
-| 21 | Template variable '$replset_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
 | 20 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
 | 14 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
-| 11 | Template variable '$node_name' is used by both metric and log widgets; the migrated options-list control targets the metrics data view because one Kibana control cannot target both data views. Recreate a separate logs control or filter in Kibana |
 | 10 | rollup interval is approximated in ES\|QL |
 | 9 | Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead |
 | 9 | as_count interval semantics are approximated in ES\|QL |
+| 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
+| 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
+| 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
+| 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
+| 5 | Approximated bargauge as bar chart |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -265,8 +265,8 @@ Elements:            740 total (717 panels + 23 rows)
 Renderable panels:   717
   Migrated:             114 (15.9%)
   With warnings:        145 (20.2%)
-  OK:                   118 (16.5%)
-  Warning:              241 (33.6%)
+  OK:                   192 (26.8%)
+  Warning:              167 (23.3%)
   Requires manual:       29 (4.0%)
   Not feasible:           6 (0.8%)
   Skipped:               64 (8.9%)
@@ -275,12 +275,12 @@ Renderable panels:   717
 Verdict breakdown:
 
 ```
-  CORRECT:                   48
-  MINOR_ISSUE:              480
+  CORRECT:                  122
+  MINOR_ISSUE:              406
   EXPECTED_LIMITATION:      212
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-08-03 20:50 UTC*
+*Last generated: 2026-08-04 18:38 UTC*

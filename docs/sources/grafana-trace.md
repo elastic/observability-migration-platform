@@ -90,7 +90,7 @@ queries because the Kibana control applies the filter at dashboard level.
 | Count | Warning |
 |------:|---------|
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 35 | Grafana panel description is not carried into Kibana YAML automatically |
+| 35 | Grafana panel description is not carried into the migrated Kibana panel automatically |
 | 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
 | 22 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 20 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
@@ -3492,7 +3492,7 @@ TS metrics-prometheus-*
 **Visual IR:**
 
 - Kibana type: `datatable`
-- Layout: x=0, y=16, w=12, h=8
+- Layout: x=0, y=16, w=20, h=8
 - Presentation kind: `esql`
 - Config keys: type, query, metrics
 
@@ -3586,7 +3586,7 @@ TS metrics-prometheus-*
 **Visual IR:**
 
 - Kibana type: `datatable`
-- Layout: x=12, y=16, w=12, h=8
+- Layout: x=20, y=24, w=21, h=8
 - Presentation kind: `esql`
 - Config keys: type, query, metrics, breakdowns
 
@@ -3683,7 +3683,7 @@ TS metrics-prometheus-*
 **Visual IR:**
 
 - Kibana type: `metric`
-- Layout: x=24, y=16, w=4, h=8
+- Layout: x=41, y=24, w=7, h=8
 - Presentation kind: `esql`
 - Config keys: type, query, primary
 
@@ -4358,7 +4358,7 @@ TS metrics-prometheus-*
 - targets: 1
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically
+**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -6819,11 +6819,11 @@ TS metrics-prometheus-*
 - targets: 3
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated bargauge as bar chart
+**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated bargauge as bar chart
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
 
-**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -6917,11 +6917,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7011,11 +7011,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7104,11 +7104,11 @@ TS metrics-prometheus-*
 - targets: 2
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7198,11 +7198,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7294,11 +7294,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7387,11 +7387,11 @@ FROM metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7477,11 +7477,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7576,7 +7576,7 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -7671,7 +7671,7 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -7766,7 +7766,7 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into Kibana YAML automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -7862,11 +7862,11 @@ TS metrics-prometheus-*
 - field_overrides: 7
 - has_description: True
 
-**Warnings:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Notes:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7966,11 +7966,11 @@ TS metrics-prometheus-*
 - field_overrides: 23
 - has_description: True
 
-**Warnings:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically; Composited multi-label grouping (instance, job) into a single XY breakdown column
+**Warnings:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically; Composited multi-label grouping (instance, job) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
-**Notes:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -8060,7 +8060,7 @@ TS metrics-prometheus-*
 - field_overrides: 24
 - has_description: True
 
-**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into Kibana YAML automatically
+**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -8151,11 +8151,11 @@ TS metrics-prometheus-*
 - targets: 1
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into Kibana YAML automatically; Approximated PromQL arithmetic using same-bucket ES|QL math
+**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
 
-**Notes:** Grafana panel description is not carried into Kibana YAML automatically
+**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -10817,4 +10817,4 @@ Every panel marked `not_feasible` in the trace run (1 total):
 
 ---
 
-*Last generated: 2026-08-03 20:50 UTC*
+*Last generated: 2026-08-04 18:38 UTC*

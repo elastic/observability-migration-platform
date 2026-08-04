@@ -84,6 +84,15 @@ class RenderCleanRunTests(unittest.TestCase):
         self.assertNotIn("Warnings", md)
         self.assertNotIn("Non-panel gaps", md)
 
+    def test_warning_only_run_is_not_described_as_clean(self):
+        view = _clean_view()
+        view.totals.warnings = 2
+        view.totals.migrated = 8
+        md = render_markdown(view)
+        self.assertIn("✅", md)
+        self.assertIn("Mostly migrated", md)
+        self.assertNotIn("**Clean**", md)
+
 
 def _mixed_view() -> SummaryView:
     return SummaryView(
