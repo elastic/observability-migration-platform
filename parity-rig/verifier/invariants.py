@@ -507,6 +507,32 @@ def _check_accessor_fields(
     return findings
 
 
+def _job_scope_extra_group_fields(
+    query: str,
+    *,
+    group_fields: list[str],
+    breakdown_field: str,
+) -> list[str]:
+    """Return extra BY fields treated as dashboard scope rather than drift.
+
+    Mirrors ``panels._job_scope_extra_group_fields``: Prometheus
+    ``by (instance, job)`` panels filtered by ``?job`` keep ``instance`` as the
+    XY breakdown and intentionally leave ``job`` off the chart. That is a
+    Kibana-fit choice, not an undisclosed series merge.
+    """
+    groups = [str(col) for col in (group_fields or []) if col]
+    if len(groups) != 2 or not breakdown_field or "?job" not in str(query or ""):
+        return []
+    instance_fields = {"instance", "labels.instance", "service.instance.id", "host.name"}
+    job_fields = {"job", "labels.job", "service.name"}
+    if breakdown_field not in instance_fields:
+        return []
+    extras = [col for col in groups if col != breakdown_field]
+    if len(extras) != 1:
+        return []
+    return extras if extras[0] in job_fields else []
+
+
 def _check_merged_series(
     title: str,
     dashboard_title: str,
@@ -533,6 +559,12 @@ def _check_merged_series(
         and bool(_COMPOSITE_SERIES_GROUP_RE.search(query or ""))
     )
     if composite_applied:
+        return []
+    if _job_scope_extra_group_fields(
+        query,
+        group_fields=group_fields,
+        breakdown_field=breakdown_field,
+    ):
         return []
 
     disclosures = (
