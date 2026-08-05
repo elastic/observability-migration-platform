@@ -10,6 +10,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 
 from observability_migration.adapters.source.datadog.cli import (
+    _print_field_profile_operator_guidance,
     _warn_on_field_profile_mismatch,
 )
 
@@ -25,6 +26,13 @@ def _warn(profile):
     buf = io.StringIO()
     with redirect_stdout(buf):
         _warn_on_field_profile_mismatch(profile)
+    return buf.getvalue()
+
+
+def _guidance(profile):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _print_field_profile_operator_guidance(profile)
     return buf.getvalue()
 
 
@@ -61,3 +69,11 @@ def test_prefixless_profile_is_silent():
 def test_offline_discovery_is_silent():
     """With no discovered fields there is no evidence either way."""
     assert _warn(_profile("prometheus", "prometheus.metrics.", [])) == ""
+
+
+def test_otel_profile_without_metric_map_explains_metric_name_limit():
+    profile = _profile("otel", "", ["system.cpu.utilization"])
+    profile.metric_map = {}
+    out = _guidance(profile)
+    assert "--metric-map-file" in out
+    assert "does not" in out and "metric names" in out

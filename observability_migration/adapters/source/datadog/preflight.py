@@ -449,6 +449,22 @@ def build_target_readiness_contract(
     from observability_migration.core.metric_mapping.reporting import attach_metric_map_to_contract
 
     attach_metric_map_to_contract(contract, field_map)
+    metric_map = getattr(field_map, "metric_map", {}) or {}
+    if field_map.name in {"otel", "default"} and not metric_map:
+        contract["operator_guidance"] = {
+            "next_step": (
+                "Built-in Datadog 'otel' maps tags/attributes, not Datadog metric "
+                "names to OTel semantic-convention metric names. If target metric "
+                "names changed, add --metric-map-file and rerun --preflight."
+            )
+        }
+    elif field_map.name == "elastic_agent" and not metric_map:
+        contract["operator_guidance"] = {
+            "next_step": (
+                "Built-in Datadog 'elastic_agent' covers common system metrics only. "
+                "Custom app metrics usually need --metric-map-file."
+            )
+        }
     return contract
 
 

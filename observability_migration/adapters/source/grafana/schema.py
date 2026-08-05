@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from typing import Any
 
 import requests
 
@@ -523,9 +524,67 @@ class SchemaResolver:
         }
         if self._field_profile == "auto" and self._auto_resolved_profile == "otel":
             summary["auto_fallback"] = "otel"
+        guidance = self._operator_guidance(summary)
+        if guidance:
+            summary["operator_guidance"] = guidance
         if self._profile_warnings:
             summary["profile_warnings"] = list(self._profile_warnings)
         return summary
+
+    def _operator_guidance(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        field_profile = str(summary.get("field_profile") or "")
+        planned = summary.get("planned_schema_profile")
+        detected = summary.get("detected_schema_profile")
+        status = str(summary.get("status") or "")
+        index_pattern = str(summary.get("index_pattern") or self._index_pattern or "metrics-*")
+
+        if field_profile == "otel" and detected in self._NAMED_PROMETHEUS_PLANS:
+            return {
+                "likely_target_layout": detected,
+                "suggested_field_profile": detected,
+                "next_step": (
+                    f"Live caps for '{index_pattern}' look like {detected}. Re-run "
+                    f"with --field-profile {detected}, or use --field-profile auto "
+                    "--es-url so the tool can select that layout."
+                ),
+            }
+
+        if summary.get("profile_mismatch") and detected in self._NAMED_PROMETHEUS_PLANS:
+            return {
+                "likely_target_layout": detected,
+                "suggested_field_profile": detected,
+                "next_step": (
+                    f"The planned profile {planned} does not match the live fields in "
+                    f"'{index_pattern}'. Re-run with --field-profile {detected} if "
+                    "this is the target you intend to query."
+                ),
+            }
+
+        if field_profile == "auto" and summary.get("auto_fallback") == "otel":
+            return {
+                "likely_target_layout": "otel_or_mixed",
+                "next_step": (
+                    "Live caps did not prove a named Prometheus layout. If this "
+                    "target came from Elasticsearch native Prometheus write, Fleet "
+                    "Prometheus remote_write, or Metricbeat Prometheus, choose that "
+                    "explicit --field-profile. Otherwise keep otel and verify "
+                    "whether metric names still match the source."
+                ),
+            }
+
+        if field_profile in {"otel", "auto"} and status in {"offline", "empty", "error"}:
+            return {
+                "likely_target_layout": "unverified",
+                "next_step": (
+                    f"Schema discovery is unverified for '{index_pattern}'. Re-run "
+                    "with --es-url and point --esql-index at the concrete metrics "
+                    "data stream. If your target stores ECS / Elastic Agent system "
+                    "metrics instead of Prometheus-shaped names, plan on explicit "
+                    "metric_map or rule-pack overrides."
+                ),
+            }
+
+        return None
 
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.

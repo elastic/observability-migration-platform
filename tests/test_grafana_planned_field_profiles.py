@@ -96,7 +96,7 @@ def test_planned_prometheus_native_wins_over_bare_otel_caps():
         field_cache=_otel_shaped_field_cache(),
     )
     assert resolver.resolve_label("instance") == "labels.instance"
-    assert resolver.resolve_metric_field("http_requests_total") == "metrics.http_requests_total"
+    assert resolver.resolve_metric_field("http_requests_total") == "http_requests_total"
 
 
 def test_planned_remote_write_metric_scoped_wins_over_bare_otel_caps():
@@ -144,6 +144,7 @@ def test_planned_remote_write_mismatch_when_native_detected():
     summary = resolver.field_resolution_summary()
     assert summary["detected_schema_profile"] == "prometheus_native"
     assert summary["profile_mismatch"] is True
+    assert summary["operator_guidance"]["suggested_field_profile"] == "prometheus_native"
 
 
 def test_auto_ambiguous_caps_falls_back_to_otel_and_warns():
@@ -164,6 +165,7 @@ def test_auto_ambiguous_caps_falls_back_to_otel_and_warns():
     assert summary.get("auto_fallback") == "otel" or any(
         "otel" in w.lower() for w in getattr(resolver, "_profile_warnings", [])
     )
+    assert "explicit --field-profile" in summary["operator_guidance"]["next_step"]
 
 
 def _remote_write_field_caps():
@@ -425,6 +427,8 @@ def test_cli_discovery_status_shows_planned_detected_and_mismatch():
     assert "planned_schema_profile=prometheus_remote_write" in message
     assert "detected_schema_profile=prometheus_native" in message
     assert "profile_mismatch=yes" in message
+    assert "suggested_field_profile=prometheus_native" in message
+    assert "Next step:" in message
 
 
 def test_cli_discovery_status_shows_auto_fallback():

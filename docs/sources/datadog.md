@@ -148,6 +148,17 @@ Always pick an explicit built-in profile or YAML path. Wrong profile →
 missing-field warnings in preflight; emitted queries still follow the chosen
 plan.
 
+To reduce guesswork, the CLI now prints operator guidance when the chosen
+profile is likely insufficient:
+
+- a prefix-mismatch warning when live caps prove the selected Prometheus family
+  is wrong
+- an explicit note that built-in `otel` maps tags/attributes well but does
+  **not** translate Datadog metric names into OTel semantic-convention metric
+  names
+- an explicit note that built-in `elastic_agent` covers common system metrics,
+  not arbitrary custom app metrics
+
 ### How Field Profiles Work
 
 A profile supplies:
@@ -367,6 +378,10 @@ source field(s) — including default dot-to-underscore renames and explicit
 `mapped_from` field.
 `unknown` means live field caps were unavailable; it is not proof that a field
 exists.
+
+The readiness contract may also include `operator_guidance.next_step` when the
+chosen profile is likely missing a required ingredient, such as
+`--metric-map-file`.
 
 `--data-view` is an explicit override. When omitted, the selected field profile
 keeps its own metric index (for example, `prometheus` keeps

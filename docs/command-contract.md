@@ -485,6 +485,10 @@ state (`false` only for `passthrough`). The separate
 `automatic_profile_selection` key is `true` only when the requested profile is
 `auto`.
 
+When live discovery has actionable evidence, Grafana also prints
+`suggested_field_profile=<profile>` and a `Next step:` line, and mirrors that
+guidance into `required_target_contract.json.operator_guidance`.
+
 Datadog accepts `otel`, `default` (alias of `otel`), the Datadog-specific
 built-ins `elastic_agent`, `prometheus` (Metricbeat remote_write:
 `prometheus.metrics.*` / `prometheus.labels.*`; Grafana twin:
@@ -496,6 +500,14 @@ always pick an explicit plan. With
 that plan. Any other value is rejected (Grafana exits `2`, Datadog exits `1`).
 Prometheus profile label paths apply only to metric queries; Datadog log
 queries continue to use ECS / OTel field mappings.
+
+Datadog also prints operator notes when the selected built-in profile is often
+incomplete by itself:
+
+- `otel`: tag/attribute mapping is built in, but metric-name translation to
+  OTel semantic conventions is not; use `--metric-map-file` when names changed
+- `elastic_agent`: common system metrics are covered, but custom app metrics
+  usually still need `--metric-map-file`
 
 > **Breaking change:** Datadog `--field-profile prometheus` now emits
 > `prometheus.labels.*` for metric tags rather than ECS/bare fields. Choose

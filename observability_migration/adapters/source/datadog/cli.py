@@ -671,6 +671,7 @@ def _load_live_field_capabilities(
         parts.append(f"logs={log_fields}")
     print(f"  Target field capabilities: loaded {' '.join(parts)}")
     _warn_on_field_profile_mismatch(field_map)
+    _print_field_profile_operator_guidance(field_map)
 
 
 def _warn_on_field_profile_mismatch(field_map: Any) -> None:
@@ -701,6 +702,24 @@ def _warn_on_field_profile_mismatch(field_map: Any) -> None:
         "Every panel will fail in Kibana with \"Unknown column\"."
         + (f" Did you mean --field-profile {other}?" if other else "")
     )
+
+
+def _print_field_profile_operator_guidance(field_map: Any) -> None:
+    name = str(getattr(field_map, "name", "") or "")
+    metric_map = getattr(field_map, "metric_map", None)
+    has_metric_map = isinstance(metric_map, dict) and bool(metric_map)
+    if name in {"otel", "default"} and not has_metric_map:
+        print(
+            "  NOTE: Datadog field profile 'otel' maps tags/attributes well, but it does not\n"
+            "        translate Datadog metric names to OTel semantic-convention metric names.\n"
+            "        If metric names changed between Datadog and the Elasticsearch target,\n"
+            "        add --metric-map-file and re-run --preflight."
+        )
+    elif name == "elastic_agent" and not has_metric_map:
+        print(
+            "  NOTE: Datadog field profile 'elastic_agent' only covers common built-in system\n"
+            "        metrics. Custom app metrics usually still need --metric-map-file."
+        )
 
 
 def _run_dashboard_preflight(

@@ -168,6 +168,16 @@ translation **keeps the plan**. The flag is recorded on
 `required_target_contract.json` for operator visibility; it is not a separate
 preflight gate beyond existing missing-field severity.
 
+When live discovery is decisive enough to help but not safe enough to remap
+automatically, the CLI now prints operator guidance directly:
+
+- `suggested_field_profile=<profile>` when live caps clearly match another
+  named Prometheus layout
+- `Next step: ...` with the exact re-run guidance
+
+The same guidance is also recorded under `operator_guidance` in
+`required_target_contract.json`.
+
 ### How Schema Resolution Works
 
 Within the chosen profile, **labels** resolve through this order:
@@ -219,6 +229,13 @@ metric names`) and are marked `migrated_with_warnings`.
 > `field_profile`, `planned_schema_profile`, `detected_schema_profile`,
 > `profile_mismatch`, `field_capabilities_discovery`, and resolved target-field
 > `status` in `required_target_contract.json`.
+
+> **Important limitation:** Grafana has strong built-in support for
+> Prometheus-shaped targets and OTel-style field selection, but it does **not**
+> currently ship a built-in `elastic_agent` schema profile for ECS/system-metric
+> targets. If your target stores semantically renamed system fields rather than
+> Prometheus metric names, expect explicit `--metric-map-file` and/or rule-pack
+> overrides.
 
 > **Feasibility is invariant to `--es-url`.** The feasibility verdict answers
 > only *was the panel translated successfully?* A panel that translates into

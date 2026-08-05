@@ -800,6 +800,12 @@ def build_target_schema_contract(
                 list(contract["metric_map"].get("gaps", [])) + recording_rule_gaps
             )
             contract["metric_map"]["totals"]["gaps"] = len(contract["metric_map"]["gaps"])
+        summary_fn = getattr(resolver, "field_resolution_summary", None)
+        if callable(summary_fn):
+            summary = summary_fn()
+            guidance = summary.get("operator_guidance")
+            if guidance:
+                contract["operator_guidance"] = guidance
     return contract
 
 

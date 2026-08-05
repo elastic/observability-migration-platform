@@ -4542,6 +4542,8 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
         self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+        self.assertIn("operator_guidance", offline_contract)
+        self.assertIn("--metric-map-file", offline_contract["operator_guidance"]["next_step"])
 
     def test_target_readiness_contract_includes_counter_expectations_for_as_rate(self):
         field_map = load_profile("otel")

@@ -1837,6 +1837,13 @@ def _print_schema_discovery_status(
             print("  WARNING: no Prometheus schema profile detected; using OTel/pass-through fallbacks")
         for warning in summary.get("profile_warnings") or []:
             print(f"  WARNING: {warning}")
+        guidance = summary.get("operator_guidance") or {}
+        suggestion = str(guidance.get("suggested_field_profile") or "").strip()
+        next_step = str(guidance.get("next_step") or "").strip()
+        if suggestion:
+            print(f"  suggested_field_profile={suggestion}")
+        if next_step:
+            print(f"  Next step: {next_step}")
     elif discovery["status"] == "empty":
         print("  WARNING: schema discovery reached Elasticsearch but found no fields")
     elif discovery["status"] == "error":
