@@ -1,9 +1,0 @@
-title: Scrape delay (counts with 1m scrape interval)
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['computed_value']
-breakdown: instance
-warning: Approximated PromQL arithmetic using same-bucket ES|QL math
-warning: Grafana variable $scrape_interval used as scalar arithmetic value was replaced with literal 0

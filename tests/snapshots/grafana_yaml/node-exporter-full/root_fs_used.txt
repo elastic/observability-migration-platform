@@ -1,8 +1,0 @@
-title: Root FS Used
-grafana_type: gauge
-status: migrated
-chart_type: gauge
-metric: computed_value
-gauge_shape: arc
-gauge_range: [0, 100]
-gauge_thresholds: 80:rgba(50, 172, 45, 0.97), 90:rgba(237, 129, 40, 0.89), 100:rgba(245, 54, 54, 0.9)

@@ -1,6 +1,0 @@
-title: heatmap panel
-grafana_type: heatmap
-status: migrated_with_warnings
-chart_type: heatmap
-metric: redis_commands_processed_total
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

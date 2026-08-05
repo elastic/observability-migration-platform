@@ -1,8 +1,0 @@
-title: Pressure
-grafana_type: bargauge
-status: migrated
-chart_type: bar
-dimension: label
-metrics: ['value']
-mode: unstacked
-axis_extent: custom [0.0, 1.0]

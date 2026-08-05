@@ -1,6 +1,0 @@
-title: Uptime
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: metric
-primary: process_start_time_seconds_uptime_seconds
-warning: Approximated time() - metric as uptime from metric timestamp

@@ -1,8 +1,0 @@
-title: Disk Space Used
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['computed_value']
-breakdown: labels.mountpoint
-axis_title: bytes

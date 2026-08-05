@@ -1,7 +1,0 @@
-title: Net errors
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['net_conntrack_dialer_conn_failed_total']
-breakdown: instance

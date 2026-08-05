@@ -1,6 +1,0 @@
-title: piechart panel
-grafana_type: piechart
-status: migrated
-chart_type: pie
-metrics: ['redis_db_keys']
-breakdowns: ['instance']

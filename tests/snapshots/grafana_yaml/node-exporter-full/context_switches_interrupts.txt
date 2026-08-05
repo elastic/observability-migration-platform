@@ -1,8 +1,0 @@
-title: Context Switches / Interrupts
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Context_switches', 'Interrupts']
-breakdown: instance
-axis_title: counter

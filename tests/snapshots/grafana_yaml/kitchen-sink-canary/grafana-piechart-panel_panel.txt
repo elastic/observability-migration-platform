@@ -1,6 +1,0 @@
-title: grafana-piechart-panel panel
-grafana_type: grafana-piechart-panel
-status: migrated
-chart_type: pie
-metrics: ['redis_db_keys']
-breakdowns: ['instance']

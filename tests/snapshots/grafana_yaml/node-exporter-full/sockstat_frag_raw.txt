@@ -1,8 +1,0 @@
-title: Sockstat FRAG / RAW
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['FRAG_inuse_Frag_sockets_currently_in_use', 'RAW_inuse_Raw_sockets_currently_in_use']
-breakdown: instance
-axis_title: counter

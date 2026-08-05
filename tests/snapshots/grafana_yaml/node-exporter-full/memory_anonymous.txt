@@ -1,8 +1,0 @@
-title: Memory Anonymous
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['AnonHugePages_Memory_in_anonymous_huge_pages', 'AnonPages_Memory_in_user_pages_not_backed_by_files']
-breakdown: instance
-axis_title: bytes

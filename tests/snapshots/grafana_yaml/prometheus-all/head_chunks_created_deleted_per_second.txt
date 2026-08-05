@@ -1,7 +1,0 @@
-title: Head Chunks Created/Deleted per second
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['created_on', 'deleted_on']
-breakdown: instance

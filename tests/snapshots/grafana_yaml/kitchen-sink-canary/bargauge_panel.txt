@@ -1,7 +1,0 @@
-title: bargauge panel
-grafana_type: bargauge
-status: migrated_with_warnings
-chart_type: bar
-dimension: instance
-metrics: ['redis_db_keys']
-warning: Approximated bargauge as bar chart

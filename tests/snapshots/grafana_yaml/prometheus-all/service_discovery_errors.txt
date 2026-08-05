@@ -1,7 +1,0 @@
-title: Service discovery errors
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['exceeded_sample_limit_on', 'sd_file_read_error_on', 'sd_consul_rpc_failure_on', 'sd_marathon_refresh_failure_on', 'sd_openstack_refresh_failure_on']
-breakdown: instance

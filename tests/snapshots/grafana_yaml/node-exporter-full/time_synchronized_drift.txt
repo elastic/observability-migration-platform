@@ -1,8 +1,0 @@
-title: Time Synchronized Drift
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Estimated_error_in_seconds', 'Time_offset_in_between_local_system_and_reference_clock', 'Maximum_error_in_seconds']
-breakdown: instance
-axis_title: seconds

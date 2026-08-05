@@ -1,7 +1,0 @@
-title: singlestat panel
-grafana_type: singlestat
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['redis_db_keys']
-breakdowns: ['instance']
-warning: Approximated grouped stat panel as summary table

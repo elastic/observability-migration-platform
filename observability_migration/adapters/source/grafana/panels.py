@@ -9,6 +9,7 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field, fields, replace
+from typing import Any
 
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.operational import build_operational_ir
@@ -2816,7 +2817,7 @@ def _panel_uses_composite_breakdown(yaml_panel) -> bool:
     esql = (yaml_panel or {}).get("esql")
     if not isinstance(esql, dict):
         return False
-    breakdown_field = str(((esql.get("breakdown") or {}).get("field") or "")).strip()
+    breakdown_field = str((esql.get("breakdown") or {}).get("field") or "").strip()
     return breakdown_field in {"legend", "series_group"}
 
 
@@ -9774,9 +9775,8 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     # panel; tag-driven "dashboards" links stay manual (see
     # ``build_links_panel``). Appended last, at the next free row, so it
     # never overlaps a panel/section already placed by the loop above. A
-    # matching ``PanelResult`` is added so the YAML leaf-panel count and the
-    # migration-report panel-result count stay 1:1 (see
-    # tests/test_grafana_yaml_generation.py's snapshot pairing invariant).
+    # matching ``PanelResult`` is added so rendered leaf panels and migration-
+    # report panel results stay 1:1.
     grafana_dashboard_links = translate_dashboard_links(dashboard)
     links_panel = build_links_panel(grafana_dashboard_links)
     if links_panel is not None:

@@ -1,8 +1,0 @@
-title: NF Conntrack
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['NF_conntrack_entries', 'NF_conntrack_limit']
-breakdown: instance
-axis_title: entries

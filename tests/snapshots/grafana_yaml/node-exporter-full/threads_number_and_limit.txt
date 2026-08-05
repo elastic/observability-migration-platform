@@ -1,8 +1,0 @@
-title: Threads Number and Limit
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Allocated_threads', 'Threads_limit']
-breakdown: instance
-axis_title: counter

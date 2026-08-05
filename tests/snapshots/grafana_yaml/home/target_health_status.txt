@@ -1,6 +1,0 @@
-title: Target Health Status
-grafana_type: table
-status: migrated
-chart_type: datatable
-metrics: ['up']
-breakdowns: ['time_bucket']

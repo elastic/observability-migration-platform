@@ -1,8 +1,0 @@
-title: status-history panel
-grafana_type: status-history
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['redis_up']
-breakdown: instance
-warning: Grafana status-history panel approximated as a Kibana line chart: the underlying time series is preserved, but Kibana has no periodic discrete-state (status cell) visualization so values render as a line

@@ -1,6 +1,0 @@
-title: table-old panel
-grafana_type: table-old
-status: migrated
-chart_type: datatable
-metrics: ['redis_db_keys']
-breakdowns: ['time_bucket', 'instance']

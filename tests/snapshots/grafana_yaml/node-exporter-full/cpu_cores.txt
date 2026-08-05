@@ -1,5 +1,0 @@
-title: CPU Cores
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: cpu_cores

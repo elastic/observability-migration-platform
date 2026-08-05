@@ -1,8 +1,0 @@
-title: Processes Memory
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Processes_virtual_memory_size_in_bytes', 'Resident_memory_size_in_bytes', 'Maximum_amount_of_virtual_memory_available_in_bytes']
-breakdown: instance
-axis_title: bytes

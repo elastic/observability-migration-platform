@@ -1,8 +1,0 @@
-title: ICMP Errors
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['node_netstat_Icmp_InErrors']
-breakdown: instance
-axis_title: messages out (-) / in (+)

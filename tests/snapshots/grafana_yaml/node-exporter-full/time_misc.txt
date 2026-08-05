@@ -1,8 +1,0 @@
-title: Time Misc
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Seconds_between_clock_ticks', 'International_Atomic_Time_TAI_offset']
-breakdown: instance
-axis_title: seconds

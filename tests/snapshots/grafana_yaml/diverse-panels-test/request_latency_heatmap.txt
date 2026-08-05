@@ -1,5 +1,0 @@
-title: Request Latency Heatmap
-grafana_type: heatmap
-status: migrated
-chart_type: heatmap
-metric: http_request_duration_seconds_bucket

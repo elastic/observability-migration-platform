@@ -1,8 +1,0 @@
-title: Request size by handler
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['http_request_size_bytes']
-breakdown: legend
-warning: Source PromQL used increase() but http_request_size_bytes is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.

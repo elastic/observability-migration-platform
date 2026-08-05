@@ -1,7 +1,0 @@
-title: gauge panel
-grafana_type: gauge
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['redis_memory_used_bytes']
-breakdowns: ['instance']
-warning: Approximated grouped gauge panel as summary table

@@ -1,7 +1,0 @@
-title: Instantaneous Queue Size
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['node_disk_io_now']
-axis_title: Outstanding req.

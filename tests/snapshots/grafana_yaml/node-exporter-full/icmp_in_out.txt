@@ -1,8 +1,0 @@
-title: ICMP In / Out
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['InMsgs_Messages_which_the_entity_received_Note_that_this_counter_includes_all_those_counted_by_icmpInErrors', 'OutMsgs_Messages_which_this_entity_attempted_to_send_Note_that_this_counter_includes_all_those_counted_by_icmpOutErrors']
-breakdown: instance
-axis_title: messages out (-) / in (+)

@@ -1,8 +1,0 @@
-title: UDP In / Out
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['InDatagrams_Datagrams_received', 'OutDatagrams_Datagrams_sent']
-breakdown: instance
-axis_title: datagrams out (-) / in (+)

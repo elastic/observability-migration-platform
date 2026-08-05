@@ -1,8 +1,0 @@
-title: TCP SynCookie
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['SyncookiesFailed_Invalid_SYN_cookies_received', 'SyncookiesRecv_SYN_cookies_received', 'SyncookiesSent_SYN_cookies_sent']
-breakdown: instance
-axis_title: counter out (-) / in (+)

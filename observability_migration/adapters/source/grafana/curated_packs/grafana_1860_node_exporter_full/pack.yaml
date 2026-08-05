@@ -279,12 +279,22 @@ panel:
         | STATS recv = AVG(IRATE({{metric:node_network_receive_bytes_total:counter}})), trans = AVG(IRATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
         | EVAL recv = (recv * 8)
         | EVAL trans = (trans * 8)
-        | EVAL __labels = MV_APPEND("recv", "trans"), __values = MV_APPEND(COALESCE(TO_STRING(recv), ""), COALESCE(TO_STRING(trans), ""))
+        | EVAL __labels = MV_APPEND("Receive", "Transmit"), __values = MV_APPEND(COALESCE(TO_STRING(recv), ""), COALESCE(TO_STRING(trans), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL direction = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
         | EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.device`), ""), " / ", direction)
         | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "I/O Utilization"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE (labels.device RLIKE ?diskdevices OR (labels.device IS NULL AND "" RLIKE ?diskdevices))
+        | WHERE {{metric:node_disk_io_time_seconds_total:counter}} IS NOT NULL
+        | STATS utilization = AVG(IRATE({{metric:node_disk_io_time_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Disk Space Used"
@@ -295,8 +305,8 @@ panel:
         | WHERE (NOT (labels.device RLIKE "rootfs") OR (labels.device IS NULL AND NOT ("" RLIKE "rootfs")))
         | WHERE {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL
         | STATS size_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})), avail_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint
-        | EVAL computed_value = (size_bytes - avail_bytes)
-        | KEEP time_bucket, labels.mountpoint, computed_value
+        | EVAL used_bytes = (size_bytes - avail_bytes)
+        | KEEP time_bucket, labels.mountpoint, used_bytes
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Disk Space Used Basic"

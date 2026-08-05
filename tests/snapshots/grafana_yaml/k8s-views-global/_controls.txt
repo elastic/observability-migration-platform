@@ -1,2 +1,0 @@
-control: type=esql field=None multiple=False
-control: type=esql field=None multiple=True

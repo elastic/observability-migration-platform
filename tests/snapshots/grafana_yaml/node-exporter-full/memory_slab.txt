@@ -1,9 +1,0 @@
-title: Memory Slab
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: area
-dimension: time_bucket
-metrics: ['SUnreclaim_Part_of_Slab_that_cannot_be_reclaimed_on_memory_pressure', 'SReclaimable_Part_of_Slab_that_might_be_reclaimed_such_as_caches']
-breakdown: instance
-mode: stacked
-axis_title: bytes

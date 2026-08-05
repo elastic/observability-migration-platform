@@ -1,8 +1,0 @@
-title: CPU Basic
-grafana_type: timeseries
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['value']
-breakdown: series_group
-mode: percentage

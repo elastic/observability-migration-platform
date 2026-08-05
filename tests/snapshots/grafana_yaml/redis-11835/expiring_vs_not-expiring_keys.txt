@@ -1,7 +1,0 @@
-title: Expiring vs Not-Expiring Keys
-grafana_type: graph
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['not_expiring', 'expiring']
-mode: stacked

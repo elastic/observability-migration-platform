@@ -1,7 +1,0 @@
-title: Commands Executed / sec
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['redis_commands_processed_total']
-breakdown: instance

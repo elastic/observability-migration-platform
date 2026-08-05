@@ -1,8 +1,0 @@
-title: Memory Vmalloc
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['VmallocChunk_Largest_contiguous_block_of_vmalloc_area_which_is_free', 'VmallocTotal_Total_size_of_vmalloc_memory_area', 'VmallocUsed_Amount_of_vmalloc_area_which_is_used']
-breakdown: instance
-axis_title: bytes

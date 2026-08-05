@@ -1,6 +1,0 @@
-title: Request duration per handler
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['http_request_duration_microseconds_max']

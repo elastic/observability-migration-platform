@@ -1,8 +1,0 @@
-title: CPU Core Throttled by instance
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['node_cpu_core_throttles_total']
-breakdown: instance
-axis_title: NB

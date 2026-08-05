@@ -1,5 +1,0 @@
-title: Total count of time series
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: prometheus_tsdb_head_series

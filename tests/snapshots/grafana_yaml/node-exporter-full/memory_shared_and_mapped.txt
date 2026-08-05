@@ -1,8 +1,0 @@
-title: Memory Shared and Mapped
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Mapped_Used_memory_in_mapped_pages_files_which_have_been_mapped_such_as_libraries', 'Shmem_Used_shared_memory_shared_between_several_processes_thus_including_RAM_disks', 'ShmemHugePages_Memory_used_by_shared_memory_shmem_and_tmpfs_allocated_with_huge_pages', 'ShmemPmdMapped_Amount_of_shared_shmem_tmpfs_memory_backed_by_huge_pages']
-breakdown: instance
-axis_title: bytes

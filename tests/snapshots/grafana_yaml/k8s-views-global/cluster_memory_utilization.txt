@@ -1,8 +1,0 @@
-title: Cluster Memory Utilization
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Memory_usage_in']
-axis_title: MEMORY
-warning: Applied Grafana transformation 'calculateField' as ES|QL rewrite

@@ -1,8 +1,0 @@
-title: File Descriptor
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Max_open_files', 'Open_files']
-breakdown: instance
-axis_title: files

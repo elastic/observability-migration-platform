@@ -1,8 +1,0 @@
-title: File Descriptors
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Maximum_open_file_descriptors', 'Open_file_descriptors']
-breakdown: instance
-axis_title: counter

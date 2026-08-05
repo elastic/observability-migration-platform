@@ -1,6 +1,0 @@
-title: Top Metrics by Series Count
-grafana_type: bargauge
-status: not_feasible
-chart_type: none
-chart_type: markdown
-warning: PromQL metric-name introspection via __name__ requires manual redesign

@@ -1,8 +1,0 @@
-title: Memory DirectMap
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['DirectMap1G_Amount_of_pages_mapped_as_this_size', 'DirectMap2M_Amount_of_pages_mapped_as_this_size', 'DirectMap4K_Amount_of_pages_mapped_as_this_size']
-breakdown: instance
-axis_title: bytes

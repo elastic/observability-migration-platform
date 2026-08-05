@@ -1,9 +1,0 @@
-title: Memory Page Faults
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: area
-dimension: time_bucket
-metrics: ['Pgfault_Page_major_and_minor_fault_operations', 'Pgmajfault_Major_page_fault_operations', 'Pgminfault_Minor_page_fault_operations']
-breakdown: instance
-mode: stacked
-axis_title: faults

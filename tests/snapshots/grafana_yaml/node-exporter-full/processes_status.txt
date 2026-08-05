@@ -1,8 +1,0 @@
-title: Processes Status
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Processes_blocked_waiting_for_I_O_to_complete', 'Processes_in_runnable_state']
-breakdown: instance
-axis_title: counter

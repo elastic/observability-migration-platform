@@ -1,8 +1,0 @@
-title: Memory Committed
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Committed_AS_Amount_of_memory_presently_allocated_on_the_system', 'CommitLimit_Amount_of_memory_currently_available_to_be_allocated_on_the_system']
-breakdown: instance
-axis_title: bytes

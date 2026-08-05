@@ -1,8 +1,0 @@
-title: System Load
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Load_1m', 'Load_5m', 'Load_15m']
-breakdown: instance
-axis_title: counter

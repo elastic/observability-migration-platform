@@ -1,8 +1,0 @@
-title: PIDs Number and Limit
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Number_of_PIDs', 'PIDs_limit']
-breakdown: instance
-axis_title: counter

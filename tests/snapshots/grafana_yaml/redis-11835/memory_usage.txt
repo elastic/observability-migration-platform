@@ -1,5 +1,0 @@
-title: Memory Usage
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: value

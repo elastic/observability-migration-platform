@@ -82,7 +82,7 @@ Completed on 2026-08-05:
 - Added curated query overrides for `RAM Used`, `SWAP Used`, and `Uptime`
 - Removed their generic arithmetic warnings
 - Added pack/integration assertions so the 1860 dashboard test path exercises the curated pack
-- Refreshed the focused Node Exporter YAML snapshots for those three panels
+- Verified those three panels through native dashboard artifacts and live upload checks
 
 Still pending:
 

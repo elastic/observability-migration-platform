@@ -1,7 +1,0 @@
-title: Uptime
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: node_boot_time_seconds_uptime_seconds
-primary_color: background <=86400:#E7664C, <=86400.0864:#54B399
-warning: Approximated time() - metric as uptime from metric timestamp

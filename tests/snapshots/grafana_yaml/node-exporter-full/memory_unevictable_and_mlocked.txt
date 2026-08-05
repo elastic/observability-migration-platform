@@ -1,8 +1,0 @@
-title: Memory Unevictable and MLocked
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Unevictable_Amount_of_unevictable_memory_that_can_t_be_swapped_out_for_a_variety_of_reasons', 'MLocked_Size_of_pages_locked_to_memory_using_the_mlock_system_call']
-breakdown: instance
-axis_title: bytes
