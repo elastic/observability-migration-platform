@@ -6301,6 +6301,19 @@
           "default": null,
           "description": "Optional display label for the metric.",
           "title": "Label"
+        },
+        "stack": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-metric stacking override. When false on a stacked/percentage XY panel, this series is rendered as an unstacked overlay (Grafana seriesOverrides.stack=false / field override custom.stacking).",
+          "title": "Stack"
         }
       },
       "required": [

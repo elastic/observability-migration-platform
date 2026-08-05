@@ -12728,6 +12728,28 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(appearance["x_axis"]["title"], False)
         self.assertEqual(appearance["y_left_axis"]["title"], "%util")
 
+    def test_extract_xy_appearance_omits_line_area_style_for_bar(self):
+        from observability_migration.targets.kibana.emit.display import extract_xy_appearance
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "axisLabel": "percentage",
+                        "drawStyle": "bars",
+                        "lineInterpolation": "smooth",
+                        "fillOpacity": 70,
+                    }
+                }
+            }
+        }
+        appearance = extract_xy_appearance(panel, chart_type="bar")
+        self.assertEqual(appearance["y_left_axis"]["title"], "percentage")
+        self.assertNotIn("line_style", appearance)
+        self.assertNotIn("fill_opacity", appearance)
+        area_appearance = extract_xy_appearance(panel, chart_type="area")
+        self.assertEqual(area_appearance.get("line_style"), "monotone-x")
+        self.assertEqual(area_appearance.get("fill_opacity"), 0.7)
+
     def test_clean_template_dollar_var(self):
         from observability_migration.targets.kibana.emit.display import clean_template_variables
         self.assertEqual(

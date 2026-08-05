@@ -202,23 +202,31 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
     return appearance if appearance else None
 
 
-def extract_xy_appearance(panel: dict) -> dict[str, Any] | None:
-    """Derive Kibana XY appearance options from Grafana panel display config."""
+def extract_xy_appearance(
+    panel: dict, *, chart_type: str | None = None
+) -> dict[str, Any] | None:
+    """Derive Kibana XY appearance options from Grafana panel display config.
+
+    ``line_style`` / ``fill_opacity`` are only valid on line/area panel configs
+    (``BarChartAppearance`` rejects them), so bar charts keep axis options only.
+    """
     appearance = extract_axis_config(panel) or {}
     defaults = _field_defaults(panel)
     custom = defaults.get("custom") or {}
+    allow_line_area_style = chart_type != "bar"
 
-    line_interpolation = str(custom.get("lineInterpolation") or "").strip().lower()
-    if line_interpolation == "smooth":
-        appearance["line_style"] = "monotone-x"
-    elif line_interpolation == "stepafter":
-        appearance["line_style"] = "step-after"
-    elif line_interpolation:
-        appearance["line_style"] = "linear"
+    if allow_line_area_style:
+        line_interpolation = str(custom.get("lineInterpolation") or "").strip().lower()
+        if line_interpolation == "smooth":
+            appearance["line_style"] = "monotone-x"
+        elif line_interpolation == "stepafter":
+            appearance["line_style"] = "step-after"
+        elif line_interpolation:
+            appearance["line_style"] = "linear"
 
-    fill_opacity = _coerce_number(custom.get("fillOpacity"))
-    if fill_opacity is not None and fill_opacity > 0:
-        appearance["fill_opacity"] = max(0.0, min(fill_opacity / 100.0, 1.0))
+        fill_opacity = _coerce_number(custom.get("fillOpacity"))
+        if fill_opacity is not None and fill_opacity > 0:
+            appearance["fill_opacity"] = max(0.0, min(fill_opacity / 100.0, 1.0))
 
     overrides = ((panel.get("fieldConfig") or {}).get("overrides") or [])
     for override in overrides:
@@ -376,7 +384,7 @@ def enrich_yaml_panel_display(
             }
             esql["legend"] = legend_block
 
-        appearance = extract_xy_appearance(grafana_panel)
+        appearance = extract_xy_appearance(grafana_panel, chart_type=chart_type)
         if appearance and "appearance" not in esql:
             esql["appearance"] = appearance
 
