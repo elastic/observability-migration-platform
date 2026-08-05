@@ -215,6 +215,11 @@ def _semantic_gate(
     status = str(getattr(panel_result, "status", "") or "").lower()
     if status in {"not_feasible", "requires_manual", "blocked"}:
         return "Red"
+    # Structural containers (Datadog groups) and other intentional skips are not
+    # fidelity outcomes — counting them as Green inflated verification totals
+    # past the OK widget count in migration_manifest / console summaries.
+    if status == "skipped":
+        return "Skipped"
     # A widget dispositioned as self-healing kept its real visualization because
     # its only validation failure was missing target data; it is empty-but-
     # correct and recovers once telemetry arrives. The failed target validation
@@ -237,6 +242,11 @@ def _semantic_gate(
     if any(item in RUNTIME_WARNING_ROLLUPS for item in runtime_rollups):
         return "Yellow"
     if status == "warning" or semantic_losses:
+        return "Yellow"
+    # status=ok panels can still carry operator-facing warnings (e.g. multi-tag
+    # XY compositing). Those must Yellow the gate and match the "with warnings"
+    # scorecard bucket from recompute_counts — otherwise Green > OK.
+    if list(getattr(panel_result, "warnings", None) or []):
         return "Yellow"
     return "Green"
 

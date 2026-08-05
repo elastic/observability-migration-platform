@@ -2648,10 +2648,15 @@ def main(argv: list[str] | None = None):
             print(f"    note: {item}")
     for result in results:
         result.runtime_features = dict(getattr(rule_pack, "runtime_features", {}) or {})
+        gate_panels = [
+            pr for pr in result.panel_results
+            if getattr(pr, "status", "") != "skipped"
+            and getattr(pr, "grafana_type", "") != "row"
+        ]
         result.verification_summary = {
-            "green": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Green"),
-            "yellow": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Yellow"),
-            "red": sum(1 for pr in result.panel_results if (pr.verification_packet or {}).get("semantic_gate") == "Red"),
+            "green": sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Green"),
+            "yellow": sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Yellow"),
+            "red": sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Red"),
         }
         result.review_explanations = (
             {

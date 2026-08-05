@@ -775,7 +775,8 @@ def build_summary_view(
         dashboards.append(
             DashboardRow(
                 title=r.dashboard_title,
-                elements=len(renderable),
+                # Match the ✓/⚠/?/✗ columns — exclude skipped so the row sums.
+                elements=r.migrated + r.migrated_with_warnings + r.requires_manual + r.not_feasible,
                 migrated=r.migrated,
                 warnings=r.migrated_with_warnings,
                 manual=r.requires_manual,

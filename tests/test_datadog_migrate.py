@@ -5756,6 +5756,118 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             "native/infra.native.json",
         )
 
+    def test_manifest_gate_counts_exclude_structural_group_widgets(self):
+        """Skipped Datadog groups must not inflate Green past the OK scorecard."""
+        from observability_migration.adapters.source.datadog.verification import (
+            build_verification_packet,
+        )
+
+        ok = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = AVG(system_cpu_user)",
+            query_language="datadog_metric",
+            source_queries=["avg:system.cpu.user{*}"],
+        )
+        group = TranslationResult(
+            widget_id="g1",
+            source_panel_id="g1",
+            title="group widget",
+            dd_widget_type="group",
+            kibana_type="group",
+            status="skipped",
+            backend="none",
+            esql_query="",
+            query_language="datadog_widget",
+            source_queries=[],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            total_widgets=2,
+            panel_results=[ok, group],
+        )
+        ok.verification_packet = build_verification_packet(dr, ok)
+        group.verification_packet = build_verification_packet(dr, group)
+        self.assertEqual(ok.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(group.verification_packet["semantic_gate"], "Skipped")
+
+        manifest = build_migration_manifest([dr])
+        self.assertEqual(manifest["summary"]["ok"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["panels"], 2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "report.json"
+            from observability_migration.adapters.source.datadog.report import (
+                save_detailed_report,
+            )
+
+            save_detailed_report([dr], output_path=output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        # 1 OK of 1 renderable widget (group excluded) → 100%, not 50%.
+        self.assertEqual(payload["summary"]["success_rate"], "100.0%")
+        self.assertEqual(payload["summary"]["total_widgets"], 2)
+
+    def test_manifest_counts_ok_with_warnings_as_warning_bucket(self):
+        """status=ok + warnings must match recompute_counts / summary.md."""
+        from observability_migration.adapters.source.datadog.verification import (
+            build_verification_packet,
+        )
+
+        clean = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = AVG(system_cpu_user)",
+            query_language="datadog_metric",
+            source_queries=["avg:system.cpu.user{*}"],
+        )
+        warned = TranslationResult(
+            widget_id="w2",
+            source_panel_id="w2",
+            title="Frontend 2xx",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = SUM(haproxy_2xx)",
+            query_language="datadog_metric",
+            source_queries=["sum:haproxy.2xx{*} by {svc,release}"],
+            warnings=["XY chart grouped by multiple tags; composited into a single breakdown column"],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            total_widgets=2,
+            panel_results=[clean, warned],
+        )
+        clean.verification_packet = build_verification_packet(dr, clean)
+        warned.verification_packet = build_verification_packet(dr, warned)
+        self.assertEqual(clean.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(warned.verification_packet["semantic_gate"], "Yellow")
+
+        dr.recompute_counts()
+        self.assertEqual(dr.migrated, 1)
+        self.assertEqual(dr.migrated_with_warnings, 1)
+
+        manifest = build_migration_manifest([dr])
+        self.assertEqual(manifest["summary"]["ok"], 1)
+        self.assertEqual(manifest["summary"]["warning"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["yellow"], 1)
+
     def test_detailed_report_includes_smoke_and_verification_sections(self):
         dr = DashboardResult(
             dashboard_id="dash-1",

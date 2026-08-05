@@ -350,6 +350,7 @@ def save_detailed_report(
         report["metric_map_summary"] = metric_map_summary
 
     total_widgets = 0
+    total_renderable = 0
     total_ok = 0
     total_warning = 0
     total_manual = 0
@@ -361,7 +362,9 @@ def save_detailed_report(
 
     for dr in results:
         dr.recompute_counts()
+        groups = sum(1 for pr in dr.panel_results if getattr(pr, "kibana_type", "") == "group")
         total_widgets += dr.total_widgets
+        total_renderable += max(dr.total_widgets - groups, 0)
         total_ok += dr.migrated
         total_warning += dr.migrated_with_warnings
         total_manual += dr.requires_manual
@@ -463,8 +466,11 @@ def save_detailed_report(
         "smoke_failed": sum(1 for dr in results if dr.smoke_status == "fail"),
         "verification_red": sum((dr.verification_summary or {}).get("red", 0) for dr in results),
         "success_rate": (
-            f"{(total_ok + total_warning) / total_widgets * 100:.1f}%"
-            if total_widgets > 0
+            # Denominator is renderable widgets (excludes structural groups),
+            # matching the console report — not total_widgets which still
+            # counts groups as elements.
+            f"{(total_ok + total_warning) / total_renderable * 100:.1f}%"
+            if total_renderable > 0
             else "0.0%"
         ),
     }
@@ -561,7 +567,8 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         dashboards.append(
             DashboardRow(
                 title=dr.dashboard_title,
-                elements=len(renderable),
+                # Match the ✓/⚠/?/✗ columns — exclude structural skips/groups.
+                elements=dr.migrated + dr.migrated_with_warnings + dr.requires_manual + dr.not_feasible,
                 migrated=dr.migrated,
                 warnings=dr.migrated_with_warnings,
                 manual=dr.requires_manual,

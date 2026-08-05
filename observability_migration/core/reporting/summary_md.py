@@ -214,6 +214,37 @@ def _plural(noun: str, n: int) -> str:
     return noun if n == 1 else noun + "s"
 
 
+def _verdict_line(totals: SummaryTotals, noun: str) -> str:
+    """Build the one-line verdict. Never claim panels were translated when they were not."""
+    verdict = _verdict(totals)
+    translated = totals.migrated + totals.warnings
+    warn_bit = (
+        f", with {totals.warnings} warning{'' if totals.warnings == 1 else 's'}"
+        if totals.warnings
+        else ""
+    )
+    if verdict == "⚠️":
+        return (
+            f"> {verdict} **Review recommended** — {totals.not_feasible} not-feasible, "
+            f"{totals.red} Red, {totals.warnings} with warnings."
+        )
+    if totals.skipped:
+        return (
+            f"> {verdict} **Mostly migrated** — {translated} of {totals.elements_total} "
+            f"{_plural(noun, totals.elements_total)} translated "
+            f"({totals.skipped} skipped){warn_bit}."
+        )
+    if totals.warnings:
+        return (
+            f"> {verdict} **Mostly migrated** — all {translated} "
+            f"{_plural(noun, translated)} translated{warn_bit}."
+        )
+    return (
+        f"> {verdict} **Clean** — all {totals.elements_total} "
+        f"{_plural(noun, totals.elements_total)} migrated."
+    )
+
+
 def render_markdown(view: SummaryView) -> str:
     t = view.totals
     noun = view.element_noun or "panel"
@@ -228,20 +259,7 @@ def render_markdown(view: SummaryView) -> str:
         f"{_plural('dashboard', t.dashboards)}"
     )
     lines.append("")
-    verdict = _verdict(t)
-    if verdict == "⚠️":
-        lines.append(
-            f"> {verdict} **Review recommended** — {t.not_feasible} not-feasible, "
-            f"{t.red} Red, {t.warnings} with warnings."
-        )
-    elif t.warnings or t.manual or t.not_feasible:
-        lines.append(
-            f"> {verdict} **Mostly migrated** — all {t.elements_total} "
-            f"{_plural(noun, t.elements_total)} translated, with {t.warnings} "
-            f"warning{'' if t.warnings == 1 else 's'}."
-        )
-    else:
-        lines.append(f"> {verdict} **Clean** — all {t.elements_total} {_plural(noun, t.elements_total)} migrated.")
+    lines.append(_verdict_line(t, noun))
     lines.append("")
 
     # 2. Scorecard
@@ -344,8 +362,8 @@ def _render_provenance(view: SummaryView) -> list[str]:
         "Structural-only unless separately validated |"
     )
     out.append(
-        f"| Placeholder (not feasible / manual) | {placeholder} | {_pct(placeholder, classified)} | "
-        "Not migrated (manual rebuild) or a non-query visual (text/markdown) |"
+        f"| Placeholder / non-query visual | {placeholder} | {_pct(placeholder, classified)} | "
+        "Not migrated (manual rebuild), skipped, or a non-query visual (text/markdown) |"
     )
     out.append("")
 

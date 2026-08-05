@@ -92,6 +92,19 @@ class RenderCleanRunTests(unittest.TestCase):
         self.assertIn("✅", md)
         self.assertIn("Mostly migrated", md)
         self.assertNotIn("**Clean**", md)
+        self.assertIn("all 10 panels translated", md)
+
+    def test_skipped_panels_are_not_claimed_translated(self):
+        view = _clean_view()
+        view.totals.elements_total = 10
+        view.totals.migrated = 6
+        view.totals.warnings = 3
+        view.totals.skipped = 1
+        md = render_markdown(view)
+        self.assertIn("Mostly migrated", md)
+        self.assertIn("9 of 10 panels translated (1 skipped)", md)
+        self.assertNotIn("all 10 panels translated", md)
+        self.assertIn("| Skipped | 1 |", md)
 
 
 def _mixed_view() -> SummaryView:

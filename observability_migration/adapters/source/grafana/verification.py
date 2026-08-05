@@ -197,6 +197,10 @@ def _semantic_gate(
     status = str(getattr(panel_result, "status", "") or "").lower()
     if status in {"not_feasible", "requires_manual"}:
         return "Red"
+    # Rows / intentionally skipped panels are not fidelity outcomes — counting
+    # them as Green inflated migration_manifest.green past the OK scorecard.
+    if status == "skipped":
+        return "Skipped"
     # A panel dispositioned as self-healing kept its real visualization because
     # its only validation failure was missing target data; it is empty-but-
     # correct and recovers once telemetry arrives. The failed target validation

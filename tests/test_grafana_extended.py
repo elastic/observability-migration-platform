@@ -4327,8 +4327,60 @@ class TestNativePromqlLiveValidationFallback(unittest.TestCase):
         self.assertNotIn("step=", validated)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestGrafanaSkippedPanelsDoNotInflateGreen(unittest.TestCase):
+    """Rows / alert lists are status=skipped and must not count as Green."""
+
+    def test_skipped_gate_and_manifest_exclude_from_green(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            build_migration_manifest,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+        )
+        from observability_migration.core.reporting.report import (
+            MigrationResult,
+            PanelResult,
+        )
+
+        clean = PanelResult(
+            title="CPU",
+            grafana_type="timeseries",
+            kibana_type="xy",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(cpu)",
+            promql_expr="avg(node_cpu)",
+            source_panel_id="1",
+        )
+        skipped = PanelResult(
+            title="Alert list",
+            grafana_type="alertlist",
+            kibana_type="markdown",
+            status="skipped",
+            confidence=0.0,
+            esql_query="",
+            promql_expr="",
+            reasons=["alert list panels are not migrated"],
+            source_panel_id="2",
+        )
+        result = MigrationResult(
+            dashboard_title="Dash",
+            dashboard_uid="dash",
+            total_panels=2,
+            migrated=1,
+            skipped=1,
+            panel_results=[clean, skipped],
+        )
+        clean.verification_packet = build_verification_packet("Dash", clean)
+        skipped.verification_packet = build_verification_packet("Dash", skipped)
+        self.assertEqual(clean.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(skipped.verification_packet["semantic_gate"], "Skipped")
+
+        manifest = build_migration_manifest([result])
+        self.assertEqual(manifest["summary"]["migrated"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["yellow"], 0)
+        self.assertEqual(manifest["summary"]["red"], 0)
 
 
 class TestValueMappingsAreReported(unittest.TestCase):
@@ -4417,3 +4469,7 @@ class TestNonPromqlPanelsNameTheirQueryLanguage(unittest.TestCase):
             self._placeholder_reason(panel),
             "No PromQL expression found in panel targets",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

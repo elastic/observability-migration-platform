@@ -398,9 +398,26 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "migrated_with_warnings": sum(1 for panel in flat_panels if panel["status"] == "migrated_with_warnings"),
             "requires_manual": sum(1 for panel in flat_panels if panel["status"] == "requires_manual"),
             "not_feasible": sum(1 for panel in flat_panels if panel["status"] == "not_feasible"),
-            "green": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"),
-            "yellow": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"),
-            "red": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"),
+            # Gate tallies exclude skipped panels (rows / non-migrated) so Green
+            # matches the Migrated scorecard rather than the raw element count.
+            "green": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"
+            ),
+            "yellow": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"
+            ),
+            "red": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"
+            ),
             "control_warnings": sum(
                 len(dashboard.get("control_warnings", []))
                 for dashboard in dashboards

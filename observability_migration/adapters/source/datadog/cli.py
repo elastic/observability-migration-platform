@@ -468,20 +468,27 @@ def _run_dashboard_pipeline(
         verify=verify,
     )
     for dashboard_result in all_results:
+        # Gate tallies exclude structural group widgets (kibana_type=group) so
+        # Green/Yellow/Red match the renderable scorecard, not element count.
+        gate_panels = [
+            panel_result
+            for panel_result in dashboard_result.panel_results
+            if getattr(panel_result, "kibana_type", "") != "group"
+        ]
         dashboard_result.verification_summary = {
             "green": sum(
                 1
-                for panel_result in dashboard_result.panel_results
+                for panel_result in gate_panels
                 if (panel_result.verification_packet or {}).get("semantic_gate") == "Green"
             ),
             "yellow": sum(
                 1
-                for panel_result in dashboard_result.panel_results
+                for panel_result in gate_panels
                 if (panel_result.verification_packet or {}).get("semantic_gate") == "Yellow"
             ),
             "red": sum(
                 1
-                for panel_result in dashboard_result.panel_results
+                for panel_result in gate_panels
                 if (panel_result.verification_packet or {}).get("semantic_gate") == "Red"
             ),
         }

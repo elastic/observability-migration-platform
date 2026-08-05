@@ -64,18 +64,35 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             flat_panels.append(panel_entry)
         dashboards.append(dashboard_entry)
 
+    def _gate_panel(panel: dict[str, Any]) -> bool:
+        # Structural Datadog groups are status=skipped / kibana_type=group and
+        # must not inflate Green/Yellow/Red beyond the renderable scorecard.
+        return panel.get("kibana_type") != "group" and panel.get("status") != "skipped"
+
+    def _is_warning_bucket(panel: dict[str, Any]) -> bool:
+        # Match DashboardResult.recompute_counts: status=ok with warnings counts
+        # as migrated_with_warnings, not clean ok.
+        status = panel.get("status")
+        warnings = panel.get("warnings") or []
+        return status == "warning" or (status == "ok" and bool(warnings))
+
+    def _is_ok_bucket(panel: dict[str, Any]) -> bool:
+        return panel.get("status") == "ok" and not (panel.get("warnings") or [])
+
+    gate_panels = [panel for panel in flat_panels if _gate_panel(panel)]
+
     return {
         "summary": {
             "dashboards": len(dashboards),
             "panels": len(flat_panels),
-            "ok": sum(1 for panel in flat_panels if panel["status"] == "ok"),
-            "warning": sum(1 for panel in flat_panels if panel["status"] == "warning"),
+            "ok": sum(1 for panel in flat_panels if _is_ok_bucket(panel)),
+            "warning": sum(1 for panel in flat_panels if _is_warning_bucket(panel)),
             "requires_manual": sum(1 for panel in flat_panels if panel["status"] == "requires_manual"),
             "not_feasible": sum(1 for panel in flat_panels if panel["status"] == "not_feasible"),
             "blocked": sum(1 for panel in flat_panels if panel["status"] == "blocked"),
-            "green": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"),
-            "yellow": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"),
-            "red": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"),
+            "green": sum(1 for panel in gate_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"),
+            "yellow": sum(1 for panel in gate_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"),
+            "red": sum(1 for panel in gate_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"),
             "uploaded_ok": sum(1 for dashboard in dashboards if (dashboard.get("runtime_summary", {}).get("upload") or {}).get("status") == "pass"),
             "smoke_ok": sum(1 for dashboard in dashboards if (dashboard.get("runtime_summary", {}).get("smoke") or {}).get("status") == "pass"),
         },
