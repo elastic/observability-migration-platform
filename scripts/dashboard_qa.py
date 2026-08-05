@@ -38,6 +38,7 @@ import argparse
 import datetime as dt
 import itertools
 import json
+import math
 import re
 import sys
 import urllib.error
@@ -47,7 +48,6 @@ from pathlib import Path
 
 GRID_COLUMNS = 48
 _AUDIT_SUFFIX = "-qa-tmp"
-_METRIC_REF = re.compile(r"\bmetrics\.[A-Za-z_][A-Za-z0-9_]*")
 _PARAM = re.compile(r"(?<!\?)\?(?!\?)([a-zA-Z_]\w*)")
 
 
@@ -289,7 +289,7 @@ def _prom_instant(prometheus_url: str, expr: str, when: str):
             value = float(series["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):
             continue
-        if value == value:  # skip NaN
+        if not math.isnan(value):
             out.append(value)
     return out
 
@@ -313,7 +313,7 @@ def _prom_instant_series(prometheus_url: str, expr: str, when: str):
             value = float(series["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):
             continue
-        if value != value:
+        if math.isnan(value):
             continue
         labels = {k: v for k, v in (series.get("metric") or {}).items() if k != "__name__"}
         out.append((labels, value))

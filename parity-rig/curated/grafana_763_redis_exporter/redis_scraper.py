@@ -16,6 +16,7 @@
 # nothing; the metric names have to actually be present to be compared.
 
 import json
+import math
 import re
 import sys
 import time
@@ -396,7 +397,7 @@ def parse_prometheus(text: str) -> dict:
             except ValueError:
                 continue
             # Skip NaN / Inf — not useful for TSDB
-            if value != value or value in (float("inf"), float("-inf")):
+            if math.isnan(value) or math.isinf(value):
                 continue
 
             labels: dict[str, str] = {}
@@ -502,8 +503,9 @@ def wait_for_es(url: str, max_wait: int = 120) -> None:
             if r.status_code == 200 and r.json().get("status") in ("green", "yellow"):
                 print("Elasticsearch ready.", flush=True)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            # ES may still be starting; keep polling until deadline.
+            print(f"Elasticsearch not ready yet ({exc!r}); retrying...", flush=True)
         time.sleep(3)
     print("ERROR: Elasticsearch did not become ready in time.", flush=True)
     sys.exit(1)

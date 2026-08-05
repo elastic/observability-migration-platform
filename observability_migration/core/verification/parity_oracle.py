@@ -12,6 +12,7 @@ ES traffic goes through the shared make_es_request adapter (honors resolve_tls).
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -1404,7 +1405,7 @@ def run_prometheus_range(prometheus_url, expr, start_iso, end_iso, step):
                 numeric = float(value)
             except (TypeError, ValueError):
                 continue
-            if numeric != numeric:  # NaN: Prometheus emits it for 0/0
+            if math.isnan(numeric):  # NaN: Prometheus emits it for 0/0
                 continue
             stamp = datetime.fromtimestamp(float(timestamp), UTC).isoformat().replace("+00:00", "Z")
             rows.append([numeric, stamp] + [labels.get(n) for n in label_names])
