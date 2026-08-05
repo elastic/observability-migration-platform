@@ -17,7 +17,7 @@ lifecycle, repo-oriented validation CLIs, and the test suite — live in
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `ELASTICSEARCH_ENDPOINT` or `ES_URL` | live validate, upload smoke, data scripts | Elasticsearch URL |
+| `ELASTICSEARCH_ENDPOINT` or `ES_URL` | live validate, upload smoke, `seed-sample-data` / `compare` / `verify` | Elasticsearch URL |
 | `KIBANA_ENDPOINT` or `KIBANA_URL` | upload, cluster commands, smoke | Kibana URL |
 | `KEY` or `ES_API_KEY` | authenticated ES/Kibana operations | API key |
 | `DD_API_KEY` / `DD_APP_KEY` | Datadog API extraction / verification | can also load via `--env-file` |
@@ -49,12 +49,12 @@ also smoke-tested on macOS. Windows is not supported.
 
 **Python:** 3.11 or newer (tested on 3.11, 3.12, and 3.13; 3.10 and older are
 rejected, and 3.14+ works but is not in the CI matrix yet — doctor prints a note,
-not a failure). On 3.11, keep `uv` on `PATH` for the kb-dashboard `uvx`
-fallback. After install, run doctor with the **same launcher** you will use for
+not a failure). After install, run doctor with the **same launcher** you will use for
 migrate — `uvx --from 'elastic-observability-migration[all]' obs-migrate doctor` if you are staying on `uvx`, or
 a bare `obs-migrate doctor` once the install location is on `PATH`.
-Doctor checks Python, required imports, extras, and compile tools, and exits
-non-zero if something blocking is missing.
+Doctor checks Python, required imports, and optional extras, and exits
+non-zero if something blocking is missing. The old `kb-dashboard-*` compile
+tools are not required (dashboard YAML compile was removed).
 
 ### Recommended (operators): `uvx` + `[all]`
 
@@ -236,6 +236,35 @@ compatibility aliases.
 
 ## Unified CLI (`obs-migrate`)
 
+### Doctor
+
+`obs-migrate doctor` is the first-run readiness check. It is offline (no
+Elastic/Kibana credentials) and exits `0` when the install can migrate and
+upload, or `1` when a blocking gap remains (Python too old, required import
+missing). Optional Datadog API client absence is a note, not a failure — file
+mode still works. Dashboard YAML / `kb-dashboard-*` tools are not checked.
+
+```bash
+obs-migrate doctor
+```
+
+### List Samples
+
+`obs-migrate list-samples` prints a JSON catalog of the sample dashboards
+bundled in the wheel. Each entry includes a resolved `input_dir` and a ready
+`run` command. Fully offline; no credentials.
+
+```bash
+obs-migrate list-samples
+# Then migrate one sample using its input_dir, for example:
+obs-migrate migrate \
+  --source grafana \
+  --input-mode files \
+  --input-dir "$(obs-migrate list-samples | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["input_dir"])')" \
+  --output-dir sample_out \
+  --assets dashboards
+```
+
 ### Migrate
 
 `obs-migrate migrate` is the canonical unified migration surface for Grafana and
@@ -255,6 +284,7 @@ Datadog.
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
 | `--validate` | Grafana, Datadog | Validate emitted ES\|QL queries against Elasticsearch after translation | Requires `--es-url`. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
+| `--ensure-data-views` | Grafana, Datadog dashboards | Create the Kibana data views referenced by migrated controls before upload | Forwarded to the source adapter. Upload already ensures referenced patterns automatically; use this flag when you want the ensure step without relying only on the upload path. Prefer `obs-migrate cluster ensure-data-views` for an explicit cluster-only ensure. |
 | `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). A requested creation that does not happen **fails the run** rather than warning and exiting `0` — see [Creating Kibana alert rules from a single command](#creating-kibana-alert-rules-from-a-single-command) for the exit codes. |
 | `--no-draft-alert-rules` | Grafana, Datadog | With `--create-alert-rules`, skip draft rules and create only fully-automated translations | Draft rules are created by default. Use this to restrict creation to translations the engine is confident about. |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
@@ -269,11 +299,15 @@ Datadog.
 | `--insecure` | Grafana, Datadog | Disable TLS certificate verification for **all** outbound connections | Env fallback `OBS_MIGRATE_INSECURE`; testing/trusted-network only, prints a one-time warning. Prefer `--ca-cert` |
 | `--smoke`, `--smoke-output`, `--browser-audit`, `--capture-screenshots` | Grafana, Datadog | Run shared post-upload validation | Forwarded to source runtimes when smoke is enabled; use `--smoke-output` to choose the report path |
 
-Use `obs-migrate cluster ...` for shared target-management operations.
+Use `obs-migrate cluster ...` for shared target-management operations
+(`list-dashboards`, `ensure-data-views`, `delete-dashboards`,
+`detect-serverless`).
 
-Dedicated source CLIs still expose `--list-dashboards`, `--delete-dashboards`,
-and `--ensure-data-views` for source-local operator workflows, but unified
-`obs-migrate migrate` no longer multiplexes those flags.
+Dedicated source CLIs still expose `--list-dashboards` /
+`--delete-dashboards` / `--ensure-data-views` as migrate-time flags for
+source-local workflows. On the unified CLI, listing and deleting dashboards
+are **only** via `obs-migrate cluster …`; `--ensure-data-views` is available
+on `obs-migrate migrate` as well (see the flag table above).
 
 Integrated smoke validation is a post-upload evidence report, not a replacement
 for reading the migration summary. `--smoke` writes and merges the smoke report
@@ -292,12 +326,16 @@ Examples below use the canonical environment names
 `serverless_creds.env`. The compatibility aliases `$ES_URL`, `$KIBANA_URL`, and
 `$ES_API_KEY` are still accepted by every CLI and refer to the same values.
 
+File-mode examples below use `./grafana_exports` / `./datadog_exports` as stand-ins
+for your exported JSON directories. For a zero-setup offline trial, run
+`obs-migrate list-samples` and pass the printed `input_dir` to `--input-dir`.
+
 ```bash
 # Grafana dashboards only (files); native PROMQL is the default
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets dashboards \
   --field-profile otel \
@@ -469,7 +507,7 @@ queries continue to use ECS / OTel field mappings.
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets dashboards \
   --field-profile passthrough \
@@ -523,7 +561,7 @@ stream:
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets dashboards \
   --field-profile otel \
@@ -816,7 +854,8 @@ customization:
 - Grafana: `--rules-file` for label rewrites, metric kinds, panel overrides, and
   optional embedded `query.metric_map` (overridden by `--metric-map-file` on
   duplicate keys). When a dashboard carries a `gnetId` that matches a bundled
-  curated pack (e.g. Redis 763, Redis Enterprise 18405, Redis Cloud 18406), the
+  curated pack (e.g. Redis 763 / 11835 / 14091, Redis Enterprise 18405, Redis
+  Cloud 18406, Node Exporter Full 1860), the
   pack is merged in automatically beneath the user `--rules-file` so the user
   always wins on collision. Pass `--no-curated-packs` to skip all curated packs
   and use only the base rule pack.
@@ -895,8 +934,9 @@ validation, source preflight/execution probes, dashboard upload, smoke
 validation, and the alerting preflight/create/audit paths.
 
 The repo-oriented `verify-panels` and `verify-visual` wrappers do not expose
-these TLS flags today; prefer the package-native migration/upload/smoke paths
-for custom-CA or self-signed target validation.
+these TLS flags today; prefer the package-native migration/upload/smoke/
+`compare`/`verify` paths for custom-CA or self-signed target validation (see
+[Verify Panels / Verify Visual](#verify-panels--verify-visual-repo-checkout)).
 
 Unified Datadog API mode exposes `--env-file`, `--dashboard-ids`,
 `--monitor-ids`, and `--monitor-query`. Datadog API mode still requires the
@@ -963,7 +1003,7 @@ set -a && source serverless_creds.env && set +a
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets all \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
@@ -1611,103 +1651,25 @@ Those gates need a repo checkout — they are documented in
 - the render audit — the only gate that catches Lens accessor / "invalid
   column" / empty-state render failures that ES|QL execution and the schema
   gate miss.
-- `obs-migrate verify-panels` — the full 5-tier panel verifier.
+- `obs-migrate verify-panels` / `verify-visual` — repo-checkout wrappers; see
+  [Verify Panels / Verify Visual](#verify-panels--verify-visual-repo-checkout).
 
 Exit code is `2` when Elasticsearch is unreachable or inputs are invalid
 (missing artifact dir, missing credentials, no emitted queries), `1` on any
 `real_bug` or compare `FAIL`/`ERROR`, and `0` otherwise (`data_gap`/`other`
 are warnings, not failures).
 
-### Verify Panels (5-tier panel verifier)
+### Verify Panels / Verify Visual (repo checkout)
 
-`obs-migrate verify-panels` is the repo-oriented 5-tier panel verifier wrapper
-(source query → translator → IR export → dashboard as stored in Kibana →
-cluster saved object → live `_query`). It delegates to verifier code that only
-exists in a repo checkout, so it is intended for development / CI, not as a
-substitute for `obs-migrate verify` on an installed wheel. Both sources are
-covered: the translator tier reads Grafana's `esql` and Datadog's `esql_query`
-from `migration_report.json`.
+`obs-migrate verify-panels` and `obs-migrate verify-visual` ship as installed
+entry points, but they **delegate to verifier / parity-rig code that only
+exists in a source checkout**. They are not an operator substitute for
+`obs-migrate verify` / `obs-migrate compare` on a PyPI/`uvx` install.
 
-```bash
-obs-migrate verify-panels \
-  --migration-out <output-dir>/dashboards \
-  --output panel_verify_report.json \
-  --kibana-url "$KIBANA_ENDPOINT" \
-  --es-url "$ELASTICSEARCH_ENDPOINT" \
-  --api-key "$KEY" \
-  --dashboard-id "<uploaded-dashboard-id>"
-```
-
-`--migration-out` and `--output` are required. T3 (the stored dashboard) needs
-`--kibana-url`; T4/T5 (cluster + live query) additionally need `--es-url`,
-`--api-key`, and `--dashboard-id`. This wrapper does **not** expose
-`--ca-cert` / `--insecure` today.
-
-**T3 comes from the Dashboards API.** With `--kibana-url`, T3 is read from
-`GET /api/dashboards/{id}` for every dashboard the run wrote a `native/`
-artifact for — the dashboard as Kibana actually stored it, rather than a
-compiler artifact. The ids are deterministic (`obs-migrate-<title-slug>`) and
-already recorded in `native/index.json`, so none has to be guessed. Panel
-records then also carry Kibana's own panel UUID (`stored.panel_id`), which is
-what the render audit and visual-regression harnesses address panels by; the
-IR's `panel_id` is a *migration* id and cannot substitute for it. The legacy
-`compiled/<slug>/compiled_dashboards.ndjson` reader is retained so it still
-works when pointed at an *archived* artifact directory from an older release; no
-current migration produces that file.
-
-**Absent tiers are reported, not inferred.** Without `--kibana-url` and without
-`compiled/`, T3 is reported unavailable with a reason on every panel record;
-the `T2=T3` / `T3=T4` axes are skipped rather than reporting one "right side
-empty" finding per panel, and the panel is *not* labelled `NOT_UPLOADED` —
-that verdict is reserved for a panel genuinely missing from a dashboard that
-*was* read back. The same rule applies to T4 when no cluster saved object was
-requested. Every report carries a `tier_population` block (also printed in the
-console and Markdown summaries) giving the per-tier panel count, T3's
-provenance, and how many records carry a real Kibana UUID — read it alongside
-the verdict counts, because a verdict distribution alone cannot distinguish
-"checked and agreed" from "never checked".
-
-**A vacuous T1 now fails the run.** T1 is the translator's own output, and an
-empty T1 short-circuits a panel's comparison to `SKIP` — so a run whose T1 is
-populated for *zero* panels reports 0 drift on all five axes no matter what the
-translator emitted. `verify-panels` exits 1 with the count named rather than 0.
-(The underlying `verifier.cli` accepts `--allow-empty-t1` for a source that
-genuinely translated nothing; the operator wrapper deliberately does not expose
-it — a gate should not offer a way to bless a measurement of nothing.)
-
-`--migration-out` may hold one dashboard or a whole run's worth. Every tier is
-joined per dashboard (report `uid`, else `title`), never by panel
-title alone — titles repeat across dashboards, and a title-only join compares
-one dashboard's panel against another's. When a dashboard cannot be matched to
-an artifact, that tier is reported empty with a note on the panel record
-instead of being filled from a neighbouring dashboard.
-
-### Verify Visual (pixel-diff Grafana vs Kibana)
-
-`obs-migrate verify-visual` pixel-diffs a migrated Kibana dashboard against its
-source Grafana dashboard (agent-browser screenshots + per-panel / median / p95
-diff scores). Like `verify-panels` it is repo-oriented: it requires the local
-Grafana stack from a checkout (and optionally a bootstrapped agent-browser
-state file for Kibana SAML).
-
-```bash
-obs-migrate verify-visual \
-  --migration-out <output-dir>/dashboards \
-  --grafana-uid "<uid>" \
-  --grafana-slug "<slug>" \
-  --kibana-url "$KIBANA_ENDPOINT" \
-  --kibana-dash-id "<uploaded-dashboard-id>" \
-  --output-dir visual_diff_out \
-  --report visual_diff_report.json
-```
-
-Like `verify-panels`, this wrapper does **not** expose `--ca-cert` /
-`--insecure` today.
-
-It exits `2` when either side discovers zero panels — an empty/absent
-`--migration-out` `ir/` directory, or a `--grafana-uid` with no panels. A
-zero-panel run previously reported `captured=0 median=0.0000` and exited `0`,
-which is indistinguishable from a perfect pixel match.
+- Prefer **`obs-migrate verify`** (emitted-query acceptance) and optional
+  `--compare` (numeric parity) from any install.
+- For the 5-tier panel verifier, pixel-diff harness, and related lab commands,
+  see [`contributing/dev-commands.md`](contributing/dev-commands.md).
 
 ## Dedicated Source CLIs
 
@@ -1733,6 +1695,7 @@ not byte-identical. Intentional differences:
 | Deprecated alert alias | `--fetch-alerts` (both sources) | `--fetch-alerts` | `--fetch-monitors` |
 | Kibana space | `--space-id` | `--shadow-space` (unified maps `--space-id` → `--shadow-space`) | `--space-id` |
 | Cluster ops | `obs-migrate cluster …` | still exposes `--list-dashboards` / `--ensure-data-views` / `--delete-dashboards` | same dedicated cluster flags |
+| `--ensure-data-views` on migrate | present (forwarded) | present | present |
 | `--data-view` default | empty → source adapter default | `metrics-*` | unset → active `--field-profile` metric index |
 | Grafana-only extras | connection flags (`--grafana-url`/token/…) forwarded | local-AI / Loki / Prometheus / review-explanations / validate-workers | n/a |
 | Datadog-only extras | `--env-file`, `--dashboard-ids`, `--monitor-ids`, `--monitor-query`, `--source-execution` | n/a | same on dedicated CLI |
@@ -1754,7 +1717,7 @@ source adapter](sources/grafana.md). For existing-OTEL metric renames, see
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets dashboards \
   --field-profile otel \
@@ -1774,7 +1737,7 @@ obs-migrate migrate \
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir infra/grafana/dashboards \
+  --input-dir ./grafana_exports \
   --output-dir migration_output \
   --assets all \
   --field-profile otel \
@@ -1809,7 +1772,7 @@ source adapter](sources/datadog.md). For existing-OTEL metric renames, see
 obs-migrate migrate \
   --source datadog \
   --input-mode files \
-  --input-dir infra/datadog/dashboards \
+  --input-dir ./datadog_exports \
   --output-dir datadog_migration_output \
   --assets dashboards \
   --field-profile otel \
@@ -1819,17 +1782,17 @@ obs-migrate migrate \
 obs-migrate migrate \
   --source datadog \
   --input-mode files \
-  --input-dir infra/datadog \
+  --input-dir ./datadog_exports \
   --output-dir datadog_migration_output \
   --assets alerts \
   --field-profile otel \
   --data-view "metrics-*"
 
-# Files: dashboards + alerts
+# Files: dashboards + alerts (dashboards JSON and monitors/ under the same input-dir)
 obs-migrate migrate \
   --source datadog \
   --input-mode files \
-  --input-dir infra/datadog \
+  --input-dir ./datadog_exports \
   --output-dir datadog_migration_output \
   --assets all \
   --field-profile otel \
@@ -1873,14 +1836,18 @@ while standalone `obs-migrate upload` sends the persisted native review
 artifacts. A rejection is terminal — there is no second renderer to fall back
 to. Alerts-only runs (`--assets alerts`) skip dashboard native/IR artifacts,
 write monitor artifacts under `<output-dir>/alerts`, and still emit the root
-`run_summary.json`. Use the dedicated Datadog CLI when you need explicit
-dashboard scoping via `--dashboard-ids` before any Elastic target exists.
+`run_summary.json`. `--dashboard-ids` works on both `obs-migrate migrate
+--source datadog` and `datadog-migrate` for explicit dashboard scoping before
+any Elastic target exists.
 
 ## Tested Alert Upload Flow
 
-This sequence was re-run against the Serverless target using the curated example corpus.
-Create `serverless_creds.env` from `serverless_creds.env.example` before
-running the commands below.
+This sequence was re-run against the Serverless target using the curated
+alerting example corpus from a **source checkout**
+(`examples/alerting/grafana`). Create `serverless_creds.env` from
+`serverless_creds.env.example` before running the commands below. On a PyPI /
+`uvx` install, point `--input-dir` at your own Grafana JSON exports that
+include alert-capable dashboards instead.
 
 ### Preferred: one unified command
 
@@ -1889,7 +1856,7 @@ set -a && source serverless_creds.env && set +a
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
-  --input-dir examples/alerting/grafana \
+  --input-dir ./grafana_exports \
   --output-dir alert_migration_output \
   --assets all \
   --es-url "$ELASTICSEARCH_ENDPOINT" \

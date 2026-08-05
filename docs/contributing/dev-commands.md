@@ -282,9 +282,49 @@ translator emitted — indistinguishable from a perfect run, and exactly the sta
 genuinely translated nothing.
 
 The repo-oriented `obs-migrate verify-panels` and `obs-migrate verify-visual`
-wrappers also delegate to `parity-rig/verifier`; their flags are documented with
-the other `obs-migrate` subcommands in
-[`../command-contract.md`](../command-contract.md).
+wrappers also delegate to `parity-rig/verifier`. Operator docs only point here;
+use the invocations below from a synced checkout.
+
+### `obs-migrate verify-panels` (5-tier panel verifier)
+
+Requires a repo checkout (verifier code under `parity-rig/`). Not a substitute
+for `obs-migrate verify` on an installed wheel.
+
+```bash
+obs-migrate verify-panels \
+  --migration-out <output-dir>/dashboards \
+  --output panel_verify_report.json \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --dashboard-id "<uploaded-dashboard-id>"
+```
+
+`--migration-out` and `--output` are required. T3 needs `--kibana-url`; T4/T5
+also need `--es-url`, `--api-key`, and `--dashboard-id`. This wrapper does
+**not** expose `--ca-cert` / `--insecure`. With `--kibana-url`, T3 is read from
+`GET /api/dashboards/{id}` for every dashboard that has a `native/` artifact.
+A vacuous T1 (zero panels with translator output) exits `1`. See
+`verifier.cli` above for `--allow-empty-t1` (checkout-only).
+
+### `obs-migrate verify-visual` (pixel-diff Grafana vs Kibana)
+
+Requires the local Grafana stack from a checkout (and optionally a bootstrapped
+agent-browser state file for Kibana SAML).
+
+```bash
+obs-migrate verify-visual \
+  --migration-out <output-dir>/dashboards \
+  --grafana-uid "<uid>" \
+  --grafana-slug "<slug>" \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-dash-id "<uploaded-dashboard-id>" \
+  --output-dir visual_diff_out \
+  --report visual_diff_report.json
+```
+
+Exits `2` when either side discovers zero panels. Does **not** expose
+`--ca-cert` / `--insecure`.
 
 ## Validation / Verification CLIs
 
