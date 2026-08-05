@@ -1373,7 +1373,6 @@ def test_redis_scenario_manifest_is_registered_and_strict() -> None:
         "pod_name",
         "instance",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
     instance = next(control for control in scenario.controls if control.key == "instance")
     assert instance.assertions.affected_panels == "all_query_panels"
@@ -1410,7 +1409,6 @@ def test_k8s_scenario_manifest_is_registered_and_strict() -> None:
         "job",
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     cluster = next(control for control in scenario.controls if control.key == "cluster")
     job = next(control for control in scenario.controls if control.key == "job")

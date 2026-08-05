@@ -337,13 +337,17 @@ def _snapshot_rule_pack_and_resolver(dashboard_path: pathlib.Path):
     that proves the metric-aware `instance` -> `service.instance.id` path.
     Other metric-scoped controls fall back offline without an ES probe.
     """
-    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.rules import (
+        RulePackConfig,
+        resolve_pack_for_dashboard,
+    )
     from observability_migration.adapters.source.grafana.schema import SchemaResolver
 
-    rule_pack = RulePackConfig()
-    resolver = SchemaResolver(rule_pack)
+    base_rule_pack = RulePackConfig()
     label_fields = {"instance", "service.instance.id"}
     dashboard = _load_dashboard(dashboard_path)
+    rule_pack = resolve_pack_for_dashboard(dashboard, base_rule_pack)
+    resolver = SchemaResolver(rule_pack)
     for variable in dashboard.get("templating", {}).get("list", []) or []:
         query_text = _variable_query_text(variable)
         field = _extract_variable_source_field(query_text)

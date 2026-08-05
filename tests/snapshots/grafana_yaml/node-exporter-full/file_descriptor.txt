@@ -1,9 +1,8 @@
 title: File Descriptor
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['Max_open_files', 'Open_files']
-breakdown: series_group
+breakdown: instance
 axis_title: files
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

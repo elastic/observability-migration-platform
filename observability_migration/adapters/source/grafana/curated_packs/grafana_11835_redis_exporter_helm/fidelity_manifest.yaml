@@ -112,19 +112,21 @@ panels:
 variables:
   - name: namespace
     type: query
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
       label_values(redis_uptime_in_seconds, namespace). Translates to a Kibana
-      ES|QL values control on labels.namespace. Inter-control scoping
-      (pod_name filtered by namespace) is not expressible in Kibana ES|QL controls.
+      ES|QL values control on the resolved namespace field. The downstream
+      pod_name and instance controls preserve the source chained scoping via
+      named ES|QL params in the control queries.
 
   - name: pod_name
     type: query
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
       label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, pod_name).
-      Kibana control cannot express the dependency on $namespace; lists all
-      pod_name values instead of only those in the selected namespace.
+      The migrated Kibana values control preserves the $namespace dependency as
+      a named ES|QL param predicate, so the option list stays scoped to the
+      selected namespace like the Grafana source.
       The pack adds labels.pod as the prometheus_native candidate (OTel: k8s.pod.name)
       so the control returns real values in prometheus_native deployments.
       No panel query filters on ?pod_name, so this is cosmetic-only.
@@ -134,16 +136,17 @@ variables:
     fidelity: PERFECT
     notes: >
       label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, instance).
-      Translates to an ES|QL values control on labels.instance.
+      Translates to an ES|QL values control whose option list is scoped by both
+      upstream namespace and pod_name selections, matching the source variable graph.
 
 summary:
   total_panels: 12
-  perfect: 11
-  approximate: 1
+  perfect: 12
+  approximate: 0
   not_feasible: 0
   overall_fidelity: HIGH
   notes: >
-    One APPROXIMATE panel remains: Command Calls (topk → time-series breakdown of
+    One functional panel caveat remains: Command Calls (topk → time-series breakdown of
     all commands; top-5 filtering not possible in ES|QL without subquery support).
     Memory Usage upgraded to PERFECT via curated pack override: hand-crafted ES|QL
     computes per-instance ratio (used/max * 100) per TBUCKET directly, bypassing

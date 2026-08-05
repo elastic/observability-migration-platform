@@ -30,12 +30,24 @@ NAMESPACE = "default"
 SCRAPE_INTERVAL = 10
 RETRY_DELAY = 5
 
-# (exporter URL, dataset, job label, instance label)
+# (exporter URL, dataset, job label, instance label, extra base labels)
 TARGETS = [
-    ("http://redis_exporter:9121/metrics", "redis.prometheus", "redis_exporter", "redis:6379"),
-    ("http://node_exporter:9100/metrics", "node.prometheus", "node_exporter", "node:9100"),
-    ("http://mysqld_exporter:9104/metrics", "mysql.prometheus", "mysqld_exporter", "mysql:3306"),
-    ("http://postgres_exporter:9187/metrics", "postgres.prometheus", "postgres_exporter", "postgres:5432"),
+    (
+        "http://redis_exporter:9121/metrics",
+        "redis.prometheus",
+        "redis_exporter",
+        "redis:6379",
+        {"pod": "redis-0"},
+    ),
+    ("http://node_exporter:9100/metrics", "node.prometheus", "node_exporter", "node:9100", {}),
+    ("http://mysqld_exporter:9104/metrics", "mysql.prometheus", "mysqld_exporter", "mysql:3306", {}),
+    (
+        "http://postgres_exporter:9187/metrics",
+        "postgres.prometheus",
+        "postgres_exporter",
+        "postgres:5432",
+        {},
+    ),
 ]
 
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
@@ -420,10 +432,19 @@ def parse_prometheus(text: str) -> dict:
     return groups
 
 
-def build_bulk_body(groups: dict, timestamp: str, dataset: str, job: str, instance: str) -> str:
+def build_bulk_body(
+    groups: dict,
+    timestamp: str,
+    dataset: str,
+    job: str,
+    instance: str,
+    extra_base_labels: dict[str, str] | None = None,
+) -> str:
     lines = []
     index = f"metrics-{dataset}-{NAMESPACE}"
     base_labels = {"instance": instance, "job": job, "namespace": NAMESPACE}
+    if extra_base_labels:
+        base_labels.update(extra_base_labels)
     for label_key, metrics in groups.items():
         if not metrics:
             continue
@@ -515,7 +536,7 @@ def main() -> None:
     wait_for_es(ES_URL)
     # Declare counter/gauge typing from each exporter's own ``# TYPE`` lines
     # before the first document creates the data stream with inferred mappings.
-    for url, dataset, _job, _instance in TARGETS:
+    for url, dataset, _job, _instance, _extra_base_labels in TARGETS:
         try:
             text = _scrape_text(url, dataset, _instance)
             ensure_index_template(
@@ -526,18 +547,25 @@ def main() -> None:
             ensure_data_stream(dataset)
         except Exception as exc:
             print(f"  template {dataset}: could not scrape for types: {exc}", flush=True)
-    for url, dataset, _job, _instance in TARGETS:
+    for url, dataset, _job, _instance, _extra_base_labels in TARGETS:
         print(f"Scraping {url} every {SCRAPE_INTERVAL}s → metrics-{dataset}-{NAMESPACE}", flush=True)
     while True:
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        for url, dataset, job, instance in TARGETS:
+        for url, dataset, job, instance, extra_base_labels in TARGETS:
             # One target being down must not stop the others: the redis pack is
             # validated from this same rig and cannot regress because a
             # secondary exporter is unhealthy.
             try:
                 text = _scrape_text(url, dataset, instance)
                 groups = parse_prometheus(text)
-                body = build_bulk_body(groups, ts, dataset, job, instance)
+                body = build_bulk_body(
+                    groups,
+                    ts,
+                    dataset,
+                    job,
+                    instance,
+                    extra_base_labels,
+                )
                 ok, err = bulk_index(body)
                 print(f"{ts} {dataset}: {len(groups)} series → indexed {ok}, errors {err}", flush=True)
             except Exception as exc:

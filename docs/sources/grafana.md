@@ -396,21 +396,24 @@ its position.
 
 Grafana query variables can chain: `label_values(metric{instance="$instance"},
 id)` scopes `$id`'s option list to whichever `$instance` is currently
-selected. Two things follow from Kibana ES|QL controls having no
-cross-control dependency mechanism (a control's populate-query cannot read
-another control's live selection):
+selected.
 
-- **The chained scope itself degrades, not silently.** The migrated `$id`
-  control still works and still lists real values, but it lists *every* `id`
-  rather than only the ones under the selected `$instance` — the control is
-  broader than the Grafana source, not broken. This degradation is recorded
-  as a `MigrationResult.control_warnings` entry (`"variable 'id' is scoped by
-  $instance in Grafana ... Kibana ES|QL controls cannot express that
-  inter-control dependency ..."`), printed under `CONTROL WARNINGS` in the
-  CLI summary, included in the Markdown summary warning worklist, and recorded
-  per-dashboard in the JSON report, migration manifest, and preflight report
-  (`control_warnings`), rather than only being discoverable by reading the
-  emitted ES|QL. Unsupported visible `query_result()` variables, textbox
+- **On targets that bind named ES|QL params inside values-query controls, the
+  chained scope is preserved.** The migrated `$id` control keeps the source
+  dependency by emitting a parameterized populate query, for example
+  `... WHERE (?instance == "" OR labels.instance RLIKE ?instance ...)`.
+  This was verified against the local Kibana `9.5.0-SNAPSHOT` stack in August
+  2026: selecting an upstream control narrowed the downstream control's option
+  list at runtime.
+- **When that capability is not available, the chained scope still degrades
+  loudly rather than silently.** The migrated `$id` control still works and
+  still lists real values, but it lists *every* `id` rather than only the ones
+  under the selected `$instance`. That degradation is recorded as a
+  `MigrationResult.control_warnings` entry, printed under `CONTROL WARNINGS`
+  in the CLI summary, included in the Markdown summary warning worklist, and
+  recorded per-dashboard in the JSON report, migration manifest, and preflight
+  report (`control_warnings`), rather than only being discoverable by reading
+  the emitted ES|QL. Unsupported visible `query_result()` variables, textbox
   variables, unresolved fields, incompatible field types, and non-aggregatable
   fields use the same surfaced warning path.
 - **A control whose target field is absent is kept with a data-readiness
@@ -486,8 +489,9 @@ migrated ES|QL values control preserves those *literal* matchers as extra
 not appear in the dropdown. Supported operators map as `=`/`!=` →
 `==`/`!=` and `=~`/`!~` → `RLIKE`/`NOT RLIKE`. Selector matchers that reference
 *another* template variable (`{instance="$instance"}`) are the chained-scope
-case above (issue #269): they cannot be expressed as a fixed predicate and are
-surfaced as a `control_warnings` degradation instead.
+case above (issue #269): on param-capable targets they stay as `?var`
+predicates inside the control query; otherwise they cannot be expressed as a
+fixed predicate and are surfaced as a `control_warnings` degradation instead.
 
 ## Command Coverage
 

@@ -156,7 +156,9 @@ variables:
     notes: >
       label_values(redis_up{namespace=~'$namespace'}, instance) — filtered terms agg.
       prometheus_native profile uses `labels.instance` directly. Live-validated locally
-      with ES 9.5.0-SNAPSHOT + python prometheus_native scraper: shows 'redis:6379'. PASS.
+      with ES 9.5.0-SNAPSHOT + python prometheus_native scraper: shows 'redis:6379'.
+      The migrated instance control query preserves the upstream namespace scope via
+      a named ES|QL param predicate. PASS.
 
 summary:
   total_panels: 13
@@ -177,7 +179,9 @@ summary:
       series fuse correctly;
       (3) resolver copy_with_pack fix ensures curated label_candidates apply to all panels.
     namespace_control: PASS
-    namespace_control_note: "Shows 'default' option; wildcard .* selected by default."
+    namespace_control_note: >
+      Shows 'default' option; wildcard .* selected by default. The downstream
+      instance control query binds ?namespace so the option list stays scoped.
     instance_control: PASS
     instance_control_note: >
       prometheus_native profile uses labels.instance directly; shows 'redis:6379' option.

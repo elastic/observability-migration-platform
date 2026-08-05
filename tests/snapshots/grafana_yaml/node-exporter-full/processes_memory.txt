@@ -1,9 +1,8 @@
 title: Processes Memory
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
-metrics: ['Processes_virtual_memory_size_in_bytes', 'Maximum_amount_of_virtual_memory_available_in_bytes', 'Processes_virtual_memory_size_in_bytes_C', 'Maximum_amount_of_virtual_memory_available_in_bytes_D']
-breakdown: series_group
+metrics: ['Processes_virtual_memory_size_in_bytes', 'Resident_memory_size_in_bytes', 'Maximum_amount_of_virtual_memory_available_in_bytes']
+breakdown: instance
 axis_title: bytes
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

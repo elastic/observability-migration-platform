@@ -1,11 +1,9 @@
 title: CPU
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: area
 dimension: time_bucket
-metrics: ['System_Processes_executing_in_kernel_mode', 'User_Normal_processes_executing_in_user_mode', 'Nice_Niced_processes_executing_in_user_mode', 'Iowait_Waiting_for_I_O_to_complete', 'Irq_Servicing_interrupts', 'Softirq_Servicing_softirqs', 'Steal_Time_spent_in_other_operating_systems_when_running_in_a_virtualized_environment', 'Idle_Waiting_for_something_to_happen']
-breakdown: instance
+metrics: ['value']
+breakdown: series_group
 mode: percentage
 axis_title: percentage
-warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)
-warning: Unioned BY fields across multi-target series with mismatched grouping

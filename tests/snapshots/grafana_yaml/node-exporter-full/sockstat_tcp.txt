@@ -1,9 +1,8 @@
 title: Sockstat TCP
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['TCP_alloc_Allocated_sockets', 'TCP_inuse_Tcp_sockets_currently_in_use', 'TCP_orphan_Orphan_sockets', 'TCP_tw_Sockets_waiting_close']
-breakdown: series_group
+breakdown: instance
 axis_title: counter
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

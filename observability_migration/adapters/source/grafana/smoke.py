@@ -30,7 +30,7 @@ DEFAULT_CHROME_CANDIDATES = (
 DEFAULT_SAVED_OBJECTS_PER_PAGE = 1000
 GRID_WIDTH = 48
 QUERY_EXPECTED_PANEL_TYPES = {"lens", "search", "visualization"}
-NO_QUERY_EXPECTED_PANEL_TYPES = {"control_group", "markdown"}
+NO_QUERY_EXPECTED_PANEL_TYPES = {"control_group", "markdown", "links"}
 BROWSER_ERROR_PATTERNS = (
     r"dashboardPanelError",
     r"embPanel__error",
@@ -819,8 +819,23 @@ def capture_browser_audit(saved_object, args):
         if proc.returncode == 0:
             html = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
             issues = _browser_audit_issues(html)
+            if not issues:
+                return {
+                    "status": "clean",
+                    "path": str(output_path),
+                    "error": "",
+                    "issues": [],
+                    "url": url,
+                }
+            # Headless Chrome can dump a transient pre-settled DOM even when the
+            # eventual dashboard screenshot is fine. Give visible DOM issues the
+            # same larger-budget retry path as outright browser failures before
+            # declaring a dashboard-level browser error.
+            last_error = "; ".join(issues)[:800]
+            if attempt < max(0, args.screenshot_retries):
+                continue
             return {
-                "status": "error" if issues else "clean",
+                "status": "error",
                 "path": str(output_path),
                 "error": "",
                 "issues": issues,

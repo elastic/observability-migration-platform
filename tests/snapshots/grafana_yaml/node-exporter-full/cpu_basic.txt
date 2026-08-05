@@ -1,8 +1,8 @@
 title: CPU Basic
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: area
 dimension: time_bucket
-metrics: ['Busy_System', 'Busy_User', 'Busy_Iowait', 'Busy_IRQs', 'Busy_Other', 'Idle']
+metrics: ['value']
+breakdown: series_group
 mode: percentage
-warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)

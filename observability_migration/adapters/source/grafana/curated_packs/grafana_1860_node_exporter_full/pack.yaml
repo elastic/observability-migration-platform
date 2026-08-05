@@ -24,6 +24,7 @@ query:
     node_netstat_Ip_Forwarding: counter
     node_netstat_TcpExt_ListenDrops: counter
     node_netstat_TcpExt_ListenOverflows: counter
+    node_netstat_TcpExt_TCPRcvQDrop: counter
     node_netstat_TcpExt_SyncookiesFailed: counter
     node_netstat_TcpExt_SyncookiesRecv: counter
     node_netstat_TcpExt_SyncookiesSent: counter
@@ -53,6 +54,14 @@ query:
     process_virtual_memory_bytes: gauge
     process_virtual_memory_max_bytes: gauge
     process_resident_memory_bytes: gauge
+    node_cpu_scaling_frequency_hertz: gauge
+    node_cpu_scaling_frequency_max_hertz: gauge
+    node_cpu_scaling_frequency_min_hertz: gauge
+
+  live_optional_metrics:
+    - node_memory_HardwareCorrupted_bytes
+    - node_netstat_TcpExt_TCPRcvQDrop
+    - node_netstat_Tcp_MaxConn
 
   label_candidates:
     instance:
@@ -65,6 +74,71 @@ query:
 
 panel:
   query_overrides:
+    - title_match: "CPU Busy"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE labels.mode == "idle"
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS idle_rate = AVG(IRATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = (100 * (1 - idle_rate))
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+        | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85
+      status_override: migrated
+    - title_match: "Pressure"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_pressure_cpu_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_memory_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_io_waiting_seconds_total:counter}} IS NOT NULL
+        | STATS CPU = MAX(IRATE({{metric:node_pressure_cpu_waiting_seconds_total:counter}})), Mem = MAX(IRATE({{metric:node_pressure_memory_waiting_seconds_total:counter}})), IO = MAX(IRATE({{metric:node_pressure_io_waiting_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)
+        | KEEP CPU, IO, Mem
+        | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "I/O"), "Mem"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(IO), "")), COALESCE(TO_STRING(Mem), ""))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | EVAL sort_order = CASE(label == "CPU", 0, label == "I/O", 1, 2)
+        | SORT sort_order ASC
+        | KEEP label, value
+      status_override: migrated
+    - title_match: "RAM Used"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL
+        | STATS mem_available = MAX(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})), mem_total = MAX(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(mem_total > 0, ((1 - (mem_available / mem_total)) * 100), NULL)
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+        | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80
+      status_override: migrated
+    - title_match: "SWAP Used"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_memory_SwapTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapFree_bytes:gauge}} IS NOT NULL
+        | STATS swap_total = MAX(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), swap_free = MAX(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(swap_total > 0, (((swap_total - swap_free) / swap_total) * 100), NULL)
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+        | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 10
+      status_override: migrated
+    - title_match: "Uptime"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_time_seconds:gauge}} IS NOT NULL OR {{metric:node_boot_time_seconds:gauge}} IS NOT NULL
+        | STATS node_time_seconds = MAX(LAST_OVER_TIME({{metric:node_time_seconds:gauge}})), node_boot_time_seconds = MAX(LAST_OVER_TIME({{metric:node_boot_time_seconds:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL computed_value = node_time_seconds - node_boot_time_seconds
+        | STATS computed_value = LAST(computed_value, time_bucket)
+        | KEEP computed_value
+      status_override: migrated
     - title_match: "Processes Memory"
       esql_query: |
         TS metrics-*
@@ -112,6 +186,45 @@ panel:
         | STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
         | STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)
         | KEEP node_filesystem_size_bytes
+      status_override: migrated
+    - title_match: "CPU Cores"
+      esql_query: |
+        FROM metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS cpu_cores = COUNT_DISTINCT(labels.cpu)
+        | KEEP cpu_cores
+      status_override: migrated
+    - title_match: "TCP Errors"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_netstat_TcpExt_ListenOverflows:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_ListenDrops:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPSynRetrans:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_RetransSegs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_InErrs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_OutRsts:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPOFOQueue:counter}} IS NOT NULL
+        | STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE({{metric:node_netstat_TcpExt_ListenOverflows:counter}})), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE({{metric:node_netstat_TcpExt_ListenDrops:counter}})), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE({{metric:node_netstat_TcpExt_TCPSynRetrans:counter}})), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE({{metric:node_netstat_Tcp_RetransSegs:counter}})), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE({{metric:node_netstat_Tcp_InErrs:counter}})), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE({{metric:node_netstat_Tcp_OutRsts:counter}})), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE({{metric:node_netstat_TcpExt_TCPOFOQueue:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | KEEP time_bucket, `{{label:instance}}`, `{{label:job}}`, ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed, ListenDrops_SYNs_to_LISTEN_sockets_ignored, TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits, RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted, InErrs_Segments_received_in_error_e_g_bad_TCP_checksums, OutRsts_Segments_sent_with_RST_flag, TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "CPU"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS system_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == "nice"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == "irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == "softirq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == "steal"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL System = (system_lhs / system_rhs), User = (user_lhs / user_rhs), Nice = (nice_lhs / nice_rhs), Iowait = (iowait_lhs / iowait_rhs), Irq = (irq_lhs / irq_rhs), Softirq = (softirq_lhs / softirq_rhs), Steal = (steal_lhs / steal_rhs), Idle = (idle_lhs / idle_rhs)
+        | EVAL __labels_ab = MV_APPEND("System - Processes executing in kernel mode", "User - Normal processes executing in user mode"), __labels_cd = MV_APPEND("Nice - Niced processes executing in user mode", "Iowait - Waiting for I/O to complete")
+        | EVAL __labels_ef = MV_APPEND("Irq - Servicing interrupts", "Softirq - Servicing softirqs"), __labels_gh = MV_APPEND("Steal - Time spent in other operating systems when running in a virtualized environment", "Idle - Waiting for something to happen")
+        | EVAL __labels = MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND(__labels_ef, __labels_gh))
+        | EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(System), ""), COALESCE(TO_STRING(User), "")), __values_cd = MV_APPEND(COALESCE(TO_STRING(Nice), ""), COALESCE(TO_STRING(Iowait), ""))
+        | EVAL __values_ef = MV_APPEND(COALESCE(TO_STRING(Irq), ""), COALESCE(TO_STRING(Softirq), "")), __values_gh = MV_APPEND(COALESCE(TO_STRING(Steal), ""), COALESCE(TO_STRING(Idle), ""))
+        | EVAL __values = MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(__values_ef, __values_gh))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
       status_override: migrated
     - title_match: "CPU Basic"
       esql_query: |
@@ -174,6 +287,18 @@ panel:
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
       status_override: migrated
+    - title_match: "Disk Space Used"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE (NOT (labels.device RLIKE "rootfs") OR (labels.device IS NULL AND NOT ("" RLIKE "rootfs")))
+        | WHERE {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL
+        | STATS size_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})), avail_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint
+        | EVAL computed_value = (size_bytes - avail_bytes)
+        | KEEP time_bucket, labels.mountpoint, computed_value
+        | SORT time_bucket ASC
+      status_override: migrated
     - title_match: "Disk Space Used Basic"
       esql_query: |
         TS metrics-*
@@ -187,3 +312,30 @@ panel:
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
       status_override: migrated
+    - title_match: "CPU Frequency Scaling"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_cpu_scaling_frequency_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_max_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_min_hertz:gauge}} IS NOT NULL
+        | STATS CPU = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_hertz:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_max_hertz:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_min_hertz:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "Max"), "Min"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(Max), "")), COALESCE(TO_STRING(Min), ""))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    - title_match: "CPU / Memory / Net / Disk"
+      collapsed: false
+    - title_match: "Memory Meminfo"
+      collapsed: false
+    - title_match: "Storage Disk"
+      collapsed: false
+    - title_match: "Storage Filesystem"
+      collapsed: false
+    - title_match: "Network Traffic"
+      collapsed: false
+    - title_match: "Node Exporter"
+      collapsed: false

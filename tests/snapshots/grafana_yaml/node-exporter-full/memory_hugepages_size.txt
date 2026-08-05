@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['HugePages_Total_size_of_the_pool_of_huge_pages', 'Hugepagesize_Huge_Page_size']
-breakdown: series_group
+breakdown: instance
 axis_title: bytes
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

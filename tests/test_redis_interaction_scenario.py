@@ -165,7 +165,6 @@ def test_redis_manifest_strict_loads() -> None:
         "pod_name",
         "instance",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
     assert {combination.id for combination in scenario.combinations} == set()
 
@@ -193,12 +192,12 @@ def test_redis_native_mapping_and_controls(redis_artifacts: Path) -> None:
 
     assert mapping["mapped"] == 12
     assert mapping["unmapped"] == 0
-    assert mapping["controls"] == 1
+    assert mapping["controls"] == 3
     assert [
         control["config"]["variable_name"]
         for control in artifact["payload"]["pinned_panels"]
         if control.get("type") == "esql_control"
-    ] == ["instance"]
+    ] == ["namespace", "pod_name", "instance"]
 
 
 def test_redis_instance_affects_all_live_query_panels(redis_artifacts: Path) -> None:
@@ -275,7 +274,6 @@ def test_redis_execution_plan_covers_every_option_and_gaps(redis_artifacts: Path
         "namespace",
         "pod_name",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
     assert {step.id for step in plan if step.kind == "combination"} == set()
     assert stream["control_fields"]
@@ -296,7 +294,6 @@ def test_redis_gap_and_source_only_capabilities() -> None:
     scenario = load_scenario(REDIS_MANIFEST)
     by_key = {control.key: control for control in scenario.controls}
     assert by_key["DS_PROMETHEUS"].capability is CapabilityCategory.SOURCE_ONLY
-    assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["instance"].assertions.affected_panels == "all_query_panels"
     assert by_key["namespace"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["namespace"].assertions.affected_panels == ()
@@ -351,8 +348,12 @@ def test_redis_native_control_value_queries(redis_artifacts: Path) -> None:
         for panel in artifact["payload"]["pinned_panels"]
         if panel.get("type") == "esql_control"
     }
-    assert set(controls) == {"instance"}
+    assert set(controls) == {"namespace", "pod_name", "instance"}
+    assert "namespace" in controls["namespace"]
+    assert "?namespace" in controls["pod_name"]
     assert "service.instance.id" in controls["instance"]
+    assert "?namespace" in controls["instance"]
+    assert "?pod_name" in controls["instance"]
 
 
 def test_redis_dashboard_has_no_text_or_markdown_panels(redis_artifacts: Path) -> None:

@@ -160,6 +160,32 @@ class SchemaResolver:
         self._metric_map_warnings: list[str] = []
         self._metric_map_applied: dict[str, str] = {}
 
+    def _profile_metric_candidates(self, metric_name, profile):
+        if not metric_name:
+            return []
+        ordered: list[str] = []
+
+        def add(candidate):
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+
+        if profile == "prometheus_native":
+            add(f"metrics.{metric_name}")
+            add(metric_name)
+        elif profile == "prometheus_metrics":
+            add(f"prometheus.metrics.{metric_name}")
+            add(f"metrics.{metric_name}")
+            add(metric_name)
+        elif profile == "prometheus_remote_write":
+            add(f"prometheus.{metric_name}.value")
+            add(f"prometheus.{metric_name}.counter")
+            add(f"prometheus.{metric_name}.rate")
+            add(metric_name)
+        else:
+            add(metric_name)
+            add(f"metrics.{metric_name}")
+        return ordered
+
     def copy_with_pack(self, rule_pack) -> SchemaResolver:
         """Return a new resolver sharing this resolver's ES field cache but using a different rule_pack.
 
@@ -202,6 +228,21 @@ class SchemaResolver:
                 if field_name not in candidates:
                     candidates.append(field_name)
         return candidates
+
+    def _profile_namespaced_label_candidates(self, label, profile):
+        prefix = ""
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
+            prefix = "prometheus.labels."
+        elif profile == "prometheus_native":
+            prefix = "labels."
+        if not prefix:
+            return []
+        ordered = [f"{prefix}{label}"]
+        for candidate in self._candidate_fields(label):
+            field_name = f"{prefix}{candidate}"
+            if field_name not in ordered:
+                ordered.append(field_name)
+        return ordered
 
     def _es_headers(self):
         headers = {}
@@ -604,13 +645,21 @@ class SchemaResolver:
         # present at all in this layout.
         profile = planned or self._namespacing_schema_profile()
         if profile in {"prometheus_remote_write", "prometheus_metrics"}:
-            return f"prometheus.labels.{label}"
+            candidates = self._profile_namespaced_label_candidates(label, profile)
+            for field_name in candidates:
+                if not self._field_cache or field_name in self._field_cache:
+                    return field_name
+            return candidates[0]
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist
         # in this layout, so falling through to them would emit wrong field names.
         # Missing labels surface through preflight rather than silently reverting.
         if profile == "prometheus_native":
-            return f"labels.{label}"
+            candidates = self._profile_namespaced_label_candidates(label, profile)
+            for field_name in candidates:
+                if not self._field_cache or field_name in self._field_cache:
+                    return field_name
+            return candidates[0]
         # Otherwise, fall back to OTEL/Prometheus normalization candidates.
         if label in self._discovered_mappings:
             return self._discovered_mappings[label]
@@ -916,16 +965,24 @@ class SchemaResolver:
         self._discover_fields()
         profile = self._namespacing_schema_profile()
         if profile == "prometheus_native":
-            # Native endpoint stores metrics as `metrics.<name>` directly — no
-            # suffix variants.  Return the prefixed form unconditionally so the
-            # contract layer can surface missing fields via preflight.
+            # Native endpoint normally stores metrics as `metrics.<name>`, but
+            # some local/dev streams still expose a flat fallback field for a
+            # subset of metrics. Prefer the spelling live caps actually
+            # advertise so emitted ES|QL does not hard-code a missing nested
+            # field when the flat alias is the only runtime-valid shape.
+            cache = self._field_cache or {}
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if candidate in cache:
+                    return self._counter_suffix_alias(candidate, metric_name)
             return self._counter_suffix_alias(f"metrics.{metric_name}", metric_name)
         if profile == "prometheus_metrics":
             # Classic Metricbeat remote_write (use_types=false): nested under
             # prometheus.metrics.<name> with labels under prometheus.labels.*.
-            return self._counter_suffix_alias(
-                f"prometheus.metrics.{metric_name}", metric_name
-            )
+            cache = self._field_cache or {}
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if candidate in cache:
+                    return self._counter_suffix_alias(candidate, metric_name)
+            return self._counter_suffix_alias(f"prometheus.metrics.{metric_name}", metric_name)
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to
@@ -1072,8 +1129,9 @@ class SchemaResolver:
         # Native endpoint layout: metric is stored as `metrics.<name>` with
         # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
         if profile == "prometheus_native":
-            if is_counter_metric_field(self.field_capability(f"metrics.{metric_name}")):
-                return True
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if is_counter_metric_field(self.field_capability(candidate)):
+                    return True
         return False
 
     def declared_gauge(self, metric_name):

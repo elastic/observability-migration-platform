@@ -146,14 +146,60 @@ def _value_mapping_count(field_config: Any) -> int:
     return len(mappings) if isinstance(mappings, list) else 0
 
 
+def _field_override_properties(field_config: Any) -> list[dict[str, Any]]:
+    if not isinstance(field_config, dict):
+        return []
+    overrides = field_config.get("overrides")
+    if not isinstance(overrides, list):
+        return []
+    properties: list[dict[str, Any]] = []
+    for override in overrides:
+        if not isinstance(override, dict):
+            continue
+        override_properties = override.get("properties")
+        if not isinstance(override_properties, list):
+            continue
+        for prop in override_properties:
+            if not isinstance(prop, dict):
+                continue
+            properties.append(prop)
+    return properties
+
+
+def _override_property_is_supported(prop: dict[str, Any]) -> bool:
+    property_id = str(prop.get("id") or "").strip()
+    if property_id == "color":
+        return True
+    if property_id == "custom.axisPlacement":
+        return str(prop.get("value") or "").strip() == "hidden"
+    if property_id == "custom.fillOpacity":
+        return True
+    if property_id == "custom.stacking":
+        value = prop.get("value")
+        if isinstance(value, dict):
+            return (
+                str(value.get("mode") or "").strip() == "normal"
+                and value.get("group") is False
+            )
+        return False
+    if property_id == "custom.transform":
+        return str(prop.get("value") or "").strip() == "negative-Y"
+    return False
+
+
 def collect_panel_inventory(panel: dict[str, Any]) -> dict[str, Any]:
     field_config = panel.get("fieldConfig") or {}
     overrides = field_config.get("overrides") if isinstance(field_config, dict) else []
+    override_properties = _field_override_properties(field_config)
     return {
         "targets": len(panel.get("targets", [])),
         "links": len(panel.get("links", []) or []),
         "transformations": len(panel.get("transformations", []) or []),
         "field_overrides": len(overrides or []),
+        "field_override_properties": len(override_properties),
+        "non_color_field_override_properties": sum(
+            1 for prop in override_properties if not _override_property_is_supported(prop)
+        ),
         "value_mappings": _value_mapping_count(field_config),
         "has_repeat": bool(panel.get("repeat")),
         "has_library_panel": bool(panel.get("libraryPanel")),
@@ -168,9 +214,12 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
         notes.append(f"Grafana panel has {inventory['links']} link(s); verify drilldowns manually")
     if inventory["transformations"]:
         notes.append(f"Grafana panel has {inventory['transformations']} transformation(s); manual review recommended")
-    if inventory["field_overrides"]:
+    if inventory["non_color_field_override_properties"]:
         notes.append(
-            f"Grafana panel has {inventory['field_overrides']} field override(s); verify visual mappings manually"
+            "Grafana panel has "
+            f"{inventory['field_overrides']} field override(s) including "
+            f"{inventory['non_color_field_override_properties']} non-color override property "
+            "(e.g. stacking, transforms); verify visual mappings manually"
         )
     if inventory["value_mappings"]:
         notes.append(
@@ -182,8 +231,6 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
         notes.append("Grafana repeating panel behavior is not preserved automatically")
     if inventory["has_library_panel"]:
         notes.append("Grafana library panel reference detected; verify source ownership manually")
-    if inventory["has_description"]:
-        notes.append("Grafana panel description is not carried into the migrated Kibana panel automatically")
     if panel_analysis and panel_analysis.get("mixed_datasource"):
         notes.append("Panel mixes datasource or query-language types and needs manual redesign")
     return notes

@@ -248,7 +248,6 @@ def test_k8s_manifest_strict_loads() -> None:
         "job",
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     assert {combination.id for combination in scenario.combinations} == {
         "cluster-and-job",
@@ -395,7 +394,6 @@ def test_k8s_execution_plan_covers_every_option_and_gaps(k8s_artifacts: Path) ->
     assert {step.control_key for step in plan if step.kind == "coverage_gap"} == {
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     combo_steps = [step for step in plan if step.kind == "combination"]
     assert {step.id for step in combo_steps} == {
@@ -434,13 +432,11 @@ def test_k8s_gap_and_source_only_capabilities() -> None:
     by_key = {control.key: control for control in scenario.controls}
     assert by_key["datasource"].capability is CapabilityCategory.SOURCE_ONLY
     assert by_key["resolution"].capability is CapabilityCategory.SOURCE_ONLY
-    assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["cluster"].assertions.affected_panels == "all_query_panels"
     assert by_key["cluster"].assertions.expect_data_change is True
     assert by_key["job"].assertions.affected_panels == "query_dependency"
     assert by_key["job"].assertions.unaffected_panels == ()
     assert by_key["job"].assertions.expect_data_change is False
-    assert by_key["gap_chained_controls"].assertions.allow_incompatible_selections is True
 
 
 def test_k8s_source_only_controls_do_not_bind_panel_queries(k8s_artifacts: Path) -> None:
@@ -462,6 +458,7 @@ def test_k8s_native_control_value_queries(k8s_artifacts: Path) -> None:
     assert "k8s.cluster.name" not in controls["cluster"]
     assert "BY job" in controls["job"] or "BY `job`" in controls["job"]
     assert "service.name" not in controls["job"]
+    assert "?cluster" in controls["job"]
 
 
 def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:

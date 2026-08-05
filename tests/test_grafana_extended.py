@@ -3387,19 +3387,19 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
 class TestPanelNotesHonesty(unittest.TestCase):
     """Feature gaps that are not translated should be captured in notes."""
 
-    def test_description_is_noted(self):
+    def test_description_is_preserved_on_panel(self):
         panel = _make_panel(1)
         panel["description"] = "Important context"
-        _, result = _translate_panel(panel)
-        self.assertTrue(any("description" in note.lower() for note in result.notes),
-                        f"Description should be noted: {result.notes}")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertFalse(any("description" in note.lower() for note in result.notes), result.notes)
+        self.assertEqual(yaml_panel["description"], "Important context")
 
-    def test_field_overrides_are_noted(self):
+    def test_unsupported_field_overrides_are_noted(self):
         panel = _make_panel(1)
         panel["fieldConfig"]["overrides"] = [
             {
                 "matcher": {"id": "byName", "options": "Value #A"},
-                "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF0000"}}],
+                "properties": [{"id": "custom.transform", "value": "constant"}],
             }
         ]
         _, result = _translate_panel(panel)
@@ -4396,7 +4396,10 @@ class TestFieldOverrideNotesPromoteWarningStatus(unittest.TestCase):
         )
         from observability_migration.core.reporting.report import PanelResult
 
-        note = "Grafana panel has 7 field override(s); verify visual mappings manually"
+        note = (
+            "Grafana panel has 7 field override(s) including 2 non-color override property "
+            "(e.g. stacking, transforms); verify visual mappings manually"
+        )
         self.assertTrue(panel_notes_imply_warning([note]))
 
         panel_result = PanelResult(
@@ -4466,6 +4469,109 @@ class TestValueMappingsAreReported(unittest.TestCase):
         panel = {"fieldConfig": {"defaults": {"mappings": [{"type": "value"}, {"type": "special"}]}}}
         self.assertEqual(collect_panel_inventory(panel)["value_mappings"], 2)
         self.assertEqual(collect_panel_inventory({})["value_mappings"], 0)
+
+    def test_color_only_field_overrides_do_not_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Memory Stack",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Apps"},
+                        "properties": [{"id": "color", "value": {"fixedColor": "#629E51", "mode": "fixed"}}],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertFalse([n for n in notes if "field override" in n], notes)
+
+    def test_negative_y_field_overrides_do_not_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Network Traffic",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertFalse([n for n in notes if "field override" in n], notes)
+
+    def test_non_color_field_overrides_still_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_inventory,
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Memory Stack",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Apps"},
+                        "properties": [{"id": "color", "value": {"fixedColor": "#629E51", "mode": "fixed"}}],
+                    },
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Hardware Corrupted - *./"},
+                        "properties": [{"id": "custom.transform", "value": "constant"}],
+                    },
+                ]
+            },
+        }
+        inventory = collect_panel_inventory(panel)
+        self.assertEqual(inventory["field_overrides"], 2)
+        self.assertEqual(inventory["field_override_properties"], 2)
+        self.assertEqual(inventory["non_color_field_override_properties"], 1)
+        notes = collect_panel_notes(panel)
+        self.assertTrue([n for n in notes if "non-color override property" in n], notes)
+
+    def test_negative_y_override_negates_matching_target(self):
+        panel = {
+            "id": 7,
+            "type": "timeseries",
+            "title": "Network Traffic",
+            "targets": [
+                {
+                    "expr": "irate(node_network_receive_bytes_total{instance=\"$node\"}[5m])*8",
+                    "legendFormat": "{{device}} - Receive",
+                    "refId": "A",
+                    "datasource": {"type": "prometheus"},
+                },
+                {
+                    "expr": "irate(node_network_transmit_bytes_total{instance=\"$node\"}[5m])*8",
+                    "legendFormat": "{{device}} - Transmit",
+                    "refId": "B",
+                    "datasource": {"type": "prometheus"},
+                },
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ],
+            },
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        }
+        _yaml, result = _translate_panel(panel)
+        self.assertIn("(-1 *", result.esql_query)
+        self.assertNotIn("field override", " || ".join(result.notes))
 
 
 class TestNonPromqlPanelsNameTheirQueryLanguage(unittest.TestCase):

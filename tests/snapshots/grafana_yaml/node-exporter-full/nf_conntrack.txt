@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['NF_conntrack_entries', 'NF_conntrack_limit']
-breakdown: series_group
+breakdown: instance
 axis_title: entries
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

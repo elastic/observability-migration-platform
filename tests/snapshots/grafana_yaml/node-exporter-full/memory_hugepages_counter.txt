@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['HugePages_Free_Huge_pages_in_the_pool_that_are_not_yet_allocated', 'HugePages_Rsvd_Huge_pages_for_which_a_commitment_to_allocate_from_the_pool_has_been_made_but_no_allocation_has_yet_been_made', 'HugePages_Surp_Huge_pages_in_the_pool_above_the_value_in_proc_sys_vm_nr_hugepages']
-breakdown: series_group
+breakdown: instance
 axis_title: pages
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

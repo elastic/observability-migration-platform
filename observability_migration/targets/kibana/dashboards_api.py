@@ -1724,6 +1724,7 @@ def dashboard_id_disambiguation_note(dashboard_ir: DashboardIR) -> str:
 def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
     """Map one YAML leaf panel (``esql``/``markdown``/``links``/``image``) to the API."""
     title = str(panel.get("title") or "")
+    description = str(panel.get("description") or "")
     grid = _grid_from_yaml(panel)
     hide_title = bool(panel.get("hide_title"))
 
@@ -1736,7 +1737,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
         }
         if hide_title:
             markdown_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "markdown", "config": markdown_config}, kind="markdown")
+        panel_payload: dict[str, Any] = {"grid": grid, "type": "markdown", "config": markdown_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="markdown")
 
     links = panel.get("links")
     if isinstance(links, dict):
@@ -1745,7 +1749,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason="links panel has no mappable url/dashboard entries", kind="links")
         if hide_title:
             links_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "links", "config": links_config}, kind="links")
+        panel_payload = {"grid": grid, "type": "links", "config": links_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="links")
 
     image = panel.get("image")
     if isinstance(image, dict):
@@ -1754,7 +1761,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason="image panel has no from_url", kind="image")
         if hide_title:
             image_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "image", "config": image_config}, kind="image")
+        panel_payload = {"grid": grid, "type": "image", "config": image_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="image")
 
     esql = panel.get("esql")
     if isinstance(esql, dict):
@@ -1763,8 +1773,11 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=reason, kind=kind)
         if hide_title:
             esql_config["hide_title"] = True
+        panel_payload = {"grid": grid, "type": "vis", "config": esql_config}
+        if description:
+            panel_payload["description"] = description
         return PanelMapping(
-            {"grid": grid, "type": "vis", "config": esql_config},
+            panel_payload,
             kind=kind,
             losses=_chart_semantic_losses(kind, esql),
         )

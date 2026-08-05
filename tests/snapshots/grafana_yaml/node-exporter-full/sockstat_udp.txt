@@ -1,9 +1,8 @@
 title: Sockstat UDP
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['UDPLITE_inuse_Udplite_sockets_currently_in_use', 'UDP_inuse_Udp_sockets_currently_in_use', 'UDP_mem_Used_memory_for_udp']
-breakdown: series_group
+breakdown: instance
 axis_title: counter
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['Writeback_Memory_which_is_actively_being_written_back_to_disk', 'WritebackTmp_Memory_used_by_FUSE_for_temporary_writeback_buffers', 'Dirty_Memory_which_is_waiting_to_get_written_back_to_the_disk']
-breakdown: series_group
+breakdown: instance
 axis_title: bytes
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

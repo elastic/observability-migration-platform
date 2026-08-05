@@ -1,9 +1,8 @@
 title: UDP Errors
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['InErrors_UDP_Datagrams_that_could_not_be_delivered_to_an_application', 'NoPorts_UDP_Datagrams_received_on_a_port_with_no_listener', 'InErrors_Lite_UDPLite_Datagrams_that_could_not_be_delivered_to_an_application', 'RcvbufErrors_UDP_buffer_errors_received', 'SndbufErrors_UDP_buffer_errors_send']
-breakdown: series_group
+breakdown: instance
 axis_title: datagrams
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

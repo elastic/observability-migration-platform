@@ -14,21 +14,7 @@ def register(api):
         rule_pack = getattr(context, "rule_pack", None)
         if getattr(rule_pack, "_curated_pack_name", "") != "grafana_11835_redis_exporter_helm":
             return None
-        variable = getattr(context, "variable", {}) or {}
-        if variable.get("type") != "query":
-            return None
-
-        name = str(variable.get("name") or "")
-        if name in {"namespace", "pod_name"}:
-            context.handled = True
-            context.trace.append(
-                "curated Redis 11835: skipped scope-only variable; dashboard "
-                "panels bind only instance"
-            )
-            return f"skipped scope-only variable {name} for curated Redis 11835"
-
-        if name == "instance":
-            context.query_text = "label_values(redis_up, instance)"
-            return "curated Redis 11835 instance control uses direct label_values(redis_up, instance)"
-
+        # Chained label_values() scoping now binds through named ES|QL params, so
+        # the generic translator can preserve the source variable graph without
+        # curated flattening.
         return None

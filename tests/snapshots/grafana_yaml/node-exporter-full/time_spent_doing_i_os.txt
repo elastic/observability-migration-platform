@@ -1,6 +1,6 @@
 title: Time Spent Doing I/Os
 grafana_type: timeseries
-status: migrated
+status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['IO', 'discard']

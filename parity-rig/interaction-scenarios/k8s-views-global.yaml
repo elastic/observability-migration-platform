@@ -60,18 +60,6 @@ controls:
     assertions:
       affected_panels: []
       expect_data_change: false
-  - label: gap chained controls
-    key: gap_chained_controls
-    adapter: esql_value
-    capability: migration_gap
-    expected_gap: Chained Grafana variable scoping for job depends on cluster selection
-    options:
-      strategy: declared
-      include: [catalog-only]
-    assertions:
-      affected_panels: []
-      allow_incompatible_selections: true
-      expect_data_change: false
 combinations:
   # Values must match telemetry-seeded / Kibana-discovered Prometheus labels
   # (cluster → cluster_*; job → job_*).

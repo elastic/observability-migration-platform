@@ -17,7 +17,7 @@ controls:
     key: namespace
     adapter: esql_value
     capability: migration_gap
-    expected_gap: Curated Redis target omits the decorative namespace control because no migrated Kibana panels bind it
+    expected_gap: Namespace control renders, but no migrated Kibana panel query binds ?namespace directly
     options:
       strategy: every
     assertions:
@@ -29,7 +29,7 @@ controls:
     key: pod_name
     adapter: esql_value
     capability: migration_gap
-    expected_gap: Curated Redis target omits the decorative pod_name control because no migrated Kibana panels bind it
+    expected_gap: Pod Name control renders, but no migrated Kibana panel query binds ?pod_name directly
     options:
       strategy: every
     assertions:
@@ -59,18 +59,6 @@ controls:
       include: [catalog-only]
     assertions:
       affected_panels: []
-      expect_data_change: false
-  - label: gap chained controls
-    key: gap_chained_controls
-    adapter: esql_value
-    capability: migration_gap
-    expected_gap: Chained Grafana variable scoping for pod_name and instance depends on namespace selection
-    options:
-      strategy: declared
-      include: [catalog-only]
-    assertions:
-      affected_panels: []
-      allow_incompatible_selections: true
       expect_data_change: false
 combinations: []
 noise_allowances:

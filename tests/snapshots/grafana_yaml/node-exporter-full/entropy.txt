@@ -1,9 +1,8 @@
 title: Entropy
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['node_entropy_available_bits']
-breakdown: series_group
+breakdown: instance
 axis_title: counter
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -1009,6 +1009,40 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "clean")
         self.assertEqual(result["panels"][0]["status"], "no_query_expected")
 
+    def test_inspect_dashboard_treats_links_panels_as_non_query(self):
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {
+                "title": "Dashboard",
+                "panelsJSON": json.dumps(
+                    [
+                        {
+                            "panelIndex": "links-1",
+                            "type": "links",
+                            "embeddableConfig": {
+                                "attributes": {
+                                    "title": "Dashboard Links",
+                                    "linksType": "list",
+                                    "links": [
+                                        {"type": "url", "label": "GitHub", "destination": "https://github.com"}
+                                    ],
+                                }
+                            },
+                            "gridData": {"x": 0, "y": 0, "w": 24, "h": 8},
+                        }
+                    ]
+                ),
+            },
+        }
+
+        result = smoke.inspect_dashboard(saved_object, "http://localhost:9200", timeout=30)
+
+        self.assertEqual(len(result["non_query_panels"]), 1)
+        self.assertEqual(len(result["not_runtime_checked_panels"]), 0)
+        self.assertEqual(len(result["unexpected_runtime_gap_panels"]), 0)
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["panels"][0]["status"], "no_query_expected")
+
     def test_inspect_dashboard_records_materialized_query(self):
         saved_object = {
             "id": "dashboard-123",
@@ -1131,6 +1165,50 @@ class UploadedDashboardSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertTrue(result["issues"])
         self.assertTrue(result["path"].endswith("node_exporter_full.html"))
+
+    def test_capture_browser_audit_retries_transient_dom_issue_then_cleans(self):
+        saved_object = {
+            "id": "dashboard-123",
+            "attributes": {"title": "Node Exporter Full"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = argparse.Namespace(
+                kibana_url="http://localhost:5601",
+                space_id="",
+                output="uploaded_dashboard_smoke_report.json",
+                screenshot_dir="",
+                browser_audit_dir=tmpdir,
+                chrome_binary="",
+                time_from="now-1h",
+                time_to="now",
+                window_width=1600,
+                window_height=2200,
+                virtual_time_budget_ms=15000,
+                screenshot_retries=1,
+                timeout=30,
+            )
+
+            doms = [
+                "<html><body><div data-test-subj='emptyPlaceholder'><p>No results found</p></div></body></html>",
+                "<html><body><div>settled</div></body></html>",
+            ]
+            calls = []
+
+            def fake_run(cmd, stdout=None, stderr=None, text=None, timeout=None, **kwargs):
+                self.assertIsNotNone(stdout)
+                assert stdout is not None
+                calls.append(cmd)
+                stdout.write(doms[len(calls) - 1])
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with mock.patch.object(smoke, "discover_chrome_binary", return_value="/usr/bin/chrome"):
+                with mock.patch.object(smoke.subprocess, "run", side_effect=fake_run):
+                    result = smoke.capture_browser_audit(saved_object, args)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["status"], "clean")
+        self.assertFalse(result["issues"])
 
     def test_browser_audit_detects_invalid_column_error_text(self):
         issues = smoke._browser_audit_issues(

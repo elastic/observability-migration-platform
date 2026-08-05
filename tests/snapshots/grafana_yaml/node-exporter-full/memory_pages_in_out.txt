@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['Pagesin_Page_in_operations', 'Pagesout_Page_out_operations']
-breakdown: series_group
+breakdown: instance
 axis_title: pages out (-) / in (+)
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

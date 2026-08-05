@@ -1,6 +1,6 @@
 title: Process schedule stats Running / Waiting
 grafana_type: timeseries
-status: migrated
+status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['CPU_seconds_spent_running_a_process', 'CPU_seconds_spent_by_processing_waiting_for_this_CPU']

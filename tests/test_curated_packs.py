@@ -178,16 +178,25 @@ def test_resolve_pack_1860_merges_metric_kinds_and_query_override():
     base = RulePackConfig()
     resolved = resolve_pack_for_dashboard(dashboard, base)
     assert resolved.metric_kinds.get("node_vmstat_pgpgin") == "counter"
+    assert resolved.metric_kinds.get("node_netstat_TcpExt_TCPRcvQDrop") == "counter"
     assert resolved.metric_kinds.get("process_virtual_memory_bytes") == "gauge"
     override_titles = {override.get("title_match") for override in resolved.panel_query_overrides}
+    assert "RAM Used" in override_titles
+    assert "Pressure" in override_titles
+    assert "SWAP Used" in override_titles
+    assert "Uptime" in override_titles
     assert "Processes Memory" in override_titles
     assert "Sys Load" in override_titles
     assert "Root FS Used" in override_titles
     assert "RootFS Total" in override_titles
     assert "CPU Basic" in override_titles
+    assert "TCP Errors" in override_titles
     assert "Memory Basic" in override_titles
     assert "Network Traffic Basic" in override_titles
     assert "Disk Space Used Basic" in override_titles
+    layout_titles = {override.get("title_match") for override in resolved.panel_layout_overrides}
+    assert "CPU / Memory / Net / Disk" in layout_titles
+    assert "Network Traffic" in layout_titles
 
 
 def test_resolve_pack_18406_merges_metric_kinds():
@@ -433,7 +442,7 @@ def test_resolve_pack_763_loads_curated_layout_overrides():
     assert overrides["Hits / Misses per Sec"]["position"]["x"] == 34
 
 
-def test_763_curated_pack_keeps_only_instance_control():
+def test_763_curated_pack_preserves_namespace_and_instance_controls():
     dashboard = json.loads(
         (
             Path("parity-rig/curated/grafana_763_redis_exporter/grafana_provisioning/dashboards")
@@ -451,18 +460,18 @@ def test_763_curated_pack_keeps_only_instance_control():
     payload = result.dashboard_ir.to_yaml_dict()
     controls = payload.get("controls", [])
 
-    assert {control.get("variable_name") for control in controls} == {"instance"}
-    assert not any("namespace" in warning for warning in result.control_warnings)
-    instance_control = controls[0]
+    assert {control.get("variable_name") for control in controls} == {"namespace", "instance"}
+    assert any("variable 'namespace' has a Kibana control" in warning for warning in result.control_warnings)
+    namespace_control = next(control for control in controls if control.get("variable_name") == "namespace")
+    instance_control = next(control for control in controls if control.get("variable_name") == "instance")
+    assert namespace_control.get("label") == "namespace"
+    assert "redis_up IS NOT NULL" in str(namespace_control.get("query") or "")
+    assert "labels.namespace" in str(namespace_control.get("query") or "")
     assert instance_control.get("label") == "instance"
     assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
-    assert (
-        "labels.instance" in str(instance_control.get("query") or "")
-        or " instance " in f" {instance_control.get('query') or ''} "
-    )
+    assert "?namespace" in str(instance_control.get("query") or "")
 
-
-def test_11835_curated_pack_keeps_only_instance_control():
+def test_11835_curated_pack_preserves_source_control_graph():
     dashboard = json.loads(
         Path("infra/grafana/dashboards/redis-11835.json").read_text(encoding="utf-8")
     )
@@ -477,15 +486,25 @@ def test_11835_curated_pack_keeps_only_instance_control():
     payload = result.dashboard_ir.to_yaml_dict()
     controls = payload.get("controls", [])
 
-    assert {control.get("variable_name") for control in controls} == {"instance"}
-    assert not any(
-        "namespace" in warning or "pod_name" in warning for warning in result.control_warnings
-    )
-    instance_control = controls[0]
+    assert {control.get("variable_name") for control in controls} == {
+        "namespace",
+        "pod_name",
+        "instance",
+    }
+    assert any("variable 'namespace' has a Kibana control" in warning for warning in result.control_warnings)
+    assert any("variable 'pod_name' has a Kibana control" in warning for warning in result.control_warnings)
+    namespace_control = next(control for control in controls if control.get("variable_name") == "namespace")
+    pod_control = next(control for control in controls if control.get("variable_name") == "pod_name")
+    instance_control = next(control for control in controls if control.get("variable_name") == "instance")
+    assert namespace_control.get("label") == "Namespace"
+    assert "namespace IS NOT NULL" in str(namespace_control.get("query") or "")
+    assert pod_control.get("label") == "Pod Name"
+    assert "?namespace" in str(pod_control.get("query") or "")
     assert instance_control.get("label") == "instance"
-    assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
+    assert "?namespace" in str(instance_control.get("query") or "")
+    assert "?pod_name" in str(instance_control.get("query") or "")
     assert (
-        "labels.instance" in str(instance_control.get("query") or "")
+        "service.instance.id" in str(instance_control.get("query") or "")
         or " instance " in f" {instance_control.get('query') or ''} "
     )
 
@@ -701,6 +720,29 @@ def test_panel_layout_overrides_apply_inside_sections():
     assert inner[1]["position"]["x"] == 6
 
 
+def test_panel_layout_overrides_can_flip_section_collapsed_state():
+    panels = [
+        {
+            "title": "CPU / Memory / Net / Disk",
+            "section": {
+                "collapsed": True,
+                "panels": [
+                    {
+                        "title": "CPU",
+                        "position": {"x": 0, "y": 0},
+                        "size": {"w": 24, "h": 8},
+                    }
+                ],
+            },
+        }
+    ]
+    overrides = [{"title_match": "CPU / Memory / Net / Disk", "collapsed": False}]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["section"]["collapsed"] is False
+
+
 def test_curated_query_override_materializes_control_and_metric_placeholders():
     class _FakeResolver:
         def resolve_control_field(self, name, metric_field=None):
@@ -775,6 +817,33 @@ def test_missing_live_metric_single_target_becomes_non_error_markdown():
     assert "markdown" in (yaml_panel or {})
     assert "redis_commands_duration_seconds_total" in yaml_panel["markdown"]["content"]
     assert result.status == "migrated_with_warnings"
+
+
+def test_live_optional_metric_is_dropped_without_downgrading_multi_target_panel():
+    rule_pack = RulePackConfig(live_optional_metrics=["redis_blocked_clients"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "redis_connected_clients": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "Connected/Blocked Clients",
+        "targets": [
+            {"expr": 'sum(redis_connected_clients{instance=~"$instance"})', "refId": "A"},
+            {"expr": 'sum(redis_blocked_clients{instance=~"$instance"})', "refId": "B"},
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "redis_connected_clients" in query
+    assert "redis_blocked_clients" not in query
+    assert not any("Dropped series whose live target metrics are absent" in reason for reason in result.reasons)
+    assert not any("only 1 could be migrated" in reason for reason in result.reasons)
 
 
 def test_esql_param_control_retargets_to_single_panel_bound_field():
@@ -1082,6 +1151,25 @@ def test_schema_validates_pack_with_layout_overrides():
     assert payload.panel.layout_overrides[0].size.w == 8
 
 
+def test_schema_validates_pack_with_collapsed_layout_override():
+    from observability_migration.adapters.source.grafana.extension_schema import validate_rule_pack_payload
+
+    raw = {
+        "panel": {
+            "layout_overrides": [
+                {
+                    "title_match": "Network Traffic",
+                    "collapsed": False,
+                }
+            ]
+        }
+    }
+    payload = validate_rule_pack_payload(raw)
+    assert len(payload.panel.layout_overrides) == 1
+    assert payload.panel.layout_overrides[0].title_match == "Network Traffic"
+    assert payload.panel.layout_overrides[0].collapsed is False
+
+
 def test_panel_query_override_loaded_from_pack_yaml_round_trip():
     """load_rule_pack_files parses query_overrides into RulePackConfig.panel_query_overrides."""
     import os
@@ -1093,6 +1181,8 @@ def test_panel_query_override_loaded_from_pack_yaml_round_trip():
         "query:\n"
         "  metric_kinds:\n"
         "    some_gauge: gauge\n"
+        "  live_optional_metrics:\n"
+        "    - optional_series_total\n"
         "panel:\n"
         "  query_overrides:\n"
         "    - title_match: 'Memory Usage'\n"
@@ -1112,6 +1202,7 @@ def test_panel_query_override_loaded_from_pack_yaml_round_trip():
         assert override["title_match"] == "Memory Usage"
         assert "some_gauge" in override["esql_query"]
         assert override["status_override"] == "migrated"
+        assert pack.live_optional_metrics == ["optional_series_total"]
     finally:
         os.unlink(tmp_path)
 
@@ -1131,6 +1222,7 @@ def test_panel_layout_override_loaded_from_pack_yaml_round_trip():
         "        y: 0\n"
         "      size:\n"
         "        w: 8\n"
+        "      collapsed: false\n"
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write(yaml_content)
@@ -1143,5 +1235,6 @@ def test_panel_layout_override_loaded_from_pack_yaml_round_trip():
         assert override["title_match"] == "Memory Usage"
         assert override["position"]["x"] == 12
         assert override["size"]["w"] == 8
+        assert override["collapsed"] is False
     finally:
         os.unlink(tmp_path)

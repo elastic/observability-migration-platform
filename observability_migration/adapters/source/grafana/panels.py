@@ -259,6 +259,7 @@ class VariableContext:
     data_view: str
     resolver: object = None
     rule_pack: RulePackConfig | None = None
+    variables_by_name: dict[str, dict] = field(default_factory=dict)
     query_text: str = ""
     source_field: str = ""
     repeat_variable_names: set[str] = field(default_factory=set)
@@ -329,6 +330,12 @@ def _infer_timeseries_chart_style(panel):
     draw_style = str(custom.get("drawStyle", "")).lower()
     if draw_style == "bars":
         return "bar"
+    fill_opacity = custom.get("fillOpacity")
+    try:
+        if fill_opacity is not None and float(fill_opacity) > 0:
+            return "area"
+    except (TypeError, ValueError):
+        pass
     return "line"
 
 
@@ -388,6 +395,53 @@ def _panel_group_label_patterns(panel):
         if pattern not in labels:
             labels.append(pattern)
     return labels
+
+
+def _grafana_override_regex_matches(pattern: str, candidate: str) -> bool:
+    text = str(pattern or "").strip()
+    value = str(candidate or "")
+    if not text or not value:
+        return False
+    if len(text) >= 2 and text.startswith("/") and text.endswith("/"):
+        text = text[1:-1]
+    try:
+        return re.search(text, value, re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _target_has_negative_y_override(panel: dict[str, Any], target: dict[str, Any]) -> bool:
+    field_config = panel.get("fieldConfig") or {}
+    overrides = field_config.get("overrides") if isinstance(field_config, dict) else []
+    legend = str(target.get("legendFormat") or "").strip()
+    ref_id = str(target.get("refId") or "").strip()
+    expr = str(target.get("expr") or "").strip()
+    candidates = [item for item in (legend, ref_id, expr) if item]
+    for override in overrides or []:
+        if not isinstance(override, dict):
+            continue
+        properties = override.get("properties")
+        if not isinstance(properties, list):
+            continue
+        if not any(
+            isinstance(prop, dict)
+            and str(prop.get("id") or "").strip() == "custom.transform"
+            and str(prop.get("value") or "").strip() == "negative-Y"
+            for prop in properties
+        ):
+            continue
+        matcher = override.get("matcher") or {}
+        matcher_id = str(matcher.get("id") or "").strip()
+        matcher_options = matcher.get("options")
+        if matcher_id == "byName":
+            expected = str(matcher_options or "").strip()
+            if expected and any(candidate == expected for candidate in candidates):
+                return True
+        elif matcher_id == "byRegexp":
+            pattern = str(matcher_options or "").strip()
+            if pattern and any(_grafana_override_regex_matches(pattern, candidate) for candidate in candidates):
+                return True
+    return False
 
 
 def _target_series_alias(panel, target):
@@ -1011,6 +1065,7 @@ _NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
 _SCALAR_ESQL_TBUCKET = "time_bucket = TBUCKET(1, ?_tstart, ?_tend)"
 _SCALAR_FROM_BUCKET = "time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)"
 _SCALAR_PANEL_TYPES = frozenset({"stat", "singlestat", "gauge", "bargauge", "piechart"})
+_SKIP_APPROXIMATION_NOTE = "curated_skip_approximation_note"
 
 
 def _grafana_panel_fixed_interval(panel) -> str | None:
@@ -2749,6 +2804,51 @@ def _sync_visual_ir(panel_result, yaml_panel):
     panel_result.visual_ir = refresh_visual_ir(panel_result, yaml_panel)
 
 
+_EXTRA_BREAKDOWN_WARNING_PREFIX = (
+    "XY chart shows a single breakdown; additional grouping "
+)
+_FUSED_MULTI_TARGET_INFO = (
+    "Fused multi-target panel from independently translated ES|QL queries"
+)
+
+
+def _panel_uses_composite_breakdown(yaml_panel) -> bool:
+    esql = (yaml_panel or {}).get("esql")
+    if not isinstance(esql, dict):
+        return False
+    breakdown_field = str(((esql.get("breakdown") or {}).get("field") or "")).strip()
+    return breakdown_field in {"legend", "series_group"}
+
+
+def _prune_non_semantic_panel_warnings(panel_result, yaml_panel):
+    reasons = [str(item) for item in (getattr(panel_result, "reasons", []) or [])]
+    if not reasons:
+        return
+    filtered: list[str] = []
+    composite_breakdown = _panel_uses_composite_breakdown(yaml_panel)
+    for reason in reasons:
+        if reason == _FUSED_MULTI_TARGET_INFO:
+            continue
+        if composite_breakdown and reason.startswith(_EXTRA_BREAKDOWN_WARNING_PREFIX):
+            continue
+        filtered.append(reason)
+    if filtered == reasons:
+        return
+    panel_result.reasons = filtered
+    query_ir = getattr(panel_result, "query_ir", None)
+    if isinstance(query_ir, dict):
+        query_ir["warnings"] = list(filtered)
+    if filtered:
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.8)
+    elif panel_notes_imply_warning(panel_result.notes):
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.85)
+    else:
+        panel_result.status = "migrated"
+        panel_result.confidence = max(panel_result.confidence, 0.85)
+
+
 def _artifact_to_dict(value):
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -2833,10 +2933,13 @@ def _enrich_panel_result(
                 "actions": [],
             }
     approximation_note = APPROXIMATED_VIS_TYPE_NOTES.get(panel_result.grafana_type)
+    if _SKIP_APPROXIMATION_NOTE in (panel_result.notes or []):
+        approximation_note = None
     if approximation_note and panel_result.status in ("migrated", "migrated_with_warnings"):
         _append_unique(panel_result.reasons, approximation_note)
         panel_result.status = "migrated_with_warnings"
         panel_result.confidence = min(panel_result.confidence, 0.8)
+    _prune_non_semantic_panel_warnings(panel_result, yaml_panel)
     # Notes that verification treats as semantic losses (e.g. field overrides
     # needing manual verify) must land in the With-warnings scorecard, not as
     # clean Migrated with a Yellow gate — otherwise Green << Migrated.
@@ -3221,6 +3324,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     source_panel_id = str(panel.get("id") or panel.get("panelId") or "").strip()
     yaml_panel = {
         "title": title,
+        "description": str(panel.get("description") or "").strip(),
         "size": {"w": KIBANA_GRID_COLS, "h": KIBANA_DEFAULT_HEIGHT},
         "position": {"x": 0, "y": 0},
         "_grafana_row_y": raw_y,
@@ -3313,20 +3417,54 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 _curated_query = _materialize_curated_query_override(_curated_query, resolver)
                 if _curated_query:
                     _override_warnings = []
-                    _esql_mode = _infer_xy_stacking_mode(panel) if kibana_type in ("bar", "area") else None
+                    _override_type = kibana_type
+                    _shape = _extract_esql_shape(_curated_query)
+                    _projected = list(getattr(_shape, "projected_fields", []) or [])
+                    if (
+                        panel_type == "bargauge"
+                        and "label" in _projected
+                        and "value" in _projected
+                    ):
+                        _override_type = "bar"
+                    _esql_mode = _infer_xy_stacking_mode(panel) if _override_type in ("bar", "area") else None
                     _native_panel = _native_esql_panel_spec(
                         _curated_query,
-                        kibana_type,
+                        _override_type,
                         panel=panel,
                         mode=_esql_mode,
                         warnings=_override_warnings,
                     )
+                    if (
+                        _native_panel is None
+                        and _override_type in ("line", "bar", "area")
+                    ):
+                        if "label" in _projected and "value" in _projected:
+                            _native_panel = _build_esql_xy_panel(
+                                _curated_query,
+                                _override_type,
+                                metric_col="value",
+                                by_cols=["label"],
+                                mode=_esql_mode,
+                                warnings=_override_warnings,
+                            )
                     if _native_panel:
                         yaml_panel["esql"] = _native_panel
                         enrich_yaml_panel_display(yaml_panel, panel)
                         _score = 1.0 if _status == "migrated" else 0.7
+                        _override_notes = list(panel_notes)
+                        if _status == "migrated":
+                            _override_notes = [
+                                note
+                                for note in _override_notes
+                                if not (
+                                    "field override(s)" in str(note)
+                                    and "verify visual mappings manually" in str(note)
+                                )
+                            ]
+                        if panel_type != _override_type:
+                            _override_notes.append(_SKIP_APPROXIMATION_NOTE)
                         _panel_result = PanelResult(
-                            title, panel_type, kibana_type, _status, _score,
+                            title, panel_type, _override_type, _status, _score,
                             reasons=_override_warnings,
                             promql_expr=_curated_query,
                             esql_query=_curated_query,
@@ -3336,7 +3474,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                             panel=panel,
                             datasource=datasource,
                             query_language=query_language,
-                            notes=panel_notes,
+                            notes=_override_notes,
                             inventory=panel_inventory,
                             yaml_panel=yaml_panel,
                         )
@@ -3464,15 +3602,22 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
 
     translations = []
     dropped_live_metric_targets: list[tuple[str, list[str]]] = []
+    tolerated_live_metric_target_refs: set[str] = set()
+    live_optional_metrics = {str(name).strip() for name in (rule_pack.live_optional_metrics or []) if str(name).strip()}
     for idx, (target, _) in enumerate(targets_with_expr, start=1):
         expr = target.get("expr", "")
         negate_target = False
+        negate_reason = ""
         stripped = expr.strip()
         if stripped.startswith("- ") or stripped.startswith("-\n") or (
             stripped.startswith("-") and len(stripped) > 1 and stripped[1] in "( "
         ):
             negate_target = True
+            negate_reason = "expression"
             expr = stripped.lstrip("-").strip()
+        elif _target_has_negative_y_override(panel, target):
+            negate_target = True
+            negate_reason = "display_transform"
         target_datasource = normalize_datasource(target.get("datasource") or datasource)
         target_query_language = infer_query_language(expr, target_datasource.get("type", ""), panel_type)
         target_resolver = resolver
@@ -3509,8 +3654,17 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             t.warnings.append(f"Translation crashed: {type(exc).__name__}: {exc}")
         missing_live_metrics = _live_missing_metrics_for_expr(expr, target_resolver)
         if missing_live_metrics:
+            target_ref = str(target.get("refId") or f"series_{idx}")
             t.metadata["missing_live_metrics"] = list(missing_live_metrics)
-            dropped_live_metric_targets.append((str(target.get("refId") or f"series_{idx}"), missing_live_metrics))
+            non_optional_missing_live_metrics = [
+                metric for metric in missing_live_metrics
+                if metric not in live_optional_metrics
+            ]
+            if non_optional_missing_live_metrics:
+                dropped_live_metric_targets.append((target_ref, non_optional_missing_live_metrics))
+            else:
+                tolerated_live_metric_target_refs.add(target_ref)
+                t.metadata["tolerated_missing_live_metrics"] = list(missing_live_metrics)
             continue
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
         # Keep the target's own expression: ``promql_expr`` is overwritten with
@@ -3519,6 +3673,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         t.metadata["target_source_expr"] = expr
         if negate_target:
             t.metadata["negate_result"] = True
+            t.metadata["negate_reason"] = negate_reason or "expression"
         translations.append(t)
 
     if dropped_live_metric_targets and not translations:
@@ -3767,7 +3922,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     }
     migrated_refs.update(primary.metadata.get("collapsed_target_refs", []) or [])
     migrated_target_count = max(len(migrated_refs), int(primary.metadata.get("collapsed_target_count", 0) or 0))
-    dropped_count = len(targets_with_expr) - migrated_target_count
+    effective_target_total = len(targets_with_expr) - len(tolerated_live_metric_target_refs)
+    dropped_count = effective_target_total - migrated_target_count
     if dropped_count > 0:
         dropped_exprs = [
             t.metadata.get("target_source_expr") or t.promql_expr
@@ -3866,7 +4022,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             primary.esql_query = "\n".join(lines)
             if yaml_panel.get("esql", {}).get("query"):
                 yaml_panel["esql"]["query"] = primary.esql_query
-            _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
+            if primary.metadata.get("negate_reason") != "display_transform":
+                _append_unique(primary.warnings, "Applied negation to match leading minus in original expression")
 
     # Translators may have snapshotted the pre-transform query into yaml_panel;
     # keep the applied-transform body authoritative when present.
@@ -5980,6 +6137,34 @@ def _apply_composite_group_breakdown_to_xy_panel(panel, *, group_cols, warnings=
     return panel
 
 
+def _job_scope_extra_group_fields(
+    query: str,
+    *,
+    non_time_groups: list[str] | None,
+    breakdown_field: str | None,
+) -> list[str]:
+    """Return extra grouping fields that can be treated as dashboard scope.
+
+    The common Prometheus ``by (instance, job)`` shape on operational
+    dashboards usually uses ``job`` as a top-level control / scoping dimension
+    while the chart itself is intended to distinguish hosts. When the emitted
+    query is explicitly filtered by ``?job``, keeping ``instance`` as the
+    visible breakdown is a better Kibana fit than synthesizing a composite
+    ``instance / job`` legend for every panel.
+    """
+    groups = [str(col) for col in (non_time_groups or []) if col]
+    if len(groups) != 2 or not breakdown_field or "?job" not in str(query or ""):
+        return []
+    instance_fields = {"instance", "labels.instance", "service.instance.id", "host.name"}
+    job_fields = {"job", "labels.job", "service.name"}
+    if breakdown_field not in instance_fields:
+        return []
+    extras = [col for col in groups if col != breakdown_field]
+    if len(extras) != 1:
+        return []
+    return extras if extras[0] in job_fields else []
+
+
 def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
                          time_fields=None, mode=None,
                          legend_format_template=None, legend_labels=None,
@@ -6040,7 +6225,16 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         for col in (by_cols or [])
         if col and col != dimension_field and not _is_time_like_output_field(col)
     ]
-    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+    scope_only_groups = _job_scope_extra_group_fields(
+        esql,
+        non_time_groups=non_time_groups,
+        breakdown_field=breakdown_field,
+    )
+    if (
+        (panel.get("breakdown") or {}).get("field") != "legend"
+        and len(non_time_groups) >= 2
+        and not scope_only_groups
+    ):
         _apply_composite_group_breakdown_to_xy_panel(
             panel,
             group_cols=non_time_groups,
@@ -6052,6 +6246,8 @@ def _build_esql_xy_panel(esql, chart_type, metric_col=None, by_cols=None,
         represented = list(legend_labels or [])
     elif breakdown_name == "series_group":
         represented = list(non_time_groups)
+    elif scope_only_groups:
+        represented = list(scope_only_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
@@ -6126,7 +6322,16 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         for col in (by_cols or [])
         if col and col != dimension_field and not _is_time_like_output_field(col)
     ]
-    if (panel.get("breakdown") or {}).get("field") != "legend" and len(non_time_groups) >= 2:
+    scope_only_groups = _job_scope_extra_group_fields(
+        esql,
+        non_time_groups=non_time_groups,
+        breakdown_field=breakdown_field,
+    )
+    if (
+        (panel.get("breakdown") or {}).get("field") != "legend"
+        and len(non_time_groups) >= 2
+        and not scope_only_groups
+    ):
         _apply_composite_group_breakdown_to_xy_panel(
             panel,
             group_cols=non_time_groups,
@@ -6138,6 +6343,8 @@ def _build_esql_multi_series_xy(esql, chart_type, metric_fields, by_cols=None,
         represented = list(legend_labels or [])
     elif breakdown_name == "series_group":
         represented = list(non_time_groups)
+    elif scope_only_groups:
+        represented = list(scope_only_groups)
     _warn_extra_breakdown_dimensions(
         by_cols,
         dimension_field,
@@ -6156,40 +6363,39 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
     if not isinstance(metrics, list) or not metrics:
         return
     overrides = grafana_panel.get("seriesOverrides")
-    if not isinstance(overrides, list) or not overrides:
-        return
-
-    right_format = _grafana_yaxis_metric_format(grafana_panel, "right")
-    for override in overrides:
-        if not isinstance(override, dict):
-            continue
-        alias = str(override.get("alias") or "").strip()
-        axis = _grafana_override_axis(override.get("yaxis"))
-        stack_override = override.get("stack")
-        if axis != "right" and stack_override is not False:
-            continue
-        matched = False
-        for metric in metrics:
-            if not isinstance(metric, dict):
+    if isinstance(overrides, list) and overrides:
+        right_format = _grafana_yaxis_metric_format(grafana_panel, "right")
+        for override in overrides:
+            if not isinstance(override, dict):
                 continue
-            candidates = {
-                str(metric.get("field") or ""),
-                str(metric.get("label") or ""),
-            }
-            if not _series_override_alias_matches(alias, candidates):
+            alias = str(override.get("alias") or "").strip()
+            axis = _grafana_override_axis(override.get("yaxis"))
+            stack_override = override.get("stack")
+            if axis != "right" and stack_override is not False:
                 continue
-            matched = True
-            if axis == "right":
-                metric["axis"] = "right"
-                if right_format:
-                    metric["format"] = dict(right_format)
-            if stack_override is False:
-                metric["stack"] = False
-        if alias and not matched:
-            _append_unique(
-                warnings,
-                f'Dropped Grafana secondary y-axis assignment for unmatched series override "{alias}"',
-            )
+            matched = False
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    continue
+                candidates = {
+                    str(metric.get("field") or ""),
+                    str(metric.get("label") or ""),
+                }
+                if not _series_override_alias_matches(alias, candidates):
+                    continue
+                matched = True
+                if axis == "right":
+                    metric["axis"] = "right"
+                    if right_format:
+                        metric["format"] = dict(right_format)
+                if stack_override is False:
+                    metric["stack"] = False
+            if alias and not matched:
+                _append_unique(
+                    warnings,
+                    f'Dropped Grafana secondary y-axis assignment for unmatched series override "{alias}"',
+                )
+    _apply_field_override_metric_overrides(metrics, grafana_panel)
 
 
 def _grafana_override_axis(value) -> str:
@@ -6207,6 +6413,59 @@ def _grafana_yaxis_metric_format(grafana_panel: dict, axis: str) -> dict | None:
         return None
     unit = str(yaxes[axis_idx].get("format") or "")
     return grafana_unit_to_yaml_format(unit)
+
+
+def _field_override_targets_metric(
+    override: dict[str, Any], metric: dict[str, Any]
+) -> bool:
+    matcher = override.get("matcher")
+    if not isinstance(matcher, dict):
+        return False
+    matcher_id = str(matcher.get("id") or "").strip()
+    options = matcher.get("options")
+    candidates = {
+        str(metric.get("field") or ""),
+        str(metric.get("label") or ""),
+    }
+    candidates = {candidate for candidate in candidates if candidate}
+    if matcher_id == "byName":
+        needle = str(options or "").strip()
+        return bool(needle) and needle in candidates
+    if matcher_id == "byRegexp":
+        return _grafana_override_regex_matches(options, candidates)
+    return False
+
+
+def _field_override_marks_metric_unstacked(override: dict[str, Any]) -> bool:
+    properties = override.get("properties")
+    if not isinstance(properties, list):
+        return False
+    for prop in properties:
+        if not isinstance(prop, dict):
+            continue
+        if str(prop.get("id") or "").strip() != "custom.stacking":
+            continue
+        value = prop.get("value")
+        if not isinstance(value, dict):
+            continue
+        if str(value.get("mode") or "").strip() == "normal" and value.get("group") is False:
+            return True
+    return False
+
+
+def _apply_field_override_metric_overrides(
+    metrics: list[dict[str, Any]], grafana_panel: dict[str, Any]
+) -> None:
+    field_config = grafana_panel.get("fieldConfig")
+    overrides = field_config.get("overrides") if isinstance(field_config, dict) else None
+    if not isinstance(overrides, list) or not overrides:
+        return
+    for override in overrides:
+        if not isinstance(override, dict) or not _field_override_marks_metric_unstacked(override):
+            continue
+        for metric in metrics:
+            if isinstance(metric, dict) and _field_override_targets_metric(override, metric):
+                metric["stack"] = False
 
 
 def _series_override_alias_matches(alias: str, candidates: set[str]) -> bool:
@@ -6380,12 +6639,12 @@ def _extract_variable_scope_template_refs(query_text):
     ``$id`` control's option list is meant to be scoped to whichever
     ``$instance`` is currently selected, not every ``id`` in the index.
 
-    Kibana's ES|QL ``VALUES_FROM_QUERY`` control has no mechanism for one
-    control's populate-query to depend on another control's live selection
-    (there is no cross-control binding today), so this scope cannot be
-    reproduced exactly. Callers use this to detect the shape and attach an
-    explicit degradation warning instead of silently listing every value —
-    the control still works, it is just broader than the Grafana source.
+    When the target can bind named ES|QL params inside another control's
+    populate-query, callers may translate these references back into ``?var``
+    predicates on the values-query control. Otherwise callers use this to
+    detect the shape and attach an explicit degradation warning instead of
+    silently listing every value — the control still works, it is just broader
+    than the Grafana source.
     """
     query_text = (query_text or "").strip()
     match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
@@ -6403,6 +6662,85 @@ def _extract_variable_scope_template_refs(query_text):
         if name and name not in refs:
             refs.append(name)
     return refs
+
+
+def _extract_variable_scope_param_filters(
+    query_text,
+    variables_by_name=None,
+    resolver=None,
+    rule_pack=None,
+    *,
+    control_warnings=None,
+    variable_name="",
+):
+    """Template-variable label matchers that can survive as ES|QL params.
+
+    Conservative by design: only single-reference, non-multi upstream
+    variables are converted into chained control-query params here.
+    """
+    query_text = (query_text or "").strip()
+    match = re.match(r"^label_values\((?P<body>.+)\)$", query_text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return [], []
+    parts = _split_top_level_csv(match.group("body"))
+    if len(parts) < 2:
+        return [], []
+    selector_match = re.search(r"\{(?P<selector>.*)\}", parts[0], re.DOTALL)
+    if not selector_match:
+        return [], []
+    filters: list[str] = []
+    applied_refs: list[str] = []
+    variables_by_name = variables_by_name or {}
+    for matcher_text in _split_top_level_csv(selector_match.group("selector")):
+        matcher = _PROMQL_LABEL_MATCHER_VAR_RE.match(matcher_text)
+        if not matcher:
+            continue
+        value = matcher.group("value")
+        refs: list[str] = []
+        for ref_match in _VARIABLE_REFERENCE_RE.finditer(value):
+            ref = ref_match.group(1) or ref_match.group(2)
+            if ref and ref not in refs:
+                refs.append(ref)
+        if not refs:
+            continue
+        if len(refs) != 1:
+            continue
+        ref = refs[0]
+        upstream = variables_by_name.get(ref) or {}
+        if bool(upstream.get("multi")):
+            if control_warnings is not None:
+                _append_unique(
+                    control_warnings,
+                    f"variable '{variable_name}' is scoped by multi-select ${ref} in "
+                    "Grafana; the migrated control kept a broader option list "
+                    "because multi-value chained ES|QL control-query params are "
+                    "not translated yet",
+                )
+            continue
+        raw_label = matcher.group("label")
+        if raw_label == "__name__":
+            continue
+        if resolver is not None:
+            field = resolver.resolve_control_field(raw_label) or raw_label
+            field_exists = getattr(resolver, "field_exists", None)
+            if field_exists is not None and field_exists(field) is False:
+                continue
+        elif rule_pack is not None:
+            field = rule_pack.control_field_overrides.get(raw_label, raw_label)
+        else:
+            field = raw_label
+        column = _esql_identifier(field)
+        param = f"?{ref}"
+        op = matcher.group("op")
+        if op in ("=", "=~"):
+            filters.append(
+                f"({param} == \"\" OR ({column} RLIKE {param} OR ({column} IS NULL AND \"\" RLIKE {param})))"
+            )
+            applied_refs.append(ref)
+        elif op in ("!=", "!~"):
+            filters.append(f"({param} == \"\" OR NOT ({column} RLIKE {param}))")
+            applied_refs.append(ref)
+    return filters, applied_refs
 
 
 def _extract_variable_scope_filters(
@@ -7125,22 +7463,6 @@ def query_variable_rule(context):
     scope_refs = [
         ref for ref in _extract_variable_scope_template_refs(query_text) if ref != name
     ]
-    if scope_refs:
-        # Issue #269 Defect 2: Grafana chains this variable's option list to
-        # whichever value(s) are currently selected on `scope_refs` (e.g.
-        # `label_values(metric{instance="$instance"}, id)`). Kibana's ES|QL
-        # VALUES_FROM_QUERY control has no cross-control dependency mechanism
-        # today, so the migrated control's populate-query cannot re-apply
-        # that scope -- it lists every value instead of just the ones under
-        # the selected scope. The control is still present and functional
-        # (not a silent drop), just broader than the Grafana source.
-        context.control_warnings.append(
-            f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in scope_refs)} in "
-            "Grafana (label_values() selector); Kibana ES|QL controls cannot "
-            "express that inter-control dependency, so the migrated control "
-            f"lists every '{field_name}' value instead of only those under the "
-            "selected scope"
-        )
     if binds_esql_named_params(context.rule_pack):
         # The target binds Grafana template variables as native ES|QL
         # parameters (``?<name>``), so the control must DEFINE that ES|QL
@@ -7156,6 +7478,22 @@ def query_variable_rule(context):
             control_warnings=context.control_warnings,
             variable_name=name,
         )
+        scope_param_filters, applied_scope_refs = _extract_variable_scope_param_filters(
+            query_text,
+            context.variables_by_name,
+            resolver,
+            context.rule_pack,
+            control_warnings=context.control_warnings,
+            variable_name=name,
+        )
+        scope_filters.extend(scope_param_filters)
+        unhandled_scope_refs = [ref for ref in scope_refs if ref not in applied_scope_refs]
+        if unhandled_scope_refs:
+            context.control_warnings.append(
+                f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in unhandled_scope_refs)} in "
+                "Grafana (label_values() selector); the migrated control kept a broader option list "
+                f"for '{field_name}' because that chained scope could not be translated"
+            )
         # Repeated panels are collapsed into one, so a multi-selection there
         # would silently merge instances -- keep those single-select.
         multi_select = (
@@ -7196,6 +7534,14 @@ def query_variable_rule(context):
             )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"
+    if scope_refs:
+        context.control_warnings.append(
+            f"variable '{name}' is scoped by {', '.join(f'${ref}' for ref in scope_refs)} in "
+            "Grafana (label_values() selector); Kibana ES|QL controls cannot "
+            "express that inter-control dependency on this target, so the migrated control "
+            f"lists every '{field_name}' value instead of only those under the "
+            "selected scope"
+        )
     control_type = _field_control_type(field_name, resolver)
     context.control = {
         "type": control_type,
@@ -7293,12 +7639,18 @@ def translate_variables(
     """
     rule_pack = rule_pack or RulePackConfig()
     controls = []
+    variables_by_name = {
+        var.get("name"): var
+        for var in template_list
+        if isinstance(var, dict) and var.get("name")
+    }
     for var in template_list:
         context = VariableContext(
             variable=var,
             data_view=datasource_index,
             resolver=resolver,
             rule_pack=rule_pack,
+            variables_by_name=variables_by_name,
             query_text=_variable_query_text(var),
             repeat_variable_names=set(repeat_variable_names or ()),
         )
@@ -9031,27 +9383,33 @@ def _apply_panel_layout_overrides_recursively(panels: list[dict], overrides: lis
     if not override_map:
         return
 
-    for panel in _iter_leaf_panels(panels):
+    for panel in panels:
         title_key = str(panel.get("title") or "").strip().casefold()
         override = override_map.get(title_key)
-        if not override:
-            continue
-        position_override = override.get("position") or {}
-        if position_override:
-            position = dict(panel.get("position", {}))
-            for key in ("x", "y"):
-                value = position_override.get(key)
-                if value is not None:
-                    position[key] = int(value)
-            panel["position"] = position
-        size_override = override.get("size") or {}
-        if size_override:
-            size = dict(panel.get("size", {}))
-            for key in ("w", "h"):
-                value = size_override.get(key)
-                if value is not None:
-                    size[key] = int(value)
-            panel["size"] = size
+        if override:
+            position_override = override.get("position") or {}
+            if position_override:
+                position = dict(panel.get("position", {}))
+                for key in ("x", "y"):
+                    value = position_override.get(key)
+                    if value is not None:
+                        position[key] = int(value)
+                panel["position"] = position
+            size_override = override.get("size") or {}
+            if size_override:
+                size = dict(panel.get("size", {}))
+                for key in ("w", "h"):
+                    value = size_override.get(key)
+                    if value is not None:
+                        size[key] = int(value)
+                panel["size"] = size
+            if "collapsed" in override and isinstance(panel.get("section"), dict):
+                panel["section"]["collapsed"] = bool(override.get("collapsed"))
+        section = panel.get("section")
+        if isinstance(section, dict):
+            inner = section.get("panels")
+            if isinstance(inner, list):
+                _apply_panel_layout_overrides_recursively(inner, overrides)
 
 
 def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:

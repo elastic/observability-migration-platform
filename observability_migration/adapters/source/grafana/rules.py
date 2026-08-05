@@ -161,6 +161,10 @@ class RulePackConfig:
     # Authoritative per-metric counter/gauge classification, keyed by metric name.
     # Overrides every inferred signal when seeding telemetry (see telemetry_contract).
     metric_kinds: dict = field(default_factory=dict)
+    # Source metrics that a curated dashboard legitimately treats as optional at
+    # runtime. When they are absent from the live target mapping, their series
+    # is dropped from a multi-target panel without downgrading the whole panel.
+    live_optional_metrics: list = field(default_factory=list)
     # Source metric name → MetricMapEntry (shared core). Empty by default.
     metric_map: dict = field(default_factory=dict)
     panel_type_overrides: dict = field(default_factory=dict)
@@ -294,6 +298,7 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                     }.items()
                     if value is not None
                 },
+                "collapsed": override.collapsed,
             })
 
         for field_name in (
@@ -319,6 +324,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
         pack.label_rewrites.update(query_cfg.label_rewrites)
         for metric_name, kind in query_cfg.metric_kinds.items():
             pack.metric_kinds[metric_name] = str(kind).strip().lower()
+        for metric_name in query_cfg.live_optional_metrics:
+            _append_unique(pack.live_optional_metrics, metric_name)
         from observability_migration.core.metric_mapping import normalize_metric_map
 
         pack.metric_map.update(normalize_metric_map(query_cfg.metric_map))
@@ -418,6 +425,8 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
         _append_unique(result.counter_suffixes, suffix)
     for suffix in user.info_metric_suffixes:
         _append_unique(result.info_metric_suffixes, suffix)
+    for metric_name in user.live_optional_metrics:
+        _append_unique(result.live_optional_metrics, metric_name)
     for skip_type in user.skip_panel_types:
         _append_unique(result.skip_panel_types, skip_type)
 

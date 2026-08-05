@@ -1,9 +1,8 @@
 title: CPU time spent in user and system contexts
 grafana_type: timeseries
-status: migrated_with_warnings
+status: migrated
 chart_type: line
 dimension: time_bucket
 metrics: ['process_cpu_seconds_total']
-breakdown: series_group
+breakdown: instance
 axis_title: seconds
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

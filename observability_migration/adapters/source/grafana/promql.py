@@ -1483,7 +1483,9 @@ def _quote_esql_string(value):
 def _split_top_level_csv(expr):
     parts = []
     current = []
-    depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    bracket_depth = 0
     in_quote = None
     escaped = False
     for char in expr:
@@ -1500,12 +1502,24 @@ def _split_top_level_csv(expr):
             in_quote = char
             current.append(char)
         elif char == "(":
-            depth += 1
+            paren_depth += 1
             current.append(char)
         elif char == ")":
-            depth = max(depth - 1, 0)
+            paren_depth = max(paren_depth - 1, 0)
             current.append(char)
-        elif char == "," and depth == 0:
+        elif char == "{":
+            brace_depth += 1
+            current.append(char)
+        elif char == "}":
+            brace_depth = max(brace_depth - 1, 0)
+            current.append(char)
+        elif char == "[":
+            bracket_depth += 1
+            current.append(char)
+        elif char == "]":
+            bracket_depth = max(bracket_depth - 1, 0)
+            current.append(char)
+        elif char == "," and paren_depth == 0 and brace_depth == 0 and bracket_depth == 0:
             parts.append("".join(current).strip())
             current = []
         else:

@@ -4,6 +4,5 @@ status: migrated_with_warnings
 chart_type: line
 dimension: time_bucket
 metrics: ['Pswpin_Pages_swapped_in', 'Pswpout_Pages_swapped_out']
-breakdown: series_group
+breakdown: instance
 axis_title: pages out (-) / in (+)
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

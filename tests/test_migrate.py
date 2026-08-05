@@ -202,6 +202,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
 
+    def test_schema_resolver_native_profile_falls_back_to_alias_label_field(self):
+        resolver = self._native_profile_resolver(
+            {
+                "labels.device": {"keyword": {"searchable": True, "aggregatable": True}},
+                "metrics.node_network_up": {"double": {"searchable": True, "aggregatable": True}},
+            }
+        )
+        self.assertEqual(resolver.resolve_label("interface"), "labels.device")
+
     def test_count_scalar_normalized_to_scalar_count(self):
         # count_scalar() was removed in Prometheus 2.0; it is semantically
         # identical to scalar(count()). Normalise it at preprocessing so the
@@ -2495,6 +2504,16 @@ class TranslatorRegressionTests(unittest.TestCase):
             "metrics.process_cpu_seconds_total",
         )
 
+    def test_resolve_metric_field_falls_back_to_bare_native_metric_when_only_bare_field_exists(self):
+        resolver = self._native_profile_resolver({
+            "node_netstat_Tcp_MaxConn": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(
+            resolver.resolve_metric_field("node_netstat_Tcp_MaxConn", prefer="gauge"),
+            "node_netstat_Tcp_MaxConn",
+        )
+
     def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
         resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
@@ -2522,6 +2541,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
 
         self.assertFalse(resolver.is_counter("http_requests_total"))
+
+    def test_is_counter_uses_bare_native_metric_when_prefixed_field_is_absent(self):
+        resolver = self._native_profile_resolver({
+            "node_netstat_TcpExt_TCPRcvQDrop": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertTrue(resolver.is_counter("node_netstat_TcpExt_TCPRcvQDrop"))
 
     def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
         """End-to-end: counter rate against a native /_prometheus endpoint target
@@ -7987,6 +8013,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         self.assertEqual(controls[0]["type"], "esql")
         self.assertIs(controls[0]["multiple"], True)
+        self.assertIn("?job", controls[0]["query"])
 
     def test_query_variable_control_default_is_match_all_for_include_all(self):
         """Issue #131: a control with no default selection leaves the bound
@@ -11798,6 +11825,32 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.reasons,
         )
 
+    def test_xy_job_scope_prefers_instance_breakdown_without_composite_warning(self):
+        warnings = []
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| WHERE (?job == \"\" OR (service.name RLIKE ?job OR (service.name IS NULL AND \"\" RLIKE ?job)))\n"
+                "| STATS requests = SUM(http_requests_total) "
+                "BY time_bucket = TBUCKET(5 minute), service.instance.id, service.name\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="requests",
+            by_cols=["time_bucket", "service.instance.id", "service.name"],
+            warnings=warnings,
+        )
+        self.assertEqual(panel["breakdown"]["field"], "service.instance.id")
+        self.assertNotIn("series_group", panel["query"])
+        self.assertFalse(
+            any("Composited multi-label grouping" in warning for warning in warnings),
+            warnings,
+        )
+        self.assertFalse(
+            any("not on the chart" in warning for warning in warnings),
+            warnings,
+        )
+
     def test_mysql_network_traffic_fuses_both_or_chain_targets(self):
         """MySQL Overview "Network Traffic" has receive + transmit OR-chains;
         both must land as series columns, not 'only 1 could be migrated'.
@@ -12135,6 +12188,111 @@ class TestVisualIRContract(unittest.TestCase):
         ir = refresh_visual_ir(panel_result, None)
         self.assertIsInstance(ir, VisualIR)
         self.assertEqual(ir.title, "")
+
+    def test_prune_non_semantic_panel_warnings_clears_composite_breakdown_false_positive(self):
+        panel_result = migrate.PanelResult(
+            "Panel",
+            "timeseries",
+            "area",
+            "migrated_with_warnings",
+            0.6,
+            reasons=[
+                "XY chart shows a single breakdown; additional grouping "
+                "dimension(s) ['labels.name', 'labels.type'] are in the query but not on the chart, "
+                "so series differing only by those are visually merged"
+            ],
+        )
+        panel_result.query_ir = {"warnings": list(panel_result.reasons)}
+        yaml_panel = {
+            "esql": {
+                "query": "TS metrics-* | EVAL legend = CONCAT(\"a\", \"b\")",
+                "breakdown": {"field": "legend"},
+            }
+        }
+
+        panels._prune_non_semantic_panel_warnings(panel_result, yaml_panel)
+
+        self.assertEqual(panel_result.reasons, [])
+        self.assertEqual(panel_result.query_ir["warnings"], [])
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertGreaterEqual(panel_result.confidence, 0.85)
+
+    def test_prune_non_semantic_panel_warnings_clears_fusion_info_only(self):
+        panel_result = migrate.PanelResult(
+            "Panel",
+            "timeseries",
+            "bar",
+            "migrated_with_warnings",
+            0.6,
+            reasons=["Fused multi-target panel from independently translated ES|QL queries"],
+        )
+        panel_result.query_ir = {"warnings": list(panel_result.reasons)}
+        yaml_panel = {"esql": {"query": "TS metrics-* | STATS a = AVG(x) BY time_bucket"}}
+
+        panels._prune_non_semantic_panel_warnings(panel_result, yaml_panel)
+
+        self.assertEqual(panel_result.reasons, [])
+        self.assertEqual(panel_result.query_ir["warnings"], [])
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertGreaterEqual(panel_result.confidence, 0.85)
+
+    def test_field_override_stacking_marks_metric_unstacked(self):
+        yaml_panel = {
+            "esql": {
+                "type": "area",
+                "metrics": [
+                    {"field": "Pgfault", "label": "Pgfault - Page major and minor fault operations"},
+                    {"field": "Pgmajfault", "label": "Pgmajfault - Major page fault operations"},
+                ],
+            }
+        }
+        grafana_panel = {
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {
+                            "id": "byName",
+                            "options": "Pgfault - Page major and minor fault operations",
+                        },
+                        "properties": [
+                            {
+                                "id": "custom.stacking",
+                                "value": {"group": False, "mode": "normal"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        panels._apply_series_override_axes(yaml_panel, grafana_panel, [])
+
+        metrics = yaml_panel["esql"]["metrics"]
+        self.assertFalse(metrics[0].get("stack", True))
+        self.assertNotIn("stack", metrics[1])
+
+    def test_supported_custom_stacking_override_does_not_count_as_manual_review_note(self):
+        panel = {
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Total"},
+                        "properties": [
+                            {
+                                "id": "custom.stacking",
+                                "value": {"group": False, "mode": "normal"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        inventory = manifest.collect_panel_inventory(panel)
+        notes = manifest.collect_panel_notes(panel)
+
+        self.assertEqual(inventory["non_color_field_override_properties"], 0)
+        self.assertFalse(any("field override(s)" in note for note in notes))
 
     def test_to_dict_serializes_nested_dataclasses(self):
         from observability_migration.core.assets.visual import VisualIR
@@ -12552,6 +12710,23 @@ class TestDisplayMetadata(unittest.TestCase):
     def test_extract_axis_empty_returns_none(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         self.assertIsNone(extract_axis_config({}))
+
+    def test_extract_xy_appearance_hides_time_axis_title_from_override(self):
+        from observability_migration.targets.kibana.emit.display import extract_xy_appearance
+        panel = {
+            "fieldConfig": {
+                "defaults": {"custom": {"axisLabel": "%util"}},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byType", "options": "time"},
+                        "properties": [{"id": "custom.axisPlacement", "value": "hidden"}],
+                    }
+                ],
+            }
+        }
+        appearance = extract_xy_appearance(panel)
+        self.assertEqual(appearance["x_axis"]["title"], False)
+        self.assertEqual(appearance["y_left_axis"]["title"], "%util")
 
     def test_clean_template_dollar_var(self):
         from observability_migration.targets.kibana.emit.display import clean_template_variables
@@ -14014,19 +14189,43 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, doc["dashboards"][0]
 
-    def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
-        # Defect 2: the migrated `id` control lists every `id` regardless of
-        # the selected `instance` -- Kibana ES|QL controls have no
-        # cross-control dependency mechanism. That is an accepted
-        # degradation (not a silent one): it must be reported as a
-        # dashboard-level control warning.
+    def test_chained_label_filter_scope_binds_into_control_query_when_supported(self):
         _result, doc = self._translate(self.resolver)
         controls = {c["variable_name"]: c for c in doc["controls"]}
         self.assertIn("id", controls)
-        self.assertNotIn("instance", controls["id"]["query"])
-        self.assertNotIn("?instance", controls["id"]["query"])
+        self.assertIn("?instance", controls["id"]["query"])
+        self.assertIn("service.instance.id", controls["id"]["query"])
 
         result, _doc = self._translate(self.resolver)
+        self.assertFalse(
+            any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_chained_label_filter_scope_warns_when_param_binding_unavailable(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=False,
+            source="test",
+            confidence="verified",
+        )
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        controls = doc["dashboards"][0]["controls"]
+        self.assertEqual(len(controls), 2)
+        self.assertFalse(any(control.get("variable_name") == "id" for control in controls))
         self.assertTrue(
             any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
             result.control_warnings,
@@ -14097,14 +14296,12 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         )
 
     def test_offline_migrate_keeps_both_controls_with_only_the_scope_warning(self):
-        # Without a resolver (offline migrate, no --es-url) the source-
-        # faithful scope is kept for the `instance` control itself; only the
-        # inter-control dependency (Defect 2) is unrepresentable.
+        # Without a resolver (offline migrate, no --es-url) the chained scope
+        # still survives as a named-param predicate on the dependent control.
         result, doc = self._translate(None)
         variable_names = {c["variable_name"] for c in doc["controls"]}
         self.assertEqual(variable_names, {"instance", "id"})
-        scope_warnings = [w for w in result.control_warnings if "scoped by $instance" in w]
-        self.assertEqual(len(scope_warnings), 1)
+        self.assertIn("?instance", {c["variable_name"]: c for c in doc["controls"]}["id"]["query"])
         # Offline (no resolver) the `id="$id"` label filter cannot be resolved and
         # is dropped, so neither control ends up bound to a panel query. Both must
         # be reported as inert rather than left looking functional.
@@ -14355,6 +14552,18 @@ class StackingAndDrawStyleTests(unittest.TestCase):
         _yaml_panel, result = self.translate_panel(panel)
         self.assertEqual(result.kibana_type, "line")
 
+    def test_timeseries_fill_opacity_maps_to_area(self):
+        panel = {
+            "id": 31, "type": "timeseries", "title": "Filled Line",
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+            "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "none"}, "fillOpacity": 20}}},
+            "targets": [{"expr": "up", "refId": "A"}],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertEqual(result.kibana_type, "area")
+        self.assertEqual(yaml_panel["esql"]["type"], "area")
+        self.assertEqual((yaml_panel["esql"].get("appearance") or {}).get("fill_opacity"), 0.2)
+
     def test_timeseries_drawstyle_bars_maps_to_bar(self):
         panel = {
             "id": 4, "type": "timeseries", "title": "Bar Style",
@@ -14474,12 +14683,14 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
     def _translate_dashboard(self, filename):
         with open(self.dashboard_dir / filename) as f:
             dashboard = json.load(f)
+        rule_pack = rules.resolve_pack_for_dashboard(dashboard, self.rule_pack)
+        resolver = migrate.SchemaResolver(rule_pack)
         result = migrate.translate_dashboard(
             dashboard,
             datasource_index="metrics-*",
             esql_index="metrics-*",
-            rule_pack=self.rule_pack,
-            resolver=self.resolver,
+            rule_pack=rule_pack,
+            resolver=resolver,
         )
         yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, yaml_doc
@@ -14523,6 +14734,25 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
                     count_gauges(p["section"].get("panels", []))
         count_gauges(yaml_doc["dashboards"][0]["panels"])
         self.assertGreaterEqual(gauge_count, 4, "Should have gauge panels for CPU/RAM/etc.")
+
+    def test_node_exporter_full_curates_first_row_summary_panels(self):
+        result, yaml_doc = self._translate_dashboard("node-exporter-full.json")
+        panels_by_title = {panel_result.title: panel_result for panel_result in result.panel_results}
+        yaml_panels_by_title = {}
+        for panel in yaml_doc["dashboards"][0]["panels"]:
+            section = panel.get("section")
+            if isinstance(section, dict):
+                for inner in section.get("panels", []):
+                    yaml_panels_by_title[inner.get("title")] = inner
+            else:
+                yaml_panels_by_title[panel.get("title")] = panel
+
+        for title in ("Pressure", "RAM Used", "SWAP Used", "Uptime"):
+            self.assertIn(title, panels_by_title)
+            panel_result = panels_by_title[title]
+            self.assertEqual(panel_result.status, "migrated", title)
+            self.assertFalse(panel_result.reasons, f"{title}: {panel_result.reasons}")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["type"], "bar")
 
     def test_all_node_exporters_compile_without_error(self):
         """Verify the bundled Node Exporter dashboard produces valid YAML."""
