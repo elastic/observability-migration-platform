@@ -161,10 +161,11 @@ Known limits, stated rather than papered over:
 * A wrong hand-written expectation is only caught where it contradicts an
   independent oracle. `assert_payload_has_no_kibana_rejections` is that oracle for
   the native payload, but its rules are empirically sourced from live uploads: the
-  full Dashboards API schema is externally hosted, so offline it can only encode
-  refusals a real upload has already taught us. Run `make check-native-schema`
-  for the live external bundle, or override `KIBANA_DASHBOARDS_API_SCHEMA_URL`
-  when checking a pinned local copy.
+  full Dashboards API OpenAPI is pinned at
+  `docs/dashboards/kibana_dashboards_api.openapi.yaml`, so offline guards encode
+  refusals a real upload has already taught us rather than re-implementing the
+  whole OpenAPI. Run `make check-native-schema` to validate the committed pin,
+  and `make refresh-native-schema` when intentionally bumping it.
 * A branch that is dead for one *input class* (`da25a51`'s single-line ES|QL) is
   not caught by the firing counter — the branch still fires on the multi-line
   majority. That one is caught by the corpus-wide idempotence property instead.

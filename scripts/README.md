@@ -100,11 +100,12 @@ and reporting a clean pass over nothing.
 
 ### Schema and analysis helpers
 
-- `generate_dashboard_schema.sh` — regenerate the dashboard YAML JSON schema
-- `fetch_dashboards_api_schema.py` — fetch/check the latest Kibana OpenAPI
-  bundle for the typed Dashboards API (`/api/dashboards`); pass
-  `--require-full-schema` in CI with the external Dashboards API bundle to
-  catch redirect-only/stale schema sources
+- `generate_dashboard_schema.sh` — regenerate the dict-shape dashboard JSON
+  schema (`docs/dashboards/schema.json`)
+- `fetch_dashboards_api_schema.py` — refresh/check the pinned Kibana Dashboards
+  API OpenAPI bundle (`docs/dashboards/kibana_dashboards_api.openapi.yaml`);
+  CI uses `make check-native-schema` against the committed file; intentional
+  bumps use `make refresh-native-schema` with `--require-full-schema`
 - `generate_telemetry_contract.py` — emit the telemetry field contract
 
 ### Release and repo hygiene

@@ -439,19 +439,22 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
-.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema
 make check-native-schema
-# Optional override when checking a pinned local copy or another bundle:
-KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
+# Intentionally bump the committed OpenAPI pin:
+make refresh-native-schema
+# Optional upstream override when refreshing from a different bundle:
+KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make refresh-native-schema
 ```
 
 `generate_dashboard_schema.sh` refreshes the `kb-dashboard-core` dashboard JSON
 schema (`docs/dashboards/schema.json`), which is still the reference for the
 internal `DashboardIR.to_yaml_dict()` dict shape even though no YAML file is
-ever written. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
-Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
-Dashboards API bundle while the API remains technical preview, because the
-standard Kibana bundle may contain redirect-only shells.
+ever written. The native upload schema authority is the committed OpenAPI pin
+`docs/dashboards/kibana_dashboards_api.openapi.yaml`. `make check-native-schema`
+validates that pin offline (`--require-full-schema`); `make refresh-native-schema`
+re-fetches Elastic's hosted Dashboards API bundle and rewrites the pin for an
+intentional bump (the standard Kibana OpenAPI bundle may still contain
+redirect-only shells).
 
 **The dashboard-YAML lint and compiled-layout stages were removed**, together
 with `obs-migrate compile` and `migrate --compile` / `--legacy-import`. The

@@ -135,8 +135,10 @@ class ScriptHelpCliTests(unittest.TestCase):
         makefile = MAKEFILE.read_text(encoding="utf-8")
 
         self.assertIn("check-native-schema:", makefile)
+        self.assertIn("refresh-native-schema:", makefile)
         self.assertIn("fetch_dashboards_api_schema.py", makefile)
         self.assertIn("--require-full-schema", makefile)
+        self.assertIn("docs/dashboards/kibana_dashboards_api.openapi.yaml", makefile)
 
     def test_datadog_entry_points_describe_native_artifacts_not_yaml(self):
         datadog_cli_text = (

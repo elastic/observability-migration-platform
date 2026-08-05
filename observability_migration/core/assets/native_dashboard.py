@@ -15,9 +15,11 @@ the native API accepts.
 
 This module has no knowledge of YAML, Grafana, or Datadog: it only knows the
 typed API's own shape and its item-count caps (see
-``docs/explore-analyze/dashboards/create-dashboards-programmatically`` and
-``scripts/fetch_dashboards_api_schema.py`` for schema refresh). Per-panel
-mapping (chart-type dispatch, column/format/color rules) stays in
+``docs/explore-analyze/dashboards/create-dashboards-programmatically`` and the
+committed OpenAPI pin
+``docs/dashboards/kibana_dashboards_api.openapi.yaml``, refreshed via
+``make refresh-native-schema`` / ``scripts/fetch_dashboards_api_schema.py``).
+Per-panel mapping (chart-type dispatch, column/format/color rules) stays in
 ``dashboards_api.py``, which is the single place those live-verified quirks are
 encoded; this module is where the *assembled dashboard* — items in order,
 section nesting, top-level/section/pinned-control caps — is modeled and
@@ -32,9 +34,8 @@ from typing import Any
 # Current Dashboards API limits (Elastic docs, preview 9.4+): up to 1,000
 # top-level dashboard items (panels + sections combined), up to 1,000 panels
 # per section, up to 100 pinned controls, and at most 1,000 combined panels /
-# sections / controls across the dashboard. The API schema is technical preview
-# and externally hosted; use ``scripts/fetch_dashboards_api_schema.py`` to
-# refresh/check it when Kibana moves.
+# sections / controls across the dashboard. Keep these in sync with the
+# committed OpenAPI pin at ``docs/dashboards/kibana_dashboards_api.openapi.yaml``.
 MAX_DASHBOARD_ITEMS = 1000
 MAX_SECTION_PANELS = 1000
 MAX_PINNED_CONTROLS = 100

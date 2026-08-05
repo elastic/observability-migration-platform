@@ -1,12 +1,19 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""Fetch/check the latest Kibana Dashboards API OpenAPI bundle.
+"""Fetch/check the Kibana Dashboards API OpenAPI bundle.
 
-The Dashboards API is still technical preview. Elastic's standard Kibana
-OpenAPI bundle may contain redirect-only shells while the full schemas are
-externally hosted, so this helper deliberately separates "fetch the latest
-bundle" from "require the bundle to contain full request schemas".
+The committed authority for offline CI and native-payload work is:
+
+  docs/dashboards/kibana_dashboards_api.openapi.yaml
+
+Use ``make check-native-schema`` to validate that pinned file. Use
+``make refresh-native-schema`` (or this script without ``--check-only``) to
+re-fetch from Elastic's hosted Dashboards API bundle and rewrite the pin.
+
+Elastic's standard Kibana OpenAPI bundle may still contain redirect-only shells
+while the full schemas are externally hosted, so this helper separates "fetch
+the latest bundle" from "require the bundle to contain full request schemas".
 """
 
 from __future__ import annotations
@@ -22,6 +29,9 @@ import yaml
 
 DEFAULT_SCHEMA_URL = "https://dashboardsapispec.kibana.dev/dashboards-openapi.yaml"
 DEFAULT_OUTPUT = Path("docs/dashboards/kibana_dashboards_api.openapi.yaml")
+# Local path used by ``make check-native-schema`` so CI does not depend on the
+# live external host remaining reachable or unchanged mid-PR.
+COMMITTED_SCHEMA = DEFAULT_OUTPUT
 
 
 def fetch_schema_text(url: str, *, timeout: int = 30) -> str:
@@ -110,15 +120,18 @@ def validate_dashboard_schema(schema: dict[str, Any], *, require_full_schema: bo
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Fetch and validate the latest Kibana Dashboards API OpenAPI schema bundle.",
+        description=(
+            "Fetch or validate the Kibana Dashboards API OpenAPI schema bundle. "
+            f"The committed pin is {COMMITTED_SCHEMA}."
+        ),
     )
     parser.add_argument(
         "--url",
         default=os.environ.get("KIBANA_DASHBOARDS_API_SCHEMA_URL", DEFAULT_SCHEMA_URL),
         help=(
-            "OpenAPI URL or local file path. Defaults to %(default)s; override with "
-            "KIBANA_DASHBOARDS_API_SCHEMA_URL or this flag when checking a pinned local copy "
-            "or a different external Dashboards API bundle."
+            "OpenAPI URL or local file path. Defaults to %(default)s for refresh; "
+            "override with KIBANA_DASHBOARDS_API_SCHEMA_URL or this flag. "
+            f"CI checks the committed pin via --url {COMMITTED_SCHEMA}."
         ),
     )
     parser.add_argument(
@@ -131,7 +144,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="Validate the fetched schema but do not write --output.",
+        help="Validate the schema from --url but do not write --output.",
     )
     parser.add_argument(
         "--require-full-schema",
@@ -144,7 +157,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
-        schema = parse_schema(fetch_schema_text(args.url, timeout=args.timeout))
+        # Preserve upstream formatting on refresh (avoid yaml.safe_dump rewrites).
+        text = fetch_schema_text(args.url, timeout=args.timeout)
+        schema = parse_schema(text)
         summary = validate_dashboard_schema(schema, require_full_schema=args.require_full_schema)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -152,7 +167,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check_only:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(yaml.safe_dump(schema, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        if not text.endswith("\n"):
+            text = f"{text}\n"
+        args.output.write_text(text, encoding="utf-8")
         print(f"Wrote {args.output}")
 
     print(
@@ -164,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     if not summary["has_full_dashboard_write_schema"]:
         print(
             "NOTE: this bundle appears to contain redirect-only dashboard docs. "
-            "Use --require-full-schema in CI with the external full Dashboards API bundle.",
+            "Refresh from the full external Dashboards API bundle "
+            f"(default {DEFAULT_SCHEMA_URL}) and commit {COMMITTED_SCHEMA}.",
             file=sys.stderr,
         )
     return 0

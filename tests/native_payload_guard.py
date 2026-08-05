@@ -217,7 +217,8 @@ def assert_payload_matches_dict_shape_bridge(
 # Every rule below was witnessed against a live cluster; the docstring of each
 # helper carries the error Kibana returned. This is deliberately a *short* list
 # of empirically-confirmed refusals rather than a re-implementation of the
-# Dashboards API schema: the full OpenAPI bundle is externally hosted (see
+# Dashboards API schema: the full OpenAPI pin lives at
+# ``docs/dashboards/kibana_dashboards_api.openapi.yaml`` (see
 # ``scripts/fetch_dashboards_api_schema.py`` and ``make check-native-schema``),
 # so offline we can only encode what a real upload has already taught us.
 

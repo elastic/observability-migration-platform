@@ -99,9 +99,9 @@ from observability_migration.targets.kibana.native_artifacts import (
     NATIVE_ARTIFACT_KIND,
 )
 
-# Current typed Dashboards API caps. The API schema is still preview and its
-# full reference is externally hosted, so keep these in sync with
-# ``scripts/fetch_dashboards_api_schema.py`` and Elastic's Dashboards API docs.
+# Current typed Dashboards API caps. Keep these in sync with the committed
+# OpenAPI pin at ``docs/dashboards/kibana_dashboards_api.openapi.yaml``
+# (``make check-native-schema`` / ``make refresh-native-schema``).
 _MAX_DASHBOARD_ITEMS = MAX_DASHBOARD_ITEMS
 _MAX_SECTION_PANELS = MAX_SECTION_PANELS
 _MAX_PINNED_CONTROLS = MAX_PINNED_CONTROLS

@@ -8,23 +8,25 @@ Dashboard authoring flow for local migration work:
   kept because it documents the internal in-memory dict shape that
   `DashboardIR.to_yaml_dict()` produces and `dashboards_api`'s `*_yaml_*`
   mappers accept.
-  If `npx` is available, it also writes `docs/dashboards/schema.toon` for easier schema browsing.
 
-- `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema`
-  Fetches/checks the typed Kibana Dashboards API OpenAPI bundle for
-  `/api/dashboards`. This is the native API schema refresh path — and the one
-  that governs what actually ships. It is separate
-  from the dict-shape schema above because the Dashboards API is still
-  technical preview and its full schemas may be hosted outside the standard
-  Kibana OpenAPI bundle. The current native IR enforces the documented limits:
-  1,000 top-level dashboard items, 1,000 panels per section, 100 pinned
-  controls, and 1,000 total panels/sections/controls.
+- `docs/dashboards/kibana_dashboards_api.openapi.yaml`
+  Pinned native Kibana Dashboards API OpenAPI bundle for `/api/dashboards`.
+  This is the schema authority for what the typed upload path may emit.
+  Refresh with `make refresh-native-schema` (or
+  `.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema`)
+  and commit the result when intentionally bumping the pin. The Dashboards API
+  may still ship full schemas outside the standard Kibana OpenAPI bundle, so
+  the refresh URL defaults to Elastic's hosted Dashboards API spec.
 
 - `make check-native-schema`
-  CI-friendly wrapper around the same native schema check. By default it checks
-  the live external Dashboards API bundle. Override
-  `KIBANA_DASHBOARDS_API_SCHEMA_URL` when you want to validate against a pinned
-  local copy or a different external bundle.
+  CI-friendly validation of the **committed** OpenAPI pin above
+  (`--require-full-schema`). Override `KIBANA_DASHBOARDS_API_SCHEMA_URL` only
+  when refreshing from a different upstream bundle via
+  `make refresh-native-schema`.
+
+The current native IR enforces the documented limits: 1,000 top-level dashboard
+items, 1,000 panels per section, 100 pinned controls, and 1,000 total
+panels/sections/controls.
 
 - **The dashboard-YAML lint stage and the compiled-layout validation stage were
   removed**, along with `obs-migrate compile` and `migrate
