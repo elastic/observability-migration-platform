@@ -33,6 +33,40 @@ RUNTIME_WARNING_ROLLUPS = {
     "validation_skipped",
 }
 
+# Tokens that turn a panel note/reason into a verification semantic loss (Yellow).
+# Keep in sync with status promotion in panels._enrich_panel_result so Migrated
+# and Green do not diverge for the same operator-facing note.
+_REASON_SEMANTIC_LOSS_TOKENS = (
+    "approximat",
+    "drop",
+    "manual",
+    "fallback",
+    "mixed datasource",
+)
+_NOTE_SEMANTIC_LOSS_TOKENS = (
+    "manual",
+    "verify",
+    "not preserved",
+    "redesign",
+    "transformation",
+    "link",
+)
+
+
+def reason_implies_semantic_loss(text: str) -> bool:
+    lowered = str(text).lower()
+    return any(token in lowered for token in _REASON_SEMANTIC_LOSS_TOKENS)
+
+
+def note_implies_semantic_loss(text: str) -> bool:
+    lowered = str(text).lower()
+    return any(token in lowered for token in _NOTE_SEMANTIC_LOSS_TOKENS)
+
+
+def panel_notes_imply_warning(notes: list[Any] | None) -> bool:
+    return any(note_implies_semantic_loss(str(note)) for note in (notes or []))
+
+
 
 def _append_unique(items: list[str], value: str) -> None:
     if value and value not in items:
@@ -129,12 +163,10 @@ def _collect_semantic_losses(panel_result: Any) -> list[str]:
     for item in (query_ir.get("semantic_losses", []) or []):
         _append_unique(losses, str(item))
     for item in (getattr(panel_result, "reasons", []) or []):
-        lowered = str(item).lower()
-        if any(token in lowered for token in ("approximat", "drop", "manual", "fallback", "mixed datasource")):
+        if reason_implies_semantic_loss(str(item)):
             _append_unique(losses, str(item))
     for item in (getattr(panel_result, "notes", []) or []):
-        lowered = str(item).lower()
-        if any(token in lowered for token in ("manual", "verify", "not preserved", "redesign", "transformation", "link")):
+        if note_implies_semantic_loss(str(item)):
             _append_unique(losses, str(item))
     return losses
 

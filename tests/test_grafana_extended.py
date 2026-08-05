@@ -4383,6 +4383,41 @@ class TestGrafanaSkippedPanelsDoNotInflateGreen(unittest.TestCase):
         self.assertEqual(manifest["summary"]["red"], 0)
 
 
+class TestFieldOverrideNotesPromoteWarningStatus(unittest.TestCase):
+    """Notes that Yellow the gate must also land in With-warnings, not Migrated."""
+
+    def test_field_override_note_upgrades_migrated_status(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _enrich_panel_result,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+            panel_notes_imply_warning,
+        )
+        from observability_migration.core.reporting.report import PanelResult
+
+        note = "Grafana panel has 7 field override(s); verify visual mappings manually"
+        self.assertTrue(panel_notes_imply_warning([note]))
+
+        panel_result = PanelResult(
+            title="CPU Basic",
+            grafana_type="timeseries",
+            kibana_type="line",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(cpu)",
+            promql_expr="avg(node_cpu_seconds_total)",
+        )
+        enriched = _enrich_panel_result(
+            panel_result,
+            panel={"id": 1, "type": "timeseries"},
+            notes=[note],
+        )
+        self.assertEqual(enriched.status, "migrated_with_warnings")
+        packet = build_verification_packet("Node", enriched)
+        self.assertEqual(packet["semantic_gate"], "Yellow")
+
+
 class TestValueMappingsAreReported(unittest.TestCase):
     """Grafana value mappings have no Kibana equivalent and must not vanish silently.
 

@@ -117,6 +117,7 @@ from .translate import (
     _collect_source_metrics,
     translate_promql_to_esql,
 )
+from .verification import panel_notes_imply_warning
 
 PANEL_TYPE_MAP = {
     "timeseries": "line",
@@ -2836,6 +2837,12 @@ def _enrich_panel_result(
         _append_unique(panel_result.reasons, approximation_note)
         panel_result.status = "migrated_with_warnings"
         panel_result.confidence = min(panel_result.confidence, 0.8)
+    # Notes that verification treats as semantic losses (e.g. field overrides
+    # needing manual verify) must land in the With-warnings scorecard, not as
+    # clean Migrated with a Yellow gate — otherwise Green << Migrated.
+    if panel_result.status == "migrated" and panel_notes_imply_warning(panel_result.notes):
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.85)
     panel_result.readiness = classify_panel_readiness(panel_result)
     panel_result.recommended_target = recommend_panel_target(panel_result)
     _sync_visual_ir(panel_result, yaml_panel)
@@ -8370,8 +8377,11 @@ def _rewrite_variable_warnings(panel_results, covered_control_refs, resolver=Non
         if len(pr.reasons) == original_count:
             continue
         if pr.status == "migrated_with_warnings" and not pr.reasons:
-            pr.status = "migrated"
-            pr.confidence = max(pr.confidence, 0.85)
+            # Keep warning status when notes still imply a semantic loss (e.g.
+            # field overrides) even after variable-drop reasons were cleared.
+            if not panel_notes_imply_warning(pr.notes):
+                pr.status = "migrated"
+                pr.confidence = max(pr.confidence, 0.85)
         rewritten_panel_results.append(pr)
     return rewritten_panel_results
 
