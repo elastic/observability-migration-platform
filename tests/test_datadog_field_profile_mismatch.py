@@ -66,6 +66,12 @@ def test_prefixless_profile_is_silent():
     assert _warn(_profile("otel", "", ["system.cpu.utilization"])) == ""
 
 
+def test_prefixless_profile_warns_when_live_fields_are_prometheus_native():
+    out = _warn(_profile("otel", "", ["metrics.redis_up", "labels.instance"]))
+    assert "WARNING" in out
+    assert "--field-profile prometheus_native" in out
+
+
 def test_offline_discovery_is_silent():
     """With no discovered fields there is no evidence either way."""
     assert _warn(_profile("prometheus", "prometheus.metrics.", [])) == ""
@@ -77,3 +83,11 @@ def test_otel_profile_without_metric_map_explains_metric_name_limit():
     out = _guidance(profile)
     assert "--metric-map-file" in out
     assert "does not" in out and "metric names" in out
+
+
+def test_elastic_agent_guidance_always_warns_about_partial_metric_coverage():
+    profile = _profile("elastic_agent", "", ["system.cpu.user.pct"])
+    profile.metric_map = {"system.cpu.user": "system.cpu.user.pct"}
+    out = _guidance(profile)
+    assert "--metric-map-file" in out
+    assert "custom app metrics" in out

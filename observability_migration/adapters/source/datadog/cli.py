@@ -73,7 +73,7 @@ from .extract import (
     load_credentials_from_env,
     selection_metadata_from_datadog_dashboard,
 )
-from .field_map import FieldMapProfile, load_profile
+from .field_map import FieldMapProfile, detect_metric_layout, load_profile
 from .generate import generate_dashboard_artifacts
 from .manifest import save_migration_manifest
 from .models import DashboardResult, NormalizedWidget, TranslationResult
@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         print(f"  ERROR: {exc}")
         sys.exit(1)
+    _print_field_profile_startup_note(field_map, args)
     _load_live_field_capabilities(field_map, args, verify=verify)
     base_dir = Path(args.output_dir)
     dashboards_dir = dashboard_output_dir(base_dir)
@@ -685,22 +686,38 @@ def _warn_on_field_profile_mismatch(field_map: Any) -> None:
     it was pointed at. Discovery already holds the live field names here, so say
     so before the operator finds out from a broken dashboard.
     """
-    prefix = getattr(field_map, "metric_prefix", "")
     caps = getattr(field_map, "metric_field_caps", None)
+    planned = str(getattr(field_map, "name", "") or "")
     # Advisory check: a profile object that does not expose these as a plain
     # string/mapping tells us nothing, so stay quiet rather than guess.
-    if not isinstance(prefix, str) or not prefix or not isinstance(caps, dict) or not caps:
+    if not isinstance(caps, dict) or not caps:
         return
-    if any(str(name).startswith(prefix) for name in caps):
+    detected = detect_metric_layout(caps)
+    if detected is None:
         return
-    other = {"prometheus.metrics.": "prometheus_native", "metrics.": "prometheus"}.get(prefix)
+    aliases = {"prometheus_metrics": "prometheus"}
+    planned = aliases.get(planned, planned)
+    if planned == detected:
+        return
     sample = sorted(str(n) for n in caps)[:3]
+    if planned in {"prometheus", "prometheus_native"}:
+        expected = {
+            "prometheus": "prometheus.metrics.",
+            "prometheus_native": "metrics.",
+        }[planned]
+        print(
+            f"  WARNING: field profile {field_map.name!r} expects metric fields under "
+            f"{expected!r}, but the live fields in {field_map.metric_index!r} look "
+            f"like {detected!r} instead (e.g. {', '.join(sample)}). Every panel "
+            "will fail in Kibana with \"Unknown column\"."
+            f" Did you mean --field-profile {detected}?"
+        )
+        return
     print(
-        f"  WARNING: field profile {field_map.name!r} expects metric fields under "
-        f"{prefix!r}, but none of the {len(caps)} fields discovered in "
-        f"{field_map.metric_index!r} use that prefix (e.g. {', '.join(sample)}). "
-        "Every panel will fail in Kibana with \"Unknown column\"."
-        + (f" Did you mean --field-profile {other}?" if other else "")
+        f"  WARNING: field profile {field_map.name!r} is querying {field_map.metric_index!r}, "
+        f"but the live fields look like the Datadog {detected!r} profile "
+        f"(e.g. {', '.join(sample)}). Re-run with --field-profile {detected} "
+        "or the translated metric and label fields will not match the target."
     )
 
 
@@ -715,10 +732,28 @@ def _print_field_profile_operator_guidance(field_map: Any) -> None:
             "        If metric names changed between Datadog and the Elasticsearch target,\n"
             "        add --metric-map-file and re-run --preflight."
         )
-    elif name == "elastic_agent" and not has_metric_map:
+    elif name == "elastic_agent":
         print(
             "  NOTE: Datadog field profile 'elastic_agent' only covers common built-in system\n"
-            "        metrics. Custom app metrics usually still need --metric-map-file."
+            "        metrics out of the box. If this dashboard uses custom app metrics,\n"
+            "        make sure your --metric-map-file covers them too."
+        )
+
+
+def _print_field_profile_startup_note(field_map: Any, args: argparse.Namespace) -> None:
+    """Print the highest-signal field-profile caveat before migration starts."""
+    name = str(getattr(field_map, "name", "") or "")
+    metric_map_files = list(getattr(args, "metric_map_file", []) or [])
+    if name in {"otel", "default"} and not metric_map_files:
+        print(
+            "  Note: Datadog --field-profile otel maps tag and attribute names, not metric names.\n"
+            "        If the target stores OTel semantic-convention metric names, add\n"
+            "        --metric-map-file or the migrated metric queries may be empty.\n"
+        )
+    elif name == "passthrough":
+        print(
+            "  Note: Datadog --field-profile passthrough emits raw Datadog metric and\n"
+            "        tag names verbatim. Use it only when the target stores those exact names.\n"
         )
 
 
@@ -1552,9 +1587,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--field-profile", default="otel",
-        help="Field mapping profile: otel, elastic_agent, prometheus "
-             "(alias: prometheus_metrics), prometheus_native, passthrough, "
-             "or path to YAML",
+        help="Field mapping profile: otel (tag/attribute mapping only; metric "
+             "renames still need --metric-map-file), elastic_agent, prometheus "
+             "(alias: prometheus_metrics), prometheus_native, passthrough "
+             "(strict raw names), or path to YAML",
     )
     parser.add_argument(
         "--metric-map-file",

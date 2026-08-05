@@ -229,7 +229,14 @@ Prometheus profiles therefore keep ECS / OTel log fields rather than emitting
 | `prometheus` | `metrics-prometheus-*` | `prometheus.metrics.` | `prometheus.labels.*` (`host` → `prometheus.labels.instance`) | Metricbeat / Agent Prometheus **remote_write** integration layout |
 | `prometheus_native` | `metrics-*.prometheus-*` | `metrics.` | `labels.*` (`host` → `labels.instance`) | Elasticsearch native `/_prometheus` remote-write layout |
 | `elastic_agent` | `metrics-*` | _(none)_ | ECS / Elastic Agent maps | Elastic Agent / Metricbeat **system** integration field names |
-| `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog names as-is (dots still convert to underscores for metrics) |
+| `passthrough` | `metrics-*` | _(none)_ | _(none)_ | Keep Datadog metric and tag names verbatim |
+
+`otel` is the default because it is the least-wrong tag baseline, not because it
+can infer OTel metric names. If the target renamed metrics during a Datadog →
+OTel move, treat `--metric-map-file` as part of the normal operator workflow.
+
+`passthrough` is strict on both tags and metrics. It is only correct when the
+Elasticsearch target stores the original Datadog names unchanged.
 
 > **Breaking change:** `--field-profile prometheus` now maps metric-query tags
 > to `prometheus.labels.*` (including `host` → `prometheus.labels.instance`)

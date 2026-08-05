@@ -2415,7 +2415,7 @@ class TestTranslation(unittest.TestCase):
         w = NormalizedWidget(id="1", widget_type="query_value", title="Test", queries=[wq])
         plan = plan_widget(w)
         result = translate_widget(w, plan, PASSTHROUGH_PROFILE)
-        self.assertIn("system_cpu_user", result.esql_query)
+        self.assertIn("system.cpu.user", result.esql_query)
 
 
 # =========================================================================
@@ -4309,7 +4309,7 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(profile.map_tag("docker_image", context="metric"), "docker_image.keyword")
 
     def test_passthrough_keeps_names(self):
-        self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system_cpu_user")
+        self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system.cpu.user")
         self.assertEqual(PASSTHROUGH_PROFILE.map_tag("host"), "host")
 
     def test_prometheus_metricbeat_profile_uses_prometheus_metrics_and_labels(self):
@@ -4435,6 +4435,15 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(args.field_profile, "otel")
 
+    def test_field_profile_help_mentions_otel_metric_map_and_passthrough_strictness(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit) as exc:
+            datadog_cli.parse_args(["--help"])
+        self.assertEqual(exc.exception.code, 0)
+        out = buf.getvalue()
+        self.assertIn("metric renames still need --metric-map-file", out)
+        self.assertIn("passthrough (strict raw names)", out)
+
     def test_parse_args_accepts_input_mode_alias_for_source(self):
         args = datadog_cli.parse_args(["--input-mode", "api"])
 
@@ -4459,6 +4468,26 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
         ])
 
         self.assertEqual(args.data_view, "metrics-custom-*")
+
+    def test_startup_note_warns_that_otel_does_not_rename_metrics(self):
+        field_map = load_profile("otel")
+        args = argparse.Namespace(metric_map_file=[])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            datadog_cli._print_field_profile_startup_note(field_map, args)
+        out = buf.getvalue()
+        self.assertIn("not metric names", out)
+        self.assertIn("--metric-map-file", out)
+
+    def test_startup_note_warns_that_passthrough_is_strict(self):
+        field_map = load_profile("passthrough")
+        args = argparse.Namespace(metric_map_file=[])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            datadog_cli._print_field_profile_startup_note(field_map, args)
+        out = buf.getvalue()
+        self.assertIn("raw Datadog metric and", out)
+        self.assertIn("exact names", out)
 
     def test_target_readiness_contract_reports_mapped_field_status(self):
         field_map = load_profile("otel")
@@ -4579,6 +4608,63 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
             contract["counter_expectations"]["http_requests"]["expected_counter"],
         )
         self.assertEqual(contract["totals"].get("counters_expected"), 1)
+
+    def test_target_readiness_contract_reports_profile_mismatch_for_prometheus_native_caps(self):
+        field_map = load_profile("otel")
+        field_map.metric_field_caps = {
+            "metrics.redis_up": FieldCapability(name="metrics.redis_up", type="double"),
+            "labels.instance": FieldCapability(name="labels.instance", type="keyword"),
+        }
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "avg:redis.up{host:redis}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="query_value",
+            title="Redis up",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                )
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract([dashboard], field_map)
+
+        self.assertEqual(contract["detected_schema_profile"], "prometheus_native")
+        self.assertTrue(contract["profile_mismatch"])
+        self.assertEqual(
+            contract["operator_guidance"]["suggested_field_profile"],
+            "prometheus_native",
+        )
+
+    def test_target_readiness_contract_always_explains_elastic_agent_metric_coverage_limit(self):
+        field_map = load_profile("elastic_agent")
+        query = "avg:system.cpu.user{*}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                )
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract([dashboard], field_map)
+
+        self.assertIn("operator_guidance", contract)
+        self.assertIn("common system metrics only", contract["operator_guidance"]["next_step"])
 
     def test_dashboard_pipeline_writes_target_readiness_contract(self):
         args = argparse.Namespace(

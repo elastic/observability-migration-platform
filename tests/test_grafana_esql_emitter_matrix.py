@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+import observability_migration.adapters.source.grafana.panels as grafana_panels
 from observability_migration.adapters.source.grafana.esql_emitters import (
     EMITTER_HELPER_SYMBOLS,
     GRAFANA_ESQL_EMITTERS,
@@ -155,8 +156,15 @@ def test_emitter_same_metric_collapse():
     assert structural_errors(check_esql_structure(query)) == []
 
 
-def test_emitter_pretranslated_xy_merge():
+def test_emitter_pretranslated_xy_merge(monkeypatch: pytest.MonkeyPatch):
     rule_pack, resolver = _rule_pack_and_resolver()
+    original_merge = grafana_panels._merge_pretranslated_xy_queries
+    monkeypatch.setattr(grafana_panels, "_build_multi_target_series_query", lambda translations: None)
+    monkeypatch.setattr(
+        grafana_panels,
+        "_merge_pretranslated_xy_queries",
+        lambda translations: original_merge(translations),
+    )
     panel = {
         "id": 2,
         "type": "timeseries",
@@ -191,7 +199,9 @@ def test_emitter_pretranslated_xy_merge():
         resolver=resolver,
     )
     query = yaml_panel["esql"]["query"]
-    assert any(_PRETRANSLATED_FUSE_WARNING in reason for reason in result.reasons)
+    provenance = result.query_ir["metadata"].get("collapsed_targets") or []
+    assert provenance
+    assert all(entry.get("whole_translated") for entry in provenance)
     assert structural_errors(check_esql_structure(query)) == []
 
 
