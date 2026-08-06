@@ -5236,7 +5236,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         }
 
-        yaml_panel, result = self.translate_panel(panel)
+        yaml_panel, _result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
 
         self.assertIn("device", query)

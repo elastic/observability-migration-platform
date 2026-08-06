@@ -34,11 +34,12 @@ panels:
     grafana_type: gauge
     fidelity: APPROXIMATE
     notes: >
-      Ratio formula sum(100 * used / max). Co-located ES|QL EVAL (plugin.py) computes
-      the ratio within a single FROM query (both metrics land in the same prometheus_native
-      document per label-set from the redis_scraper). Panel shows empty when Redis
-      maxmemory=0 (no limit configured). APPROXIMATE because the co-location assumption
-      could fail on non-standard scrapers; semantically correct for the default layout.
+      Ratio formula sum(100 * used / max). The generic co-located binary-expression
+      translator emits a single FROM query (both metrics land in the same
+      prometheus_native document per label-set from the redis_scraper). Panel shows
+      empty when Redis maxmemory=0 (no limit configured). APPROXIMATE because the
+      co-location assumption could fail on non-standard scrapers; semantically
+      correct for the default layout.
     grafana_grid: {x: 5, y: 0, w: 3, h: 7}
     kibana_grid: {x: 16, y: 0, w: 10, h: 6}
 
@@ -72,11 +73,12 @@ panels:
     fidelity: APPROXIMATE
     notes: >
       Two-series line chart: input and output byte rates. The Grafana legendFormat uses
-      {{ input }} and {{ output }} which are NOT real Prometheus labels; plugin.py
-      (redis_network_io_legend_fix classifier) removes the phantom group-by so both
-      targets fuse into a single STATS query. WHERE uses OR logic to include documents
-      with either metric present. APPROXIMATE because the WHERE OR filter requires both
-      metrics to be discoverable in the index but reads them from co-located documents.
+      {{ input }} and {{ output }} which are NOT real Prometheus labels; the generic
+      legendFormat/fusion path treats those tokens as series aliases (not BY dimensions)
+      so both targets fuse into a single STATS query. WHERE uses OR logic to include
+      documents with either metric present. APPROXIMATE because the WHERE OR filter
+      requires both metrics to be discoverable in the index but reads them from
+      co-located documents.
     grafana_grid: {x: 12, y: 7, w: 12, h: 7}
     kibana_grid: {x: 32, y: 6, w: 16, h: 8}
 
@@ -172,12 +174,7 @@ summary:
     panels_render_ok: 13
     panels_not_feasible: 0
     migration_flags: "--translation-mode esql (required; native PROMQL mode fails on ?instance params in PromQL label filters)"
-    plugin: >
-      curated_packs/grafana_763_redis_exporter/plugin.py —
-      (1) Memory Usage: co-located EVAL query for used/max ratio;
-      (2) Network I/O: removes phantom {{ input }}/{{ output }} label group-by so both
-      series fuse correctly;
-      (3) resolver copy_with_pack fix ensures curated label_candidates apply to all panels.
+    plugin: none (generic translator + pack.yaml cover Memory Usage ratio and Network I/O fusion)
     namespace_control: PASS
     namespace_control_note: >
       Shows 'default' option; wildcard .* selected by default. The downstream

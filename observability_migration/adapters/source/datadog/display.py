@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import NormalizedWidget, TranslationResult
 from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
+
+from .models import NormalizedWidget, TranslationResult
 
 DATADOG_UNIT_MAP: dict[str, dict[str, Any]] = {
     "byte": {"type": "bytes"},

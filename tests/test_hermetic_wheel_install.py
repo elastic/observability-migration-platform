@@ -101,16 +101,16 @@ class HermeticWheelInstallTests(unittest.TestCase):
             # Drop any accidental editable/src path pollution from the parent env.
             env.pop("PYTHONPATH", None)
 
-            plugin_probe = subprocess.run(
+            pack_probe = subprocess.run(
                 [
                     str(python),
                     "-c",
                     (
                         "from pathlib import Path; "
                         "import observability_migration.adapters.source.grafana.curated_packs as p; "
-                        "plugin = Path(p.__file__).resolve().parent / "
-                        "'grafana_763_redis_exporter' / 'plugin.py'; "
-                        "print(plugin.exists())"
+                        "pack = Path(p.__file__).resolve().parent / "
+                        "'grafana_763_redis_exporter' / 'pack.yaml'; "
+                        "print(pack.exists())"
                     ),
                 ],
                 check=True,
@@ -119,7 +119,7 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 cwd=neutral,
                 env=env,
             )
-            self.assertEqual(plugin_probe.stdout.strip(), "True")
+            self.assertEqual(pack_probe.stdout.strip(), "True")
 
             doctor = subprocess.run(
                 [str(obs_migrate), "doctor"],

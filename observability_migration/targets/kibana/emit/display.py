@@ -212,17 +212,14 @@ def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
     into ``axisLabel``. They are not human-friendly axis titles and look worse
     than leaving the axis unnamed, so suppress only the narrow machine-style
     form rather than dropping all short labels.
+
+    ``unit`` is accepted for call-site compatibility with axis extractors; opaque
+    shorthand suppression is label-shape based today.
     """
+    _ = unit
     text = str(label or "").strip()
     if not text:
         return ""
-    lowered = text.lower()
-    curated_aliases = {
-        "aqu-sz": "Average queue size",
-    }
-    if lowered in curated_aliases:
-        return curated_aliases[lowered]
-    normalized_unit = str(unit or "").strip().lower()
     if re.fullmatch(r"[a-z]{2,}(?:[-_][a-z0-9]{1,})+", text):
         return ""
     return text

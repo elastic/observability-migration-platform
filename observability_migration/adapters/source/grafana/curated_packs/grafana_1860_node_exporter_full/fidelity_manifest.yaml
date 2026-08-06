@@ -1,0 +1,17 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 1860 (Node Exporter Full)
+# https://grafana.com/grafana/dashboards/1860-node-exporter-full/
+#
+# Documentation-only contract for the curated pack. Panel-by-panel classification
+# of the full ~133-panel dashboard is deferred; ``pack.yaml`` is the source of
+# truth for metric_kinds pins and title_match query overrides (CPU Busy,
+# Processes Memory, and related Node Exporter Full repairs).
+
+schema_version: 1
+gnet_id: 1860
+gnet_revision: 37
+dashboard_title: "Node Exporter Full"
+
+panels: []
