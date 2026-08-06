@@ -610,6 +610,7 @@ def _scoped_stream(stream: dict[str, Any], dimensions: frozenset[str], metrics: 
         "group_fields": [f for f in (stream.get("group_fields") or []) if f in dimensions],
         "required_values": {k: v for k, v in (stream.get("required_values") or {}).items() if k in dimensions},
         "required_patterns": {k: v for k, v in (stream.get("required_patterns") or {}).items() if k in dimensions},
+        "requirements": _scoped_requirements(stream, dimensions, metrics),
     }
 
 
@@ -667,7 +668,63 @@ def _dimension_combinations(stream: dict[str, Any], *, max_combinations: int) ->
         value_options,
         sorted(set(control_fields) | set(group_fields) | set(required_values) | set(required_patterns)),
     )
+    _ensure_requirement_bundle_coverage(
+        combos,
+        stream.get("requirements") or [],
+        value_options,
+        dimension_names,
+    )
     return combos or [{}]
+
+
+def _scoped_requirements(
+    stream: dict[str, Any],
+    dimensions: frozenset[str],
+    metrics: set[str],
+) -> list[dict[str, Any]]:
+    """Per-query requirements relevant to one metric family scope."""
+    scoped: list[dict[str, Any]] = []
+    stream_fields = stream.get("fields") or {}
+    metric_fields = {
+        name: info
+        for name, info in stream_fields.items()
+        if name in metrics and info.get("role") == "metric"
+    }
+    for requirement in stream.get("requirements") or []:
+        matched_metrics: set[str] = set()
+        for metric_name in requirement.get("metrics") or []:
+            matched_metrics.update(_requirement_metric_targets(metric_name, metric_fields))
+        raw_dims = (
+            set(requirement.get("dimensions") or [])
+            | set(requirement.get("group_fields") or [])
+            | set(requirement.get("control_fields") or [])
+            | set((requirement.get("required_values") or {}).keys())
+            | set((requirement.get("required_patterns") or {}).keys())
+        )
+        matched_dims: set[str] = set()
+        for field_name in raw_dims:
+            matched_dims.update(_requirement_dimension_targets(field_name, stream_fields, metric_fields))
+            if field_name in metrics:
+                matched_metrics.add(field_name)
+        if not matched_metrics and not (matched_dims & dimensions):
+            continue
+        scoped.append(
+            {
+                "group_fields": [f for f in (requirement.get("group_fields") or []) if f in dimensions],
+                "control_fields": [f for f in (requirement.get("control_fields") or []) if f in dimensions],
+                "required_values": {
+                    k: v
+                    for k, v in (requirement.get("required_values") or {}).items()
+                    if k in dimensions
+                },
+                "required_patterns": {
+                    k: v
+                    for k, v in (requirement.get("required_patterns") or {}).items()
+                    if k in dimensions
+                },
+            }
+        )
+    return scoped
 
 
 def _document_timestamps(
@@ -747,6 +804,56 @@ def _ensure_dimension_value_coverage(
             combos.append(combo)
             seen_combos.add(key)
             existing.add(value)
+
+
+def _ensure_requirement_bundle_coverage(
+    combos: list[dict[str, str]],
+    requirements: list[dict[str, Any]],
+    value_options: dict[str, list[str]],
+    dimension_names: set[str],
+) -> None:
+    """Ensure each scoped query requirement has at least one satisfiable combo.
+
+    Per-field coverage is not enough once the dimension cross-product is
+    truncated: a dashboard may need ``type=kafka`` + ``pathway_type=full`` +
+    ``direction=in`` on the same document, not merely each value somewhere in
+    the stream. Build one concrete combo per requirement bundle so every query's
+    filter conjunction can match synthetic data.
+    """
+    if not combos:
+        return
+    base = dict(combos[0])
+    seen_combos = {tuple(sorted(combo.items())) for combo in combos}
+    for requirement in requirements:
+        combo = dict(base)
+        touched = False
+        for field_name, values in (requirement.get("required_values") or {}).items():
+            if field_name not in dimension_names:
+                continue
+            candidates = [v for v in values if _seedable_value(v)]
+            if candidates:
+                combo[field_name] = candidates[0]
+                touched = True
+        for field_name, patterns in (requirement.get("required_patterns") or {}).items():
+            if field_name not in dimension_names or field_name in combo:
+                continue
+            expanded = _expand_patterns(field_name, patterns or [])
+            if expanded:
+                combo[field_name] = expanded[0]
+                touched = True
+        for field_name in (requirement.get("group_fields") or []) + (requirement.get("control_fields") or []):
+            if field_name not in dimension_names or field_name in combo:
+                continue
+            defaults = value_options.get(field_name) or _default_dimension_values(field_name, count=1)
+            if defaults:
+                combo[field_name] = defaults[0]
+                touched = True
+        if not touched:
+            continue
+        key = tuple(sorted(combo.items()))
+        if key not in seen_combos:
+            combos.append(combo)
+            seen_combos.add(key)
 
 
 _LITERALISH_RE = re.compile(r"^[\w./:@-]+$")

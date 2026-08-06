@@ -482,10 +482,33 @@ def test_xy_hidden_y_axis_title_omits_empty_text():
     assert cfg["axis"]["y"]["title"] == {"visible": False}
 
 
+def test_xy_hidden_y_axis_title_for_single_breakdown_value_metric():
+    """A single long-form metric named ``value`` should not leak as the axis title."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [{"field": "value", "format": {"type": "bits"}}],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"visible": False}
+
+
 def test_api_axis_title_drops_empty_text():
     assert api._api_axis_title({"text": "", "visible": False}) == {"visible": False}
     assert api._api_axis_title({"text": ""}) is None
     assert api._api_axis_title({"text": "Bytes"}) == {"text": "Bytes"}
+
+
+def test_api_axis_title_suppresses_opaque_shorthand_text():
+    assert api._api_axis_title({"text": "aqu-sz", "visible": True}) == {
+        "text": "Average queue size",
+        "visible": True,
+    }
+    assert api._yaml_axis_title("aqu-sz") == {
+        "text": "Average queue size",
+        "visible": True,
+    }
 
 
 def test_metric_builder_preserves_secondary_breakdown_and_styling():

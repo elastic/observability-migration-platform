@@ -231,6 +231,7 @@ def build_telemetry_contract(
                     "fields": {},
                     "control_fields": [],
                     "group_fields": [],
+                    "_filter_fields": [],
                     "required_values": {},
                     "required_patterns": {},
                     "requires_native_promql": False,
@@ -273,6 +274,7 @@ def build_telemetry_contract(
                 "fields": {},
                 "control_fields": [],
                 "group_fields": [],
+                "_filter_fields": [],
                 "required_values": {},
                 "required_patterns": {},
                 "requires_native_promql": False,
@@ -292,6 +294,7 @@ def build_telemetry_contract(
         dimensions = _extract_dimensions(query)
         control_fields = _extract_control_fields(query)
         group_fields = _extract_group_fields(query)
+        filter_fields = _extract_filter_fields(query)
         keyword_multifields = _extract_keyword_multifields(query)
         required_values, required_patterns = _extract_required_filters(query)
         for metric_name, metric_kind in metrics.items():
@@ -304,7 +307,14 @@ def build_telemetry_contract(
                 source=source,
                 requires_native_promql=query.startswith("PROMQL "),
             )
-        for dimension in dimensions | set(control_fields) | set(group_fields) | set(required_values) | set(required_patterns):
+        for dimension in (
+            dimensions
+            | set(control_fields)
+            | set(group_fields)
+            | set(filter_fields)
+            | set(required_values)
+            | set(required_patterns)
+        ):
             _merge_field(
                 stream["fields"],
                 dimension,
@@ -325,6 +335,8 @@ def build_telemetry_contract(
             _append_unique(stream["control_fields"], control_field)
         for group_field in group_fields:
             _append_unique(stream["group_fields"], group_field)
+        for filter_field in sorted(filter_fields):
+            _append_unique(stream["_filter_fields"], filter_field)
         _merge_required_map(stream["required_values"], required_values)
         _merge_required_map(stream["required_patterns"], required_patterns)
         stream["requirements"].append(
@@ -525,6 +537,7 @@ def build_combined_telemetry_contract(
                     "fields": {},
                     "control_fields": [],
                     "group_fields": [],
+                    "_filter_fields": [],
                     "required_values": {},
                     "required_patterns": {},
                     "requires_native_promql": False,
@@ -562,6 +575,8 @@ def build_combined_telemetry_contract(
             for key in ("control_fields", "group_fields", "query_sources"):
                 for value in stream.get(key) or []:
                     _append_unique(target[key], value)
+            for value in stream.get("_filter_fields") or []:
+                _append_unique(target["_filter_fields"], value)
             _merge_required_map(target["required_values"], stream.get("required_values") or {})
             _merge_required_map(target["required_patterns"], stream.get("required_patterns") or {})
             target["requirements"].extend(stream.get("requirements") or [])
@@ -747,6 +762,7 @@ def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
     for stream in streams.values():
         evidence = set(stream.get("control_fields") or [])
         evidence.update(stream.get("group_fields") or [])
+        evidence.update(stream.get("_filter_fields") or [])
         evidence.update((stream.get("required_values") or {}).keys())
         evidence.update((stream.get("required_patterns") or {}).keys())
         for field_name in evidence:
@@ -1230,7 +1246,11 @@ def _extract_metrics(query: str) -> dict[str, str]:
             # counter_double cannot be used with standard aggregations in FROM mode.
             metrics[field_name] = "gauge"
         else:
-            metrics[field_name] = "counter" if function_name in {"RATE", "IRATE"} else _classify_metric(field_name)
+            metrics[field_name] = (
+                "counter_locked"
+                if function_name in {"RATE", "IRATE"}
+                else _classify_metric(field_name)
+            )
 
     # Aggregations over expressions, e.g. MAX(node_boot_time_seconds * 1000) or
     # AVG(CASE((NOT (fstype RLIKE "tmpfs")), node_filesystem_device_error, 0)),
@@ -1248,7 +1268,9 @@ def _extract_metrics(query: str) -> dict[str, str]:
         for field_name in _extract_query_field_candidates(arg_text):
             if is_from_query:
                 metrics[field_name] = "gauge"
-            elif function_name in {"RATE", "IRATE", "INCREASE"}:
+            elif function_name in {"RATE", "IRATE"}:
+                metrics[field_name] = "counter_locked"
+            elif function_name == "INCREASE":
                 metrics[field_name] = "counter"
             else:
                 metrics[field_name] = _classify_metric(field_name)
@@ -1262,7 +1284,11 @@ def _extract_metrics(query: str) -> dict[str, str]:
     ):
         field_name = _normalize_field(m.group(1))
         if not _should_skip_field(field_name):
-            metrics[field_name] = "counter"
+            metrics[field_name] = (
+                "counter_locked"
+                if re.match(r"\b(?:IRATE|RATE)\(", m.group(0), re.IGNORECASE)
+                else "counter"
+            )
 
     # MAX_OVER_TIME(field, dur) and AVG_OVER_TIME(field, dur) require gauge_double; mark as
     # gauge, overriding any counter classification from PROMQL verification packets that
@@ -1644,6 +1670,45 @@ def _extract_required_filters(query: str) -> tuple[dict[str, list[str]], dict[st
                 continue
             _append_required(values, normalized, value)
     return values, patterns
+
+
+def _extract_filter_fields(query: str) -> set[str]:
+    """Return fields referenced by filter predicates, even when they are negative.
+
+    A field compared as a string/regex is still a dimension when the predicate
+    is ``!=`` or wrapped in ``NOT (...)``. The seeder must therefore keep those
+    fields as keyword dimensions even when no positive required value can be
+    harvested from the filter.
+    """
+    fields: set[str] = set()
+    if query.startswith("FILTER "):
+        field_match = re.search(r"\bfield=([^\s]+)", query)
+        field_name = _normalize_field(field_match.group(1) if field_match else "")
+        if field_name and not _should_skip_field(field_name):
+            fields.add(field_name)
+        return fields
+    if query.startswith("PROMQL "):
+        matcher_re = re.compile(r"([A-Za-z_][\w:.]*)\s*(=~|=|!=|!~)\s*\"([^\"]*)\"")
+        for field_name, _operator, _value in matcher_re.findall(query):
+            normalized = _normalize_field(field_name)
+            if normalized and not _should_skip_field(normalized):
+                fields.add(normalized)
+        return fields
+    query = _unwrap_scalar_casts(query)
+    comparison_re = re.compile(
+        rf"({_IDENT_RE})\s*(?:==|!=|>=|<=|>|<|NOT\s+RLIKE|RLIKE|NOT\s+LIKE|LIKE)\s*\"([^\"]*)\"",
+        re.IGNORECASE,
+    )
+    for match in comparison_re.finditer(query):
+        field_name = _normalize_field(match.group(1) or "")
+        if field_name and not _should_skip_field(field_name):
+            fields.add(field_name)
+    for kql in re.findall(r'KQL\("([^"]*)"\)', query):
+        for field_name, _value in re.findall(r"([A-Za-z_@][\w.@-]*)\s*:\s*([A-Za-z0-9_./-]+)", kql):
+            normalized = _normalize_field(field_name)
+            if normalized and not _should_skip_field(normalized):
+                fields.add(normalized)
+    return fields
 
 
 def _is_negated_filter(query: str, field_start: int) -> bool:

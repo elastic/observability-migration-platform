@@ -727,6 +727,91 @@ class TelemetryDataTests(unittest.TestCase):
             )
         )
 
+    def test_generate_documents_covers_scoped_requirement_bundles_beyond_combo_cap(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "data_streams_latency": {"role": "metric", "metric_kind": "gauge"},
+                        "type": {"role": "dimension"},
+                        "pathway_type": {"role": "dimension"},
+                        "direction": {"role": "dimension"},
+                        "service.name": {"role": "dimension"},
+                        "deployment.environment": {"role": "dimension"},
+                        "topic": {"role": "dimension"},
+                    },
+                    "group_fields": ["service.name", "deployment.environment", "topic"],
+                    "required_values": {
+                        "type": ["kafka", "rabbitmq"],
+                        "pathway_type": ["edge", "partial_edge", "full"],
+                        "direction": ["out", "in"],
+                    },
+                    "requirements": [
+                        {
+                            "metrics": ["data_streams_latency"],
+                            "group_fields": ["topic", "deployment.environment"],
+                            "required_values": {
+                                "type": ["kafka"],
+                                "pathway_type": ["edge"],
+                                "direction": ["out"],
+                            },
+                        },
+                        {
+                            "metrics": ["data_streams_latency"],
+                            "group_fields": ["service.name", "deployment.environment"],
+                            "required_values": {
+                                "type": ["kafka"],
+                                "pathway_type": ["full"],
+                                "direction": ["in"],
+                            },
+                        },
+                        {
+                            "metrics": ["data_streams_latency"],
+                            "group_fields": ["service.name", "deployment.environment"],
+                            "required_values": {
+                                "type": ["rabbitmq"],
+                                "pathway_type": ["full"],
+                                "direction": ["in"],
+                            },
+                        },
+                    ],
+                }
+            }
+        }
+
+        docs = [
+            doc
+            for index, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+                max_combinations=2,
+            )
+            if index == "metrics-generic-default"
+        ]
+
+        self.assertTrue(
+            any(
+                doc.get("type") == "kafka"
+                and doc.get("pathway_type") == "full"
+                and doc.get("direction") == "in"
+                and doc.get("service.name")
+                and doc.get("deployment.environment")
+                for doc in docs
+            )
+        )
+        self.assertTrue(
+            any(
+                doc.get("type") == "rabbitmq"
+                and doc.get("pathway_type") == "full"
+                and doc.get("direction") == "in"
+                and doc.get("service.name")
+                and doc.get("deployment.environment")
+                for doc in docs
+            )
+        )
+
     def test_generate_documents_adds_dense_recent_points_for_short_rate_windows(self):
         contract = {
             "streams": {

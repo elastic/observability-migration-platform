@@ -94,6 +94,17 @@ _NOOP_SCOPE_LOG_WARNING = (
 PANEL_PRESENTATION_KINDS = ("markdown", "esql", "lens", "links", "image")
 
 
+def _quote_esql_identifier(name: str) -> str:
+    value = str(name or "").strip()
+    if not value:
+        return value
+    if value.startswith("`") and value.endswith("`"):
+        return value
+    if re.fullmatch(r"[A-Za-z_][\w.]*", value):
+        return value
+    return f"`{value}`"
+
+
 def _panel_presentation_kind(panel: dict[str, Any]) -> str:
     """Return a leaf panel's presentation block key (``markdown``, ``esql``, ...).
 
@@ -1871,7 +1882,7 @@ def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> t
     for index, dim in enumerate(dims):
         if index:
             concat_args.append('" / "')
-        concat_args.append(f'COALESCE(TO_STRING({dim}), "")')
+        concat_args.append(f'COALESCE(TO_STRING({_quote_esql_identifier(dim)}), "")')
     eval_stage = f"| EVAL {name} = CONCAT({', '.join(concat_args)})"
 
     stages = [line.strip() for line in query.splitlines() if line.strip()]

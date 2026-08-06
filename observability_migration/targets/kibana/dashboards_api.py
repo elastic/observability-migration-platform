@@ -94,6 +94,7 @@ from observability_migration.core.assets.native_dashboard import (
 )
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
+from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
 from observability_migration.targets.kibana.native_artifacts import (
     ARTIFACT_ENVELOPE_VERSION,
     NATIVE_ARTIFACT_KIND,
@@ -837,6 +838,13 @@ def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
                 merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
                 return merged_hidden
             return {"y": hidden}
+        if len(left) == 1 and _xy_single_metric_uses_placeholder_name(cfg, left[0]):
+            hidden = {"title": {"visible": False}}
+            if axis:
+                merged_hidden = dict(axis)
+                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
+                return merged_hidden
+            return {"y": hidden}
         return axis
     y_title: dict[str, Any] = {"title": {"text": inferred, "visible": True}}
     if axis:
@@ -844,6 +852,24 @@ def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
         merged["y"] = {**merged.get("y", {}), **y_title}
         return merged
     return {"y": y_title}
+
+
+def _xy_single_metric_uses_placeholder_name(cfg: dict[str, Any], metric: Any) -> bool:
+    """True when Kibana would invent a useless y-axis title from a synthetic metric.
+
+    Long-form XY panels with a single numeric metric and a breakdown commonly use
+    placeholder metric names like ``value`` or ``computed_value``. When Grafana
+    did not ask for a y-axis title, showing that synthetic column name is
+    actively misleading, so hide it.
+    """
+    if not isinstance(metric, dict):
+        return False
+    breakdown = cfg.get("breakdown")
+    breakdowns = cfg.get("breakdowns")
+    if not breakdown and not breakdowns:
+        return False
+    field_name = str(metric.get("field") or metric.get("column") or "").strip()
+    return field_name in {"value", "computed_value"}
 
 
 def _api_axis_title(title: Any) -> dict[str, Any] | None:
@@ -859,8 +885,10 @@ def _api_axis_title(title: Any) -> dict[str, Any] | None:
         return None
     out: dict[str, Any] = {}
     text = title.get("text")
-    if text is not None and str(text):
-        out["text"] = str(text)
+    if text is not None:
+        safe_text = sanitize_axis_title_text(str(text))
+        if safe_text:
+            out["text"] = safe_text
     if isinstance(title.get("visible"), bool):
         out["visible"] = title["visible"]
     return out or None
@@ -869,8 +897,11 @@ def _api_axis_title(title: Any) -> dict[str, Any] | None:
 def _yaml_axis_title(title: Any) -> dict[str, Any] | None:
     if isinstance(title, bool):
         return {"visible": title}
-    if isinstance(title, str) and title:
-        return {"text": title, "visible": True}
+    if isinstance(title, str):
+        safe_text = sanitize_axis_title_text(title)
+        if safe_text:
+            return {"text": safe_text, "visible": True}
+        return None
     if isinstance(title, dict):
         return _api_axis_title(title)
     return None

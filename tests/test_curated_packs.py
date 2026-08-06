@@ -4,6 +4,7 @@
 """Tests for the curated dashboard pack registry and resolution engine."""
 
 import json
+import tomllib
 from pathlib import Path
 
 from observability_migration.adapters.source.grafana.curated_packs import (
@@ -19,6 +20,8 @@ from observability_migration.adapters.source.grafana.panels import (
 )
 from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
+    _merge_curated_into_base,
+    load_rule_pack_files,
     resolve_pack_for_dashboard,
 )
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
@@ -229,6 +232,25 @@ def test_resolve_pack_no_curated_flag_skips_curated():
     assert resolved is base
 
 
+def test_merge_curated_scalar_user_default_still_wins_when_explicit():
+    curated = RulePackConfig(default_rate_window="10m")
+    user = RulePackConfig(default_rate_window="5m")
+    user._explicit_scalar_fields.add("default_rate_window")
+
+    merged = _merge_curated_into_base(curated, user)
+
+    assert merged.default_rate_window == "5m"
+
+
+def test_load_rule_pack_marks_explicit_scalar_even_when_equal_to_default(tmp_path):
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text("query:\n  default_rate_window: 5m\n", encoding="utf-8")
+
+    pack = load_rule_pack_files([str(rules_file)])
+
+    assert "default_rate_window" in pack._explicit_scalar_fields
+
+
 def test_resolve_pack_label_candidates_from_curated():
     dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
     base = RulePackConfig()
@@ -253,6 +275,18 @@ def test_resolve_pack_stamps_curated_pack_name():
     base = RulePackConfig()
     resolved = resolve_pack_for_dashboard(dashboard, base)
     assert getattr(resolved, "_curated_pack_name", "") == "grafana_763_redis_exporter"
+
+
+def test_grafana_curated_pack_plugins_ship_as_package_data():
+    repo = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = pyproject["tool"]["setuptools"]["package-data"]
+    patterns = declared.get("observability_migration.adapters.source.grafana.curated_packs", [])
+
+    assert any(pattern.endswith("*.py") for pattern in patterns), (
+        "Grafana curated-pack plugin.py files are loaded by path at runtime, so "
+        "they must be declared in [tool.setuptools.package-data] for wheel installs."
+    )
 
 
 def test_resolve_pack_base_has_no_curated_pack_name():

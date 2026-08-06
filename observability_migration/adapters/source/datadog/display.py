@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import NormalizedWidget, TranslationResult
+from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
 
 DATADOG_UNIT_MAP: dict[str, dict[str, Any]] = {
     "byte": {"type": "bytes"},
@@ -407,7 +408,9 @@ def _apply_axis(yaml_panel: dict[str, Any], widget: NormalizedWidget, result: Tr
     y_cfg: dict[str, Any] = {}
     label = yaxis.get("label")
     if label and isinstance(label, str):
-        y_cfg["title"] = label
+        title = sanitize_axis_title_text(label)
+        if title:
+            y_cfg["title"] = title
     scale = yaxis.get("scale")
     if scale == "log":
         y_cfg["scale"] = "log"

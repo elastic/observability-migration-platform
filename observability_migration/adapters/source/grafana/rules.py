@@ -188,6 +188,11 @@ class RulePackConfig:
     native_validation_stats: dict = field(
         default_factory=lambda: {"checked": 0, "degraded": 0, "kept": 0}
     )
+    # Scalar settings explicitly present in a loaded rules file, even when the
+    # chosen value equals the built-in default. This preserves "user pack wins"
+    # semantics when a user intentionally resets a curated scalar back to the
+    # default value.
+    _explicit_scalar_fields: set[str] = field(default_factory=set, repr=False)
 
     def __post_init__(self):
         if self.native_promql:
@@ -245,11 +250,16 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
     pack = RulePackConfig()
     for raw_path in paths or []:
         path = Path(raw_path)
-        payload = validate_rule_pack_payload(_load_structured_file(path), source=str(path))
+        raw_payload = _load_structured_file(path)
+        payload = validate_rule_pack_payload(raw_payload, source=str(path))
         query_cfg = payload.query
         panel_cfg = payload.panel
         schema_cfg = payload.schema_config
         dashboard_cfg = payload.dashboard
+        raw_query_cfg = raw_payload.get("query") if isinstance(raw_payload.get("query"), dict) else {}
+        raw_dashboard_cfg = (
+            raw_payload.get("dashboard") if isinstance(raw_payload.get("dashboard"), dict) else {}
+        )
 
         pack.not_feasible_patterns.extend(
             PatternRule(pattern=item.pattern, reason=item.reason)
@@ -321,6 +331,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 setattr(pack, field_name, query_value)
             elif dashboard_value not in (None, "", []):
                 setattr(pack, field_name, dashboard_value)
+            if field_name in raw_query_cfg or field_name in raw_dashboard_cfg:
+                pack._explicit_scalar_fields.add(field_name)
         pack.label_rewrites.update(query_cfg.label_rewrites)
         for metric_name, kind in query_cfg.metric_kinds.items():
             pack.metric_kinds[metric_name] = str(kind).strip().lower()
@@ -379,7 +391,9 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
 
     _defaults = RulePackConfig()
 
-    # Scalars: user wins if they differ from the default
+    explicit_scalar_fields = getattr(user, "_explicit_scalar_fields", set())
+    # Scalars: user wins when explicitly set, even if set back to the built-in
+    # default; otherwise use the "differs from default" heuristic.
     for field_name in (
         "default_rate_window", "default_gauge_agg", "ts_time_filter", "from_time_filter",
         "ts_bucket", "from_bucket", "logs_index", "metrics_dataset_filter",
@@ -388,7 +402,7 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     ):
         user_val = getattr(user, field_name)
         default_val = getattr(_defaults, field_name)
-        if user_val != default_val:
+        if field_name in explicit_scalar_fields or user_val != default_val:
             setattr(result, field_name, user_val)
 
     # Dicts: user keys win
@@ -447,6 +461,9 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.native_promql_validator = user.native_promql_validator
     result.native_validation_stats = user.native_validation_stats
     result.runtime_features = {**result.runtime_features, **user.runtime_features}
+    result._explicit_scalar_fields = set(getattr(curated, "_explicit_scalar_fields", set())) | set(
+        explicit_scalar_fields
+    )
 
     # Propagate curated pack identity so callers can surface it in the manifest.
     result._curated_pack_name = getattr(curated, "_curated_pack_name", "")

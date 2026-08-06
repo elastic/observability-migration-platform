@@ -4652,10 +4652,41 @@ def _build_multi_target_series_query(translations):
     post_filters: dict[int, dict] = {}
     comp_ops = {"==": "==", "!=": "!=", ">": ">", "<": "<", ">=": ">=", "<=": "<="}
 
+    def _preserve_legend_grouping_for_multi_target() -> bool:
+        """Keep a shared legend placeholder as a real grouping field when needed.
+
+        Single-target TS translations intentionally treat a legend-only label like
+        ``{{device}}`` as display-only so they can avoid the distorting
+        ``AVG(IRATE(...)) BY device`` wrapper. That tradeoff breaks down for
+        multi-target overlays whose source legends are ``{{device}} - Receive`` /
+        ``{{device}} - Transmit``: dropping ``device`` collapses every interface
+        into one aggregate and loses the panel's actual series identity.
+
+        Restrict the opt-out to the narrow, node-exporter-style case where every
+        target contributes the SAME single legend placeholder. Broader/mixed
+        legend patterns keep the existing display-only behavior.
+        """
+        shared_labels: tuple[str, ...] | None = None
+        saw_legend_origin = False
+        for translation in translations:
+            metadata = getattr(translation, "metadata", {}) or {}
+            if metadata.get("preferred_group_labels_origin") != "legend":
+                return False
+            labels = tuple(str(label).strip() for label in (metadata.get("preferred_group_labels") or []) if str(label).strip())
+            if len(labels) != 1:
+                return False
+            if shared_labels is None:
+                shared_labels = labels
+            elif labels != shared_labels:
+                return False
+            saw_legend_origin = True
+        return saw_legend_origin
+
     def _build_plans(allow_tsds_gauge_promotion):
         plans = []
         all_specs = []
         warnings = []
+        preserve_legend_grouping = _preserve_legend_grouping_for_multi_target()
         for idx, translation in enumerate(translations, start=1):
             pf = None
             if translation.fragment and translation.fragment.extra.get("post_filter"):
@@ -4672,6 +4703,7 @@ def _build_multi_target_series_query(translations):
                 allow_direct_ts_gauge=False,
                 preferred_group_labels_origin=translation.metadata.get("preferred_group_labels_origin"),
                 allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                drop_legend_labels=not preserve_legend_grouping,
             )
             if pf is not None:
                 translation.fragment.extra["post_filter"] = pf
@@ -5648,9 +5680,46 @@ def _normalize_esql_panel_query(yaml_panel, rule_pack=None):
         [rule_pack.from_time_filter, rule_pack.ts_time_filter],
     )
     query = _strip_dotted_group_keep(query)
+    query = _strip_scalar_last_time_bucket_keep(query)
     esql_panel["query"] = _ensure_bucket_sort(query)
     yaml_panel["esql"] = esql_panel
     return yaml_panel
+
+
+def _strip_scalar_last_time_bucket_keep(query):
+    """Drop stale ``time_bucket`` from KEEP after a scalar ``LAST(..., time_bucket)``.
+
+    A ``STATS value = LAST(value, time_bucket)`` with no ``BY`` collapses the
+    time dimension. A trailing ``KEEP time_bucket, value`` is therefore invalid:
+    the ``LAST`` output keeps only the aggregate alias, not ``time_bucket``.
+    """
+    if not query or "LAST(" not in query or "time_bucket" not in query:
+        return query
+    lines = query.splitlines()
+    out: list[str] = []
+    collapsed_scalar = False
+    for line in lines:
+        stripped = line.strip()
+        if (
+            stripped.startswith("| STATS")
+            and "LAST(" in stripped
+            and "time_bucket" in stripped
+            and " BY " not in stripped
+        ):
+            collapsed_scalar = True
+            out.append(line)
+            continue
+        if collapsed_scalar and stripped.startswith("| KEEP "):
+            parts = _split_top_level_csv(stripped[len("| KEEP "):])
+            filtered = [part for part in parts if part.strip().strip("`") != "time_bucket"]
+            if filtered:
+                out.append("| KEEP " + ", ".join(filtered))
+            collapsed_scalar = False
+            continue
+        if stripped.startswith("| STATS"):
+            collapsed_scalar = False
+        out.append(line)
+    return "\n".join(out)
 
 
 def _metric_threshold_color(panel):

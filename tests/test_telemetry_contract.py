@@ -2304,6 +2304,47 @@ class TelemetryContractTests(unittest.TestCase):
             "source rate() must classify the field as counter despite AVG_OVER_TIME in the translation",
         )
 
+    def test_esql_irate_counter_wins_over_translated_avg_over_time_gauge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "node.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Node",
+                                "panels": [
+                                    {
+                                        "title": "CPU",
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n"
+                                                "| STATS value = AVG(IRATE(metrics.node_cpu_seconds_total)) "
+                                                "BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n"
+                                                "| SORT time_bucket ASC"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(
+            fields["metrics.node_cpu_seconds_total"]["metric_kind"],
+            "counter",
+            "ES|QL IRATE() must classify the field as counter despite later gauge-shaped votes",
+        )
+
     def test_translated_max_over_time_still_downgrades_increase_misuse_to_gauge(self):
         # Guard the legitimate gauge-override: increase() can be MISused on a real
         # gauge (it is not counter-only the way rate()/irate() are). When only an
@@ -2854,6 +2895,89 @@ class KeywordMultifieldTests(unittest.TestCase):
             {"404", "500"},
         )
         self.assertIn("nginx", logs["required_values"]["service.name"])
+
+    def test_negative_string_filters_still_mark_dimension_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "node.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Node",
+                                "panels": [
+                                    {
+                                        "title": "FS",
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| WHERE (labels.fstype != \"rootfs\" "
+                                                "OR (labels.fstype IS NULL AND \"\" != \"rootfs\"))\n"
+                                                "| WHERE (NOT (labels.nic RLIKE \".*Virtual.*\") "
+                                                "OR (labels.nic IS NULL AND NOT (\"\" RLIKE \".*Virtual.*\")))\n"
+                                                "| STATS value = AVG(node_filesystem_device_error) "
+                                                "BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n"
+                                                "| SORT time_bucket ASC"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        metrics = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(metrics["labels.fstype"]["role"], "dimension")
+        self.assertEqual(metrics["labels.fstype"]["type_family"], "keyword")
+        self.assertEqual(metrics["labels.nic"]["role"], "dimension")
+        self.assertEqual(metrics["labels.nic"]["type_family"], "keyword")
+
+    def test_negative_filter_fields_win_over_metric_noise_inside_case_aggregations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "network.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "title": "Network",
+                                "panels": [
+                                    {
+                                        "title": "Windows network",
+                                        "esql": {
+                                            "query": (
+                                                "TS metrics-*\n"
+                                                "| STATS value = SUM(CASE(((NOT (labels.nic RLIKE "
+                                                "\".*Virtual.*\") OR (labels.nic IS NULL AND NOT "
+                                                "(\"\" RLIKE \".*Virtual.*\")))), "
+                                                "RATE(windows_net_bytes_received_total), NULL)) "
+                                                "BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), "
+                                                "labels.instance\n"
+                                                "| SORT time_bucket ASC"
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        metrics = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(metrics["labels.nic"]["role"], "dimension")
+        self.assertEqual(metrics["labels.nic"]["type_family"], "keyword")
+        self.assertEqual(metrics["windows_net_bytes_received_total"]["metric_kind"], "counter")
 
 
 class ResolveIrDirTests(unittest.TestCase):

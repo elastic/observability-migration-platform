@@ -278,12 +278,34 @@ panel:
         | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS recv = AVG(IRATE({{metric:node_network_receive_bytes_total:counter}})), trans = AVG(IRATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
         | EVAL recv = (recv * 8)
-        | EVAL trans = (trans * 8)
+        | EVAL trans = (-1 * (trans * 8))
         | EVAL __labels = MV_APPEND("Receive", "Transmit"), __values = MV_APPEND(COALESCE(TO_STRING(recv), ""), COALESCE(TO_STRING(trans), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL direction = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
         | EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.device`), ""), " / ", direction)
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Average Queue Size"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_disk_io_time_weighted_seconds_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_disk_io_time_weighted_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Instantaneous Queue Size"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_disk_io_now:gauge}} IS NOT NULL
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_disk_io_now:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
       status_override: migrated
@@ -333,6 +355,110 @@ panel:
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic Multicast"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_receive_multicast_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_network_receive_multicast_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic Frame"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_receive_frame_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_network_receive_frame_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic Carrier"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_transmit_carrier_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_network_transmit_carrier_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic Colls"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_transmit_colls_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_network_transmit_colls_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL value = -1 * value
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "ARP Entries"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_arp_entries:gauge}} IS NOT NULL
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_arp_entries:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "MTU"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_mtu_bytes:gauge}} IS NOT NULL
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_mtu_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Speed"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_speed_bytes:gauge}} IS NOT NULL
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_speed_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Queue Length"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_transmit_queue_length:gauge}} IS NOT NULL
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_transmit_queue_length:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Operational Status"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_network_up:gauge}} IS NOT NULL OR {{metric:node_network_carrier:gauge}} IS NOT NULL
+        | STATS operational_state_up = MAX(LAST_OVER_TIME(CASE(({{label:operstate}} == "up") and ({{metric:node_network_up:gauge}} IS NOT NULL), {{metric:node_network_up:gauge}}, NULL))), physical_link_state = MAX(LAST_OVER_TIME(CASE(({{metric:node_network_carrier:gauge}} IS NOT NULL), {{metric:node_network_carrier:gauge}}, NULL))) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | EVAL __labels = MV_APPEND("Operational state UP", "Physical link state"), __values = MV_APPEND(COALESCE(TO_STRING(operational_state_up), ""), COALESCE(TO_STRING(physical_link_state), ""))
+        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | MV_EXPAND __pairs
+        | EVAL metric_label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | EVAL series_group = CONCAT(COALESCE(TO_STRING(`{{label:device}}`), ""), " / ", metric_label)
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
       status_override: migrated

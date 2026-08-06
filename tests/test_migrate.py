@@ -5103,6 +5103,150 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"unexpected drop-target warning in: {result.reasons!r}",
         )
 
+    def test_node_exporter_curated_network_basic_preserves_negative_y_transmit(self):
+        """The 1860 curated override must keep Grafana's negative-Y transmit transform."""
+        self.seed_field_caps(
+            {
+                "device": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
+                "node_network_receive_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "node_network_transmit_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        dashboard = {
+            "gnetId": 1860,
+            "title": "Node Exporter Full",
+            "tags": ["prometheus"],
+            "panels": [
+                {
+                    "id": 300,
+                    "type": "timeseries",
+                    "title": "Network Traffic Basic",
+                    "datasource": {"type": "prometheus", "uid": "prom"},
+                    "targets": [
+                        {
+                            "expr": 'irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                            "legendFormat": "recv {{device}}",
+                            "refId": "A",
+                        },
+                        {
+                            "expr": 'irate(node_network_transmit_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                            "legendFormat": "trans {{device}} ",
+                            "refId": "B",
+                        },
+                    ],
+                    "fieldConfig": {
+                        "defaults": {"unit": "bps", "custom": {"axisLabel": ""}},
+                        "overrides": [
+                            {
+                                "matcher": {"id": "byRegexp", "options": "/.*trans.*/"},
+                                "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+        rule_pack = rules.resolve_pack_for_dashboard(dashboard, migrate.RulePackConfig())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+        )
+        by_title = {panel.title: panel for panel in result.panel_results}
+        query = by_title["Network Traffic Basic"].esql_query
+
+        self.assertIn("labels.device", query)
+        self.assertIn('| EVAL trans = (-1 * (trans * 8))', query)
+
+    def test_multi_target_legend_placeholder_preserves_shared_device_grouping(self):
+        """Node-exporter-style ``{{device}} - ...`` legends must not collapse devices."""
+        self.seed_field_caps(
+            {
+                "device": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
+                "node_network_receive_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "node_network_transmit_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 301,
+            "type": "timeseries",
+            "title": "Network Traffic",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "expr": 'irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                    "legendFormat": "{{device}} - Receive",
+                    "refId": "A",
+                },
+                {
+                    "expr": 'irate(node_network_transmit_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                    "legendFormat": "{{device}} - Transmit",
+                    "refId": "B",
+                },
+            ],
+            "fieldConfig": {
+                "defaults": {"unit": "bps", "custom": {"axisLabel": "bits out (-) / in (+)"}},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ],
+            },
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        self.assertIn("device", query)
+        self.assertIn("AVG(IRATE(node_network_receive_bytes_total))", query)
+        self.assertIn("AVG(IRATE(node_network_transmit_bytes_total))", query)
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "device")
+        metrics = {metric["field"]: metric for metric in (yaml_panel["esql"].get("metrics") or [])}
+        self.assertIn("Receive", metrics)
+        self.assertIn("Transmit", metrics)
+
     def test_same_metric_collapse_rebuilds_valid_query(self):
         self.seed_field_caps(
             {
@@ -12680,6 +12824,18 @@ class TestDisplayMetadata(unittest.TestCase):
         axis = extract_axis_config(panel)
         self.assertEqual(axis["y_left_axis"]["title"], "Duration (s)")
 
+    def test_extract_axis_label_suppresses_opaque_shorthand(self):
+        from observability_migration.targets.kibana.emit.display import extract_axis_config
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "none",
+                    "custom": {"axisLabel": "aqu-sz"},
+                }
+            }
+        }
+        self.assertIsNone(extract_axis_config(panel))
+
     def test_extract_axis_log_scale_modern(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         panel = {"fieldConfig": {"defaults": {"custom": {"scaleDistribution": {"type": "log"}}}}}
@@ -14775,6 +14931,41 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
             self.assertEqual(panel_result.status, "migrated", title)
             self.assertFalse(panel_result.reasons, f"{title}: {panel_result.reasons}")
         self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["type"], "bar")
+
+    def test_node_exporter_full_preserves_device_breakdown_on_curated_device_panels(self):
+        result, _yaml_doc = self._translate_dashboard("node-exporter-full.json")
+        panels_by_title = {panel_result.title: panel_result for panel_result in result.panel_results}
+
+        for title in (
+            "Average Queue Size",
+            "Network Traffic Multicast",
+            "MTU",
+            "Queue Length",
+        ):
+            query = panels_by_title[title].esql_query or ""
+            self.assertIn("series_group", query, title)
+            self.assertIn("device", query, title)
+        for title in (
+            "Average Queue Size",
+            "Network Traffic Multicast",
+            "Network Traffic Frame",
+            "Network Traffic Carrier",
+            "Network Traffic Colls",
+        ):
+            query = panels_by_title[title].esql_query or ""
+            self.assertIn("AVG(IRATE(", query, title)
+
+        colls_query = panels_by_title["Network Traffic Colls"].esql_query or ""
+        self.assertIn("series_group", colls_query)
+        self.assertIn("device", colls_query)
+        self.assertIn("-1 * value", colls_query)
+
+        operational_query = panels_by_title["Network Operational Status"].esql_query or ""
+        self.assertIn("series_group", operational_query)
+        self.assertIn("device", operational_query)
+        self.assertIn("Operational state UP", operational_query)
+        self.assertIn("Physical link state", operational_query)
+        self.assertNotIn("interface", operational_query)
 
     def test_all_node_exporters_compile_without_error(self):
         """Verify the bundled Node Exporter dashboard produces valid YAML."""

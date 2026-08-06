@@ -90,4 +90,7 @@ docs/superpowers/
 # Datadog parity rig run outputs
 parity-rig/datadog/parity_report.json
 verify_report.json
+comparison_report.json
+comparison_report.md
+schema_change_report.md
 harness_empirical_*/

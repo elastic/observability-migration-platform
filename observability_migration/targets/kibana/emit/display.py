@@ -157,6 +157,7 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
     appearance: dict[str, Any] = {}
     defaults = _field_defaults(panel)
     custom = defaults.get("custom") or {}
+    unit = str(defaults.get("unit") or "").strip()
 
     axis_label = str(custom.get("axisLabel", "") or "").strip()
     if not axis_label:
@@ -167,8 +168,9 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
                     axis_label = label
                     break
 
-    if axis_label:
-        appearance.setdefault("y_left_axis", {})["title"] = axis_label
+    axis_title = sanitize_axis_title_text(axis_label, unit=unit)
+    if axis_title:
+        appearance.setdefault("y_left_axis", {})["title"] = axis_title
 
     has_log = False
     scale_dist = custom.get("scaleDistribution") or {}
@@ -193,13 +195,37 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
         right = yaxes[1]
         right_label = str(right.get("label") or "").strip()
         right_show = right.get("show", True)
-        if right_show and right_label:
-            appearance.setdefault("y_right_axis", {})["title"] = right_label
+        right_title = sanitize_axis_title_text(right_label)
+        if right_show and right_title:
+            appearance.setdefault("y_right_axis", {})["title"] = right_title
         right_log = (right.get("logBase") or 0) > 1
         if right_show and right_log:
             appearance.setdefault("y_right_axis", {})["scale"] = "log"
 
     return appearance if appearance else None
+
+
+def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
+    """Return a user-facing axis title, or ``""`` when the source text is opaque.
+
+    Some community dashboards copy terse source-side aliases such as ``aqu-sz``
+    into ``axisLabel``. They are not human-friendly axis titles and look worse
+    than leaving the axis unnamed, so suppress only the narrow machine-style
+    form rather than dropping all short labels.
+    """
+    text = str(label or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    curated_aliases = {
+        "aqu-sz": "Average queue size",
+    }
+    if lowered in curated_aliases:
+        return curated_aliases[lowered]
+    normalized_unit = str(unit or "").strip().lower()
+    if re.fullmatch(r"[a-z]{2,}(?:[-_][a-z0-9]{1,})+", text):
+        return ""
+    return text
 
 
 def extract_xy_appearance(

@@ -2472,6 +2472,30 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertIn("`client-id`", esql["query"])
         self.assertEqual(esql["breakdown"]["field"], "client-id")
 
+    def test_series_group_quotes_hyphenated_dimension_in_concat(self):
+        query = "sum:kafka.consumer.messages_in{*} by {client-id,env}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Messages Consumed",
+            queries=[wq],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        dash = self._render_dashboard([widget])
+        esql = dash["panels"][0]["esql"]
+
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        self.assertIn('TO_STRING(`client-id`)', esql["query"])
+        self.assertNotIn("TO_STRING(client-id)", esql["query"])
+
     def test_generate_from_sample(self):
         path = Path(__file__).parent.parent / "infra" / "datadog" / "dashboards" / "sample_dashboard.json"
         raw = json.loads(path.read_text())
@@ -2929,6 +2953,13 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(extent["mode"], "custom")
         self.assertEqual(extent["min"], 0.0)
         self.assertEqual(extent["max"], 100.0)
+
+    def test_y_axis_opaque_shorthand_label_is_suppressed(self):
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"label": "aqu-sz"})
+        )
+        y_left = result.yaml_panel["esql"]["appearance"].get("y_left_axis", {})
+        self.assertFalse(y_left.get("title"))
 
     def test_y_axis_max_only_with_include_zero_true_infers_min_zero(self):
         # Regression: max-only + include_zero=true previously emitted {mode:custom, max:N}
