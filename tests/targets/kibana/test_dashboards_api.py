@@ -502,13 +502,9 @@ def test_api_axis_title_drops_empty_text():
 
 def test_api_axis_title_suppresses_opaque_shorthand_text():
     assert api._api_axis_title({"text": "aqu-sz", "visible": True}) == {
-        "text": "Average queue size",
         "visible": True,
     }
-    assert api._yaml_axis_title("aqu-sz") == {
-        "text": "Average queue size",
-        "visible": True,
-    }
+    assert api._yaml_axis_title("aqu-sz") is None
 
 
 def test_metric_builder_preserves_secondary_breakdown_and_styling():
