@@ -835,7 +835,7 @@ def _ensure_requirement_bundle_coverage(
                 combo[field_name] = candidates[0]
                 touched = True
         for field_name, patterns in (requirement.get("required_patterns") or {}).items():
-            if field_name not in dimension_names or field_name in combo:
+            if field_name not in dimension_names:
                 continue
             expanded = _expand_patterns(field_name, patterns or [])
             if expanded:

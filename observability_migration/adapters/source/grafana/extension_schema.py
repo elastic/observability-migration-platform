@@ -65,6 +65,9 @@ class PanelQueryOverrideModel(_StrictModel):
     title_match: str
     esql_query: str
     status_override: str = "migrated"
+    # Optional Lens presentation override when the curated ES|QL shape does
+    # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
+    kibana_type_override: str | None = None
 
 
 class PanelPositionOverrideModel(_StrictModel):

@@ -11,6 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+_OPAQUE_AXIS_TITLE_ALIASES = {
+    "aqu-sz",
+}
+
 GRAFANA_UNIT_TO_YAML: dict[str, dict[str, Any]] = {
     "percent": {"type": "number", "suffix": "%"},
     "percentunit": {"type": "percent"},
@@ -210,8 +214,8 @@ def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
 
     Some community dashboards copy terse source-side aliases such as ``aqu-sz``
     into ``axisLabel``. They are not human-friendly axis titles and look worse
-    than leaving the axis unnamed, so suppress only the narrow machine-style
-    form rather than dropping all short labels.
+    than leaving the axis unnamed, so suppress only known opaque aliases rather
+    than broad kebab/snake labels that may be intentional operator text.
 
     ``unit`` is accepted for call-site compatibility with axis extractors; opaque
     shorthand suppression is label-shape based today.
@@ -220,7 +224,7 @@ def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
     text = str(label or "").strip()
     if not text:
         return ""
-    if re.fullmatch(r"[a-z]{2,}(?:[-_][a-z0-9]{1,})+", text):
+    if text in _OPAQUE_AXIS_TITLE_ALIASES:
         return ""
     return text
 
@@ -370,14 +374,49 @@ def enrich_yaml_panel_display(
         if fmt:
             esql["primary"].setdefault("format", dict(fmt))
         cleaned_title = str(yaml_panel.get("title") or "").strip()
-        if chart_type == "metric" and cleaned_title:
+        has_breakdown = bool(
+            (isinstance(esql.get("breakdown"), dict) and esql["breakdown"].get("field"))
+            or (isinstance(esql.get("breakdown_by"), dict) and esql["breakdown_by"].get("field"))
+            or (isinstance(esql.get("breakdowns"), list) and esql["breakdowns"])
+        )
+        if chart_type == "metric" and cleaned_title and not has_breakdown:
+            # Single-tile metrics can reuse the panel title as the primary
+            # label (and hide the chrome title). Breakdown tiles already show
+            # per-series labels (CPU / I/O / Mem); stamping the panel title on
+            # every tile doubles the text and overflows narrow first-row
+            # panels like Node Exporter "Pressure".
             esql["primary"].setdefault("label", cleaned_title)
             if esql["primary"].get("label") == cleaned_title:
                 yaml_panel["hide_title"] = True
+        elif chart_type == "metric" and has_breakdown:
+            # Keep the panel chrome title; blank the primary label so Lens
+            # does not render the measure field name under every tile.
+            esql["primary"]["label"] = ""
+            yaml_panel.pop("hide_title", None)
+            breakdown = esql.get("breakdown")
+            if isinstance(breakdown, dict):
+                breakdown.setdefault("columns", 1)
+            # Lens percent formatting on multi-tile breakdown metrics has been
+            # observed to render N/A even when the ES|QL rows are numeric; use
+            # a plain number format for these summary tiles.
+            primary_fmt = esql["primary"].get("format")
+            if isinstance(primary_fmt, dict) and primary_fmt.get("type") == "percent":
+                esql["primary"]["format"] = {
+                    "type": "number",
+                    "decimals": int(primary_fmt.get("decimals") or 1),
+                    "suffix": "%",
+                }
         else:
             label = _label_for_field(esql["primary"].get("field", ""), metric_labels)
             if label:
                 esql["primary"].setdefault("label", label)
+
+        # Multi-tile metrics in curated summary slots are usually narrow
+        # (w≈6). Compact density keeps labels/values readable.
+        if chart_type == "metric" and has_breakdown:
+            styling = esql.setdefault("styling", {})
+            if isinstance(styling, dict):
+                styling.setdefault("density", "compact")
 
     if "metric" in esql and isinstance(esql["metric"], dict):
         if fmt:

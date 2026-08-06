@@ -1,0 +1,189 @@
+[
+  {
+    "title": "Filesystem space available",
+    "grafana": {
+      "unit": "bytes",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{mountpoint}} - Available"
+      ],
+      "exprs": [
+        "node_filesystem_avail_bytes{instance=\"$node\",job=\"$job\",device!~'rootfs'}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_filesystem_avail_bytes",
+          "label": "Node Filesystem Avail Bytes"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_avail_bytes IS NOT NULL\n| STATS node_filesystem_avail_bytes = AVG(LAST_OVER_TIME(metrics.node_filesystem_avail_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 213048,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "File Nodes Free",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{mountpoint}} - Free file nodes"
+      ],
+      "exprs": [
+        "node_filesystem_files_free{instance=\"$node\",job=\"$job\",device!~'rootfs'}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_filesystem_files_free",
+          "label": "Node Filesystem Files Free"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_files_free IS NOT NULL\n| STATS node_filesystem_files_free = AVG(LAST_OVER_TIME(metrics.node_filesystem_files_free)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 213048,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "File Descriptor",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Max open files",
+        "Open files"
+      ],
+      "exprs": [
+        "node_filefd_maximum{instance=\"$node\",job=\"$job\"}",
+        "node_filefd_allocated{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Max_open_files",
+          "label": "Max open files"
+        },
+        {
+          "field": "Open_files",
+          "label": "Open files"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_filefd_maximum IS NOT NULL OR metrics.node_filefd_allocated IS NOT NULL\n| STATS Max_open_files = AVG(LAST_OVER_TIME(metrics.node_filefd_maximum)), Open_files = AVG(LAST_OVER_TIME(metrics.node_filefd_allocated)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Max_open_files, Open_files\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9684,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "File Nodes Size",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{mountpoint}} - File nodes total"
+      ],
+      "exprs": [
+        "node_filesystem_files{instance=\"$node\",job=\"$job\",device!~'rootfs'}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_filesystem_files",
+          "label": "Node Filesystem Files"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_files IS NOT NULL\n| STATS node_filesystem_files = AVG(LAST_OVER_TIME(metrics.node_filesystem_files)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 213048,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Filesystem in ReadOnly / Error",
+    "grafana": {
+      "unit": "short",
+      "stack": "normal",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{mountpoint}} - ReadOnly",
+        "{{mountpoint}} - Device error"
+      ],
+      "exprs": [
+        "node_filesystem_readonly{instance=\"$node\",job=\"$job\",device!~'rootfs'}",
+        "node_filesystem_device_error{instance=\"$node\",job=\"$job\",device!~'rootfs',fstype!~'tmpfs'}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "ReadOnly",
+          "label": "ReadOnly"
+        },
+        {
+          "field": "Device_error",
+          "label": "Device error"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_readonly IS NOT NULL OR metrics.node_filesystem_device_error IS NOT NULL\n| STATS ReadOnly = AVG(LAST_OVER_TIME(metrics.node_filesystem_readonly)), Device_error = AVG(LAST_OVER_TIME(CASE(((NOT (labels.fstype RLIKE \"tmpfs\") OR (labels.fstype IS NULL AND NOT (\"\" RLIKE \"tmpfs\")))), metrics.node_filesystem_device_error, NULL), 5m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| KEEP time_bucket, `labels.mountpoint`, ReadOnly, Device_error\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 271152,
+    "live_err": "",
+    "verdict": "Good"
+  }
+]

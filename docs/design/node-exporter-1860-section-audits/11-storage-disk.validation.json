@@ -1,0 +1,318 @@
+[
+  {
+    "title": "Disk IOps Completed",
+    "grafana": {
+      "unit": "iops",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - Reads completed",
+        "{{device}} - Writes completed"
+      ],
+      "exprs": [
+        "irate(node_disk_reads_completed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_writes_completed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Reads_completed",
+          "label": "Reads completed"
+        },
+        {
+          "field": "Writes_completed",
+          "label": "Writes completed"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_reads_completed_total IS NOT NULL OR metrics.node_disk_writes_completed_total IS NOT NULL\n| STATS node_disk_reads_completed_total_A = AVG(IRATE(metrics.node_disk_reads_completed_total)), Writes_completed = AVG(IRATE(metrics.node_disk_writes_completed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Reads_completed = (-1 * node_disk_reads_completed_total_A)\n| DROP node_disk_reads_completed_total_A\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Disk R/W Data",
+    "grafana": {
+      "unit": "Bps",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - Read bytes",
+        "{{device}} - Written bytes"
+      ],
+      "exprs": [
+        "irate(node_disk_read_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_written_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Read_bytes",
+          "label": "Read bytes"
+        },
+        {
+          "field": "Written_bytes",
+          "label": "Written bytes"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_read_bytes_total IS NOT NULL OR metrics.node_disk_written_bytes_total IS NOT NULL\n| STATS node_disk_read_bytes_total_A = AVG(IRATE(metrics.node_disk_read_bytes_total)), Written_bytes = AVG(IRATE(metrics.node_disk_written_bytes_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Read_bytes = (-1 * node_disk_read_bytes_total_A)\n| DROP node_disk_read_bytes_total_A\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Disk Average Wait Time",
+    "grafana": {
+      "unit": "s",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - Read wait time avg",
+        "{{device}} - Write wait time avg"
+      ],
+      "exprs": [
+        "irate(node_disk_read_time_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval]) / irate(node_disk_reads_completed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_write_time_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval]) / irate(node_disk_writes_completed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Read_wait_time_avg",
+          "label": "Read wait time avg"
+        },
+        {
+          "field": "Write_wait_time_avg",
+          "label": "Write wait time avg"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_read_time_seconds_total IS NOT NULL OR metrics.node_disk_reads_completed_total IS NOT NULL OR metrics.node_disk_write_time_seconds_total IS NOT NULL OR metrics.node_disk_writes_completed_total IS NOT NULL\n| STATS node_disk_read_time_seconds_total_A_lhs = AVG(IRATE(metrics.node_disk_read_time_seconds_total)), node_disk_reads_completed_total_A_rhs = AVG(IRATE(metrics.node_disk_reads_completed_total)), node_disk_write_time_seconds_total_B_lhs = AVG(IRATE(metrics.node_disk_write_time_seconds_total)), node_disk_writes_completed_total_B_rhs = AVG(IRATE(metrics.node_disk_writes_completed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Read_wait_time_avg = (-1 * (node_disk_read_time_seconds_total_A_lhs / node_disk_reads_completed_total_A_rhs))\n| EVAL Write_wait_time_avg = (node_disk_write_time_seconds_total_B_lhs / node_disk_writes_completed_total_B_rhs)\n| DROP node_disk_read_time_seconds_total_A_lhs, node_disk_reads_completed_total_A_rhs, node_disk_write_time_seconds_total_B_lhs, node_disk_writes_completed_total_B_rhs\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Average Queue Size",
+    "grafana": {
+      "unit": "none",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{device}}"
+      ],
+      "exprs": [
+        "irate(node_disk_io_time_weighted_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_io_time_weighted_seconds_total IS NOT NULL\n| STATS value = AVG(IRATE(metrics.node_disk_io_time_weighted_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Disk R/W Merged",
+    "grafana": {
+      "unit": "iops",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - Read merged",
+        "{{device}} - Write merged"
+      ],
+      "exprs": [
+        "irate(node_disk_reads_merged_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_writes_merged_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Read_merged",
+          "label": "Read merged"
+        },
+        {
+          "field": "Write_merged",
+          "label": "Write merged"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_reads_merged_total IS NOT NULL OR metrics.node_disk_writes_merged_total IS NOT NULL\n| STATS node_disk_reads_merged_total_A = AVG(IRATE(metrics.node_disk_reads_merged_total)), Write_merged = AVG(IRATE(metrics.node_disk_writes_merged_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Read_merged = (-1 * node_disk_reads_merged_total_A)\n| DROP node_disk_reads_merged_total_A\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Time Spent Doing I/Os",
+    "grafana": {
+      "unit": "percentunit",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - IO",
+        "{{device}} - discard"
+      ],
+      "exprs": [
+        "irate(node_disk_io_time_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_discard_time_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "IO",
+          "label": "IO"
+        },
+        {
+          "field": "discard",
+          "label": "discard"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_io_time_seconds_total IS NOT NULL OR metrics.node_disk_discard_time_seconds_total IS NOT NULL\n| STATS IO = AVG(IRATE(metrics.node_disk_io_time_seconds_total)), discard = AVG(IRATE(metrics.node_disk_discard_time_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, IO, discard\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Instantaneous Queue Size",
+    "grafana": {
+      "unit": "none",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{device}} - IO now"
+      ],
+      "exprs": [
+        "node_disk_io_now{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_io_now IS NOT NULL\n| STATS value = MAX(LAST_OVER_TIME(metrics.node_disk_io_now)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Disk IOps Discards completed / merged",
+    "grafana": {
+      "unit": "iops",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{device}} - Discards completed",
+        "{{device}} - Discards merged"
+      ],
+      "exprs": [
+        "irate(node_disk_discards_completed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_disk_discards_merged_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Discards_completed",
+          "label": "Discards completed"
+        },
+        {
+          "field": "Discards_merged",
+          "label": "Discards merged"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_disk_discards_completed_total IS NOT NULL OR metrics.node_disk_discards_merged_total IS NOT NULL\n| STATS Discards_completed = AVG(IRATE(metrics.node_disk_discards_completed_total)), Discards_merged = AVG(IRATE(metrics.node_disk_discards_merged_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, Discards_completed, Discards_merged\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 174312,
+    "live_err": "",
+    "verdict": "Good"
+  }
+]

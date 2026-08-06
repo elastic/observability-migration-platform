@@ -3743,6 +3743,15 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
     # rest. Grouped panels hit the same boundary-bucket problem but need a
     # per-group fix, which this is not.
     if wants_last and not group_fields and _parts_use_range_function(parts):
+        # Skip null rate buckets first. On short windows (e.g. 15m with
+        # TBUCKET(100) → ~9s buckets) the newest buckets are often null because
+        # IRATE needs multiple samples per bucket; taking LIMIT 2 without this
+        # filter yields an empty scalar panel even though older buckets have
+        # data. After dropping nulls, keep the penultimate non-null bucket to
+        # avoid the incomplete window-edge rate spike documented above.
+        parts.append("| WHERE " + " AND ".join(
+            f"{_esql_identifier(field)} IS NOT NULL" for field in keep_fields
+        ))
         parts.append("| SORT time_bucket DESC")
         parts.append("| LIMIT 2")
         parts.append("| SORT time_bucket ASC")

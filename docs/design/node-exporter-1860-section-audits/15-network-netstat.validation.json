@@ -1,0 +1,550 @@
+[
+  {
+    "title": "Netstat IP In / Out Octets",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "InOctets - Received octets",
+        "OutOctets - Sent octets"
+      ],
+      "exprs": [
+        "irate(node_netstat_IpExt_InOctets{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_IpExt_OutOctets{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "InOctets_Received_octets",
+          "label": "InOctets - Received octets"
+        },
+        {
+          "field": "OutOctets_Sent_octets",
+          "label": "OutOctets - Sent octets"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_IpExt_InOctets IS NOT NULL OR metrics.node_netstat_IpExt_OutOctets IS NOT NULL\n| STATS InOctets_Received_octets = AVG(IRATE(metrics.node_netstat_IpExt_InOctets)), node_netstat_IpExt_OutOctets_B = AVG(IRATE(metrics.node_netstat_IpExt_OutOctets)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL OutOctets_Sent_octets = (-1 * node_netstat_IpExt_OutOctets_B)\n| DROP node_netstat_IpExt_OutOctets_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Netstat IP Forwarding",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "Forwarding - IP forwarding"
+      ],
+      "exprs": [
+        "irate(node_netstat_Ip_Forwarding{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_netstat_Ip_Forwarding",
+          "label": "Forwarding - IP forwarding"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Ip_Forwarding IS NOT NULL\n| STATS node_netstat_Ip_Forwarding = AVG(IRATE(metrics.node_netstat_Ip_Forwarding)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "ICMP In / Out",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "InMsgs -  Messages which the entity received. Note that this counter includes all those counted by icmpInErrors",
+        "OutMsgs - Messages which this entity attempted to send. Note that this counter includes all those counted by icmpOutErrors"
+      ],
+      "exprs": [
+        "irate(node_netstat_Icmp_InMsgs{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Icmp_OutMsgs{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "InMsgs_Messages_which_the_entity_received_Note_that_this_counter_includes_all_those_counted_by_icmpInErrors",
+          "label": "InMsgs -  Messages which the entity received. Note that this counter includes all those counted by icmpInErrors"
+        },
+        {
+          "field": "OutMsgs_Messages_which_this_entity_attempted_to_send_Note_that_this_counter_includes_all_those_counted_by_icmpOutErrors",
+          "label": "OutMsgs - Messages which this entity attempted to send. Note that this counter includes all those counted by icmpOutErrors"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Icmp_InMsgs IS NOT NULL OR metrics.node_netstat_Icmp_OutMsgs IS NOT NULL\n| STATS InMsgs_Messages_which_the_entity_received_Note_that_this_counter_includes_all_those_counted_by_icmpInErrors = AVG(IRATE(metrics.node_netstat_Icmp_InMsgs)), node_netstat_Icmp_OutMsgs_B = AVG(IRATE(metrics.node_netstat_Icmp_OutMsgs)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL OutMsgs_Messages_which_this_entity_attempted_to_send_Note_that_this_counter_includes_all_those_counted_by_icmpOutErrors = (-1 * node_netstat_Icmp_OutMsgs_B)\n| DROP node_netstat_Icmp_OutMsgs_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "ICMP Errors",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "InErrors - Messages which the entity received but determined as having ICMP-specific errors (bad ICMP checksums, bad length, etc.)"
+      ],
+      "exprs": [
+        "irate(node_netstat_Icmp_InErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_netstat_Icmp_InErrors",
+          "label": "InErrors - Messages which the entity received but determined as having ICMP-specific errors (bad ICMP checksums, bad length, etc.)"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Icmp_InErrors IS NOT NULL\n| STATS node_netstat_Icmp_InErrors = AVG(IRATE(metrics.node_netstat_Icmp_InErrors)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "UDP In / Out",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "InDatagrams - Datagrams received",
+        "OutDatagrams - Datagrams sent"
+      ],
+      "exprs": [
+        "irate(node_netstat_Udp_InDatagrams{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Udp_OutDatagrams{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "InDatagrams_Datagrams_received",
+          "label": "InDatagrams - Datagrams received"
+        },
+        {
+          "field": "OutDatagrams_Datagrams_sent",
+          "label": "OutDatagrams - Datagrams sent"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Udp_InDatagrams IS NOT NULL OR metrics.node_netstat_Udp_OutDatagrams IS NOT NULL\n| STATS InDatagrams_Datagrams_received = AVG(IRATE(metrics.node_netstat_Udp_InDatagrams)), node_netstat_Udp_OutDatagrams_B = AVG(IRATE(metrics.node_netstat_Udp_OutDatagrams)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL OutDatagrams_Datagrams_sent = (-1 * node_netstat_Udp_OutDatagrams_B)\n| DROP node_netstat_Udp_OutDatagrams_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "UDP Errors",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 5,
+      "legends": [
+        "InErrors - UDP Datagrams that could not be delivered to an application",
+        "NoPorts - UDP Datagrams received on a port with no listener",
+        "InErrors Lite - UDPLite Datagrams that could not be delivered to an application",
+        "RcvbufErrors - UDP buffer errors received",
+        "SndbufErrors - UDP buffer errors send"
+      ],
+      "exprs": [
+        "irate(node_netstat_Udp_InErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Udp_NoPorts{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_UdpLite_InErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Udp_RcvbufErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Udp_SndbufErrors{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 5,
+      "metrics": [
+        {
+          "field": "InErrors_UDP_Datagrams_that_could_not_be_delivered_to_an_application",
+          "label": "InErrors - UDP Datagrams that could not be delivered to an application"
+        },
+        {
+          "field": "NoPorts_UDP_Datagrams_received_on_a_port_with_no_listener",
+          "label": "NoPorts - UDP Datagrams received on a port with no listener"
+        },
+        {
+          "field": "InErrors_Lite_UDPLite_Datagrams_that_could_not_be_delivered_to_an_application",
+          "label": "InErrors Lite - UDPLite Datagrams that could not be delivered to an application"
+        },
+        {
+          "field": "RcvbufErrors_UDP_buffer_errors_received",
+          "label": "RcvbufErrors - UDP buffer errors received"
+        },
+        {
+          "field": "SndbufErrors_UDP_buffer_errors_send",
+          "label": "SndbufErrors - UDP buffer errors send"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Udp_InErrors IS NOT NULL OR metrics.node_netstat_Udp_NoPorts IS NOT NULL OR metrics.node_netstat_UdpLite_InErrors IS NOT NULL OR metrics.node_netstat_Udp_RcvbufErrors IS NOT NULL OR metrics.node_netstat_Udp_SndbufErrors IS NOT NULL\n| STATS InErrors_UDP_Datagrams_that_could_not_be_delivered_to_an_application = AVG(IRATE(metrics.node_netstat_Udp_InErrors)), NoPorts_UDP_Datagrams_received_on_a_port_with_no_listener = AVG(IRATE(metrics.node_netstat_Udp_NoPorts)), InErrors_Lite_UDPLite_Datagrams_that_could_not_be_delivered_to_an_application = AVG(IRATE(metrics.node_netstat_UdpLite_InErrors)), RcvbufErrors_UDP_buffer_errors_received = AVG(IRATE(metrics.node_netstat_Udp_RcvbufErrors)), SndbufErrors_UDP_buffer_errors_send = AVG(IRATE(metrics.node_netstat_Udp_SndbufErrors)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, InErrors_UDP_Datagrams_that_could_not_be_delivered_to_an_application, NoPorts_UDP_Datagrams_received_on_a_port_with_no_listener, InErrors_Lite_UDPLite_Datagrams_that_could_not_be_delivered_to_an_application, RcvbufErrors_UDP_buffer_errors_received, SndbufErrors_UDP_buffer_errors_send\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "TCP In / Out",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "InSegs - Segments received, including those received in error. This count includes segments received on currently established connections",
+        "OutSegs - Segments sent, including those on current connections but excluding those containing only retransmitted octets"
+      ],
+      "exprs": [
+        "irate(node_netstat_Tcp_InSegs{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Tcp_OutSegs{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "InSegs_Segments_received_including_those_received_in_error_This_count_includes_segments_received_on_currently_established",
+          "label": "InSegs - Segments received, including those received in error. This count includes segments received on currently established connections"
+        },
+        {
+          "field": "OutSegs_Segments_sent_including_those_on_current_connections_but_excluding_those_containing_only_retransmitted_octets",
+          "label": "OutSegs - Segments sent, including those on current connections but excluding those containing only retransmitted octets"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Tcp_InSegs IS NOT NULL OR metrics.node_netstat_Tcp_OutSegs IS NOT NULL\n| STATS InSegs_Segments_received_including_those_received_in_error_This_count_includes_segments_received_on_currently_established = AVG(IRATE(metrics.node_netstat_Tcp_InSegs)), node_netstat_Tcp_OutSegs_B = AVG(IRATE(metrics.node_netstat_Tcp_OutSegs)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL OutSegs_Segments_sent_including_those_on_current_connections_but_excluding_those_containing_only_retransmitted_octets = (-1 * node_netstat_Tcp_OutSegs_B)\n| DROP node_netstat_Tcp_OutSegs_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "TCP Errors",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 8,
+      "legends": [
+        "ListenOverflows - Times the listen queue of a socket overflowed",
+        "ListenDrops - SYNs to LISTEN sockets ignored",
+        "TCPSynRetrans - SYN-SYN/ACK retransmits to break down retransmissions in SYN, fast/timeout retransmits",
+        "RetransSegs - Segments retransmitted - that is, the number of TCP segments transmitted containing one or more previously transmitted octets",
+        "InErrs - Segments received in error (e.g., bad TCP checksums)",
+        "OutRsts - Segments sent with RST flag",
+        "TCPRcvQDrop - Packets meant to be queued in rcv queue but dropped because socket rcvbuf limit hit",
+        "TCPOFOQueue - TCP layer receives an out of order packet and has enough memory to queue it"
+      ],
+      "exprs": [
+        "irate(node_netstat_TcpExt_ListenOverflows{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_ListenDrops{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_TCPSynRetrans{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Tcp_RetransSegs{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Tcp_InErrs{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Tcp_OutRsts{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_TCPRcvQDrop{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_TCPOFOQueue{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 7,
+      "metrics": [
+        {
+          "field": "ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed",
+          "label": "Listenoverflows Times The Listen Queue Of A Socket Overflowed"
+        },
+        {
+          "field": "ListenDrops_SYNs_to_LISTEN_sockets_ignored",
+          "label": "Listendrops Syns To LISTEN Sockets Ignored"
+        },
+        {
+          "field": "TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits",
+          "label": "Tcpsynretrans SYN SYN ACK Retransmits To Break Down Retransmissions In SYN Fast Timeout Retransmits"
+        },
+        {
+          "field": "RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted",
+          "label": "Retranssegs Segments Retransmitted That Is The Number Of TCP Segments Transmitted Containing One Or More Previously Transmitted"
+        },
+        {
+          "field": "InErrs_Segments_received_in_error_e_g_bad_TCP_checksums",
+          "label": "Inerrs Segments Received In Error E G Bad TCP Checksums"
+        },
+        {
+          "field": "OutRsts_Segments_sent_with_RST_flag",
+          "label": "Outrsts Segments Sent With RST Flag"
+        },
+        {
+          "field": "TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it",
+          "label": "Tcpofoqueue TCP Layer Receives An Out Of Order Packet And Has Enough Memory To Queue It"
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_TcpExt_ListenOverflows IS NOT NULL OR metrics.node_netstat_TcpExt_ListenDrops IS NOT NULL OR metrics.node_netstat_TcpExt_TCPSynRetrans IS NOT NULL OR metrics.node_netstat_Tcp_RetransSegs IS NOT NULL OR metrics.node_netstat_Tcp_InErrs IS NOT NULL OR metrics.node_netstat_Tcp_OutRsts IS NOT NULL OR metrics.node_netstat_TcpExt_TCPOFOQueue IS NOT NULL\n| STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE(metrics.node_netstat_TcpExt_ListenOverflows)), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE(metrics.node_netstat_TcpExt_ListenDrops)), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE(metrics.node_netstat_TcpExt_TCPSynRetrans)), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE(metrics.node_netstat_Tcp_RetransSegs)), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE(metrics.node_netstat_Tcp_InErrs)), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE(metrics.node_netstat_Tcp_OutRsts)), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE(metrics.node_netstat_TcpExt_TCPOFOQueue)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed, ListenDrops_SYNs_to_LISTEN_sockets_ignored, TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits, RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted, InErrs_Segments_received_in_error_e_g_bad_TCP_checksums, OutRsts_Segments_sent_with_RST_flag, TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Partial"
+  },
+  {
+    "title": "TCP Connections",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "CurrEstab - TCP connections for which the current state is either ESTABLISHED or CLOSE- WAIT",
+        "MaxConn - Limit on the total number of TCP connections the entity can support (Dynamic is \"-1\")"
+      ],
+      "exprs": [
+        "node_netstat_Tcp_CurrEstab{instance=\"$node\",job=\"$job\"}",
+        "node_netstat_Tcp_MaxConn{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "CurrEstab_TCP_connections_for_which_the_current_state_is_either_ESTABLISHED_or_CLOSE_WAIT",
+          "label": "CurrEstab - TCP connections for which the current state is either ESTABLISHED or CLOSE- WAIT"
+        },
+        {
+          "field": "MaxConn_Limit_on_the_total_number_of_TCP_connections_the_entity_can_support_Dynamic_is_1",
+          "label": "MaxConn - Limit on the total number of TCP connections the entity can support (Dynamic is \"-1\")"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Tcp_CurrEstab IS NOT NULL OR node_netstat_Tcp_MaxConn IS NOT NULL\n| STATS CurrEstab_TCP_connections_for_which_the_current_state_is_either_ESTABLISHED_or_CLOSE_WAIT = AVG(LAST_OVER_TIME(metrics.node_netstat_Tcp_CurrEstab)), MaxConn_Limit_on_the_total_number_of_TCP_connections_the_entity_can_support_Dynamic_is_1 = AVG(LAST_OVER_TIME(node_netstat_Tcp_MaxConn)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, CurrEstab_TCP_connections_for_which_the_current_state_is_either_ESTABLISHED_or_CLOSE_WAIT, MaxConn_Limit_on_the_total_number_of_TCP_connections_the_entity_can_support_Dynamic_is_1\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "TCP SynCookie",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 3,
+      "legends": [
+        "SyncookiesFailed - Invalid SYN cookies received",
+        "SyncookiesRecv - SYN cookies received",
+        "SyncookiesSent - SYN cookies sent"
+      ],
+      "exprs": [
+        "irate(node_netstat_TcpExt_SyncookiesFailed{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_SyncookiesRecv{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_TcpExt_SyncookiesSent{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 3,
+      "metrics": [
+        {
+          "field": "SyncookiesFailed_Invalid_SYN_cookies_received",
+          "label": "SyncookiesFailed - Invalid SYN cookies received"
+        },
+        {
+          "field": "SyncookiesRecv_SYN_cookies_received",
+          "label": "SyncookiesRecv - SYN cookies received"
+        },
+        {
+          "field": "SyncookiesSent_SYN_cookies_sent",
+          "label": "SyncookiesSent - SYN cookies sent"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_TcpExt_SyncookiesFailed IS NOT NULL OR metrics.node_netstat_TcpExt_SyncookiesRecv IS NOT NULL OR metrics.node_netstat_TcpExt_SyncookiesSent IS NOT NULL\n| STATS SyncookiesFailed_Invalid_SYN_cookies_received = AVG(IRATE(metrics.node_netstat_TcpExt_SyncookiesFailed)), SyncookiesRecv_SYN_cookies_received = AVG(IRATE(metrics.node_netstat_TcpExt_SyncookiesRecv)), node_netstat_TcpExt_SyncookiesSent_C = AVG(IRATE(metrics.node_netstat_TcpExt_SyncookiesSent)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL SyncookiesSent_SYN_cookies_sent = (-1 * node_netstat_TcpExt_SyncookiesSent_C)\n| DROP node_netstat_TcpExt_SyncookiesSent_C\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "TCP Direct Transition",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "ActiveOpens - TCP connections that have made a direct transition to the SYN-SENT state from the CLOSED state",
+        "PassiveOpens - TCP connections that have made a direct transition to the SYN-RCVD state from the LISTEN state"
+      ],
+      "exprs": [
+        "irate(node_netstat_Tcp_ActiveOpens{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_netstat_Tcp_PassiveOpens{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "ActiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_SENT_state_from_the_CLOSED_state",
+          "label": "ActiveOpens - TCP connections that have made a direct transition to the SYN-SENT state from the CLOSED state"
+        },
+        {
+          "field": "PassiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_RCVD_state_from_the_LISTEN_state",
+          "label": "PassiveOpens - TCP connections that have made a direct transition to the SYN-RCVD state from the LISTEN state"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_netstat_Tcp_ActiveOpens IS NOT NULL OR metrics.node_netstat_Tcp_PassiveOpens IS NOT NULL\n| STATS ActiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_SENT_state_from_the_CLOSED_state = AVG(IRATE(metrics.node_netstat_Tcp_ActiveOpens)), PassiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_RCVD_state_from_the_LISTEN_state = AVG(IRATE(metrics.node_netstat_Tcp_PassiveOpens)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, ActiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_SENT_state_from_the_CLOSED_state, PassiveOpens_TCP_connections_that_have_made_a_direct_transition_to_the_SYN_RCVD_state_from_the_LISTEN_state\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "TCP Stat",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 4,
+      "legends": [
+        "established - TCP sockets in established state",
+        "fin_wait2 - TCP sockets in fin_wait2 state",
+        "listen - TCP sockets in listen state",
+        "time_wait - TCP sockets in time_wait state"
+      ],
+      "exprs": [
+        "node_tcp_connection_states{state=\"established\",instance=\"$node\",job=\"$job\"}",
+        "node_tcp_connection_states{state=\"fin_wait2\",instance=\"$node\",job=\"$job\"}",
+        "node_tcp_connection_states{state=\"listen\",instance=\"$node\",job=\"$job\"}",
+        "node_tcp_connection_states{state=\"time_wait\",instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 4,
+      "metrics": [
+        {
+          "field": "established_TCP_sockets_in_established_state",
+          "label": "established - TCP sockets in established state"
+        },
+        {
+          "field": "fin_wait2_TCP_sockets_in_fin_wait2_state",
+          "label": "fin_wait2 - TCP sockets in fin_wait2 state"
+        },
+        {
+          "field": "listen_TCP_sockets_in_listen_state",
+          "label": "listen - TCP sockets in listen state"
+        },
+        {
+          "field": "time_wait_TCP_sockets_in_time_wait_state",
+          "label": "time_wait - TCP sockets in time_wait state"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_tcp_connection_states IS NOT NULL\n| STATS established_TCP_sockets_in_established_state = AVG(LAST_OVER_TIME(CASE((labels.state == \"established\"), metrics.node_tcp_connection_states, NULL), 5m)), fin_wait2_TCP_sockets_in_fin_wait2_state = AVG(LAST_OVER_TIME(CASE((labels.state == \"fin_wait2\"), metrics.node_tcp_connection_states, NULL), 5m)), listen_TCP_sockets_in_listen_state = AVG(LAST_OVER_TIME(CASE((labels.state == \"listen\"), metrics.node_tcp_connection_states, NULL), 5m)), time_wait_TCP_sockets_in_time_wait_state = AVG(LAST_OVER_TIME(CASE((labels.state == \"time_wait\"), metrics.node_tcp_connection_states, NULL), 5m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, established_TCP_sockets_in_established_state, fin_wait2_TCP_sockets_in_fin_wait2_state, listen_TCP_sockets_in_listen_state, time_wait_TCP_sockets_in_time_wait_state\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9690,
+    "live_err": "",
+    "verdict": "Good"
+  }
+]

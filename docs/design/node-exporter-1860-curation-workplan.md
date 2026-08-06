@@ -1,8 +1,16 @@
 # Node Exporter 1860 Curation Workplan
 
-**Date:** 2026-08-05
-**Status:** In progress
+**Date:** 2026-08-05 (updated 2026-08-07)
+**Status:** Curation Phases 1–2, 4–5 complete on lab; Phase 3 blocked on runtime
 **Dashboard:** Grafana community dashboard 1860, "Node Exporter Full"
+
+## Section-by-section audit (2026-08-06 → 2026-08-07)
+
+Full row-by-row Grafana vs Kibana reports live under
+[`node-exporter-1860-section-audits/`](node-exporter-1860-section-audits/README.md)
+(16 sections + validation JSON). Audits drove pack fixes for Pressure,
+Memory Basic overlay, IRATE `TBUCKET(20)` on selected panels, and
+per-CPU **CPU Frequency Scaling**.
 
 ## Goal
 
@@ -77,18 +85,23 @@ the best smoke run, so a fresh upload/smoke pass is still needed after the next 
 
 ## Progress update
 
-Completed on 2026-08-05:
+Completed through 2026-08-07:
 
-- Added curated query overrides for `RAM Used`, `SWAP Used`, and `Uptime`
-- Removed their generic arithmetic warnings
-- Added pack/integration assertions so the 1860 dashboard test path exercises the curated pack
-- Verified those three panels through native dashboard artifacts and live upload checks
+- Phase 1: curated `RAM Used` / `SWAP Used` / `Uptime` (+ pack tests)
+- Phase 2: Pressure → metric tiles + first-row polish
+- Section-by-section audits (16 rows) with pack fixes (Memory Basic overlay,
+  IRATE `TBUCKET(20)`, per-CPU Frequency Scaling, …)
+- Phase 4: lab seed of three optional metrics → 117/0 yellows
+- Phase 3: re-probed and **deferred** (`label_replace` still missing)
+- Phase 5: canonical migrate+upload+smoke
+  `/tmp/node-exporter-phase5-20260807-030538`
 
-Still pending:
+Still deferred:
 
-- `Pressure` first-row presentation polish
-- targeted seeding for the final three live-missing metrics
-- multi-target native `PROMQL` revisit once the target runtime contract is clearer
+- multi-target native `PROMQL` (runtime `label_replace`)
+- `$job`-scoped `$node` control dependency
+- optional: restore TCPRcvQDrop optionality in curated TCP Errors for hosts
+  without the field
 
 ## Current state
 
@@ -215,14 +228,15 @@ The translator's multi-target native path in
 is still hard-disabled because it relies on `label_replace()` for per-target
 series labeling.
 
-As of Wednesday, August 5, 2026:
+As of **Thursday, August 7, 2026** (re-probe on lab `9.5.0-SNAPSHOT`):
 
-- the local `9.5.0-SNAPSHOT` target still does not provide a clean runtime
-  contract for this path
-- direct `_query` probes against `PROMQL ... value=(label_replace(...))` and a
-  simple `or` expression currently return a parser-side `500`
-  `null_pointer_exception`, so this needs target/runtime clarification before
-  enabling the path in the translator
+- `label_replace(...)` still fails:
+  `Function [label_replace] is not yet implemented`
+- bare structural `or` runs, but Receive/Transmit (same device labels) collapses
+  to **one** series — so `or` alone is not a correct multi-target overlay
+- `or on()` / `and` / `unless` remain unsupported
+- Decision write-up:
+  [`node-exporter-1860-phase3-native-promql.md`](node-exporter-1860-phase3-native-promql.md)
 
 ### 4. Advanced panels are structurally fine but operationally weak without telemetry
 
@@ -272,24 +286,35 @@ Expected effect:
 
 ### Phase 2: Improve first-row Kibana presentation
 
-1. Revisit `Pressure`
-2. Decide whether the curated target should remain a compact bar summary or move to a more
-   Kibana-native presentation
-3. Preserve the dense first-row layout while removing the current visual inconsistency
+Status: **completed (2026-08-06/07 section audit + pack fixes)**
+
+1. Revisited `Pressure` — curated as Lens **metric** tiles (`kibana_type_override:
+   metric`), unpivot CPU/I/O/Mem, penultimate non-null IRATE collapse, `* 100`
+   color domain.
+2. First-row gauges/stats remain curated (`RAM Used`, `SWAP Used`, `Uptime`,
+   `Sys Load`, `Root FS Used`, `CPU Busy`, …) with documented `/oldroot`
+   adaptation where needed.
+3. Dense first-row layout preserved (Pressure + gauges + stats).
 
 Expected effect:
 
 - first viewport reads like a deliberate Kibana operations dashboard
 
+Evidence: [`node-exporter-1860-section-audits/01-quick-cpu-mem-disk.md`](node-exporter-1860-section-audits/01-quick-cpu-mem-disk.md)
+
 ### Phase 3: Native multi-target `PROMQL` revisit
 
-1. Keep the current single-target native path as-is.
+Status: **blocked / deferred (re-probed 2026-08-07)** — see
+[`node-exporter-1860-phase3-native-promql.md`](node-exporter-1860-phase3-native-promql.md).
+
+1. Keep the current single-target native path as-is. *(unchanged)*
 2. Revisit the disabled multi-target native helper only after the target runtime
    gives a stable answer on:
-   - `label_replace()`
-   - structural `or` between native series
-   - dashboard-context control binding for any rewritten params
-3. Start with the shortlist in this order:
+   - `label_replace()` — **still unimplemented** on `9.5.0-SNAPSHOT`
+   - structural `or` between native series — parses, but **collapses** mirrored
+     same-label series without `label_replace`
+   - dashboard-context control binding for any rewritten params — secondary gate
+3. Start with the shortlist in this order *(when unblocked)*:
    - `Network Traffic`
    - `Disk IOps`
    - `I/O Usage Read / Write`
@@ -297,60 +322,91 @@ Expected effect:
    - `Sockstat TCP`
    - `TCP Stat`
 
-Expected effect:
+Expected effect *(when unblocked)*:
 
 - native-`PROMQL` expansion only where it buys real fidelity
 - no churn on panels that are already better served by `TS`
 
+**2026-08-07 decision:** do not enable the helper; do not ship an `or`-only
+workaround. Shortlist panels remain on audited ES|QL `TS` / curated paths.
+
 ### Phase 4: Targeted telemetry seeding for the last three yellows
 
-Seed or fixture only the live-missing metrics:
+Status: **completed on lab validation host (2026-08-07)**
 
-- `node_memory_HardwareCorrupted_bytes`
-- `node_netstat_TcpExt_TCPRcvQDrop`
-- `node_netstat_Tcp_MaxConn`
+Seeded into `metrics-node.prometheus-default` with labels
+`instance=node:9100`, `job=node_exporter` (and TSDB `time_series_metric`
+mappings):
+
+- `node_memory_HardwareCorrupted_bytes` (gauge)
+- `node_netstat_TcpExt_TCPRcvQDrop` (counter)
+- `node_netstat_Tcp_MaxConn` (gauge)
+
+Also restored `TCPRcvQDrop` in the curated **TCP Errors** pack query (field
+must be present at remigrate time).
+
+Post-seed remigrate (`/tmp/node-exporter-fix-20260807-025842`):
+
+- `117` migrated / `0` warnings
+- Verification gate: **117 Green / 0 Yellow / 0 Red**
+- Smoke: `0` runtime errors, `0` empty panels
+
+Note: seeding is a **lab validation** step, not an operator CLI requirement.
+Real node-exporter scrapes that lack these collectors still degrade via
+`live_optional_metrics` on the generic path; curated TCP Errors assumes the
+counter exists once included in the pack override.
 
 Expected effect:
 
-- `114/3` should become `117/0` if the seeded metrics land in
-  `metrics-node.prometheus-default` with the expected labels and types
+- `114/3` → `117/0` on a target that has these fields (achieved on this lab)
 
 ### Phase 5: Fresh end-to-end verification
 
-After the curation edits:
+Status: **completed 2026-08-07** — see
+[`node-exporter-1860-phase5-verification.md`](node-exporter-1860-phase5-verification.md).
 
-1. regenerate Node Exporter artifacts
-2. upload the curated dashboard
-3. rerun smoke / browser QA
-4. run compare/native-oracle verification where applicable
+Canonical run (translate **and** upload/smoke in one bundle):
+
+- Path: `/tmp/node-exporter-phase5-20260807-030538`
+- `117` migrated / `0` warnings
+- Verification: **117 Green / 0 Yellow / 0 Red**
+- Smoke: `0` runtime errors, `0` empty panels, `0` layout issues
+- Spot-checked Pressure, CPU Busy, Memory Stack, TCP Errors/Connections,
+  CPU Frequency Scaling, Network Traffic by Packets via live `_query`
 
 Required before calling the dashboard "perfect":
 
 - the best translation bundle and the best upload/smoke bundle must be the same run
+  → **satisfied by this Phase 5 run** (with Phase 3 / control / seed caveats below)
 
 ## Definition of done
 
 The Node Exporter 1860 curated pack is "done" when:
 
-- summary-row panels are warning-free or intentionally curated with documented tradeoffs
-- first-row presentation looks deliberate in Kibana
-- the final three data-readiness gaps are either seeded green or explicitly
-  documented as absent from the validation target
-- the `TS` vs native-`PROMQL` split is explained by current runtime constraints,
-  not accidental fallback
-- a fresh single run proves:
-  - migration succeeds
-  - upload succeeds
-  - no panel drops
-  - smoke/browser QA is clean
-  - warning panels, if any, are honest target-data gaps
+- [x] summary-row panels are warning-free or intentionally curated with documented tradeoffs
+- [x] first-row presentation looks deliberate in Kibana (Pressure → metric tiles)
+- [x] the final three data-readiness gaps are either seeded green or explicitly
+  documented as absent from the validation target *(seeded green on this lab)*
+- [x] the `TS` vs native-`PROMQL` split is explained by current runtime constraints,
+  not accidental fallback *(Phase 3 decision doc)*
+- [x] a fresh single run proves migration + upload + no drops + clean smoke
+  *(Phase 5 canonical run)*
+
+**Still out of scope / deferred (honest gaps):**
+
+- multi-target native `PROMQL` (blocked on `label_replace`)
+- Grafana-style `$job`-scoped `$node` control chaining
+- full browser render / interaction nightly gates as part of this workplan pass
+- operator environments that lack the three optional metrics (degrade path)
 
 ## Immediate next step
 
-Start with **Phase 4**:
+Curation workplan Phases 1–2 / 4–5 are complete on the lab target; Phase 3 waits
+on Elasticsearch PromQL `label_replace`.
 
-- either get the three live-missing metrics into `metrics-node.prometheus-default`
-- or write a minimal targeted fixture path when the generic seeder will not emit
-  them into the node stream
-- then rerun the live upload/smoke/browser path and confirm whether `114/3`
-  becomes `117/0`
+Operator/product follow-ups if desired:
+
+1. Open or track an ES/Kibana dependency for PromQL `label_replace` (Phase 3 unblock).
+2. Decide whether curated **TCP Errors** should keep requiring `TCPRcvQDrop` or
+   regain optional stripping when the field is absent.
+3. PR the pack + design docs from this branch when ready.

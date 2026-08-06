@@ -507,6 +507,17 @@ def test_api_axis_title_suppresses_opaque_shorthand_text():
     assert api._yaml_axis_title("aqu-sz") is None
 
 
+def test_api_axis_title_keeps_legitimate_kebab_and_snake_text():
+    assert api._api_axis_title({"text": "requests-per-second", "visible": True}) == {
+        "text": "requests-per-second",
+        "visible": True,
+    }
+    assert api._yaml_axis_title("request_rate") == {
+        "text": "request_rate",
+        "visible": True,
+    }
+
+
 def test_metric_builder_preserves_secondary_breakdown_and_styling():
     cfg = _map({
         "type": "metric",
@@ -547,6 +558,19 @@ def test_metric_builder_preserves_secondary_breakdown_and_styling():
     ]
     assert cfg["breakdown_by"] == {"column": "service", "label": "Service", "collapse_by": "max"}
     assert cfg["styling"] == {"primary": {"position": "bottom"}}
+
+
+def test_metric_builder_passes_compact_density_styling():
+    cfg = _map({
+        "type": "metric",
+        "query": "FROM m",
+        "primary": {"field": "gauge_value", "label": ""},
+        "breakdown": {"field": "label", "columns": 1},
+        "styling": {"density": "compact"},
+    })["config"]
+    assert cfg["metrics"] == [{"type": "primary", "column": "gauge_value", "label": ""}]
+    assert cfg["breakdown_by"] == {"column": "label", "columns": 1}
+    assert cfg["styling"] == {"density": "compact"}
 
 
 def test_gauge_builder_preserves_bounds_shape_ticks_and_drops_invalid_thresholds():

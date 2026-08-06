@@ -1,0 +1,251 @@
+[
+  {
+    "title": "Time Synchronized Drift",
+    "grafana": {
+      "unit": "s",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 3,
+      "legends": [
+        "Estimated error in seconds",
+        "Time offset in between local system and reference clock",
+        "Maximum error in seconds"
+      ],
+      "exprs": [
+        "node_timex_estimated_error_seconds{instance=\"$node\",job=\"$job\"}",
+        "node_timex_offset_seconds{instance=\"$node\",job=\"$job\"}",
+        "node_timex_maxerror_seconds{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg_effective": false,
+      "neg_matchers": []
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "Estimated_error_in_seconds",
+          "label": "Estimated error in seconds",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        },
+        {
+          "field": "Time_offset_in_between_local_system_and_reference_clock",
+          "label": "Time offset in between local system and reference clock",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        },
+        {
+          "field": "Maximum_error_in_seconds",
+          "label": "Maximum error in seconds",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": false,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_timex_estimated_error_seconds IS NOT NULL OR metrics.node_timex_offset_seconds IS NOT NULL OR metrics.node_timex_maxerror_seconds IS NOT NULL\n| STATS Estimated_error_in_seconds = AVG(LAST_OVER_TIME(metrics.node_timex_estimated_error_seconds)), Time_offset_in_between_local_system_and_reference_clock = AVG(LAST_OVER_TIME(metrics.node_timex_offset_seconds)), Maximum_error_in_seconds = AVG(LAST_OVER_TIME(metrics.node_timex_maxerror_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Estimated_error_in_seconds, Time_offset_in_between_local_system_and_reference_clock, Maximum_error_in_seconds\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        16.0,
+        16.0
+      ]
+    ]
+  },
+  {
+    "title": "Time PLL Adjust",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 1,
+      "legends": [
+        "Phase-locked loop time adjust"
+      ],
+      "exprs": [
+        "node_timex_loop_time_constant{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg_effective": false,
+      "neg_matchers": []
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "node_timex_loop_time_constant",
+          "label": "Phase-locked loop time adjust",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": false,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_timex_loop_time_constant IS NOT NULL\n| STATS node_timex_loop_time_constant = AVG(LAST_OVER_TIME(metrics.node_timex_loop_time_constant)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        2.0,
+        2.0
+      ]
+    ]
+  },
+  {
+    "title": "Time Synchronized Status",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 2,
+      "legends": [
+        "Is clock synchronized to a reliable server (1 = yes, 0 = no)",
+        "Local clock frequency adjustment"
+      ],
+      "exprs": [
+        "node_timex_sync_status{instance=\"$node\",job=\"$job\"}",
+        "node_timex_frequency_adjustment_ratio{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg_effective": false,
+      "neg_matchers": []
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "Is_clock_synchronized_to_a_reliable_server_1_yes_0_no",
+          "label": "Is clock synchronized to a reliable server (1 = yes, 0 = no)",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "Local_clock_frequency_adjustment",
+          "label": "Local clock frequency adjustment",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": false,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_timex_sync_status IS NOT NULL OR metrics.node_timex_frequency_adjustment_ratio IS NOT NULL\n| STATS Is_clock_synchronized_to_a_reliable_server_1_yes_0_no = AVG(LAST_OVER_TIME(metrics.node_timex_sync_status)), Local_clock_frequency_adjustment = AVG(LAST_OVER_TIME(metrics.node_timex_frequency_adjustment_ratio)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Is_clock_synchronized_to_a_reliable_server_1_yes_0_no, Local_clock_frequency_adjustment\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  {
+    "title": "Time Misc",
+    "grafana": {
+      "unit": "s",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 2,
+      "legends": [
+        "Seconds between clock ticks",
+        "International Atomic Time (TAI) offset"
+      ],
+      "exprs": [
+        "node_timex_tick_seconds{instance=\"$node\",job=\"$job\"}",
+        "node_timex_tai_offset_seconds{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg_effective": false,
+      "neg_matchers": []
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "Seconds_between_clock_ticks",
+          "label": "Seconds between clock ticks",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        },
+        {
+          "field": "International_Atomic_Time_TAI_offset",
+          "label": "International Atomic Time (TAI) offset",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": false,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_timex_tick_seconds IS NOT NULL OR metrics.node_timex_tai_offset_seconds IS NOT NULL\n| STATS Seconds_between_clock_ticks = AVG(LAST_OVER_TIME(metrics.node_timex_tick_seconds)), International_Atomic_Time_TAI_offset = AVG(LAST_OVER_TIME(metrics.node_timex_tai_offset_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Seconds_between_clock_ticks, International_Atomic_Time_TAI_offset\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        0.01,
+        0.01
+      ]
+    ]
+  }
+]

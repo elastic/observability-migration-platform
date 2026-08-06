@@ -577,8 +577,12 @@ def _api_column(obj: Any, role: str = "generic") -> dict[str, Any] | None:
     col = _column(obj)
     if col is None or not isinstance(obj, dict):
         return col
-    if obj.get("label"):
+    if obj.get("label") is not None and str(obj.get("label")) != "":
         col["label"] = str(obj["label"])
+    elif "label" in obj and obj.get("label") == "":
+        # Explicit empty label: hide the measure field name on breakdown
+        # metric tiles (otherwise Lens shows "gauge_value" truncated).
+        col["label"] = ""
     fmt = _api_format(obj.get("format"))
     if fmt and role not in {"gauge_bound", "region"}:
         col["format"] = fmt
@@ -595,6 +599,10 @@ def _api_column(obj: Any, role: str = "generic") -> dict[str, Any] | None:
         collapse_by = obj.get("collapse_by") or obj.get("collapse")
         if collapse_by in _COLLAPSE_BY:
             col["collapse_by"] = collapse_by
+    if role == "metric_breakdown":
+        columns = obj.get("columns")
+        if isinstance(columns, int | float) and 1 <= int(columns) <= 12:
+            col["columns"] = int(columns)
     if role in {"datatable_metric", "datatable_row"}:
         if isinstance(obj.get("width"), int | float) and obj["width"] >= 0:
             col["width"] = obj["width"]
@@ -1043,6 +1051,9 @@ def _api_metric_styling(styling: Any) -> dict[str, Any] | None:
     if not isinstance(styling, dict):
         return None
     out = {key: styling[key] for key in ("primary", "secondary", "icon") if isinstance(styling.get(key), dict)}
+    density = styling.get("density")
+    if density in {"compact", "default"}:
+        out["density"] = density
     return out or None
 
 

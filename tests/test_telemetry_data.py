@@ -812,6 +812,54 @@ class TelemetryDataTests(unittest.TestCase):
             )
         )
 
+    def test_generate_documents_applies_pattern_only_requirement_bundle_over_base_combo(self):
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "fields": {
+                        "request_latency": {"role": "metric", "metric_kind": "gauge"},
+                        "region": {"role": "dimension"},
+                        "deployment.environment": {"role": "dimension"},
+                    },
+                    "group_fields": ["region", "deployment.environment"],
+                    "required_values": {
+                        "region": ["us-east-1"],
+                        "deployment.environment": ["prod"],
+                    },
+                    "requirements": [
+                        {
+                            "metrics": ["request_latency"],
+                            "group_fields": ["region", "deployment.environment"],
+                            "required_patterns": {
+                                "region": ["eu-west-1"],
+                                "deployment.environment": ["staging"],
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+
+        docs = [
+            doc
+            for index, doc in generate_documents(
+                contract,
+                now=datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC),
+                data_hours=1,
+                interval_sec=3600,
+                max_combinations=1,
+            )
+            if index == "metrics-generic-default"
+        ]
+
+        self.assertTrue(
+            any(
+                doc.get("region") == "eu-west-1"
+                and doc.get("deployment.environment") == "staging"
+                for doc in docs
+            )
+        )
+
     def test_generate_documents_adds_dense_recent_points_for_short_rate_windows(self):
         contract = {
             "streams": {

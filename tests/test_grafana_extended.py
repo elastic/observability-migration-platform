@@ -2511,10 +2511,12 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("step=", query)
 
     def test_multi_target_overlay_is_windowless_and_stepless(self):
-        """As of August 4, 2026 the multi-target native overlay path stays
+        """As of August 7, 2026 the multi-target native overlay path stays
         disabled because Elasticsearch 9.5 still rejects ``label_replace()`` at
-        runtime, so translation must fall back instead of emitting a native
-        PROMQL panel that Kibana cannot render."""
+        runtime (and bare ``or`` collapses same-label mirrored series), so
+        translation must fall back instead of emitting a native PROMQL panel
+        that Kibana cannot render correctly. See
+        docs/design/node-exporter-1860-phase3-native-promql.md."""
         panel = {
             "id": 1, "type": "timeseries", "title": "Overlay", "targets": [],
             "fieldConfig": {"defaults": {}, "overrides": []},

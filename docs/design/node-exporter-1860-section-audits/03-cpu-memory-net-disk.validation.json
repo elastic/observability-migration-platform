@@ -1,0 +1,909 @@
+[
+  {
+    "title": "CPU",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "percentunit",
+      "min": 0,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "percent"
+      },
+      "neg_y": false,
+      "unstacked_override_names": [],
+      "n_targets": 8,
+      "hidden": [],
+      "legends": [
+        "System - Processes executing in kernel mode",
+        "User - Normal processes executing in user mode",
+        "Nice - Niced processes executing in user mode",
+        "Iowait - Waiting for I/O to complete",
+        "Irq - Servicing interrupts",
+        "Softirq - Servicing softirqs",
+        "Steal - Time spent in other operating systems when running in a virtualized environment",
+        "Idle - Waiting for something to happen"
+      ],
+      "exprs": [
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"system\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"user\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"nice\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum by(instance) (irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"iowait\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"irq\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"softirq\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"steal\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"idle\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area_percentage_stacked",
+      "n_layers": 1,
+      "layer_types": [
+        "area_percentage_stacked"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": true,
+      "has_series_group": true,
+      "has_neg": false,
+      "cols": [
+        "time_bucket",
+        "value",
+        "series_group"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "value",
+          "format": {
+            "id": "percent",
+            "params": {
+              "decimals": 2,
+              "compact": false
+            }
+          },
+          "label": null
+        },
+        {
+          "field": "series_group",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "percentage",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS system_lhs = SUM(CASE((labels.mode == \"system\"), IRATE(metrics.node_cpu_seconds_total), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == \"user\"), IRATE(metrics.node_cpu_seconds_total), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == \"nice\"), IRATE(metrics.node_cpu_seconds_total), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == \"iowait\"), IRATE(metrics.node_cpu_seconds_total), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == \"irq\"), IRATE(metrics.node_cpu_seconds_total), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == \"softirq\"), IRATE(metrics.node_cpu_seconds_total), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == \"steal\"), IRATE(metrics.node_cpu_seconds_total), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == \"idle\"), IRATE(metrics.node_cpu_seconds_total), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL System = (system_lhs / system_rhs), User = (user_lhs / user_rhs), Nice = (nice_lhs / nice_rhs), Iowait = (iowait_lhs / iowait_rhs), Irq = (irq_lhs / irq_rhs), Softirq = (softirq_lhs / softirq_rhs), Steal = (steal_lhs / steal_rhs), Idle = (idle_lhs / idle_rhs)\n| EVAL __labels_ab = MV_APPEND(\"System - Processes executing in kernel mode\", \"User - Normal processes executing in user mode\"), __labels_cd = MV_APPEND(\"Nice - Niced processes executing in user mode\", \"Iowait - Waiting for I/O to complete\")\n| EVAL __labels_ef = MV_APPEND(\"Irq - Servicing interrupts\", \"Softirq - Servicing softirqs\"), __labels_gh = MV_APPEND(\"Steal - Time spent in other operating systems when running in a virtualized environment\", \"Idle - Waiting for something to happen\")\n| EVAL __labels = MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND(__labels_ef, __labels_gh))\n| EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(System), \"\"), COALESCE(TO_STRING(User), \"\")), __values_cd = MV_APPEND(COALESCE(TO_STRING(Nice), \"\"), COALESCE(TO_STRING(Iowait), \"\"))\n| EVAL __values_ef = MV_APPEND(COALESCE(TO_STRING(Irq), \"\"), COALESCE(TO_STRING(Softirq), \"\")), __values_gh = MV_APPEND(COALESCE(TO_STRING(Steal), \"\"), COALESCE(TO_STRING(Idle), \"\"))\n| EVAL __values = MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(__values_ef, __values_gh))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL series_group = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": false,
+      "error": "{\"error\":{\"root_cause\":[{\"type\":\"circuit_breaking_exception\",\"reason\":\"[request] Data too large, data for [LongLongSwissHash-keyPage] would be [322123240/307.2mb], which is larger than the limit of [322122547/307.1mb]; for more information, see https://www.elastic.co/docs/troubleshoot/elasticsearch/circuit-breaker-errors?version=master\",\"bytes_wanted\":322123240,\"bytes_limit\":322122547,\"durability\""
+    }
+  },
+  {
+    "title": "Memory Stack",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "bytes",
+      "min": 0,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "normal"
+      },
+      "neg_y": false,
+      "unstacked_override_names": [
+        "/.*Hardware Corrupted - *./"
+      ],
+      "n_targets": 9,
+      "hidden": [],
+      "legends": [
+        "Apps - Memory used by user-space applications",
+        "PageTables - Memory used to map between virtual and physical memory addresses",
+        "SwapCache - Memory that keeps track of pages that have been fetched from swap but not yet been modified",
+        "Slab - Memory used by the kernel to cache data structures for its own use (caches like inode, dentry, etc)",
+        "Cache - Parked file data (file content) cache",
+        "Buffers - Block device (e.g. harddisk) cache",
+        "Unused - Free memory unassigned",
+        "Swap - Swap space used",
+        "Hardware Corrupted - Amount of RAM that the kernel identified as corrupted / not working"
+      ],
+      "exprs": [
+        "node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_MemFree_bytes{instance=\"$node\",job=\"$job\"} - node_memory_Buffers_bytes{instance=\"$node\",job=\"$job\"} - node_memory_Cached_bytes{instance=\"$node\",job=\"$job\"} - node_memory_Slab_bytes{instance=\"$node\",job=\"$job\"} - node_memory_PageTables_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapCached_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_PageTables_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_SwapCached_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Slab_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Cached_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Buffers_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_MemFree_bytes{instance=\"$node\",job=\"$job\"}",
+        "(node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapFree_bytes{instance=\"$node\",job=\"$job\"})",
+        "node_memory_HardwareCorrupted_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area_stacked",
+      "n_layers": 2,
+      "layer_types": [
+        "area_stacked",
+        "line"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": false,
+      "has_series_group": false,
+      "has_neg": false,
+      "cols": [
+        "time_bucket",
+        "Apps_Memory_used_by_user_space_applications",
+        "PageTables_Memory_used_to_map_between_virtual_and_physical_memory_addresses",
+        "SwapCache_Memory_that_keeps_track_of_pages_that_have_been_fetched_from_swap_but_not_yet_been_modified",
+        "Slab_Memory_used_by_the_kernel_to_cache_data_structures_for_its_own_use_caches_like_inode_dentry_etc",
+        "Cache_Parked_file_data_file_content_cache",
+        "Buffers_Block_device_e_g_harddisk_cache",
+        "Unused_Free_memory_unassigned",
+        "Swap_Swap_space_used",
+        "labels.instance"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "Apps_Memory_used_by_user_space_applications",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Apps - Memory used by user-space applications"
+        },
+        {
+          "field": "PageTables_Memory_used_to_map_between_virtual_and_physical_memory_addresses",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "PageTables - Memory used to map between virtual and physical memory addresses"
+        },
+        {
+          "field": "SwapCache_Memory_that_keeps_track_of_pages_that_have_been_fetched_from_swap_but_not_yet_been_modified",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "SwapCache - Memory that keeps track of pages that have been fetched from swap but not yet been modified"
+        },
+        {
+          "field": "Slab_Memory_used_by_the_kernel_to_cache_data_structures_for_its_own_use_caches_like_inode_dentry_etc",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Slab - Memory used by the kernel to cache data structures for its own use (caches like inode, dentry, etc)"
+        },
+        {
+          "field": "Cache_Parked_file_data_file_content_cache",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Cache - Parked file data (file content) cache"
+        },
+        {
+          "field": "Buffers_Block_device_e_g_harddisk_cache",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Buffers - Block device (e.g. harddisk) cache"
+        },
+        {
+          "field": "Unused_Free_memory_unassigned",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Unused - Free memory unassigned"
+        },
+        {
+          "field": "Swap_Swap_space_used",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Swap - Swap space used"
+        },
+        {
+          "field": "labels.instance",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "bytes",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL OR metrics.node_memory_PageTables_bytes IS NOT NULL OR metrics.node_memory_SwapCached_bytes IS NOT NULL OR metrics.node_memory_Slab_bytes IS NOT NULL OR metrics.node_memory_Cached_bytes IS NOT NULL OR metrics.node_memory_Buffers_bytes IS NOT NULL OR metrics.node_memory_MemFree_bytes IS NOT NULL OR metrics.node_memory_SwapTotal_bytes IS NOT NULL OR metrics.node_memory_SwapFree_bytes IS NOT NULL OR node_memory_HardwareCorrupted_bytes IS NOT NULL\n| STATS node_memory_MemTotal_bytes_A_lhs_lhs_lhs_lhs_lhs_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)), PageTables_Memory_used_to_map_between_virtual_and_physical_memory_addresses = AVG(LAST_OVER_TIME(metrics.node_memory_PageTables_bytes)), SwapCache_Memory_that_keeps_track_of_pages_that_have_been_fetched_from_swap_but_not_yet_been_modified = AVG(LAST_OVER_TIME(metrics.node_memory_SwapCached_bytes)), Slab_Memory_used_by_the_kernel_to_cache_data_structures_for_its_own_use_caches_like_inode_dentry_etc = AVG(LAST_OVER_TIME(metrics.node_memory_Slab_bytes)), Cache_Parked_file_data_file_content_cache = AVG(LAST_OVER_TIME(metrics.node_memory_Cached_bytes)), Buffers_Block_device_e_g_harddisk_cache = AVG(LAST_OVER_TIME(metrics.node_memory_Buffers_bytes)), Unused_Free_memory_unassigned = AVG(LAST_OVER_TIME(metrics.node_memory_MemFree_bytes)), node_memory_SwapTotal_bytes_H_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_H_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_SwapFree_bytes)), Hardware_Corrupted_Amount_of_RAM_that_the_kernel_identified_as_corrupted_not_working = AVG(LAST_OVER_TIME(node_memory_HardwareCorrupted_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL Apps_Memory_used_by_user_space_applications = ((((((node_memory_MemTotal_bytes_A_lhs_lhs_lhs_lhs_lhs_lhs - Unused_Free_memory_unassigned) - Buffers_Block_device_e_g_harddisk_cache) - Cache_Parked_file_data_file_content_cache) - Slab_Memory_used_by_the_kernel_to_cache_data_structures_for_its_own_use_caches_like_inode_dentry_etc) - PageTables_Memory_used_to_map_between_virtual_and_physical_memory_addresses) - SwapCache_Memory_that_keeps_track_of_pages_that_have_been_fetched_from_swap_but_not_yet_been_modified)\n| EVAL Swap_Swap_space_used = (node_memory_SwapTotal_bytes_H_lhs - node_memory_SwapFree_bytes_H_rhs)\n| DROP node_memory_MemTotal_bytes_A_lhs_lhs_lhs_lhs_lhs_lhs, node_memory_SwapTotal_bytes_H_lhs, node_memory_SwapFree_bytes_H_rhs\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": true,
+      "cols": [
+        "n",
+        "vmin",
+        "vmax"
+      ],
+      "rows": [
+        [
+          9602,
+          5236822016.0,
+          7536238592.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Network Traffic",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "bps",
+      "min": null,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": true,
+      "unstacked_override_names": [],
+      "n_targets": 2,
+      "hidden": [],
+      "legends": [
+        "{{device}} - Receive",
+        "{{device}} - Transmit"
+      ],
+      "exprs": [
+        "irate(node_network_receive_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])*8",
+        "irate(node_network_transmit_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])*8"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "n_layers": 1,
+      "layer_types": [
+        "area"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": false,
+      "has_series_group": false,
+      "has_neg": true,
+      "cols": [
+        "time_bucket",
+        "Receive",
+        "Transmit",
+        "labels.device"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "Receive",
+          "format": {
+            "id": "bits",
+            "params": {
+              "decimals": 2,
+              "suffix": "/s"
+            }
+          },
+          "label": "Receive"
+        },
+        {
+          "field": "Transmit",
+          "format": {
+            "id": "bits",
+            "params": {
+              "decimals": 2,
+              "suffix": "/s"
+            }
+          },
+          "label": "Transmit"
+        },
+        {
+          "field": "labels.device",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "bits out (-) / in (+)",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_bytes_total IS NOT NULL OR metrics.node_network_transmit_bytes_total IS NOT NULL\n| STATS node_network_receive_bytes_total_A_lhs = AVG(IRATE(metrics.node_network_receive_bytes_total)), node_network_transmit_bytes_total_B_lhs = AVG(IRATE(metrics.node_network_transmit_bytes_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Receive = (node_network_receive_bytes_total_A_lhs * 8)\n| EVAL Transmit = (-1 * (node_network_transmit_bytes_total_B_lhs * 8))\n| DROP node_network_receive_bytes_total_A_lhs, node_network_transmit_bytes_total_B_lhs\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": true,
+      "cols": [
+        "n",
+        "vmin",
+        "vmax",
+        "labels.device"
+      ],
+      "rows": [
+        [
+          9602,
+          0.0,
+          0.0,
+          "gretap0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "sit0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "ip6gre0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "ip6tnl0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "ip_vti0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "lo"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "erspan0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "ip6_vti0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "tunl0"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "gre0"
+        ],
+        [
+          9602,
+          2020.5714285714284,
+          14144.0,
+          "eth0"
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Disk Space Used",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "bytes",
+      "min": 0,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "unstacked_override_names": [],
+      "n_targets": 1,
+      "hidden": [],
+      "legends": [
+        "{{mountpoint}}"
+      ],
+      "exprs": [
+        "node_filesystem_size_bytes{instance=\"$node\",job=\"$job\",device!~'rootfs'} - node_filesystem_avail_bytes{instance=\"$node\",job=\"$job\",device!~'rootfs'}"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "n_layers": 1,
+      "layer_types": [
+        "area"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": true,
+      "has_series_group": false,
+      "has_neg": false,
+      "cols": [
+        "time_bucket",
+        "used_bytes",
+        "labels.mountpoint"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "used_bytes",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          },
+          "label": "Used Bytes"
+        },
+        {
+          "field": "labels.mountpoint",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "bytes",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_size_bytes IS NOT NULL OR metrics.node_filesystem_avail_bytes IS NOT NULL\n| STATS size_bytes = AVG(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)), avail_bytes = AVG(LAST_OVER_TIME(metrics.node_filesystem_avail_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| EVAL used_bytes = (size_bytes - avail_bytes)\n| KEEP time_bucket, labels.mountpoint, used_bytes\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": true,
+      "cols": [
+        "n",
+        "vmin",
+        "vmax",
+        "labels.mountpoint"
+      ],
+      "rows": [
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_virtiofs/Volumes"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_mark/var/folders"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_virtiofs/Users"
+        ],
+        [
+          9602,
+          93205069824.0,
+          99301625856.0,
+          "/var/lib/docker"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_virtiofs/tmp"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_mark/private"
+        ],
+        [
+          9602,
+          24576.0,
+          24576.0,
+          "/var"
+        ],
+        [
+          9602,
+          0.0,
+          20480.0,
+          "/tmp"
+        ],
+        [
+          9602,
+          93205069824.0,
+          99302236160.0,
+          "/run/mutagen-file-shares"
+        ],
+        [
+          9602,
+          93205069824.0,
+          99302236160.0,
+          "/var/lib"
+        ],
+        [
+          9602,
+          458752.0,
+          458752.0,
+          "/oldroot/run"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_virtiofs/var/folders"
+        ],
+        [
+          9602,
+          0.0,
+          0.0,
+          "/run/jfs"
+        ],
+        [
+          9602,
+          168908770246656.0,
+          174735757410304.0,
+          "/run/host_virtiofs/private"
+        ],
+        [
+          9602,
+          662392832.0,
+          662392832.0,
+          "/oldroot"
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Disk IOps",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "iops",
+      "min": null,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": true,
+      "unstacked_override_names": [],
+      "n_targets": 2,
+      "hidden": [],
+      "legends": [
+        "{{device}} - Reads completed",
+        "{{device}} - Writes completed"
+      ],
+      "exprs": [
+        "irate(node_disk_reads_completed_total{instance=\"$node\",job=\"$job\",device=~\"$diskdevices\"}[$__rate_interval])",
+        "irate(node_disk_writes_completed_total{instance=\"$node\",job=\"$job\",device=~\"$diskdevices\"}[$__rate_interval])"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "n_layers": 1,
+      "layer_types": [
+        "area"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": false,
+      "has_series_group": false,
+      "has_neg": true,
+      "cols": [
+        "time_bucket",
+        "Reads_completed",
+        "Writes_completed",
+        "labels.device"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "Reads_completed",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "suffix": " iops",
+              "compact": false
+            }
+          },
+          "label": "Reads completed"
+        },
+        {
+          "field": "Writes_completed",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "suffix": " iops",
+              "compact": false
+            }
+          },
+          "label": "Writes completed"
+        },
+        {
+          "field": "labels.device",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "IO read (-) / write (+)",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (labels.device RLIKE ?diskdevices OR (labels.device IS NULL AND \"\" RLIKE ?diskdevices))\n| WHERE metrics.node_disk_reads_completed_total IS NOT NULL OR metrics.node_disk_writes_completed_total IS NOT NULL\n| STATS node_disk_reads_completed_total_A = AVG(IRATE(metrics.node_disk_reads_completed_total)), Writes_completed = AVG(IRATE(metrics.node_disk_writes_completed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Reads_completed = (-1 * node_disk_reads_completed_total_A)\n| DROP node_disk_reads_completed_total_A\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": false,
+      "error": "{\"error\":{\"root_cause\":[{\"type\":\"parsing_exception\",\"reason\":\"line 4:30: Unknown query parameter [diskdevices]; line 4:10: Invalid pattern for RLIKE [labels.device RLIKE ?diskdevices]: expected string literal or parameter; line 4:82: Unknown query parameter [diskdevices]; line 4:73: Invalid pattern for RLIKE [\\\"\\\" RLIKE ?diskdevices]: expected string literal or parameter\"}],\"type\":\"parsing_excepti"
+    }
+  },
+  {
+    "title": "I/O Usage Read / Write",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "Bps",
+      "min": null,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": true,
+      "unstacked_override_names": [],
+      "n_targets": 2,
+      "hidden": [],
+      "legends": [
+        "{{device}} - Successfully read bytes",
+        "{{device}} - Successfully written bytes"
+      ],
+      "exprs": [
+        "irate(node_disk_read_bytes_total{instance=\"$node\",job=\"$job\",device=~\"$diskdevices\"}[$__rate_interval])",
+        "irate(node_disk_written_bytes_total{instance=\"$node\",job=\"$job\",device=~\"$diskdevices\"}[$__rate_interval])"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "n_layers": 1,
+      "layer_types": [
+        "area"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": false,
+      "has_series_group": false,
+      "has_neg": true,
+      "cols": [
+        "time_bucket",
+        "Successfully_read_bytes",
+        "Successfully_written_bytes",
+        "labels.device"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "Successfully_read_bytes",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2,
+              "suffix": "/s"
+            }
+          },
+          "label": "Successfully read bytes"
+        },
+        {
+          "field": "Successfully_written_bytes",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2,
+              "suffix": "/s"
+            }
+          },
+          "label": "Successfully written bytes"
+        },
+        {
+          "field": "labels.device",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "bytes read (-) / write (+)",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (labels.device RLIKE ?diskdevices OR (labels.device IS NULL AND \"\" RLIKE ?diskdevices))\n| WHERE metrics.node_disk_read_bytes_total IS NOT NULL OR metrics.node_disk_written_bytes_total IS NOT NULL\n| STATS node_disk_read_bytes_total_A = AVG(IRATE(metrics.node_disk_read_bytes_total)), Successfully_written_bytes = AVG(IRATE(metrics.node_disk_written_bytes_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Successfully_read_bytes = (-1 * node_disk_read_bytes_total_A)\n| DROP node_disk_read_bytes_total_A\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": false,
+      "error": "{\"error\":{\"root_cause\":[{\"type\":\"parsing_exception\",\"reason\":\"line 4:30: Unknown query parameter [diskdevices]; line 4:10: Invalid pattern for RLIKE [labels.device RLIKE ?diskdevices]: expected string literal or parameter; line 4:82: Unknown query parameter [diskdevices]; line 4:73: Invalid pattern for RLIKE [\\\"\\\" RLIKE ?diskdevices]: expected string literal or parameter\"}],\"type\":\"parsing_excepti"
+    }
+  },
+  {
+    "title": "I/O Utilization",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "percentunit",
+      "min": 0,
+      "max": null,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "unstacked_override_names": [],
+      "n_targets": 1,
+      "hidden": [],
+      "legends": [
+        "{{device}}"
+      ],
+      "exprs": [
+        "irate(node_disk_io_time_seconds_total{instance=\"$node\",job=\"$job\",device=~\"$diskdevices\"} [$__rate_interval])"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "n_layers": 1,
+      "layer_types": [
+        "area"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": true,
+      "has_series_group": false,
+      "has_neg": false,
+      "cols": [
+        "time_bucket",
+        "utilization",
+        "labels.device"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "utilization",
+          "format": {
+            "id": "percent",
+            "params": {
+              "decimals": 2,
+              "compact": false
+            }
+          },
+          "label": null
+        },
+        {
+          "field": "labels.device",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "%util",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (labels.device RLIKE ?diskdevices OR (labels.device IS NULL AND \"\" RLIKE ?diskdevices))\n| WHERE metrics.node_disk_io_time_seconds_total IS NOT NULL\n| STATS utilization = AVG(IRATE(metrics.node_disk_io_time_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": false,
+      "error": "{\"error\":{\"root_cause\":[{\"type\":\"parsing_exception\",\"reason\":\"line 4:30: Unknown query parameter [diskdevices]; line 4:10: Invalid pattern for RLIKE [labels.device RLIKE ?diskdevices]: expected string literal or parameter; line 4:82: Unknown query parameter [diskdevices]; line 4:73: Invalid pattern for RLIKE [\\\"\\\" RLIKE ?diskdevices]: expected string literal or parameter\"}],\"type\":\"parsing_excepti"
+    }
+  },
+  {
+    "title": "CPU spent seconds in guests (VMs)",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "percentunit",
+      "min": null,
+      "max": 1,
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "unstacked_override_names": [],
+      "n_targets": 2,
+      "hidden": [],
+      "legends": [
+        "Guest - Time spent running a virtual CPU for a guest operating system",
+        "GuestNice - Time spent running a niced guest  (virtual CPU for guest operating system)"
+      ],
+      "exprs": [
+        "sum by(instance) (irate(node_cpu_guest_seconds_total{instance=\"$node\",job=\"$job\", mode=\"user\"}[1m])) / on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}[1m])))",
+        "sum by(instance) (irate(node_cpu_guest_seconds_total{instance=\"$node\",job=\"$job\", mode=\"nice\"}[1m])) / on(instance) group_left sum by (instance)((irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}[1m])))"
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "bar",
+      "n_layers": 1,
+      "layer_types": [
+        "bar"
+      ],
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "curated": false,
+      "has_series_group": false,
+      "has_neg": false,
+      "cols": [
+        "time_bucket",
+        "Guest_Time_spent_running_a_virtual_CPU_for_a_guest_operating_system",
+        "GuestNice_Time_spent_running_a_niced_guest_virtual_CPU_for_guest_operating_system",
+        "labels.instance"
+      ],
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null,
+          "label": "Time"
+        },
+        {
+          "field": "Guest_Time_spent_running_a_virtual_CPU_for_a_guest_operating_system",
+          "format": {
+            "id": "percent",
+            "params": {
+              "decimals": 2,
+              "compact": false
+            }
+          },
+          "label": "Guest - Time spent running a virtual CPU for a guest operating system"
+        },
+        {
+          "field": "GuestNice_Time_spent_running_a_niced_guest_virtual_CPU_for_guest_operating_system",
+          "format": {
+            "id": "percent",
+            "params": {
+              "decimals": 2,
+              "compact": false
+            }
+          },
+          "label": "GuestNice - Time spent running a niced guest  (virtual CPU for guest operating system)"
+        },
+        {
+          "field": "labels.instance",
+          "format": null,
+          "label": null
+        }
+      ],
+      "yLeftExtent": null,
+      "yTitle": "percentage",
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| STATS numerator_A = SUM(CASE((labels.mode == \"user\"), IRATE(metrics.node_cpu_guest_seconds_total), NULL)), denominator_A = SUM(CASE(true, IRATE(metrics.node_cpu_seconds_total), NULL)), numerator_B = SUM(CASE((labels.mode == \"nice\"), IRATE(metrics.node_cpu_guest_seconds_total), NULL)), denominator_B = SUM(CASE(true, IRATE(metrics.node_cpu_seconds_total), NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance\n| EVAL Guest_Time_spent_running_a_virtual_CPU_for_a_guest_operating_system = numerator_A / denominator_A\n| EVAL GuestNice_Time_spent_running_a_niced_guest_virtual_CPU_for_guest_operating_system = numerator_B / denominator_B\n| DROP numerator_A, denominator_A, numerator_B, denominator_B\n| SORT time_bucket ASC"
+    },
+    "live": {
+      "ok": false,
+      "error": "{\"error\":{\"root_cause\":[{\"type\":\"circuit_breaking_exception\",\"reason\":\"[request] Data too large, data for [<<irate aggregation>>] would be [322123236/307.2mb], which is larger than the limit of [322122547/307.1mb]; for more information, see https://www.elastic.co/docs/troubleshoot/elasticsearch/circuit-breaker-errors?version=master\",\"bytes_wanted\":322123236,\"bytes_limit\":322122547,\"durability\":\"TR"
+    }
+  }
+]

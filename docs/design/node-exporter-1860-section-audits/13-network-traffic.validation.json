@@ -1,0 +1,641 @@
+[
+  {
+    "title": "Network Traffic by Packets",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{device}} - Receive",
+        "{{device}} - Transmit"
+      ],
+      "exprs": [
+        "irate(node_network_receive_packets_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_network_transmit_packets_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Receive",
+          "label": "Receive"
+        },
+        {
+          "field": "Transmit",
+          "label": "Transmit"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_packets_total IS NOT NULL OR metrics.node_network_transmit_packets_total IS NOT NULL\n| STATS Receive = AVG(IRATE(metrics.node_network_receive_packets_total)), node_network_transmit_packets_total_B = AVG(IRATE(metrics.node_network_transmit_packets_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Transmit = (-1 * node_network_transmit_packets_total_B)\n| DROP node_network_transmit_packets_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Errors",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{device}} - Receive errors",
+        "{{device}} - Transmit errors"
+      ],
+      "exprs": [
+        "irate(node_network_receive_errs_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_network_transmit_errs_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Receive_errors",
+          "label": "Receive errors"
+        },
+        {
+          "field": "Transmit_errors",
+          "label": "Transmit errors"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_errs_total IS NOT NULL OR metrics.node_network_transmit_errs_total IS NOT NULL\n| STATS Receive_errors = AVG(IRATE(metrics.node_network_receive_errs_total)), node_network_transmit_errs_total_B = AVG(IRATE(metrics.node_network_transmit_errs_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Transmit_errors = (-1 * node_network_transmit_errs_total_B)\n| DROP node_network_transmit_errs_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Drop",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{device}} - Receive drop",
+        "{{device}} - Transmit drop"
+      ],
+      "exprs": [
+        "irate(node_network_receive_drop_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_network_transmit_drop_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Receive_drop",
+          "label": "Receive drop"
+        },
+        {
+          "field": "Transmit_drop",
+          "label": "Transmit drop"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_drop_total IS NOT NULL OR metrics.node_network_transmit_drop_total IS NOT NULL\n| STATS Receive_drop = AVG(IRATE(metrics.node_network_receive_drop_total)), node_network_transmit_drop_total_B = AVG(IRATE(metrics.node_network_transmit_drop_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Transmit_drop = (-1 * node_network_transmit_drop_total_B)\n| DROP node_network_transmit_drop_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Compressed",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{device}} - Receive compressed",
+        "{{device}} - Transmit compressed"
+      ],
+      "exprs": [
+        "irate(node_network_receive_compressed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_network_transmit_compressed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Receive_compressed",
+          "label": "Receive compressed"
+        },
+        {
+          "field": "Transmit_compressed",
+          "label": "Transmit compressed"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_compressed_total IS NOT NULL OR metrics.node_network_transmit_compressed_total IS NOT NULL\n| STATS Receive_compressed = AVG(IRATE(metrics.node_network_receive_compressed_total)), node_network_transmit_compressed_total_B = AVG(IRATE(metrics.node_network_transmit_compressed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Transmit_compressed = (-1 * node_network_transmit_compressed_total_B)\n| DROP node_network_transmit_compressed_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Multicast",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{device}} - Receive multicast"
+      ],
+      "exprs": [
+        "irate(node_network_receive_multicast_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_multicast_total IS NOT NULL\n| STATS value = AVG(IRATE(metrics.node_network_receive_multicast_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Fifo",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{device}} - Receive fifo",
+        "{{device}} - Transmit fifo"
+      ],
+      "exprs": [
+        "irate(node_network_receive_fifo_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_network_transmit_fifo_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Receive_fifo",
+          "label": "Receive fifo"
+        },
+        {
+          "field": "Transmit_fifo",
+          "label": "Transmit fifo"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_fifo_total IS NOT NULL OR metrics.node_network_transmit_fifo_total IS NOT NULL\n| STATS Receive_fifo = AVG(IRATE(metrics.node_network_receive_fifo_total)), node_network_transmit_fifo_total_B = AVG(IRATE(metrics.node_network_transmit_fifo_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL Transmit_fifo = (-1 * node_network_transmit_fifo_total_B)\n| DROP node_network_transmit_fifo_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Frame",
+    "grafana": {
+      "unit": "pps",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{device}} - Receive frame"
+      ],
+      "exprs": [
+        "irate(node_network_receive_frame_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_frame_total IS NOT NULL\n| STATS value = AVG(IRATE(metrics.node_network_receive_frame_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Carrier",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{device}} - Statistic transmit_carrier"
+      ],
+      "exprs": [
+        "irate(node_network_transmit_carrier_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_transmit_carrier_total IS NOT NULL\n| STATS value = AVG(IRATE(metrics.node_network_transmit_carrier_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Traffic Colls",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{device}} - Transmit colls"
+      ],
+      "exprs": [
+        "irate(node_network_transmit_colls_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_transmit_colls_total IS NOT NULL\n| STATS value = AVG(IRATE(metrics.node_network_transmit_colls_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL value = -1 * value\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "NF Conntrack",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "NF conntrack entries",
+        "NF conntrack limit"
+      ],
+      "exprs": [
+        "node_nf_conntrack_entries{instance=\"$node\",job=\"$job\"}",
+        "node_nf_conntrack_entries_limit{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "NF_conntrack_entries",
+          "label": "NF conntrack entries"
+        },
+        {
+          "field": "NF_conntrack_limit",
+          "label": "NF conntrack limit"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_nf_conntrack_entries IS NOT NULL OR metrics.node_nf_conntrack_entries_limit IS NOT NULL\n| STATS NF_conntrack_entries = AVG(LAST_OVER_TIME(metrics.node_nf_conntrack_entries)), NF_conntrack_limit = AVG(LAST_OVER_TIME(metrics.node_nf_conntrack_entries_limit)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, NF_conntrack_entries, NF_conntrack_limit\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "ARP Entries",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{ device }} - ARP entries"
+      ],
+      "exprs": [
+        "node_arp_entries{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_arp_entries IS NOT NULL\n| STATS value = MAX(LAST_OVER_TIME(metrics.node_arp_entries)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "MTU",
+    "grafana": {
+      "unit": "bytes",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{ device }} - Bytes"
+      ],
+      "exprs": [
+        "node_network_mtu_bytes{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_mtu_bytes IS NOT NULL\n| STATS value = MAX(LAST_OVER_TIME(metrics.node_network_mtu_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Speed",
+    "grafana": {
+      "unit": "bytes",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{ device }} - Speed"
+      ],
+      "exprs": [
+        "node_network_speed_bytes{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_speed_bytes IS NOT NULL\n| STATS value = MAX(LAST_OVER_TIME(metrics.node_network_speed_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Queue Length",
+    "grafana": {
+      "unit": "none",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "{{ device }} -   Interface transmit queue length"
+      ],
+      "exprs": [
+        "node_network_transmit_queue_length{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_transmit_queue_length IS NOT NULL\n| STATS value = MAX(LAST_OVER_TIME(metrics.node_network_transmit_queue_length)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL series_group = COALESCE(TO_STRING(`labels.device`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 106579,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Softnet Packets",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "CPU {{cpu}} - Processed",
+        "CPU {{cpu}} - Dropped"
+      ],
+      "exprs": [
+        "irate(node_softnet_processed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_softnet_dropped_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "CPU_Processed",
+          "label": "CPU  - Processed"
+        },
+        {
+          "field": "CPU_Dropped",
+          "label": "CPU  - Dropped"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_softnet_processed_total IS NOT NULL OR metrics.node_softnet_dropped_total IS NOT NULL\n| STATS CPU_Processed = AVG(IRATE(metrics.node_softnet_processed_total)), node_softnet_dropped_total_B = AVG(IRATE(metrics.node_softnet_dropped_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu\n| EVAL CPU_Dropped = (-1 * node_softnet_dropped_total_B)\n| DROP node_softnet_dropped_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 96890,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Softnet Out of Quota",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "CPU {{cpu}} - Squeezed"
+      ],
+      "exprs": [
+        "irate(node_softnet_times_squeezed_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_softnet_times_squeezed_total",
+          "label": "Node Softnet Times Squeezed Total"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_softnet_times_squeezed_total IS NOT NULL\n| STATS node_softnet_times_squeezed_total = AVG(IRATE(metrics.node_softnet_times_squeezed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 96890,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Network Operational Status",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{interface}} - Operational state UP",
+        "{{device}} - Physical link state"
+      ],
+      "exprs": [
+        "node_network_up{operstate=\"up\",instance=\"$node\",job=\"$job\"}",
+        "node_network_carrier{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_up IS NOT NULL OR metrics.node_network_carrier IS NOT NULL\n| STATS operational_state_up = MAX(LAST_OVER_TIME(CASE((labels.operstate == \"up\") and (metrics.node_network_up IS NOT NULL), metrics.node_network_up, NULL))), physical_link_state = MAX(LAST_OVER_TIME(CASE((metrics.node_network_carrier IS NOT NULL), metrics.node_network_carrier, NULL))) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL __labels = MV_APPEND(\"Operational state UP\", \"Physical link state\"), __values = MV_APPEND(COALESCE(TO_STRING(operational_state_up), \"\"), COALESCE(TO_STRING(physical_link_state), \"\"))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL metric_label = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.device`), \"\"), \" / \", metric_label)\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 213158,
+    "live_err": "",
+    "verdict": "Partial"
+  }
+]

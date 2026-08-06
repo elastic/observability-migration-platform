@@ -1,0 +1,686 @@
+[
+  {
+    "title": "CPU Basic",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "percentunit",
+      "stacking": {
+        "group": "A",
+        "mode": "percent"
+      },
+      "n_targets": 6,
+      "legends": [
+        "Busy System",
+        "Busy User",
+        "Busy Iowait",
+        "Busy IRQs",
+        "Busy Other",
+        "Idle"
+      ],
+      "exprs": [
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"system\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"user\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"iowait\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=~\".*irq\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\",  mode!='idle',mode!='user',mode!='system',mode!='iowait',mode!='irq',mode!='softirq'}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))",
+        "sum(irate(node_cpu_seconds_total{instance=\"$node\",job=\"$job\", mode=\"idle\"}[$__rate_interval])) / scalar(count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu)))"
+      ],
+      "negative_y_overrides": []
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area_percentage_stacked",
+      "yTitle": "%",
+      "yLeftExtent": null,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null
+        },
+        {
+          "field": "value",
+          "format": {
+            "id": "percent",
+            "params": {
+              "decimals": 2,
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "series_group",
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS node_cpu_seconds_total_A_lhs = SUM(CASE((labels.mode == \"system\"), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((labels.mode == \"user\"), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((labels.mode == \"iowait\"), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((labels.mode RLIKE \".*irq\"), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((labels.mode != \"idle\" OR (labels.mode IS NULL AND \"\" != \"idle\"))) and ((labels.mode != \"user\" OR (labels.mode IS NULL AND \"\" != \"user\"))) and ((labels.mode != \"system\" OR (labels.mode IS NULL AND \"\" != \"system\"))) and ((labels.mode != \"iowait\" OR (labels.mode IS NULL AND \"\" != \"iowait\"))) and ((labels.mode != \"irq\" OR (labels.mode IS NULL AND \"\" != \"irq\"))) and ((labels.mode != \"softirq\" OR (labels.mode IS NULL AND \"\" != \"softirq\"))), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((labels.mode == \"idle\"), IRATE(metrics.node_cpu_seconds_total), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL Busy_System = (node_cpu_seconds_total_A_lhs / node_cpu_seconds_total_A_rhs)\n| EVAL Busy_User = (node_cpu_seconds_total_B_lhs / node_cpu_seconds_total_B_rhs)\n| EVAL Busy_Iowait = (node_cpu_seconds_total_C_lhs / node_cpu_seconds_total_C_rhs)\n| EVAL Busy_IRQs = (node_cpu_seconds_total_D_lhs / node_cpu_seconds_total_D_rhs)\n| EVAL Busy_Other = (node_cpu_seconds_total_E_lhs / node_cpu_seconds_total_E_rhs)\n| EVAL Idle = (node_cpu_seconds_total_F_lhs / node_cpu_seconds_total_F_rhs)\n| EVAL __labels_ab = MV_APPEND(\"Busy System\", \"Busy User\"), __labels_cd = MV_APPEND(\"Busy Iowait\", \"Busy IRQs\")\n| EVAL __labels = MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND(\"Busy Other\", \"Idle\"))\n| EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(Busy_System), \"\"), COALESCE(TO_STRING(Busy_User), \"\")), __values_cd = MV_APPEND(COALESCE(TO_STRING(Busy_Iowait), \"\"), COALESCE(TO_STRING(Busy_IRQs), \"\"))\n| EVAL __values = MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(COALESCE(TO_STRING(Busy_Other), \"\"), COALESCE(TO_STRING(Idle), \"\")))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL series_group = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC",
+      "grid": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 11,
+        "i": "7f5cdaf5-204a-42da-9426-be120e3ab829",
+        "sectionId": "eb638213-74a7-4783-b21d-cac7a67390ff"
+      }
+    },
+    "live_summary": {
+      "ok": true,
+      "by_series": [
+        [
+          187,
+          1,
+          null,
+          null,
+          "Busy IRQs"
+        ],
+        [
+          187,
+          1,
+          null,
+          null,
+          "Busy Iowait"
+        ],
+        [
+          187,
+          1,
+          null,
+          null,
+          "Busy Other"
+        ],
+        [
+          187,
+          1,
+          null,
+          null,
+          "Busy System"
+        ],
+        [
+          187,
+          1,
+          null,
+          null,
+          "Busy User"
+        ],
+        [
+          187,
+          1,
+          null,
+          null,
+          "Idle"
+        ]
+      ],
+      "cols": [
+        "n",
+        "series",
+        "vmin",
+        "vmax",
+        "series_group"
+      ]
+    }
+  },
+  {
+    "title": "Memory Basic",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "normal"
+      },
+      "n_targets": 5,
+      "legends": [
+        "RAM Total",
+        "RAM Used",
+        "RAM Cache + Buffer",
+        "RAM Free",
+        "SWAP Used"
+      ],
+      "exprs": [
+        "node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_MemFree_bytes{instance=\"$node\",job=\"$job\"} - (node_memory_Cached_bytes{instance=\"$node\",job=\"$job\"} + node_memory_Buffers_bytes{instance=\"$node\",job=\"$job\"} + node_memory_SReclaimable_bytes{instance=\"$node\",job=\"$job\"})",
+        "node_memory_Cached_bytes{instance=\"$node\",job=\"$job\"} + node_memory_Buffers_bytes{instance=\"$node\",job=\"$job\"} + node_memory_SReclaimable_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_MemFree_bytes{instance=\"$node\",job=\"$job\"}",
+        "(node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapFree_bytes{instance=\"$node\",job=\"$job\"})"
+      ],
+      "negative_y_overrides": []
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area_stacked",
+      "yTitle": "Bytes",
+      "yLeftExtent": null,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null
+        },
+        {
+          "field": "value",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "series_group",
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL OR metrics.node_memory_Cached_bytes IS NOT NULL OR metrics.node_memory_Buffers_bytes IS NOT NULL OR metrics.node_memory_SReclaimable_bytes IS NOT NULL OR metrics.node_memory_MemFree_bytes IS NOT NULL OR metrics.node_memory_SwapTotal_bytes IS NOT NULL OR metrics.node_memory_SwapFree_bytes IS NOT NULL\n| STATS RAM_Total = AVG(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)), node_memory_Cached_bytes_B_rhs_lhs_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_Cached_bytes)), node_memory_Buffers_bytes_B_rhs_lhs_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_B_rhs_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_SReclaimable_bytes)), node_memory_Cached_bytes_C_lhs_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_Cached_bytes)), node_memory_Buffers_bytes_C_lhs_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_C_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_SReclaimable_bytes)), RAM_Free = AVG(LAST_OVER_TIME(metrics.node_memory_MemFree_bytes)), node_memory_SwapTotal_bytes_E_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_E_rhs = AVG(LAST_OVER_TIME(metrics.node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL RAM_Used = ((RAM_Total - RAM_Free) - ((node_memory_Cached_bytes_B_rhs_lhs_lhs + node_memory_Buffers_bytes_B_rhs_lhs_rhs) + node_memory_SReclaimable_bytes_B_rhs_rhs))\n| EVAL RAM_Cache_Buffer = ((node_memory_Cached_bytes_C_lhs_lhs + node_memory_Buffers_bytes_C_lhs_rhs) + node_memory_SReclaimable_bytes_C_rhs)\n| EVAL SWAP_Used = (node_memory_SwapTotal_bytes_E_lhs - node_memory_SwapFree_bytes_E_rhs)\n| EVAL __labels_ab = MV_APPEND(\"RAM Used\", \"RAM Cache + Buffer\"), __labels_cd = MV_APPEND(\"RAM Free\", \"SWAP Used\")\n| EVAL __labels = MV_APPEND(__labels_ab, __labels_cd)\n| EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(RAM_Used), \"\"), COALESCE(TO_STRING(RAM_Cache_Buffer), \"\")), __values_cd = MV_APPEND(COALESCE(TO_STRING(RAM_Free), \"\"), COALESCE(TO_STRING(SWAP_Used), \"\"))\n| EVAL __values = MV_APPEND(__values_ab, __values_cd)\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL metric_label = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| EVAL series_group = metric_label\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC",
+      "grid": {
+        "x": 24,
+        "y": 0,
+        "w": 24,
+        "h": 11,
+        "i": "1f5cc674-5f4f-403c-868b-403f25feee10",
+        "sectionId": "eb638213-74a7-4783-b21d-cac7a67390ff"
+      }
+    },
+    "live_summary": {
+      "ok": true,
+      "by_series": [
+        [
+          9412,
+          1,
+          436961280.0,
+          1646637056.0,
+          "RAM Cache + Buffer"
+        ],
+        [
+          9412,
+          1,
+          77869056.0,
+          1336807424.0,
+          "RAM Free"
+        ],
+        [
+          9412,
+          1,
+          5420879872.0,
+          7795802112.0,
+          "RAM Used"
+        ],
+        [
+          9412,
+          1,
+          608772096.0,
+          1073737728.0,
+          "SWAP Used"
+        ]
+      ],
+      "cols": [
+        "n",
+        "series",
+        "vmin",
+        "vmax",
+        "series_group"
+      ]
+    }
+  },
+  {
+    "title": "Network Traffic Basic",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "bps",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "n_targets": 2,
+      "legends": [
+        "recv {{device}}",
+        "trans {{device}} "
+      ],
+      "exprs": [
+        "irate(node_network_receive_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])*8",
+        "irate(node_network_transmit_bytes_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])*8"
+      ],
+      "negative_y_overrides": [
+        {
+          "matcher": {
+            "id": "byRegexp",
+            "options": "/.*trans.*/"
+          },
+          "properties": [
+            {
+              "id": "custom.transform",
+              "value": "negative-Y"
+            }
+          ]
+        }
+      ]
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "yTitle": null,
+      "yLeftExtent": null,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null
+        },
+        {
+          "field": "value",
+          "format": {
+            "id": "bits",
+            "params": {
+              "decimals": 2,
+              "suffix": "/s"
+            }
+          }
+        },
+        {
+          "field": "series_group",
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_network_receive_bytes_total IS NOT NULL OR metrics.node_network_transmit_bytes_total IS NOT NULL\n| STATS recv = AVG(IRATE(metrics.node_network_receive_bytes_total)), trans = AVG(IRATE(metrics.node_network_transmit_bytes_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device\n| EVAL recv = (recv * 8)\n| EVAL trans = (-1 * (trans * 8))\n| EVAL __labels = MV_APPEND(\"Receive\", \"Transmit\"), __values = MV_APPEND(COALESCE(TO_STRING(recv), \"\"), COALESCE(TO_STRING(trans), \"\"))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL direction = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.device`), \"\"), \" / \", direction)\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC",
+      "grid": {
+        "x": 0,
+        "y": 11,
+        "w": 24,
+        "h": 10,
+        "i": "a0c2ea81-8ae9-4b6f-bc92-26738134af3e",
+        "sectionId": "eb638213-74a7-4783-b21d-cac7a67390ff"
+      }
+    },
+    "live_summary": {
+      "ok": true,
+      "by_series": [
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "erspan0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "erspan0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          2020.5714285714284,
+          14144.0,
+          "eth0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -266512.0,
+          -38088.0,
+          "eth0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "gre0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "gre0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "gretap0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "gretap0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "ip6_vti0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "ip6_vti0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "ip6gre0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "ip6gre0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "ip6tnl0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "ip6tnl0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "ip_vti0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "ip_vti0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "lo / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "lo / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "sit0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "sit0 / Transmit"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.0,
+          "tunl0 / Receive"
+        ],
+        [
+          9413,
+          1,
+          -0.0,
+          -0.0,
+          "tunl0 / Transmit"
+        ]
+      ],
+      "cols": [
+        "n",
+        "series",
+        "vmin",
+        "vmax",
+        "series_group"
+      ]
+    }
+  },
+  {
+    "title": "Disk Space Used Basic",
+    "grafana": {
+      "type": "timeseries",
+      "unit": "percent",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "n_targets": 1,
+      "legends": [
+        "{{mountpoint}}"
+      ],
+      "exprs": [
+        "100 - ((node_filesystem_avail_bytes{instance=\"$node\",job=\"$job\",device!~'rootfs'} * 100) / node_filesystem_size_bytes{instance=\"$node\",job=\"$job\",device!~'rootfs'})"
+      ],
+      "negative_y_overrides": []
+    },
+    "kibana": {
+      "viz_type": "lnsXY",
+      "preferredSeriesType": "area",
+      "yTitle": null,
+      "yLeftExtent": {
+        "mode": "custom",
+        "lowerBound": 0,
+        "upperBound": 100,
+        "niceValues": true
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "formats": [
+        {
+          "field": "time_bucket",
+          "format": null
+        },
+        {
+          "field": "value",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "series_group",
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (NOT (labels.device RLIKE \"rootfs\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"rootfs\")))\n| WHERE metrics.node_filesystem_avail_bytes IS NOT NULL OR metrics.node_filesystem_size_bytes IS NOT NULL\n| STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME(metrics.node_filesystem_avail_bytes)), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint\n| EVAL value = (100 - ((node_filesystem_avail_bytes_device_rootfs * 100) / node_filesystem_size_bytes_device_rootfs))\n| EVAL series_group = COALESCE(TO_STRING(`labels.mountpoint`), \"\")\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC",
+      "grid": {
+        "x": 24,
+        "y": 11,
+        "w": 24,
+        "h": 10,
+        "i": "d6bd54a0-c5aa-4d27-b694-23f69003e958",
+        "sectionId": "eb638213-74a7-4783-b21d-cac7a67390ff"
+      }
+    },
+    "live_summary": {
+      "ok": true,
+      "by_series": [
+        [
+          9413,
+          1,
+          100.0,
+          100.0,
+          "/oldroot"
+        ],
+        [
+          9413,
+          1,
+          0.05512841968477744,
+          0.05512841968477744,
+          "/oldroot/run"
+        ],
+        [
+          9413,
+          1,
+          0.2254358590681278,
+          0.2593989033382229,
+          "/run"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_mark/Users"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_mark/Volumes"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_mark/private"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_mark/tmp"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_mark/var/folders"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_virtiofs/Users"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_virtiofs/Volumes"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_virtiofs/private"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_virtiofs/tmp"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/host_virtiofs/var/folders"
+        ],
+        [
+          9413,
+          1,
+          null,
+          null,
+          "/run/jfs"
+        ],
+        [
+          9413,
+          1,
+          34.59388518067996,
+          36.84474324574819,
+          "/run/mutagen-file-shares"
+        ],
+        [
+          9413,
+          1,
+          34.59388518067996,
+          36.84474324574819,
+          "/run/mutagen-file-shares-mark"
+        ],
+        [
+          9413,
+          1,
+          null,
+          null,
+          "/run/rosetta"
+        ],
+        [
+          9413,
+          1,
+          66.33404072669241,
+          68.62242162759469,
+          "/run/rosetta.orig"
+        ],
+        [
+          9413,
+          1,
+          0.0,
+          0.002461090164501911,
+          "/tmp"
+        ],
+        [
+          9413,
+          1,
+          0.000590661639478185,
+          0.000590661639478185,
+          "/var"
+        ],
+        [
+          9413,
+          1,
+          34.59388518067996,
+          36.84474324574819,
+          "/var/lib"
+        ],
+        [
+          9413,
+          1,
+          34.59388518067996,
+          36.84474324574819,
+          "/var/lib/docker"
+        ]
+      ],
+      "cols": [
+        "n",
+        "series",
+        "vmin",
+        "vmax",
+        "series_group"
+      ]
+    }
+  }
+]

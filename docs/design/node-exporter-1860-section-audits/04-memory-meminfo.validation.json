@@ -1,0 +1,981 @@
+[
+  {
+    "title": "Memory Active / Inactive",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "normal"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "Inactive - Memory which has been less recently used.  It is more eligible to be reclaimed for other purposes",
+        "Active - Memory that has been used more recently and usually not reclaimed unless absolutely necessary"
+      ],
+      "exprs": [
+        "node_memory_Inactive_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Active_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Inactive_Memory_which_has_been_less_recently_used_It_is_more_eligible_to_be_reclaimed_for_other_purposes",
+          "label": "Inactive - Memory which has been less recently used.  It is more eligible to be reclaimed for other purposes",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Active_Memory_that_has_been_used_more_recently_and_usually_not_reclaimed_unless_absolutely_necessary",
+          "label": "Active - Memory that has been used more recently and usually not reclaimed unless absolutely necessary",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Inactive_bytes IS NOT NULL OR metrics.node_memory_Active_bytes IS NOT NULL\n| STATS Inactive_Memory_which_has_been_less_recently_used_It_is_more_eligible_to_be_reclaimed_for_other_purposes = AVG(LAST_OVER_TIME(metrics.node_memory_Inactive_bytes)), Active_Memory_that_has_been_used_more_recently_and_usually_not_reclaimed_unless_absolutely_necessary = AVG(LAST_OVER_TIME(metrics.node_memory_Active_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Inactive_Memory_which_has_been_less_recently_used_It_is_more_eligible_to_be_reclaimed_for_other_purposes, Active_Memory_that_has_been_used_more_recently_and_usually_not_reclaimed_unless_absolutely_necessary\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9634,
+          2189004800.0,
+          5444927488.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Committed",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "Committed_AS - Amount of memory presently allocated on the system",
+        "CommitLimit - Amount of  memory currently available to be allocated on the system"
+      ],
+      "exprs": [
+        "node_memory_Committed_AS_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_CommitLimit_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Committed_AS_Amount_of_memory_presently_allocated_on_the_system",
+          "label": "Committed_AS - Amount of memory presently allocated on the system",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "CommitLimit_Amount_of_memory_currently_available_to_be_allocated_on_the_system",
+          "label": "CommitLimit - Amount of  memory currently available to be allocated on the system",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Committed_AS_bytes IS NOT NULL OR metrics.node_memory_CommitLimit_bytes IS NOT NULL\n| STATS Committed_AS_Amount_of_memory_presently_allocated_on_the_system = AVG(LAST_OVER_TIME(metrics.node_memory_Committed_AS_bytes)), CommitLimit_Amount_of_memory_currently_available_to_be_allocated_on_the_system = AVG(LAST_OVER_TIME(metrics.node_memory_CommitLimit_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Committed_AS_Amount_of_memory_presently_allocated_on_the_system, CommitLimit_Amount_of_memory_currently_available_to_be_allocated_on_the_system\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9634,
+          11669516288.0,
+          15527194624.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Active / Inactive Detail",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "normal"
+      },
+      "neg_y": false,
+      "n_targets": 4,
+      "legends": [
+        "Inactive_file - File-backed memory on inactive LRU list",
+        "Inactive_anon - Anonymous and swap cache on inactive LRU list, including tmpfs (shmem)",
+        "Active_file - File-backed memory on active LRU list",
+        "Active_anon - Anonymous and swap cache on active least-recently-used (LRU) list, including tmpfs"
+      ],
+      "exprs": [
+        "node_memory_Inactive_file_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Inactive_anon_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Active_file_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Active_anon_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Inactive_file_File_backed_memory_on_inactive_LRU_list",
+          "label": "Inactive_file - File-backed memory on inactive LRU list",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Inactive_anon_Anonymous_and_swap_cache_on_inactive_LRU_list_including_tmpfs_shmem",
+          "label": "Inactive_anon - Anonymous and swap cache on inactive LRU list, including tmpfs (shmem)",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Active_file_File_backed_memory_on_active_LRU_list",
+          "label": "Active_file - File-backed memory on active LRU list",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Active_anon_Anonymous_and_swap_cache_on_active_least_recently_used_LRU_list_including_tmpfs",
+          "label": "Active_anon - Anonymous and swap cache on active least-recently-used (LRU) list, including tmpfs",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Inactive_file_bytes IS NOT NULL OR metrics.node_memory_Inactive_anon_bytes IS NOT NULL OR metrics.node_memory_Active_file_bytes IS NOT NULL OR metrics.node_memory_Active_anon_bytes IS NOT NULL\n| STATS Inactive_file_File_backed_memory_on_inactive_LRU_list = AVG(LAST_OVER_TIME(metrics.node_memory_Inactive_file_bytes)), Inactive_anon_Anonymous_and_swap_cache_on_inactive_LRU_list_including_tmpfs_shmem = AVG(LAST_OVER_TIME(metrics.node_memory_Inactive_anon_bytes)), Active_file_File_backed_memory_on_active_LRU_list = AVG(LAST_OVER_TIME(metrics.node_memory_Active_file_bytes)), Active_anon_Anonymous_and_swap_cache_on_active_least_recently_used_LRU_list_including_tmpfs = AVG(LAST_OVER_TIME(metrics.node_memory_Active_anon_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Inactive_file_File_backed_memory_on_inactive_LRU_list, Inactive_anon_Anonymous_and_swap_cache_on_inactive_LRU_list_including_tmpfs_shmem, Active_file_File_backed_memory_on_active_LRU_list, Active_anon_Anonymous_and_swap_cache_on_active_least_recently_used_LRU_list_including_tmpfs\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9634,
+          112496640.0,
+          1223368704.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Writeback and Dirty",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 3,
+      "legends": [
+        "Writeback - Memory which is actively being written back to disk",
+        "WritebackTmp - Memory used by FUSE for temporary writeback buffers",
+        "Dirty - Memory which is waiting to get written back to the disk"
+      ],
+      "exprs": [
+        "node_memory_Writeback_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_WritebackTmp_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Dirty_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Writeback_Memory_which_is_actively_being_written_back_to_disk",
+          "label": "Writeback - Memory which is actively being written back to disk",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "WritebackTmp_Memory_used_by_FUSE_for_temporary_writeback_buffers",
+          "label": "WritebackTmp - Memory used by FUSE for temporary writeback buffers",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Dirty_Memory_which_is_waiting_to_get_written_back_to_the_disk",
+          "label": "Dirty - Memory which is waiting to get written back to the disk",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Writeback_bytes IS NOT NULL OR metrics.node_memory_WritebackTmp_bytes IS NOT NULL OR metrics.node_memory_Dirty_bytes IS NOT NULL\n| STATS Writeback_Memory_which_is_actively_being_written_back_to_disk = AVG(LAST_OVER_TIME(metrics.node_memory_Writeback_bytes)), WritebackTmp_Memory_used_by_FUSE_for_temporary_writeback_buffers = AVG(LAST_OVER_TIME(metrics.node_memory_WritebackTmp_bytes)), Dirty_Memory_which_is_waiting_to_get_written_back_to_the_disk = AVG(LAST_OVER_TIME(metrics.node_memory_Dirty_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Writeback_Memory_which_is_actively_being_written_back_to_disk, WritebackTmp_Memory_used_by_FUSE_for_temporary_writeback_buffers, Dirty_Memory_which_is_waiting_to_get_written_back_to_the_disk\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9634,
+          0.0,
+          917504.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Shared and Mapped",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 4,
+      "legends": [
+        "Mapped - Used memory in mapped pages files which have been mapped, such as libraries",
+        "Shmem - Used shared memory (shared between several processes, thus including RAM disks)",
+        "ShmemHugePages - Memory used by shared memory (shmem) and tmpfs allocated  with huge pages",
+        "ShmemPmdMapped - Amount of shared (shmem/tmpfs) memory backed by huge pages"
+      ],
+      "exprs": [
+        "node_memory_Mapped_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Shmem_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_ShmemHugePages_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_ShmemPmdMapped_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Mapped_Used_memory_in_mapped_pages_files_which_have_been_mapped_such_as_libraries",
+          "label": "Mapped - Used memory in mapped pages files which have been mapped, such as libraries",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Shmem_Used_shared_memory_shared_between_several_processes_thus_including_RAM_disks",
+          "label": "Shmem - Used shared memory (shared between several processes, thus including RAM disks)",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "ShmemHugePages_Memory_used_by_shared_memory_shmem_and_tmpfs_allocated_with_huge_pages",
+          "label": "ShmemHugePages - Memory used by shared memory (shmem) and tmpfs allocated  with huge pages",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "ShmemPmdMapped_Amount_of_shared_shmem_tmpfs_memory_backed_by_huge_pages",
+          "label": "ShmemPmdMapped - Amount of shared (shmem/tmpfs) memory backed by huge pages",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Mapped_bytes IS NOT NULL OR metrics.node_memory_Shmem_bytes IS NOT NULL OR metrics.node_memory_ShmemHugePages_bytes IS NOT NULL OR metrics.node_memory_ShmemPmdMapped_bytes IS NOT NULL\n| STATS Mapped_Used_memory_in_mapped_pages_files_which_have_been_mapped_such_as_libraries = AVG(LAST_OVER_TIME(metrics.node_memory_Mapped_bytes)), Shmem_Used_shared_memory_shared_between_several_processes_thus_including_RAM_disks = AVG(LAST_OVER_TIME(metrics.node_memory_Shmem_bytes)), ShmemHugePages_Memory_used_by_shared_memory_shmem_and_tmpfs_allocated_with_huge_pages = AVG(LAST_OVER_TIME(metrics.node_memory_ShmemHugePages_bytes)), ShmemPmdMapped_Amount_of_shared_shmem_tmpfs_memory_backed_by_huge_pages = AVG(LAST_OVER_TIME(metrics.node_memory_ShmemPmdMapped_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Mapped_Used_memory_in_mapped_pages_files_which_have_been_mapped_such_as_libraries, Shmem_Used_shared_memory_shared_between_several_processes_thus_including_RAM_disks, ShmemHugePages_Memory_used_by_shared_memory_shmem_and_tmpfs_allocated_with_huge_pages, ShmemPmdMapped_Amount_of_shared_shmem_tmpfs_memory_backed_by_huge_pages\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9634,
+          181481472.0,
+          515051520.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Slab",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "normal"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "SUnreclaim - Part of Slab, that cannot be reclaimed on memory pressure",
+        "SReclaimable - Part of Slab, that might be reclaimed, such as caches"
+      ],
+      "exprs": [
+        "node_memory_SUnreclaim_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_SReclaimable_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "SUnreclaim_Part_of_Slab_that_cannot_be_reclaimed_on_memory_pressure",
+          "label": "SUnreclaim - Part of Slab, that cannot be reclaimed on memory pressure",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "SReclaimable_Part_of_Slab_that_might_be_reclaimed_such_as_caches",
+          "label": "SReclaimable - Part of Slab, that might be reclaimed, such as caches",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_SUnreclaim_bytes IS NOT NULL OR metrics.node_memory_SReclaimable_bytes IS NOT NULL\n| STATS SUnreclaim_Part_of_Slab_that_cannot_be_reclaimed_on_memory_pressure = AVG(LAST_OVER_TIME(metrics.node_memory_SUnreclaim_bytes)), SReclaimable_Part_of_Slab_that_might_be_reclaimed_such_as_caches = AVG(LAST_OVER_TIME(metrics.node_memory_SReclaimable_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, SUnreclaim_Part_of_Slab_that_cannot_be_reclaimed_on_memory_pressure, SReclaimable_Part_of_Slab_that_might_be_reclaimed_such_as_caches\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          129478656.0,
+          132530176.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Vmalloc",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 3,
+      "legends": [
+        "VmallocChunk - Largest contiguous block of vmalloc area which is free",
+        "VmallocTotal - Total size of vmalloc memory area",
+        "VmallocUsed - Amount of vmalloc area which is used"
+      ],
+      "exprs": [
+        "node_memory_VmallocChunk_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_VmallocTotal_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_VmallocUsed_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "VmallocChunk_Largest_contiguous_block_of_vmalloc_area_which_is_free",
+          "label": "VmallocChunk - Largest contiguous block of vmalloc area which is free",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "VmallocTotal_Total_size_of_vmalloc_memory_area",
+          "label": "VmallocTotal - Total size of vmalloc memory area",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "VmallocUsed_Amount_of_vmalloc_area_which_is_used",
+          "label": "VmallocUsed - Amount of vmalloc area which is used",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_VmallocChunk_bytes IS NOT NULL OR metrics.node_memory_VmallocTotal_bytes IS NOT NULL OR metrics.node_memory_VmallocUsed_bytes IS NOT NULL\n| STATS VmallocChunk_Largest_contiguous_block_of_vmalloc_area_which_is_free = AVG(LAST_OVER_TIME(metrics.node_memory_VmallocChunk_bytes)), VmallocTotal_Total_size_of_vmalloc_memory_area = AVG(LAST_OVER_TIME(metrics.node_memory_VmallocTotal_bytes)), VmallocUsed_Amount_of_vmalloc_area_which_is_used = AVG(LAST_OVER_TIME(metrics.node_memory_VmallocUsed_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, VmallocChunk_Largest_contiguous_block_of_vmalloc_area_which_is_free, VmallocTotal_Total_size_of_vmalloc_memory_area, VmallocUsed_Amount_of_vmalloc_area_which_is_used\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Bounce",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 1,
+      "legends": [
+        "Bounce - Memory used for block device bounce buffers"
+      ],
+      "exprs": [
+        "node_memory_Bounce_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "node_memory_Bounce_bytes",
+          "label": "Bounce - Memory used for block device bounce buffers",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [
+        "node_memory_Bounce_bytes"
+      ],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Bounce_bytes IS NOT NULL\n| STATS node_memory_Bounce_bytes = AVG(LAST_OVER_TIME(metrics.node_memory_Bounce_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Anonymous",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": true,
+      "n_targets": 2,
+      "legends": [
+        "AnonHugePages - Memory in anonymous huge pages",
+        "AnonPages - Memory in user pages not backed by files"
+      ],
+      "exprs": [
+        "node_memory_AnonHugePages_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_AnonPages_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "AnonHugePages_Memory_in_anonymous_huge_pages",
+          "label": "AnonHugePages - Memory in anonymous huge pages",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "AnonPages_Memory_in_user_pages_not_backed_by_files",
+          "label": "AnonPages - Memory in user pages not backed by files",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_AnonHugePages_bytes IS NOT NULL OR metrics.node_memory_AnonPages_bytes IS NOT NULL\n| STATS AnonHugePages_Memory_in_anonymous_huge_pages = AVG(LAST_OVER_TIME(metrics.node_memory_AnonHugePages_bytes)), AnonPages_Memory_in_user_pages_not_backed_by_files = AVG(LAST_OVER_TIME(metrics.node_memory_AnonPages_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, AnonHugePages_Memory_in_anonymous_huge_pages, AnonPages_Memory_in_user_pages_not_backed_by_files\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          1644167168.0,
+          2548039680.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Kernel / CPU",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "KernelStack - Kernel memory stack. This is not reclaimable",
+        "PerCPU - Per CPU memory allocated dynamically by loadable modules"
+      ],
+      "exprs": [
+        "node_memory_KernelStack_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Percpu_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "KernelStack_Kernel_memory_stack_This_is_not_reclaimable",
+          "label": "KernelStack - Kernel memory stack. This is not reclaimable",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "PerCPU_Per_CPU_memory_allocated_dynamically_by_loadable_modules",
+          "label": "PerCPU - Per CPU memory allocated dynamically by loadable modules",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_KernelStack_bytes IS NOT NULL OR metrics.node_memory_Percpu_bytes IS NOT NULL\n| STATS KernelStack_Kernel_memory_stack_This_is_not_reclaimable = AVG(LAST_OVER_TIME(metrics.node_memory_KernelStack_bytes)), PerCPU_Per_CPU_memory_allocated_dynamically_by_loadable_modules = AVG(LAST_OVER_TIME(metrics.node_memory_Percpu_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, KernelStack_Kernel_memory_stack_This_is_not_reclaimable, PerCPU_Per_CPU_memory_allocated_dynamically_by_loadable_modules\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          22478848.0,
+          24641536.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory HugePages Counter",
+    "grafana": {
+      "unit": "short",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 3,
+      "legends": [
+        "HugePages_Free - Huge pages in the pool that are not yet allocated",
+        "HugePages_Rsvd - Huge pages for which a commitment to allocate from the pool has been made, but no allocation has yet been made",
+        "HugePages_Surp - Huge pages in the pool above the value in /proc/sys/vm/nr_hugepages"
+      ],
+      "exprs": [
+        "node_memory_HugePages_Free{instance=\"$node\",job=\"$job\"}",
+        "node_memory_HugePages_Rsvd{instance=\"$node\",job=\"$job\"}",
+        "node_memory_HugePages_Surp{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "HugePages_Free_Huge_pages_in_the_pool_that_are_not_yet_allocated",
+          "label": "HugePages_Free - Huge pages in the pool that are not yet allocated",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "HugePages_Rsvd_Huge_pages_for_which_a_commitment_to_allocate_from_the_pool_has_been_made_but_no_allocation_has_yet_been_made",
+          "label": "HugePages_Rsvd - Huge pages for which a commitment to allocate from the pool has been made, but no allocation has yet been made",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "HugePages_Surp_Huge_pages_in_the_pool_above_the_value_in_proc_sys_vm_nr_hugepages",
+          "label": "HugePages_Surp - Huge pages in the pool above the value in /proc/sys/vm/nr_hugepages",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_HugePages_Free IS NOT NULL OR metrics.node_memory_HugePages_Rsvd IS NOT NULL OR metrics.node_memory_HugePages_Surp IS NOT NULL\n| STATS HugePages_Free_Huge_pages_in_the_pool_that_are_not_yet_allocated = AVG(LAST_OVER_TIME(metrics.node_memory_HugePages_Free)), HugePages_Rsvd_Huge_pages_for_which_a_commitment_to_allocate_from_the_pool_has_been_made_but_no_allocation_has_yet_been_made = AVG(LAST_OVER_TIME(metrics.node_memory_HugePages_Rsvd)), HugePages_Surp_Huge_pages_in_the_pool_above_the_value_in_proc_sys_vm_nr_hugepages = AVG(LAST_OVER_TIME(metrics.node_memory_HugePages_Surp)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, HugePages_Free_Huge_pages_in_the_pool_that_are_not_yet_allocated, HugePages_Rsvd_Huge_pages_for_which_a_commitment_to_allocate_from_the_pool_has_been_made_but_no_allocation_has_yet_been_made, HugePages_Surp_Huge_pages_in_the_pool_above_the_value_in_proc_sys_vm_nr_hugepages\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory HugePages Size",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "HugePages - Total size of the pool of huge pages",
+        "Hugepagesize - Huge Page size"
+      ],
+      "exprs": [
+        "node_memory_HugePages_Total{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Hugepagesize_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "HugePages_Total_size_of_the_pool_of_huge_pages",
+          "label": "HugePages - Total size of the pool of huge pages",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "Hugepagesize_Huge_Page_size",
+          "label": "Hugepagesize - Huge Page size",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_HugePages_Total IS NOT NULL OR metrics.node_memory_Hugepagesize_bytes IS NOT NULL\n| STATS HugePages_Total_size_of_the_pool_of_huge_pages = AVG(LAST_OVER_TIME(metrics.node_memory_HugePages_Total)), Hugepagesize_Huge_Page_size = AVG(LAST_OVER_TIME(metrics.node_memory_Hugepagesize_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, HugePages_Total_size_of_the_pool_of_huge_pages, Hugepagesize_Huge_Page_size\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory DirectMap",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 3,
+      "legends": [
+        "DirectMap1G - Amount of pages mapped as this size",
+        "DirectMap2M - Amount of pages mapped as this size",
+        "DirectMap4K - Amount of pages mapped as this size"
+      ],
+      "exprs": [
+        "node_memory_DirectMap1G_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_DirectMap2M_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_DirectMap4k_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "DirectMap1G_Amount_of_pages_mapped_as_this_size",
+          "label": "DirectMap1G - Amount of pages mapped as this size",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "DirectMap2M_Amount_of_pages_mapped_as_this_size",
+          "label": "DirectMap2M - Amount of pages mapped as this size",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "DirectMap4K_Amount_of_pages_mapped_as_this_size",
+          "label": "DirectMap4K - Amount of pages mapped as this size",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_DirectMap1G_bytes IS NOT NULL OR metrics.node_memory_DirectMap2M_bytes IS NOT NULL OR metrics.node_memory_DirectMap4k_bytes IS NOT NULL\n| STATS DirectMap1G_Amount_of_pages_mapped_as_this_size = AVG(LAST_OVER_TIME(metrics.node_memory_DirectMap1G_bytes)), DirectMap2M_Amount_of_pages_mapped_as_this_size = AVG(LAST_OVER_TIME(metrics.node_memory_DirectMap2M_bytes)), DirectMap4K_Amount_of_pages_mapped_as_this_size = AVG(LAST_OVER_TIME(metrics.node_memory_DirectMap4k_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, DirectMap1G_Amount_of_pages_mapped_as_this_size, DirectMap2M_Amount_of_pages_mapped_as_this_size, DirectMap4K_Amount_of_pages_mapped_as_this_size\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          7782,
+          2147483648.0,
+          2147483648.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory Unevictable and MLocked",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 2,
+      "legends": [
+        "Unevictable - Amount of unevictable memory that can't be swapped out for a variety of reasons",
+        "MLocked - Size of pages locked to memory using the mlock() system call"
+      ],
+      "exprs": [
+        "node_memory_Unevictable_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_memory_Mlocked_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "Unevictable_Amount_of_unevictable_memory_that_can_t_be_swapped_out_for_a_variety_of_reasons",
+          "label": "Unevictable - Amount of unevictable memory that can't be swapped out for a variety of reasons",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "field": "MLocked_Size_of_pages_locked_to_memory_using_the_mlock_system_call",
+          "label": "MLocked - Size of pages locked to memory using the mlock() system call",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_Unevictable_bytes IS NOT NULL OR metrics.node_memory_Mlocked_bytes IS NOT NULL\n| STATS Unevictable_Amount_of_unevictable_memory_that_can_t_be_swapped_out_for_a_variety_of_reasons = AVG(LAST_OVER_TIME(metrics.node_memory_Unevictable_bytes)), MLocked_Size_of_pages_locked_to_memory_using_the_mlock_system_call = AVG(LAST_OVER_TIME(metrics.node_memory_Mlocked_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Unevictable_Amount_of_unevictable_memory_that_can_t_be_swapped_out_for_a_variety_of_reasons, MLocked_Size_of_pages_locked_to_memory_using_the_mlock_system_call\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  },
+  {
+    "title": "Memory NFS",
+    "grafana": {
+      "unit": "bytes",
+      "stacking": {
+        "group": "A",
+        "mode": "none"
+      },
+      "neg_y": false,
+      "n_targets": 1,
+      "legends": [
+        "NFS Unstable - Memory in NFS pages sent to the server, but not yet committed to the storage"
+      ],
+      "exprs": [
+        "node_memory_NFS_Unstable_bytes{instance=\"$node\",job=\"$job\"}"
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "n_layers": 1,
+      "metrics": [
+        {
+          "field": "node_memory_NFS_Unstable_bytes",
+          "label": "NFS Unstable - Memory in NFS pages sent to the server, but not yet committed to the storage",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 2
+            }
+          }
+        }
+      ],
+      "bare_fields": [
+        "node_memory_NFS_Unstable_bytes"
+      ],
+      "neg_lines": [],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_NFS_Unstable_bytes IS NOT NULL\n| STATS node_memory_NFS_Unstable_bytes = AVG(LAST_OVER_TIME(metrics.node_memory_NFS_Unstable_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "missing_metrics_in_es": [],
+    "live": {
+      "ok": true,
+      "rows": [
+        [
+          9635,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  }
+]

@@ -2582,11 +2582,15 @@ def _translate_multi_target_native_promql(
     series appear on one chart with distinct breakdown values.  Only attempted
     for XY chart types (line, bar, area) where overlay makes sense.
     """
-    # As of August 4, 2026, Elasticsearch 9.5 still rejects PROMQL
+    # As of August 7, 2026, Elasticsearch 9.5.0-SNAPSHOT still rejects PROMQL
     # ``label_replace()`` at runtime with "Function [label_replace] is not yet
-    # implemented". This helper relies on ``label_replace`` to assign a stable
-    # per-target series label, so keep the established ES|QL fusion path until
-    # the target actually implements the function.
+    # implemented" (confirmed via live ``_query`` and Elastic PromQL function
+    # docs). Bare structural ``or`` parses, but mirrored series that share
+    # labels (Receive/Transmit, Read/Write) collapse to one timeseries without
+    # a distinguishing label — so an ``or``-only combiner is not correct.
+    # Keep the established ES|QL fusion path until label_replace (or an
+    # equivalent series-label injection) lands. Evidence:
+    # ``docs/design/node-exporter-1860-phase3-native-promql.md``.
     return None
 
     if kibana_type not in ("line", "bar", "area"):
@@ -2999,19 +3003,17 @@ def bargauge_panel_rule(context):
             primary.metadata.get("multi_series_metric_labels", {}),
         )
         primary.esql_query = category_query
-        context.yaml_panel["esql"] = _build_esql_xy_panel(
+        context.yaml_panel["esql"] = _build_esql_metric_panel(
             category_query,
-            "bar",
-            metric_col="value",
-            by_cols=["label"],
+            metric_col="gauge_value",
+            panel=context.panel,
+            breakdown_col="label",
         )
-        context.kibana_type = "bar"
-        context.yaml_panel["esql"]["legend"] = {
-            "visible": "hide",
-            "position": "right",
-            "truncate_labels": 1,
-        }
-        _append_unique(context.translation.warnings, "Approximated bargauge as bar chart")
+        context.kibana_type = "metric"
+        _append_unique(
+            context.translation.warnings,
+            "Approximated bargauge as metric tiles",
+        )
     elif series_fields:
         context.yaml_panel["esql"] = _build_esql_multi_series_xy(
             primary.esql_query,
@@ -3418,15 +3420,29 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 _curated_query = _materialize_curated_query_override(_curated_query, resolver)
                 if _curated_query:
                     _override_warnings = []
-                    _override_type = kibana_type
+                    _override_type = str(
+                        _override.get("kibana_type_override") or kibana_type or ""
+                    ).strip() or kibana_type
                     _shape = _extract_esql_shape(_curated_query)
                     _projected = list(getattr(_shape, "projected_fields", []) or [])
-                    if (
-                        panel_type == "bargauge"
-                        and "label" in _projected
-                        and "value" in _projected
-                    ):
-                        _override_type = "bar"
+                    _bargauge_measure = None
+                    # Metric tiles with a label breakdown: either an explicit
+                    # curated override, or the automatic multi-value bargauge
+                    # approximation.
+                    if "label" in _projected:
+                        _measure_cols = [
+                            field
+                            for field in _projected
+                            if field not in {"label", "sort_order"}
+                        ]
+                        if len(_measure_cols) == 1:
+                            if (
+                                not _override.get("kibana_type_override")
+                                and panel_type == "bargauge"
+                            ):
+                                _override_type = "metric"
+                            if _override_type == "metric":
+                                _bargauge_measure = _measure_cols[0]
                     _esql_mode = _infer_xy_stacking_mode(panel) if _override_type in ("bar", "area") else None
                     _native_panel = _native_esql_panel_spec(
                         _curated_query,
@@ -3435,6 +3451,26 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         mode=_esql_mode,
                         warnings=_override_warnings,
                     )
+                    if (
+                        _native_panel is None
+                        and _override_type == "datatable"
+                        and _projected
+                    ):
+                        _native_panel = _build_esql_datatable_panel(
+                            _curated_query,
+                            metric_fields=_projected,
+                        )
+                    if (
+                        _native_panel is None
+                        and _override_type == "metric"
+                        and _bargauge_measure
+                    ):
+                        _native_panel = _build_esql_metric_panel(
+                            _curated_query,
+                            metric_col=_bargauge_measure,
+                            panel=panel,
+                            breakdown_col="label",
+                        )
                     if (
                         _native_panel is None
                         and _override_type in ("line", "bar", "area")
@@ -3450,6 +3486,12 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                             )
                     if _native_panel:
                         yaml_panel["esql"] = _native_panel
+                        # Wide multi-metric curated queries (e.g. Memory Basic)
+                        # need Grafana field overrides like RAM Total
+                        # ``stack: false`` applied the same as the generic path.
+                        _apply_series_override_axes(
+                            yaml_panel, panel, _override_warnings
+                        )
                         enrich_yaml_panel_display(yaml_panel, panel)
                         _score = 1.0 if _status == "migrated" else 0.7
                         _override_notes = list(panel_notes)
@@ -5242,10 +5284,19 @@ def _first_numeric_threshold(panel):
 
 
 def _append_esql_constants(esql, constants):
+    """Append ``| EVAL field = literal`` constants for gauge accessors.
+
+    Curated pack queries often already emit ``_gauge_min`` / ``_gauge_max`` /
+    ``_gauge_goal``. Re-appending them duplicates the stage (harmless to ES|QL
+    but noisy in reviews and SO diffs), so skip any field already assigned in
+    the query text.
+    """
     assignments = []
     for field_name, value in constants.items():
         number = _coerce_number(value)
         if number is None:
+            continue
+        if re.search(rf"(?m)\b{re.escape(field_name)}\s*=", esql or ""):
             continue
         assignments.append(f"{field_name} = {number}")
     if not assignments:
@@ -5471,10 +5522,13 @@ def _build_summary_category_bar_query(esql, metric_fields, metric_label_hints=No
     lines.extend(
         [
             f"| EVAL __labels = {_nested_mv_append_expr(labels)}, __values = {_nested_mv_append_expr(value_terms)}",
-            '| EVAL __pairs = MV_ZIP(__labels, __values, "~")',
+            '| EVAL __pairs = MV_ZIP(__labels, __values, "\\t")',
             "| MV_EXPAND __pairs",
-            '| EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))',
-            "| KEEP label, value",
+            # ``gauge_value`` (not ``value``): Lens metric tiles have been
+            # observed to bind breakdown labels while leaving a measure column
+            # literally named ``value`` as N/A in the UI.
+            '| EVAL label = MV_FIRST(SPLIT(__pairs, "\\t")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t")))',
+            "| KEEP label, gauge_value",
             "| SORT label ASC",
         ]
     )
@@ -5722,7 +5776,31 @@ def _strip_scalar_last_time_bucket_keep(query):
     return "\n".join(out)
 
 
-def _metric_threshold_color(panel):
+def _metric_display_domain(panel, esql=None):
+    """Return ``(minimum, maximum)`` for metric color mapping.
+
+    Grafana ``percentunit`` panels store data in 0–1 with ``max: 1``. Curated
+    summaries that scale with ``* 100`` (Node Exporter Pressure) display
+    percent points 0–100; keep color ``range_max`` on that display domain so
+    threshold steps like 70/90 are not dropped against ``max: 1``.
+    """
+    defaults = _panel_field_defaults(panel)
+    minimum = _coerce_number(defaults.get("min"))
+    maximum = _coerce_number(defaults.get("max"))
+    unit = str(defaults.get("unit") or "")
+    if (
+        unit == "percentunit"
+        and maximum is not None
+        and maximum <= 1
+        and re.search(r"\*\s*100\b", esql or "")
+    ):
+        if minimum is not None:
+            minimum = minimum * 100.0
+        maximum = 100.0
+    return minimum, maximum
+
+
+def _metric_threshold_color(panel, esql=None):
     """Map a Grafana stat/single-value panel's threshold steps to a Kibana
     metric ``primary.color`` (``MetricChartColor``: ``apply_to`` +
     ``thresholds``/``range_min``/``range_max``).
@@ -5745,9 +5823,7 @@ def _metric_threshold_color(panel):
     # (often un-mapped) hue that misrepresents the panel.
     if not any(step.get("value") is not None for step in _gauge_threshold_steps(panel)):
         return None
-    defaults = _panel_field_defaults(panel)
-    minimum = _coerce_number(defaults.get("min"))
-    maximum = _coerce_number(defaults.get("max"))
+    minimum, maximum = _metric_display_domain(panel, esql=esql)
     color = _build_metric_color_mapping(panel, minimum=minimum, maximum=maximum)
     if not color:
         return None
@@ -5755,19 +5831,33 @@ def _metric_threshold_color(panel):
     return color
 
 
-def _build_esql_metric_panel(esql, metric_col=None, panel=None):
+def _build_esql_metric_panel(esql, metric_col=None, panel=None, breakdown_col=None):
     esql = _ensure_bucket_sort(esql)
     if not metric_col:
         metric_col, _ = _extract_esql_columns(esql)
     primary = {"field": metric_col}
-    color = _metric_threshold_color(panel)
+    color = _metric_threshold_color(panel, esql=esql)
     if color:
         primary["color"] = color
-    return {
+    out = {
         "type": "metric",
         "query": esql,
         "primary": primary,
     }
+    # Multi-value Grafana bargauge summaries unpivot to label/value rows. Lens
+    # XY categorical bars often render as empty for that shape; metric tiles
+    # with a label breakdown are the Kibana-native first-row presentation.
+    if breakdown_col:
+        out["breakdown"] = {"field": breakdown_col, "columns": 1}
+        # Narrow dashboard slots (common for summary rows) overflow with the
+        # default metric density when several tiles share one panel. Stack in
+        # one column (columns: 1) and use compact density so labels stay
+        # readable in w≈6 first-row panels.
+        out["styling"] = {"density": "compact"}
+        # Empty primary label: otherwise Lens shows the measure field name
+        # (e.g. "gauge_value" → "gaug...") under every breakdown tile.
+        out["primary"]["label"] = ""
+    return out
 
 
 _COMPOSITE_LEGEND_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")

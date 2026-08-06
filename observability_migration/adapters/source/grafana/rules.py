@@ -284,11 +284,14 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
         pack.panel_type_overrides.update(panel_cfg.type_map)
 
         for override in panel_cfg.query_overrides:
-            pack.panel_query_overrides.append({
+            entry = {
                 "title_match": override.title_match,
                 "esql_query": override.esql_query,
                 "status_override": override.status_override,
-            })
+            }
+            if override.kibana_type_override:
+                entry["kibana_type_override"] = override.kibana_type_override
+            pack.panel_query_overrides.append(entry)
         for override in panel_cfg.layout_overrides:
             pack.panel_layout_overrides.append({
                 "title_match": override.title_match,

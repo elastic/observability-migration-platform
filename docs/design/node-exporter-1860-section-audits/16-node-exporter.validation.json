@@ -1,0 +1,78 @@
+[
+  {
+    "title": "Node Exporter Scrape Time",
+    "grafana": {
+      "unit": "s",
+      "stack": "normal",
+      "n": 1,
+      "legends": [
+        "{{collector}} - Scrape duration"
+      ],
+      "exprs": [
+        "node_scrape_collector_duration_seconds{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_scrape_collector_duration_seconds",
+          "label": "Node Scrape Collector Duration Seconds"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_scrape_collector_duration_seconds IS NOT NULL\n| STATS node_scrape_collector_duration_seconds = AVG(LAST_OVER_TIME(metrics.node_scrape_collector_duration_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.collector\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 465120,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Node Exporter Scrape",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "{{collector}} - Scrape success",
+        "{{collector}} - Scrape textfile error (1 = true)"
+      ],
+      "exprs": [
+        "node_scrape_collector_success{instance=\"$node\",job=\"$job\"}",
+        "node_textfile_scrape_error{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Scrape_success",
+          "label": "Scrape success"
+        },
+        {
+          "field": "Scrape_textfile_error_1_true",
+          "label": "Scrape textfile error (1 = true)"
+        }
+      ],
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_scrape_collector_success IS NOT NULL OR metrics.node_textfile_scrape_error IS NOT NULL\n| STATS Scrape_success = AVG(LAST_OVER_TIME(metrics.node_scrape_collector_success)), node_textfile_scrape_error_B = AVG(LAST_OVER_TIME(metrics.node_textfile_scrape_error)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.collector\n| EVAL Scrape_textfile_error_1_true = (-1 * node_textfile_scrape_error_B)\n| DROP node_textfile_scrape_error_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 474810,
+    "live_err": "",
+    "verdict": "Good"
+  }
+]

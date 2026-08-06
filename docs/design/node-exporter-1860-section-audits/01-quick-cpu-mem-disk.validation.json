@@ -1,0 +1,1305 @@
+[
+  {
+    "title": "Pressure",
+    "grafana": {
+      "type": "bargauge",
+      "unit": "percentunit",
+      "min": 0,
+      "max": 1,
+      "thresholds": {
+        "mode": "percentage",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "dark-yellow",
+            "value": 70
+          },
+          {
+            "color": "dark-red",
+            "value": 90
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "CPU some",
+          "hide": false,
+          "instant": true,
+          "expr": "irate(node_pressure_cpu_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+        },
+        {
+          "refId": "Memory some",
+          "hide": false,
+          "instant": true,
+          "expr": "irate(node_pressure_memory_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+        },
+        {
+          "refId": "I/O some",
+          "hide": false,
+          "instant": true,
+          "expr": "irate(node_pressure_io_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "316e069f-318d-4bd1-a3e1-cffb328dff64",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(20, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": false,
+      "has_star_100": true,
+      "formats": [
+        {
+          "field": "label",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "gauge_value",
+          "label": "",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_pressure_cpu_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_memory_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_io_waiting_seconds_total IS NOT NULL\n| STATS CPU = MAX(IRATE(metrics.node_pressure_cpu_waiting_seconds_total)), Mem = MAX(IRATE(metrics.node_pressure_memory_waiting_seconds_total)), IO = MAX(IRATE(metrics.node_pressure_io_waiting_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)\n| EVAL __labels = MV_APPEND(MV_APPEND(\"CPU\", \"I/O\"), \"Mem\"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), \"\"), COALESCE(TO_STRING(IO), \"\")), COALESCE(TO_STRING(Mem), \"\"))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"\\t\")\n| MV_EXPAND __pairs\n| EVAL label = MV_FIRST(SPLIT(__pairs, \"\\t\")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"\\t\"))) * 100\n| KEEP label, gauge_value\n| SORT label ASC",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "color",
+        "showBar",
+        "density",
+        "breakdownByAccessor",
+        "maxCols"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": "metric_accessor_breakdown",
+        "maxCols": 1,
+        "density": "compact",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "label",
+        "gauge_value"
+      ],
+      "values": [
+        [
+          "CPU",
+          3.2971600000018952
+        ],
+        [
+          "I/O",
+          1.374820000000341
+        ],
+        [
+          "Mem",
+          0.42413000000010476
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_pressure_cpu_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_memory_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_io_waiting_seconds_total IS NOT NULL\n| STATS CPU = MAX(IRATE(metrics.node_pressure_cpu_waiting_seconds_total)), Mem = MAX(IRATE(metrics.node_pressure_memory_waiting_seconds_total)), IO = MAX(IRATE(metrics.node_pressure_io_waiting_seconds_total)) BY time_bucket = TBUCKET(20, NOW() - 15 minutes, NOW())\n| STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)\n| EVAL __labels = MV_APPEND(MV_APPEND(\"CPU\", \"I/O\"), \"Mem\"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), \"\"), COALESCE(TO_STRING(IO), \"\")), COALESCE(TO_STRING(Mem), \"\"))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"\\t\")\n| MV_EXPAND __pairs\n| EVAL label = MV_FIRST(SPLIT(__pairs, \"\\t\")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"\\t\"))) * 100\n| KEEP label, gauge_value\n| SORT label ASC"
+    }
+  },
+  {
+    "title": "CPU Busy",
+    "grafana": {
+      "type": "gauge",
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 85
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 95
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\", instance=\"$node\"}[$__rate_interval])))"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsGauge",
+      "grid": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "a53697a6-5614-4905-bd5f-1f73c42d815f",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(20, ?_tstart, ?_tend)",
+      "has_limit_2": true,
+      "has_last_stats": false,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "CPU Busy",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "_gauge_max",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_min",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_goal",
+          "label": null,
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE labels.mode == \"idle\"\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS idle_rate = AVG(IRATE(metrics.node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| EVAL computed_value = (100 * (1 - idle_rate))\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 2\n| SORT time_bucket ASC\n| LIMIT 1\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "minAccessor",
+        "maxAccessor",
+        "goalAccessor",
+        "shape",
+        "colorMode",
+        "palette",
+        "ticksPosition",
+        "labelMajorMode"
+      ],
+      "viz": {
+        "metricAccessor": "gauge_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": null,
+        "shape": "arc",
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value",
+        "_gauge_min",
+        "_gauge_max",
+        "_gauge_goal"
+      ],
+      "values": [
+        [
+          2.140000000130393,
+          0,
+          100,
+          85
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE labels.mode == \"idle\"\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS idle_rate = AVG(IRATE(metrics.node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, NOW() - 15 minutes, NOW())\n| EVAL computed_value = (100 * (1 - idle_rate))\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 2\n| SORT time_bucket ASC\n| LIMIT 1\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85"
+    }
+  },
+  {
+    "title": "Sys Load",
+    "grafana": {
+      "type": "gauge",
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 85
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 95
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "scalar(node_load1{instance=\"$node\",job=\"$job\"}) * 100 / count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu))"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsGauge",
+      "grid": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "41310585-280a-4bfe-9d3c-126297b2765d",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": true,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "Sys Load",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "_gauge_max",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_min",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_goal",
+          "label": null,
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_load1 IS NOT NULL OR metrics.node_cpu_seconds_total IS NOT NULL\n| STATS node_load1 = MAX(LAST_OVER_TIME(metrics.node_load1)), cpu_cores = COUNT_DISTINCT(CASE(metrics.node_cpu_seconds_total IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(cpu_cores > 0, ((node_load1 * 100) / cpu_cores), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "minAccessor",
+        "maxAccessor",
+        "goalAccessor",
+        "shape",
+        "colorMode",
+        "palette",
+        "ticksPosition",
+        "labelMajorMode"
+      ],
+      "viz": {
+        "metricAccessor": "gauge_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": null,
+        "shape": "arc",
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value",
+        "_gauge_min",
+        "_gauge_max",
+        "_gauge_goal"
+      ],
+      "values": [
+        [
+          7.3,
+          0,
+          100,
+          85
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_load1 IS NOT NULL OR metrics.node_cpu_seconds_total IS NOT NULL\n| STATS node_load1 = MAX(LAST_OVER_TIME(metrics.node_load1)), cpu_cores = COUNT_DISTINCT(CASE(metrics.node_cpu_seconds_total IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| EVAL computed_value = CASE(cpu_cores > 0, ((node_load1 * 100) / cpu_cores), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85"
+    }
+  },
+  {
+    "title": "RAM Used",
+    "grafana": {
+      "type": "gauge",
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 80
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 90
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": true,
+          "instant": true,
+          "expr": "((node_memory_MemTotal_bytes{instance=\"$node\", job=\"$job\"} - node_memory_MemFree_bytes{instance=\"$node\", job=\"$job\"}) / node_memory_MemTotal_bytes{instance=\"$node\", job=\"$job\"}) * 100"
+        },
+        {
+          "refId": "B",
+          "hide": false,
+          "instant": true,
+          "expr": "(1 - (node_memory_MemAvailable_bytes{instance=\"$node\", job=\"$job\"} / node_memory_MemTotal_bytes{instance=\"$node\", job=\"$job\"})) * 100"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsGauge",
+      "grid": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "ac59a40d-1588-46ec-8707-ba58f7c8f836",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": true,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "RAM Used",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "_gauge_max",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_min",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_goal",
+          "label": null,
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_MemAvailable_bytes IS NOT NULL OR metrics.node_memory_MemTotal_bytes IS NOT NULL\n| STATS mem_available = MAX(LAST_OVER_TIME(metrics.node_memory_MemAvailable_bytes)), mem_total = MAX(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(mem_total > 0, ((1 - (mem_available / mem_total)) * 100), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "minAccessor",
+        "maxAccessor",
+        "goalAccessor",
+        "shape",
+        "colorMode",
+        "palette",
+        "ticksPosition",
+        "labelMajorMode"
+      ],
+      "viz": {
+        "metricAccessor": "gauge_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": null,
+        "shape": "arc",
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value",
+        "_gauge_min",
+        "_gauge_max",
+        "_gauge_goal"
+      ],
+      "values": [
+        [
+          83.25060788927064,
+          0,
+          100,
+          80
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_memory_MemAvailable_bytes IS NOT NULL OR metrics.node_memory_MemTotal_bytes IS NOT NULL\n| STATS mem_available = MAX(LAST_OVER_TIME(metrics.node_memory_MemAvailable_bytes)), mem_total = MAX(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| EVAL computed_value = CASE(mem_total > 0, ((1 - (mem_available / mem_total)) * 100), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80"
+    }
+  },
+  {
+    "title": "SWAP Used",
+    "grafana": {
+      "type": "gauge",
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 10
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 25
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "((node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"} - node_memory_SwapFree_bytes{instance=\"$node\",job=\"$job\"}) / (node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"})) * 100"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsGauge",
+      "grid": {
+        "x": 24,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "88b6bb76-37ef-4a21-921b-8b4cc45f2cdd",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": true,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "SWAP Used",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "_gauge_max",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_min",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_goal",
+          "label": null,
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_SwapTotal_bytes IS NOT NULL OR metrics.node_memory_SwapFree_bytes IS NOT NULL\n| STATS swap_total = MAX(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)), swap_free = MAX(LAST_OVER_TIME(metrics.node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(swap_total > 0, (((swap_total - swap_free) / swap_total) * 100), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 10\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 10",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "minAccessor",
+        "maxAccessor",
+        "goalAccessor",
+        "shape",
+        "colorMode",
+        "palette",
+        "ticksPosition",
+        "labelMajorMode"
+      ],
+      "viz": {
+        "metricAccessor": "gauge_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": null,
+        "shape": "arc",
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value",
+        "_gauge_min",
+        "_gauge_max",
+        "_gauge_goal"
+      ],
+      "values": [
+        [
+          91.23531812789203,
+          0,
+          100,
+          10
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_memory_SwapTotal_bytes IS NOT NULL OR metrics.node_memory_SwapFree_bytes IS NOT NULL\n| STATS swap_total = MAX(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)), swap_free = MAX(LAST_OVER_TIME(metrics.node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| EVAL computed_value = CASE(swap_total > 0, (((swap_total - swap_free) / swap_total) * 100), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 10\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 10"
+    }
+  },
+  {
+    "title": "Root FS Used",
+    "grafana": {
+      "type": "gauge",
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 80
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 90
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "100 - ((node_filesystem_avail_bytes{instance=\"$node\",job=\"$job\",mountpoint=\"/\",fstype!=\"rootfs\"} * 100) / node_filesystem_size_bytes{instance=\"$node\",job=\"$job\",mountpoint=\"/\",fstype!=\"rootfs\"})"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsGauge",
+      "grid": {
+        "x": 30,
+        "y": 0,
+        "w": 6,
+        "h": 12,
+        "i": "4d58c03d-f2db-4317-80bd-6cc4d39161eb",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": true,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "Root FS Used",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 1,
+              "suffix": "%",
+              "compact": false
+            }
+          }
+        },
+        {
+          "field": "_gauge_max",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_min",
+          "label": null,
+          "format": null
+        },
+        {
+          "field": "_gauge_goal",
+          "label": null,
+          "format": null
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (labels.mountpoint == \"/\" OR labels.mountpoint == \"/oldroot\")\n| WHERE (labels.fstype != \"rootfs\" OR (labels.fstype IS NULL AND \"\" != \"rootfs\"))\n| WHERE metrics.node_filesystem_avail_bytes IS NOT NULL OR metrics.node_filesystem_size_bytes IS NOT NULL\n| STATS avail = MAX(LAST_OVER_TIME(metrics.node_filesystem_avail_bytes)), size = MAX(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(size > 0, (100 - ((avail * 100) / size)), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "minAccessor",
+        "maxAccessor",
+        "goalAccessor",
+        "shape",
+        "colorMode",
+        "palette",
+        "ticksPosition",
+        "labelMajorMode"
+      ],
+      "viz": {
+        "metricAccessor": "gauge_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": null,
+        "shape": "arc",
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value",
+        "_gauge_min",
+        "_gauge_max",
+        "_gauge_goal"
+      ],
+      "values": [
+        [
+          100.0,
+          0,
+          100,
+          80
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE (labels.mountpoint == \"/\" OR labels.mountpoint == \"/oldroot\")\n| WHERE (labels.fstype != \"rootfs\" OR (labels.fstype IS NULL AND \"\" != \"rootfs\"))\n| WHERE metrics.node_filesystem_avail_bytes IS NOT NULL OR metrics.node_filesystem_size_bytes IS NOT NULL\n| STATS avail = MAX(LAST_OVER_TIME(metrics.node_filesystem_avail_bytes)), size = MAX(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| EVAL computed_value = CASE(size > 0, (100 - ((avail * 100) / size)), NULL)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80\n| EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 80"
+    }
+  },
+  {
+    "title": "CPU Cores",
+    "grafana": {
+      "type": "stat",
+      "unit": "short",
+      "min": null,
+      "max": null,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "red",
+            "value": 80
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "count(count(node_cpu_seconds_total{instance=\"$node\",job=\"$job\"}) by (cpu))"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 36,
+        "y": 0,
+        "w": 4,
+        "h": 6,
+        "i": "2e10957e-f380-48a7-8166-365135046667",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": null,
+      "has_limit_2": false,
+      "has_last_stats": false,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "cpu_cores",
+          "label": "CPU Cores",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "query": "FROM metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS cpu_cores = COUNT_DISTINCT(labels.cpu)\n| KEEP cpu_cores",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "showBar",
+        "density"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": "default",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "cpu_cores"
+      ],
+      "values": [
+        [
+          10
+        ]
+      ],
+      "query_used": "FROM metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS cpu_cores = COUNT_DISTINCT(labels.cpu)\n| KEEP cpu_cores"
+    }
+  },
+  {
+    "title": "Uptime",
+    "grafana": {
+      "type": "stat",
+      "unit": "s",
+      "min": null,
+      "max": null,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "red",
+            "value": 80
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "node_time_seconds{instance=\"$node\",job=\"$job\"} - node_boot_time_seconds{instance=\"$node\",job=\"$job\"}"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 40,
+        "y": 0,
+        "w": 8,
+        "h": 6,
+        "i": "b49aa4db-a96c-4728-9574-17eff642cc34",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "computed_value",
+          "label": "Uptime",
+          "format": {
+            "id": "duration",
+            "params": {
+              "decimals": 2,
+              "fromUnit": "seconds",
+              "toUnit": "humanizePrecise"
+            }
+          }
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_time_seconds IS NOT NULL OR metrics.node_boot_time_seconds IS NOT NULL\n| STATS node_time_seconds = MAX(LAST_OVER_TIME(metrics.node_time_seconds)), node_boot_time_seconds = MAX(LAST_OVER_TIME(metrics.node_boot_time_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| EVAL computed_value = node_time_seconds - node_boot_time_seconds\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "showBar",
+        "density"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": "default",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "computed_value"
+      ],
+      "values": [
+        [
+          629693.9802320004
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_time_seconds IS NOT NULL OR metrics.node_boot_time_seconds IS NOT NULL\n| STATS node_time_seconds = MAX(LAST_OVER_TIME(metrics.node_time_seconds)), node_boot_time_seconds = MAX(LAST_OVER_TIME(metrics.node_boot_time_seconds)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| EVAL computed_value = node_time_seconds - node_boot_time_seconds\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value"
+    }
+  },
+  {
+    "title": "RootFS Total",
+    "grafana": {
+      "type": "stat",
+      "unit": "bytes",
+      "min": null,
+      "max": null,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "rgba(50, 172, 45, 0.97)",
+            "value": null
+          },
+          {
+            "color": "rgba(237, 129, 40, 0.89)",
+            "value": 70
+          },
+          {
+            "color": "rgba(245, 54, 54, 0.9)",
+            "value": 90
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 18,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "node_filesystem_size_bytes{instance=\"$node\",job=\"$job\",mountpoint=\"/\",fstype!=\"rootfs\"}"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 36,
+        "y": 6,
+        "w": 4,
+        "h": 6,
+        "i": "3a2fcbaf-c3aa-45a9-8d8e-12a405f32106",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "node_filesystem_size_bytes",
+          "label": "RootFS Total",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 0
+            }
+          }
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE (labels.mountpoint == \"/\" OR labels.mountpoint == \"/oldroot\")\n| WHERE (labels.fstype != \"rootfs\" OR (labels.fstype IS NULL AND \"\" != \"rootfs\"))\n| WHERE metrics.node_filesystem_size_bytes IS NOT NULL\n| STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)\n| KEEP node_filesystem_size_bytes",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "showBar",
+        "density"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": "default",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "node_filesystem_size_bytes"
+      ],
+      "values": [
+        [
+          662392832.0
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE (labels.mountpoint == \"/\" OR labels.mountpoint == \"/oldroot\")\n| WHERE (labels.fstype != \"rootfs\" OR (labels.fstype IS NULL AND \"\" != \"rootfs\"))\n| WHERE metrics.node_filesystem_size_bytes IS NOT NULL\n| STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME(metrics.node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)\n| KEEP node_filesystem_size_bytes"
+    }
+  },
+  {
+    "title": "RAM Total",
+    "grafana": {
+      "type": "stat",
+      "unit": "bytes",
+      "min": null,
+      "max": null,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "red",
+            "value": 80
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 20,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "node_memory_MemTotal_bytes{instance=\"$node\",job=\"$job\"}"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 40,
+        "y": 6,
+        "w": 4,
+        "h": 6,
+        "i": "8688e414-7ef5-4603-8ba2-e7be6fd28de3",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "node_memory_MemTotal_bytes",
+          "label": "RAM Total",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 0
+            }
+          }
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL\n| STATS node_memory_MemTotal_bytes = MAX(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| STATS node_memory_MemTotal_bytes = LAST(node_memory_MemTotal_bytes, time_bucket)\n| KEEP node_memory_MemTotal_bytes",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "showBar",
+        "density"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": "default",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "node_memory_MemTotal_bytes"
+      ],
+      "values": [
+        [
+          8321515520.0
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL\n| STATS node_memory_MemTotal_bytes = MAX(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| STATS node_memory_MemTotal_bytes = LAST(node_memory_MemTotal_bytes, time_bucket)\n| KEEP node_memory_MemTotal_bytes"
+    }
+  },
+  {
+    "title": "SWAP Total",
+    "grafana": {
+      "type": "stat",
+      "unit": "bytes",
+      "min": null,
+      "max": null,
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "green",
+            "value": null
+          },
+          {
+            "color": "red",
+            "value": 80
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 22,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "hide": false,
+          "instant": true,
+          "expr": "node_memory_SwapTotal_bytes{instance=\"$node\",job=\"$job\"}"
+        }
+      ],
+      "reduce": {
+        "calcs": [
+          "lastNotNull"
+        ],
+        "fields": "",
+        "values": false
+      }
+    },
+    "kibana": {
+      "viz_type": "lnsMetric",
+      "grid": {
+        "x": 44,
+        "y": 6,
+        "w": 4,
+        "h": 6,
+        "i": "46019b42-6798-46de-90f3-99a67ecae508",
+        "sectionId": "8459ec29-f77c-4050-90e0-369c665b55ad"
+      },
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_limit_2": false,
+      "has_last_stats": true,
+      "has_star_100": false,
+      "formats": [
+        {
+          "field": "node_memory_SwapTotal_bytes",
+          "label": "SWAP Total",
+          "format": {
+            "id": "bytes",
+            "params": {
+              "decimals": 0
+            }
+          }
+        }
+      ],
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_memory_SwapTotal_bytes IS NOT NULL\n| STATS node_memory_SwapTotal_bytes = MAX(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)\n| STATS node_memory_SwapTotal_bytes = LAST(node_memory_SwapTotal_bytes, time_bucket)\n| KEEP node_memory_SwapTotal_bytes",
+      "viz_keys": [
+        "layerId",
+        "layerType",
+        "metricAccessor",
+        "showBar",
+        "density"
+      ],
+      "viz": {
+        "metricAccessor": "metric_accessor_metric",
+        "breakdownByAccessor": null,
+        "maxCols": null,
+        "density": "default",
+        "shape": null,
+        "goal": null,
+        "metricAccessorId": null
+      }
+    },
+    "live_15m": {
+      "ok": true,
+      "columns": [
+        "node_memory_SwapTotal_bytes"
+      ],
+      "values": [
+        [
+          1073737728.0
+        ]
+      ],
+      "query_used": "TS metrics-node.prometheus-default\n| WHERE (\"node:9100\" == \"\" OR (labels.instance RLIKE \"node:9100\" OR (labels.instance IS NULL AND \"\" RLIKE \"node:9100\")))\n| WHERE (\"node_exporter\" == \"\" OR (labels.job RLIKE \"node_exporter\" OR (labels.job IS NULL AND \"\" RLIKE \"node_exporter\")))\n| WHERE metrics.node_memory_SwapTotal_bytes IS NOT NULL\n| STATS node_memory_SwapTotal_bytes = MAX(LAST_OVER_TIME(metrics.node_memory_SwapTotal_bytes)) BY time_bucket = TBUCKET(100, NOW() - 15 minutes, NOW())\n| STATS node_memory_SwapTotal_bytes = LAST(node_memory_SwapTotal_bytes, time_bucket)\n| KEEP node_memory_SwapTotal_bytes"
+    }
+  }
+]

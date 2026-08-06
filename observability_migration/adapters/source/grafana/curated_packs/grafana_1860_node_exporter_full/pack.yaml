@@ -75,35 +75,53 @@ query:
 panel:
   query_overrides:
     - title_match: "CPU Busy"
+      # Penultimate non-null rate bucket. TBUCKET(100) over 15m yields ~9s
+      # buckets (below scrape interval) so IRATE is null on the newest rows and
+      # the panel goes empty; TBUCKET(20) keeps ~45s buckets that still skip the
+      # incomplete window-edge spike via LIMIT 2 after dropping nulls.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE labels.mode == "idle"
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS idle_rate = AVG(IRATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS idle_rate = AVG(IRATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | EVAL computed_value = (100 * (1 - idle_rate))
-        | STATS computed_value = LAST(computed_value, time_bucket)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 2
+        | SORT time_bucket ASC
+        | LIMIT 1
         | KEEP computed_value
         | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85
       status_override: migrated
     - title_match: "Pressure"
+      # Compact first-row summary: unpivot the three PSI rates to
+      # label/gauge_value rows and render as Lens metric tiles stacked in
+      # one column (panel is only w=6). Use TBUCKET(20) so short windows
+      # (15m) still have enough samples per bucket for IRATE.
+      # Collapse with penultimate non-null bucket (Grafana lastNotNull), not
+      # MAX across the window — MAX reads peak pressure spikes instead of
+      # the current rate.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_pressure_cpu_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_memory_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_io_waiting_seconds_total:counter}} IS NOT NULL
-        | STATS CPU = MAX(IRATE({{metric:node_pressure_cpu_waiting_seconds_total:counter}})), Mem = MAX(IRATE({{metric:node_pressure_memory_waiting_seconds_total:counter}})), IO = MAX(IRATE({{metric:node_pressure_io_waiting_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
-        | STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)
-        | KEEP CPU, IO, Mem
+        | STATS CPU = MAX(IRATE({{metric:node_pressure_cpu_waiting_seconds_total:counter}})), Mem = MAX(IRATE({{metric:node_pressure_memory_waiting_seconds_total:counter}})), IO = MAX(IRATE({{metric:node_pressure_io_waiting_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | WHERE CPU IS NOT NULL OR Mem IS NOT NULL OR IO IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 2
+        | SORT time_bucket ASC
+        | LIMIT 1
         | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "I/O"), "Mem"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(IO), "")), COALESCE(TO_STRING(Mem), ""))
-        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
+        | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
-        | EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
-        | EVAL sort_order = CASE(label == "CPU", 0, label == "I/O", 1, 2)
-        | SORT sort_order ASC
-        | KEEP label, value
+        | EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t"))) * 100
+        | KEEP label, gauge_value
+        | SORT label ASC
       status_override: migrated
+      kibana_type_override: metric
     - title_match: "RAM Used"
       esql_query: |
         TS metrics-*
@@ -197,22 +215,27 @@ panel:
         | KEEP cpu_cores
       status_override: migrated
     - title_match: "TCP Errors"
+      # Includes TCPRcvQDrop (also listed under live_optional_metrics). When that
+      # field is absent from the target, remigrate without this override or seed
+      # the counter first — curated ES|QL cannot drop optional columns at runtime.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
-        | WHERE {{metric:node_netstat_TcpExt_ListenOverflows:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_ListenDrops:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPSynRetrans:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_RetransSegs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_InErrs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_OutRsts:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPOFOQueue:counter}} IS NOT NULL
-        | STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE({{metric:node_netstat_TcpExt_ListenOverflows:counter}})), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE({{metric:node_netstat_TcpExt_ListenDrops:counter}})), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE({{metric:node_netstat_TcpExt_TCPSynRetrans:counter}})), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE({{metric:node_netstat_Tcp_RetransSegs:counter}})), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE({{metric:node_netstat_Tcp_InErrs:counter}})), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE({{metric:node_netstat_Tcp_OutRsts:counter}})), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE({{metric:node_netstat_TcpExt_TCPOFOQueue:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
-        | KEEP time_bucket, `{{label:instance}}`, `{{label:job}}`, ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed, ListenDrops_SYNs_to_LISTEN_sockets_ignored, TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits, RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted, InErrs_Segments_received_in_error_e_g_bad_TCP_checksums, OutRsts_Segments_sent_with_RST_flag, TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it
+        | WHERE {{metric:node_netstat_TcpExt_ListenOverflows:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_ListenDrops:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPSynRetrans:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_RetransSegs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_InErrs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_OutRsts:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPRcvQDrop:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPOFOQueue:counter}} IS NOT NULL
+        | STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE({{metric:node_netstat_TcpExt_ListenOverflows:counter}})), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE({{metric:node_netstat_TcpExt_ListenDrops:counter}})), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE({{metric:node_netstat_TcpExt_TCPSynRetrans:counter}})), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE({{metric:node_netstat_Tcp_RetransSegs:counter}})), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE({{metric:node_netstat_Tcp_InErrs:counter}})), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE({{metric:node_netstat_Tcp_OutRsts:counter}})), TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit = AVG(IRATE({{metric:node_netstat_TcpExt_TCPRcvQDrop:counter}})), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE({{metric:node_netstat_TcpExt_TCPOFOQueue:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | KEEP time_bucket, `{{label:instance}}`, `{{label:job}}`, ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed, ListenDrops_SYNs_to_LISTEN_sockets_ignored, TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits, RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted, InErrs_Segments_received_in_error_e_g_bad_TCP_checksums, OutRsts_Segments_sent_with_RST_flag, TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit, TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "CPU"
+      # TBUCKET(20) keeps ~45s buckets on a 15m range so IRATE has enough
+      # samples; TBUCKET(100) (~9s) gaps the newest points and is heavy.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS system_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == "nice"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == "irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == "softirq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == "steal"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS system_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == "nice"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == "irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == "softirq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == "steal"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | EVAL System = (system_lhs / system_rhs), User = (user_lhs / user_rhs), Nice = (nice_lhs / nice_rhs), Iowait = (iowait_lhs / iowait_rhs), Irq = (irq_lhs / irq_rhs), Softirq = (softirq_lhs / softirq_rhs), Steal = (steal_lhs / steal_rhs), Idle = (idle_lhs / idle_rhs)
         | EVAL __labels_ab = MV_APPEND("System - Processes executing in kernel mode", "User - Normal processes executing in user mode"), __labels_cd = MV_APPEND("Nice - Niced processes executing in user mode", "Iowait - Waiting for I/O to complete")
         | EVAL __labels_ef = MV_APPEND("Irq - Servicing interrupts", "Softirq - Servicing softirqs"), __labels_gh = MV_APPEND("Steal - Time spent in other operating systems when running in a virtualized environment", "Idle - Waiting for something to happen")
@@ -232,7 +255,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS node_cpu_seconds_total_A_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((labels.mode RLIKE ".*irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((labels.mode != "idle" OR (labels.mode IS NULL AND "" != "idle"))) and ((labels.mode != "user" OR (labels.mode IS NULL AND "" != "user"))) and ((labels.mode != "system" OR (labels.mode IS NULL AND "" != "system"))) and ((labels.mode != "iowait" OR (labels.mode IS NULL AND "" != "iowait"))) and ((labels.mode != "irq" OR (labels.mode IS NULL AND "" != "irq"))) and ((labels.mode != "softirq" OR (labels.mode IS NULL AND "" != "softirq"))), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS node_cpu_seconds_total_A_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((labels.mode RLIKE ".*irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((labels.mode != "idle" OR (labels.mode IS NULL AND "" != "idle"))) and ((labels.mode != "user" OR (labels.mode IS NULL AND "" != "user"))) and ((labels.mode != "system" OR (labels.mode IS NULL AND "" != "system"))) and ((labels.mode != "iowait" OR (labels.mode IS NULL AND "" != "iowait"))) and ((labels.mode != "irq" OR (labels.mode IS NULL AND "" != "irq"))) and ((labels.mode != "softirq" OR (labels.mode IS NULL AND "" != "softirq"))), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(labels.cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | EVAL Busy_System = (node_cpu_seconds_total_A_lhs / node_cpu_seconds_total_A_rhs)
         | EVAL Busy_User = (node_cpu_seconds_total_B_lhs / node_cpu_seconds_total_B_rhs)
         | EVAL Busy_Iowait = (node_cpu_seconds_total_C_lhs / node_cpu_seconds_total_C_rhs)
@@ -250,24 +273,21 @@ panel:
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Memory Basic"
+      # Wide multi-metric output (not series_group unpivot) so Grafana's
+      # RAM Total field override (stack: false, fillOpacity: 0) can mark an
+      # unstacked overlay line while Used/Cache/Free/SWAP stay stacked.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Cached_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Buffers_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SReclaimable_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemFree_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapFree_bytes:gauge}} IS NOT NULL
-        | STATS RAM_Total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), node_memory_Cached_bytes_B_rhs_lhs_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), node_memory_Buffers_bytes_B_rhs_lhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), node_memory_SReclaimable_bytes_B_rhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), node_memory_Cached_bytes_C_lhs_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), node_memory_Buffers_bytes_C_lhs_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), node_memory_SReclaimable_bytes_C_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), RAM_Free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), node_memory_SwapTotal_bytes_E_lhs = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), node_memory_SwapFree_bytes_E_rhs = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
-        | EVAL RAM_Used = ((RAM_Total - RAM_Free) - ((node_memory_Cached_bytes_B_rhs_lhs_lhs + node_memory_Buffers_bytes_B_rhs_lhs_rhs) + node_memory_SReclaimable_bytes_B_rhs_rhs))
-        | EVAL RAM_Cache_Buffer = ((node_memory_Cached_bytes_C_lhs_lhs + node_memory_Buffers_bytes_C_lhs_rhs) + node_memory_SReclaimable_bytes_C_rhs)
-        | EVAL SWAP_Used = (node_memory_SwapTotal_bytes_E_lhs - node_memory_SwapFree_bytes_E_rhs)
-        | EVAL __labels_ab = MV_APPEND("RAM Used", "RAM Cache + Buffer"), __labels_cd = MV_APPEND("RAM Free", "SWAP Used")
-        | EVAL __labels = MV_APPEND(__labels_ab, __labels_cd)
-        | EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(RAM_Used), ""), COALESCE(TO_STRING(RAM_Cache_Buffer), "")), __values_cd = MV_APPEND(COALESCE(TO_STRING(RAM_Free), ""), COALESCE(TO_STRING(SWAP_Used), ""))
-        | EVAL __values = MV_APPEND(__values_ab, __values_cd)
-        | EVAL __pairs = MV_ZIP(__labels, __values, "~")
-        | MV_EXPAND __pairs
-        | EVAL metric_label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
-        | EVAL series_group = metric_label
-        | KEEP time_bucket, series_group, value
+        | STATS RAM_Total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), Cached = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), Buffers = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), SReclaimable = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), RAM_Free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), SwapTotal = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), SwapFree = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL `RAM Used` = ((RAM_Total - RAM_Free) - ((Cached + Buffers) + SReclaimable))
+        | EVAL `RAM Cache + Buffer` = ((Cached + Buffers) + SReclaimable)
+        | EVAL `SWAP Used` = (SwapTotal - SwapFree)
+        | EVAL `RAM Total` = RAM_Total
+        | EVAL `RAM Free` = RAM_Free
+        | KEEP time_bucket, `RAM Total`, `RAM Used`, `RAM Cache + Buffer`, `RAM Free`, `SWAP Used`
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Network Traffic Basic"
@@ -276,7 +296,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
-        | STATS recv = AVG(IRATE({{metric:node_network_receive_bytes_total:counter}})), trans = AVG(IRATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
+        | STATS recv = AVG(IRATE({{metric:node_network_receive_bytes_total:counter}})), trans = AVG(IRATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device
         | EVAL recv = (recv * 8)
         | EVAL trans = (-1 * (trans * 8))
         | EVAL __labels = MV_APPEND("Receive", "Transmit"), __values = MV_APPEND(COALESCE(TO_STRING(recv), ""), COALESCE(TO_STRING(trans), ""))
@@ -316,7 +336,7 @@ panel:
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE (labels.device RLIKE ?diskdevices OR (labels.device IS NULL AND "" RLIKE ?diskdevices))
         | WHERE {{metric:node_disk_io_time_seconds_total:counter}} IS NOT NULL
-        | STATS utilization = AVG(IRATE({{metric:node_disk_io_time_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.device
+        | STATS utilization = AVG(IRATE({{metric:node_disk_io_time_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Disk Space Used"
@@ -345,13 +365,18 @@ panel:
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "CPU Frequency Scaling"
+      # Grafana draws one series per cpu (`CPU {{ cpu }}`) plus single Max/Min
+      # reference lines. Averaging hertz across CPUs collapsed that into one
+      # "CPU" series; keep BY labels.cpu and emit Max/Min only once (cpu=="0").
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_cpu_scaling_frequency_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_max_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_min_hertz:gauge}} IS NOT NULL
-        | STATS CPU = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_hertz:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_max_hertz:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_min_hertz:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
-        | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "Max"), "Min"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(Max), "")), COALESCE(TO_STRING(Min), ""))
+        | STATS CPU = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_hertz:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_max_hertz:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_min_hertz:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu
+        | EVAL cpu_label = CONCAT("CPU ", COALESCE(TO_STRING(labels.cpu), ""))
+        | EVAL __labels = CASE(labels.cpu == "0", MV_APPEND(MV_APPEND(cpu_label, "Max"), "Min"), cpu_label)
+        | EVAL __values = CASE(labels.cpu == "0", MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(Max), "")), COALESCE(TO_STRING(Min), "")), COALESCE(TO_STRING(CPU), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))

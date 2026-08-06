@@ -354,6 +354,40 @@ def test_redis_memory_ratio_uses_ts_source():
     assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
 
 
+def test_1860_cpu_busy_curated_override_avoids_boundary_bucket_last():
+    """The node-exporter-full CPU Busy gauge must skip the final partial rate bucket."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    cpu_busy_panel = {
+        "type": "gauge",
+        "title": "CPU Busy",
+        "targets": [
+            {
+                "expr": '100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])))',
+                "refId": "A",
+            }
+        ],
+        "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+    }
+
+    yaml_panel, result = translate_panel(cpu_busy_panel, rule_pack=resolved)
+
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "AVG(IRATE(" in query
+    assert "| SORT time_bucket DESC" in query
+    assert "| LIMIT 2" in query
+    assert "| SORT time_bucket ASC" in query
+    assert "| LIMIT 1" in query
+    assert "WHERE computed_value IS NOT NULL" in query
+    assert "TBUCKET(20," in query
+    assert "STATS computed_value = LAST(computed_value, time_bucket)" not in query
+
+
 def test_find_14091_by_gnet_id():
     entry = find_curated_pack(gnet_id=14091, title="", tags=[])
     assert entry is not None

@@ -9963,16 +9963,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["type"], "bar")
-        self.assertEqual(
-            [m["field"] for m in yaml_panel["esql"]["metrics"]],
-            ["value"],
-        )
-        self.assertEqual(yaml_panel["esql"]["dimension"]["field"], "label")
-        self.assertEqual(yaml_panel["esql"]["legend"]["visible"], "hide")
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
         self.assertIn("MV_ZIP", yaml_panel["esql"]["query"])
-        self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"~\"))", yaml_panel["esql"]["query"])
-        self.assertIn("Approximated bargauge as bar chart", result.reasons)
+        self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"\\t\"))", yaml_panel["esql"]["query"])
+        self.assertIn("Approximated bargauge as metric tiles", result.reasons)
 
     def test_single_value_bargauge_becomes_horizontal_bullet_gauge(self):
         # A single-value Grafana bargauge is the snapshot of one metric against a
@@ -10124,12 +10123,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["type"], "bar")
-        self.assertIn("Approximated bargauge as bar chart", _.reasons)
-        metric_fields = [m["field"] for m in yaml_panel["esql"]["metrics"]]
-        self.assertEqual(metric_fields, ["value"])
-        self.assertEqual(yaml_panel["esql"]["dimension"]["field"], "label")
-        self.assertEqual(yaml_panel["esql"]["legend"]["visible"], "hide")
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
+        self.assertIn("Approximated bargauge as metric tiles", _.reasons)
         self.assertIn("CPU", yaml_panel["esql"]["query"])
         self.assertIn("I/O", yaml_panel["esql"]["query"])
         self.assertNotIn("breakdowns", yaml_panel["esql"])
@@ -10322,6 +10322,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         # path; only this fixture's omitted calcs differed.
         self.assertIn("| SORT time_bucket DESC", query)
         self.assertIn("| LIMIT 2", query)
+        self.assertIn("IS NOT NULL", query)
         self.assertNotIn("MAX(node_cpu_seconds_total)", query)
         self.assertNotIn("time_bucket = MAX(time_bucket)", query)
         self.assertIn("| KEEP node_cpu_seconds_total", query)
@@ -13011,6 +13012,7 @@ class TestDisplayMetadata(unittest.TestCase):
     def test_enrich_metric_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
         yaml_panel = {
+            "title": "Uptime",
             "esql": {
                 "type": "metric",
                 "query": "FROM metrics-*",
@@ -13020,6 +13022,28 @@ class TestDisplayMetadata(unittest.TestCase):
         grafana_panel = {"fieldConfig": {"defaults": {"unit": "bytes"}}}
         enrich_yaml_panel_display(yaml_panel, grafana_panel)
         self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "bytes")
+        self.assertEqual(yaml_panel["esql"]["primary"]["label"], "Uptime")
+        self.assertTrue(yaml_panel.get("hide_title"))
+
+    def test_enrich_metric_breakdown_keeps_chrome_title_and_uses_compact_density(self):
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Pressure",
+            "hide_title": True,
+            "esql": {
+                "type": "metric",
+                "query": "FROM metrics-* | KEEP label, gauge_value",
+                "primary": {"field": "gauge_value", "label": "Pressure"},
+                "breakdown": {"field": "label"},
+            },
+        }
+        enrich_yaml_panel_display(yaml_panel, {"fieldConfig": {"defaults": {"unit": "percentunit"}}})
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertNotIn("hide_title", yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "number")
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"].get("suffix"), "%")
 
     def test_enrich_gauge_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
@@ -14930,7 +14954,42 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
             panel_result = panels_by_title[title]
             self.assertEqual(panel_result.status, "migrated", title)
             self.assertFalse(panel_result.reasons, f"{title}: {panel_result.reasons}")
-        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["type"], "bar")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["type"], "metric")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["primary"].get("label"), "")
+        self.assertEqual(
+            yaml_panels_by_title["Pressure"]["esql"]["styling"]["density"],
+            "compact",
+        )
+        self.assertNotIn("hide_title", yaml_panels_by_title["Pressure"])
+        pressure_query = yaml_panels_by_title["Pressure"]["esql"]["query"]
+        self.assertIn("gauge_value", pressure_query)
+        self.assertIn("label", pressure_query)
+        self.assertIn("TBUCKET(20,", pressure_query)
+        # lastNotNull-style collapse (not MAX across the window)
+        self.assertIn("| LIMIT 2", pressure_query)
+        self.assertIn("WHERE CPU IS NOT NULL OR Mem IS NOT NULL OR IO IS NOT NULL", pressure_query)
+        self.assertNotIn("| STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)", pressure_query)
+        pressure_color = (
+            (yaml_panels_by_title["Pressure"]["esql"].get("primary") or {}).get("color") or {}
+        )
+        self.assertEqual(pressure_color.get("range_max"), 100)
+        memory_basic = yaml_panels_by_title["Memory Basic"]["esql"]
+        memory_query = memory_basic["query"]
+        self.assertIn("`RAM Total`", memory_query)
+        self.assertNotIn("series_group", memory_query)
+        metrics_by_field = {
+            m.get("field"): m for m in (memory_basic.get("metrics") or [])
+        }
+        self.assertIn("RAM Total", metrics_by_field)
+        self.assertIs(metrics_by_field["RAM Total"].get("stack"), False)
+        cpu_busy_query = yaml_panels_by_title["CPU Busy"]["esql"]["query"]
+        self.assertIn("WHERE computed_value IS NOT NULL", cpu_busy_query)
+        self.assertIn("TBUCKET(20,", cpu_busy_query)
+        # Curated pack already emits gauge constants; emitter must not duplicate.
+        self.assertEqual(cpu_busy_query.count("_gauge_min = 0"), 1)
 
     def test_node_exporter_full_preserves_device_breakdown_on_curated_device_panels(self):
         result, _yaml_doc = self._translate_dashboard("node-exporter-full.json")
@@ -15552,7 +15611,7 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
 
         panels = [
-            {"title": "Pressure", "esql": {"type": "bar"}, "size": {}, "position": {},
+            {"title": "Pressure", "esql": {"type": "metric"}, "size": {}, "position": {},
              "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 3, "_grafana_h": 4},
             {"title": "CPU Busy", "esql": {"type": "gauge"}, "size": {}, "position": {},
              "_grafana_row_y": 0, "_grafana_row_x": 3, "_grafana_w": 3, "_grafana_h": 4},

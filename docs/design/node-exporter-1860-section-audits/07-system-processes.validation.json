@@ -1,0 +1,278 @@
+[
+  {
+    "title": "Processes Status",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Processes blocked waiting for I/O to complete",
+        "Processes in runnable state"
+      ],
+      "exprs": [
+        "node_procs_blocked{instance=\"$node\",job=\"$job\"}",
+        "node_procs_running{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Processes_blocked_waiting_for_I_O_to_complete",
+          "label": "Processes blocked waiting for I/O to complete"
+        },
+        {
+          "field": "Processes_in_runnable_state",
+          "label": "Processes in runnable state"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_procs_blocked IS NOT NULL OR metrics.node_procs_running IS NOT NULL\n| STATS Processes_blocked_waiting_for_I_O_to_complete = AVG(LAST_OVER_TIME(metrics.node_procs_blocked)), Processes_in_runnable_state = AVG(LAST_OVER_TIME(metrics.node_procs_running)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Processes_blocked_waiting_for_I_O_to_complete, Processes_in_runnable_state\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Processes State",
+    "grafana": {
+      "unit": "short",
+      "stack": "normal",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{ state }}"
+      ],
+      "exprs": [
+        "node_processes_state{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_processes_state",
+          "label": "Node Processes State"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_processes_state IS NOT NULL\n| STATS node_processes_state = AVG(LAST_OVER_TIME(metrics.node_processes_state)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.state\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Processes  Forks",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "Processes forks second"
+      ],
+      "exprs": [
+        "irate(node_forks_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_forks_total",
+          "label": "Processes forks second"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_forks_total IS NOT NULL\n| STATS node_forks_total = AVG(IRATE(metrics.node_forks_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Processes Memory",
+    "grafana": {
+      "unit": "decbytes",
+      "stack": "none",
+      "draw": "line",
+      "n": 4,
+      "legends": [
+        "Processes virtual memory size in bytes",
+        "Maximum amount of virtual memory available in bytes",
+        "Processes virtual memory size in bytes",
+        "Maximum amount of virtual memory available in bytes"
+      ],
+      "exprs": [
+        "irate(process_virtual_memory_bytes{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "process_resident_memory_max_bytes{instance=\"$node\",job=\"$job\"}",
+        "irate(process_virtual_memory_bytes{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(process_virtual_memory_max_bytes{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 3,
+      "metrics": [
+        {
+          "field": "Processes_virtual_memory_size_in_bytes",
+          "label": "Processes Virtual Memory Size In Bytes"
+        },
+        {
+          "field": "Resident_memory_size_in_bytes",
+          "label": "Resident Memory Size In Bytes"
+        },
+        {
+          "field": "Maximum_amount_of_virtual_memory_available_in_bytes",
+          "label": "Maximum Amount Of Virtual Memory Available In Bytes"
+        }
+      ],
+      "live_series": null,
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.process_virtual_memory_bytes IS NOT NULL OR metrics.process_resident_memory_bytes IS NOT NULL OR metrics.process_virtual_memory_max_bytes IS NOT NULL\n| STATS Processes_virtual_memory_size_in_bytes = AVG(LAST_OVER_TIME(metrics.process_virtual_memory_bytes)), Resident_memory_size_in_bytes = AVG(LAST_OVER_TIME(metrics.process_resident_memory_bytes)), Maximum_amount_of_virtual_memory_available_in_bytes = AVG(LAST_OVER_TIME(metrics.process_virtual_memory_max_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.instance`), \"\"), \" / \", COALESCE(TO_STRING(`labels.job`), \"\"))\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Partial"
+  },
+  {
+    "title": "PIDs Number and Limit",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Number of PIDs",
+        "PIDs limit"
+      ],
+      "exprs": [
+        "node_processes_pids{instance=\"$node\",job=\"$job\"}",
+        "node_processes_max_processes{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Number_of_PIDs",
+          "label": "Number of PIDs"
+        },
+        {
+          "field": "PIDs_limit",
+          "label": "PIDs limit"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_processes_pids IS NOT NULL OR metrics.node_processes_max_processes IS NOT NULL\n| STATS Number_of_PIDs = AVG(LAST_OVER_TIME(metrics.node_processes_pids)), PIDs_limit = AVG(LAST_OVER_TIME(metrics.node_processes_max_processes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Number_of_PIDs, PIDs_limit\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Process schedule stats Running / Waiting",
+    "grafana": {
+      "unit": "s",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "CPU {{ cpu }} - seconds spent running a process",
+        "CPU {{ cpu }} - seconds spent by processing waiting for this CPU"
+      ],
+      "exprs": [
+        "irate(node_schedstat_running_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_schedstat_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": true
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "CPU_seconds_spent_running_a_process",
+          "label": "CPU  - seconds spent running a process"
+        },
+        {
+          "field": "CPU_seconds_spent_by_processing_waiting_for_this_CPU",
+          "label": "CPU  - seconds spent by processing waiting for this CPU"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": true,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_schedstat_running_seconds_total IS NOT NULL OR metrics.node_schedstat_waiting_seconds_total IS NOT NULL\n| STATS CPU_seconds_spent_running_a_process = AVG(IRATE(metrics.node_schedstat_running_seconds_total)), node_schedstat_waiting_seconds_total_B = AVG(IRATE(metrics.node_schedstat_waiting_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu\n| EVAL CPU_seconds_spent_by_processing_waiting_for_this_CPU = (-1 * node_schedstat_waiting_seconds_total_B)\n| DROP node_schedstat_waiting_seconds_total_B\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Threads Number and Limit",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Allocated threads",
+        "Threads limit"
+      ],
+      "exprs": [
+        "node_processes_threads{instance=\"$node\",job=\"$job\"}",
+        "node_processes_max_threads{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Allocated_threads",
+          "label": "Allocated threads"
+        },
+        {
+          "field": "Threads_limit",
+          "label": "Threads limit"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_processes_threads IS NOT NULL OR metrics.node_processes_max_threads IS NOT NULL\n| STATS Allocated_threads = AVG(LAST_OVER_TIME(metrics.node_processes_threads)), Threads_limit = AVG(LAST_OVER_TIME(metrics.node_processes_max_threads)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Allocated_threads, Threads_limit\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  }
+]
