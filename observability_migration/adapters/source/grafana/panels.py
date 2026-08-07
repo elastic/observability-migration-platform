@@ -5779,9 +5779,9 @@ def _strip_scalar_last_time_bucket_keep(query):
 def _metric_display_domain(panel, esql=None):
     """Return ``(minimum, maximum)`` for metric color mapping.
 
-    Grafana ``percentunit`` panels store data in 0–1 with ``max: 1``. Curated
+    Grafana ``percentunit`` panels store data in 0-1 with ``max: 1``. Curated
     summaries that scale with ``* 100`` (Node Exporter Pressure) display
-    percent points 0–100; keep color ``range_max`` on that display domain so
+    percent points 0-100; keep color ``range_max`` on that display domain so
     threshold steps like 70/90 are not dropped against ``max: 1``.
     """
     defaults = _panel_field_defaults(panel)

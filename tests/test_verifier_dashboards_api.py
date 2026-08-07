@@ -420,6 +420,7 @@ class TestSafeDisplayMetadata:
         assert cfg["breakdown_by"] == {
             "column": "service.name",
             "label": "Service",
+            "columns": 4,
             "collapse_by": "max",
         }
 
