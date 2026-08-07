@@ -224,10 +224,14 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         self.assertEqual(section_titles, ["Overview", "Resources", "Kubernetes", "Network"])
         self.assertEqual(len(yaml_doc["dashboards"][0].get("controls") or []), 2)
         # Multi-series summary bargauge → metric tiles with label breakdown
-        # (see ``bargauge_panel_rule``), not a category bar chart.
+        # (see ``bargauge_panel_rule``), not a category bar chart. percentunit
+        # ratios (0-1) must be scaled to percent points for number+% display.
         cpu = leaf_panels["Global CPU  Usage"]["esql"]
         self.assertEqual(cpu["type"], "metric")
         self.assertEqual(cpu["breakdown"]["field"], "label")
+        self.assertRegex(cpu["query"], r"gauge_value\s*=\s*.*\*\s*100")
+        self.assertEqual(cpu["primary"]["format"]["type"], "number")
+        self.assertEqual(cpu["primary"]["format"].get("suffix"), "%")
         self.assertEqual(leaf_panels["Nodes"]["esql"]["type"], "metric")
 
     def test_prometheus_all_keeps_metric_and_area_panels(self):

@@ -32,15 +32,16 @@ Grafana has **8** irate targets including `node_netstat_TcpExt_TCPRcvQDrop`.
 
 **Update 2026-08-07:** Lab host seeded the counter + pack override restored the
 eighth series. Remigrate is **117 Green / 0 Yellow**. On hosts where the field
-is still absent, curated TCP Errors will fail discovery/`_query` until the
-metric is ingested (or the override is narrowed again); the generic path still
-lists it under `live_optional_metrics`.
+is still absent, curated TCP Errors **omits** `TCPRcvQDrop` via
+`live_optional_metrics` + field-caps-aware override materialization, so the
+other seven series still migrate without requiring lab seeding.
 
 ---
 
 ## Fixes
 
-- Pack: re-include `TCPRcvQDrop` in curated TCP Errors (lab seed required).
+- Pack: include `TCPRcvQDrop` in curated TCP Errors when present; omit when
+  field-caps prove it absent (`live_optional_metrics`).
 - Lab seed: `metrics.node_netstat_TcpExt_TCPRcvQDrop` (+ HardwareCorrupted / MaxConn for other sections).
 
 ---

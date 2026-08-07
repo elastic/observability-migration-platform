@@ -13032,7 +13032,11 @@ class TestDisplayMetadata(unittest.TestCase):
             "hide_title": True,
             "esql": {
                 "type": "metric",
-                "query": "FROM metrics-* | KEEP label, gauge_value",
+                "query": (
+                    "FROM metrics-* "
+                    '| EVAL gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t"))) * 100 '
+                    "| KEEP label, gauge_value"
+                ),
                 "primary": {"field": "gauge_value", "label": "Pressure"},
                 "breakdown": {"field": "label"},
             },
@@ -13044,6 +13048,44 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
         self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "number")
         self.assertEqual(yaml_panel["esql"]["primary"]["format"].get("suffix"), "%")
+        # Already scaled curated query must not be double-multiplied.
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+
+    def test_enrich_metric_breakdown_scales_percentunit_when_switching_to_number_suffix(self):
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Global CPU  Usage",
+            "esql": {
+                "type": "metric",
+                "query": (
+                    "FROM metrics-* "
+                    '| EVAL label = MV_FIRST(SPLIT(__pairs, "\\t")), '
+                    'gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t"))) '
+                    "| KEEP label, gauge_value"
+                ),
+                "primary": {
+                    "field": "gauge_value",
+                    "format": {"type": "percent", "decimals": 1},
+                    "color": {
+                        "thresholds": [{"up_to": 1, "color": "#54B399"}],
+                        "range_min": 0,
+                        "range_max": 1,
+                        "apply_to": "value",
+                    },
+                },
+                "breakdown": {"field": "label"},
+            },
+        }
+        enrich_yaml_panel_display(
+            yaml_panel,
+            {"fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}},
+        )
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("gauge_value = gauge_value * 100", query)
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "number")
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"].get("suffix"), "%")
+        self.assertEqual(yaml_panel["esql"]["primary"]["color"]["range_max"], 100.0)
+        self.assertEqual(yaml_panel["esql"]["primary"]["color"]["thresholds"][0]["up_to"], 100.0)
 
     def test_enrich_gauge_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display

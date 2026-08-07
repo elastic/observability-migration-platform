@@ -14,6 +14,7 @@ from observability_migration.adapters.source.grafana.curated_packs import (
 from observability_migration.adapters.source.grafana.panels import (
     _apply_panel_layout_overrides_recursively,
     _materialize_curated_query_override,
+    _omit_absent_optional_metrics_from_curated_query,
     _retarget_esql_param_controls_to_panel_bindings,
     translate_dashboard,
     translate_panel,
@@ -831,6 +832,96 @@ def test_curated_query_override_materializes_control_and_metric_placeholders():
     assert "{{" not in rendered
     assert "MV_CONTAINS(?instance, \"instance\")" in rendered
     assert "metrics.redis_memory_used_bytes IS NOT NULL" in rendered
+
+
+def test_omit_absent_optional_metric_from_curated_tcp_errors_override():
+    """TCPRcvQDrop is live_optional; absent field-caps must not hard-fail TCP Errors."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    rule_pack = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    override = next(
+        item
+        for item in rule_pack.panel_query_overrides
+        if item.get("title_match") == "TCP Errors"
+    )
+    raw_query = override["esql_query"]
+    assert "TCPRcvQDrop" in raw_query
+
+    present = {
+        "metrics.node_netstat_TcpExt_ListenOverflows": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_ListenDrops": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPSynRetrans": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_RetransSegs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_InErrs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_OutRsts": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPOFOQueue": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+    }
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = dict(present)
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    stripped = _omit_absent_optional_metrics_from_curated_query(
+        raw_query,
+        rule_pack.live_optional_metrics,
+        resolver,
+    )
+    assert "TCPRcvQDrop" not in stripped
+    assert "ListenOverflows" in stripped
+    assert "TCPOFOQueue" in stripped
+    assert "{{metric:node_netstat_TcpExt_ListenOverflows" in stripped
+
+    # End-to-end: panel still migrates with a valid ES|QL query (no TCPRcvQDrop).
+    panel = {
+        "type": "timeseries",
+        "title": "TCP Errors",
+        "targets": [
+            {
+                "expr": 'irate(node_netstat_TcpExt_ListenOverflows{instance=~"$node"}[5m])',
+                "refId": "A",
+                "legendFormat": "ListenOverflows",
+            }
+        ],
+    }
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "ListenOverflows" in query
+    assert "TCPRcvQDrop" not in query
+    assert "markdown" not in (yaml_panel or {})
+
+
+def test_curated_tcp_errors_keeps_optional_metric_when_field_caps_present():
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    rule_pack = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    override = next(
+        item
+        for item in rule_pack.panel_query_overrides
+        if item.get("title_match") == "TCP Errors"
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "metrics.node_netstat_TcpExt_ListenOverflows": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_ListenDrops": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPSynRetrans": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_RetransSegs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_InErrs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_OutRsts": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPRcvQDrop": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPOFOQueue": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    kept = _omit_absent_optional_metrics_from_curated_query(
+        override["esql_query"],
+        rule_pack.live_optional_metrics,
+        resolver,
+    )
+    assert "TCPRcvQDrop" in kept
 
 
 def test_missing_live_metric_target_is_dropped_from_multi_target_panel():

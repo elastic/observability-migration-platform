@@ -215,9 +215,9 @@ panel:
         | KEEP cpu_cores
       status_override: migrated
     - title_match: "TCP Errors"
-      # Includes TCPRcvQDrop (also listed under live_optional_metrics). When that
-      # field is absent from the target, remigrate without this override or seed
-      # the counter first — curated ES|QL cannot drop optional columns at runtime.
+      # Includes TCPRcvQDrop (also listed under live_optional_metrics). When live
+      # field-caps prove that optional counter absent, materialization omits the
+      # series so the other seven TCP error series still migrate.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))

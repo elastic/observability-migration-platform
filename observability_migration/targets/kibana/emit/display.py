@@ -341,6 +341,50 @@ def humanize_metric_label(field_name: str, legend_format: str | None = None) -> 
     return label if label != field_name else None
 
 
+def _scale_metric_field_to_percent_points(query: str, field: str) -> str:
+    """Multiply a 0-1 measure into 0-100 percent points for ``number`` + ``%`` display."""
+    field_name = str(field or "").strip()
+    if not query or not field_name:
+        return query
+    if re.search(r"\*\s*100\b", query):
+        return query
+    scale_line = f"| EVAL {field_name} = {field_name} * 100"
+    lines = str(query).splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("| KEEP ") and field_name in stripped:
+            lines.insert(index, scale_line)
+            return "\n".join(lines)
+    lines.append(scale_line)
+    return "\n".join(lines)
+
+
+def _scale_metric_color_to_percent_points(color: dict[str, Any]) -> dict[str, Any]:
+    """Scale 0-1 threshold/range color config into percent points."""
+    out = dict(color)
+    range_max = out.get("range_max")
+    if not isinstance(range_max, (int, float)) or isinstance(range_max, bool) or range_max > 1:
+        return out
+    for key in ("range_min", "range_max"):
+        value = out.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = value * 100.0
+    thresholds = out.get("thresholds")
+    if isinstance(thresholds, list):
+        scaled_steps: list[Any] = []
+        for step in thresholds:
+            if not isinstance(step, dict):
+                scaled_steps.append(step)
+                continue
+            scaled = dict(step)
+            up_to = scaled.get("up_to")
+            if isinstance(up_to, (int, float)) and not isinstance(up_to, bool) and up_to <= 1:
+                scaled["up_to"] = up_to * 100.0
+            scaled_steps.append(scaled)
+        out["thresholds"] = scaled_steps
+    return out
+
+
 def enrich_yaml_panel_display(
     yaml_panel: dict,
     grafana_panel: dict,
@@ -406,6 +450,17 @@ def enrich_yaml_panel_display(
                     "decimals": int(primary_fmt.get("decimals") or 1),
                     "suffix": "%",
                 }
+                # Grafana ``percentunit`` stores 0-1 ratios. Number+% display
+                # expects percent points (0-100); scale once when the query has
+                # not already done so (curated Pressure already uses ``* 100``).
+                if unit == "percentunit":
+                    field = str(esql["primary"].get("field") or "").strip() or "gauge_value"
+                    query = str(esql.get("query") or "")
+                    if query and not re.search(r"\*\s*100\b", query):
+                        esql["query"] = _scale_metric_field_to_percent_points(query, field)
+                        color = esql["primary"].get("color")
+                        if isinstance(color, dict):
+                            esql["primary"]["color"] = _scale_metric_color_to_percent_points(color)
         else:
             label = _label_for_field(esql["primary"].get("field", ""), metric_labels)
             if label:

@@ -2997,10 +2997,13 @@ def bargauge_panel_rule(context):
     )
     if series_fields and (_summary_mode_from_metadata(primary.metadata) or not has_time_dim):
         restored_query, restored = _restore_summary_time_bucket(query)
+        panel_unit = str(_panel_field_defaults(context.panel).get("unit") or "")
         category_query = _build_summary_category_bar_query(
             restored_query if restored else query,
             series_fields,
             primary.metadata.get("multi_series_metric_labels", {}),
+            # Grafana percentunit is 0-1; metric tiles use number+% (0-100).
+            scale_to_percent_points=(panel_unit == "percentunit"),
         )
         primary.esql_query = category_query
         context.yaml_panel["esql"] = _build_esql_metric_panel(
@@ -3417,6 +3420,14 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         count=1,
                         flags=re.IGNORECASE,
                     )
+                # Drop live_optional metrics that field-caps proved absent so a
+                # curated override does not hard-require optional collector
+                # fields (e.g. TCPRcvQDrop on TCP Errors).
+                _curated_query = _omit_absent_optional_metrics_from_curated_query(
+                    _curated_query,
+                    rule_pack.live_optional_metrics or [],
+                    resolver,
+                )
                 _curated_query = _materialize_curated_query_override(_curated_query, resolver)
                 if _curated_query:
                     _override_warnings = []
@@ -5170,6 +5181,102 @@ def _materialize_curated_query_override(query, resolver):
     return _CURATED_QUERY_TOKEN_RE.sub(_replace, query)
 
 
+def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge))?\s*\}}\}}",
+        re.IGNORECASE,
+    )
+
+
+def _live_optional_metric_is_absent(metric_name: str, resolver) -> bool:
+    """Return True when live field-caps prove *metric_name* is missing."""
+    return bool(metric_name) and metric_name in _live_missing_metrics_for_expr(
+        metric_name, resolver
+    )
+
+
+def _strip_optional_metric_token_from_curated_esql(query: str, metric_name: str) -> str:
+    """Remove one optional ``{{metric:...}}`` series from a curated ES|QL override.
+
+    Handles the common Node Exporter shape: an ``OR … IS NOT NULL`` WHERE term,
+    a ``alias = AVG(IRATE(...))`` STATS assignment, and the matching KEEP column.
+    """
+    if not query or not metric_name:
+        return query
+    token_re = _curated_metric_token_pattern(metric_name)
+    if not token_re.search(query):
+        return query
+
+    aliases: list[str] = []
+    for match in re.finditer(
+        r"([A-Za-z_][\w]*)\s*=\s*[^,\n|]+",
+        query,
+    ):
+        assignment = match.group(0)
+        if token_re.search(assignment):
+            aliases.append(match.group(1))
+
+    # WHERE: drop ``OR token IS NOT NULL`` / ``token IS NOT NULL OR``.
+    query = re.sub(
+        rf"\s+OR\s+{token_re.pattern}\s+IS\s+NOT\s+NULL",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(
+        rf"{token_re.pattern}\s+IS\s+NOT\s+NULL\s+OR\s+",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+    # STATS: drop ``alias = …token…`` assignments (with surrounding commas).
+    for alias in aliases:
+        query = re.sub(
+            rf",\s*{re.escape(alias)}\s*=\s*[^,\n|]+",
+            "",
+            query,
+            count=1,
+        )
+        query = re.sub(
+            rf"{re.escape(alias)}\s*=\s*[^,\n|]+\s*,\s*",
+            "",
+            query,
+            count=1,
+        )
+
+    # KEEP: drop the matching aliases.
+    for alias in aliases:
+        query = re.sub(rf",\s*`?{re.escape(alias)}`?", "", query)
+        query = re.sub(rf"`?{re.escape(alias)}`?\s*,\s*", "", query)
+
+    # Tidy leftover double commas from STATS/KEEP edits.
+    query = re.sub(r",\s*,+", ", ", query)
+    query = re.sub(r"\|\s*STATS\s*,", "| STATS ", query, flags=re.IGNORECASE)
+    query = re.sub(r"\|\s*KEEP\s*,", "| KEEP ", query, flags=re.IGNORECASE)
+    return query
+
+
+def _omit_absent_optional_metrics_from_curated_query(query, optional_metrics, resolver):
+    """Strip live-optional metric tokens that field-caps prove are absent.
+
+    Curated overrides are otherwise materialized verbatim; without this step an
+    optional collector metric listed in ``live_optional_metrics`` still hard-
+    fails the whole panel when referenced in a hand-written override.
+    """
+    if not query:
+        return query
+    metrics = [str(name).strip() for name in (optional_metrics or []) if str(name).strip()]
+    if not metrics or not resolver:
+        return query
+    out = str(query)
+    for metric_name in metrics:
+        if not _live_optional_metric_is_absent(metric_name, resolver):
+            continue
+        out = _strip_optional_metric_token_from_curated_esql(out, metric_name)
+    return out
+
+
 def _live_missing_metrics_for_expr(expr, resolver):
     if not expr or not resolver:
         return []
@@ -5504,7 +5611,13 @@ def _nested_mv_append_expr(items):
     return expr
 
 
-def _build_summary_category_bar_query(esql, metric_fields, metric_label_hints=None):
+def _build_summary_category_bar_query(
+    esql,
+    metric_fields,
+    metric_label_hints=None,
+    *,
+    scale_to_percent_points: bool = False,
+):
     metric_fields = [field for field in (metric_fields or []) if field]
     if not esql or not metric_fields:
         return esql
@@ -5518,16 +5631,20 @@ def _build_summary_category_bar_query(esql, metric_fields, metric_label_hints=No
     # yields null again at the far end, so only the absent metric's own bar is
     # empty.
     value_terms = [f'COALESCE(TO_STRING({field}), "")' for field in metric_fields]
+    # ``gauge_value`` (not ``value``): Lens metric tiles have been observed to
+    # bind breakdown labels while leaving a measure column literally named
+    # ``value`` as N/A in the UI. Scale percentunit (0-1) into percent points
+    # when the panel will display as number+% rather than Lens percent.
+    gauge_expr = 'TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t")))'
+    if scale_to_percent_points:
+        gauge_expr = f"({gauge_expr}) * 100"
     lines = esql.splitlines()
     lines.extend(
         [
             f"| EVAL __labels = {_nested_mv_append_expr(labels)}, __values = {_nested_mv_append_expr(value_terms)}",
             '| EVAL __pairs = MV_ZIP(__labels, __values, "\\t")',
             "| MV_EXPAND __pairs",
-            # ``gauge_value`` (not ``value``): Lens metric tiles have been
-            # observed to bind breakdown labels while leaving a measure column
-            # literally named ``value`` as N/A in the UI.
-            '| EVAL label = MV_FIRST(SPLIT(__pairs, "\\t")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t")))',
+            f'| EVAL label = MV_FIRST(SPLIT(__pairs, "\\t")), gauge_value = {gauge_expr}',
             "| KEEP label, gauge_value",
             "| SORT label ASC",
         ]
