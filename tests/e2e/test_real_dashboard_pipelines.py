@@ -223,7 +223,11 @@ class TestGrafanaRealDashboardPipelines(unittest.TestCase):
         self.assertEqual(result.total_panels, 30)
         self.assertEqual(section_titles, ["Overview", "Resources", "Kubernetes", "Network"])
         self.assertEqual(len(yaml_doc["dashboards"][0].get("controls") or []), 2)
-        self.assertEqual(leaf_panels["Global CPU  Usage"]["esql"]["type"], "bar")
+        # Multi-series summary bargauge → metric tiles with label breakdown
+        # (see ``bargauge_panel_rule``), not a category bar chart.
+        cpu = leaf_panels["Global CPU  Usage"]["esql"]
+        self.assertEqual(cpu["type"], "metric")
+        self.assertEqual(cpu["breakdown"]["field"], "label")
         self.assertEqual(leaf_panels["Nodes"]["esql"]["type"], "metric")
 
     def test_prometheus_all_keeps_metric_and_area_panels(self):
