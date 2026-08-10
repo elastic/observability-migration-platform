@@ -3308,6 +3308,9 @@ def simple_agg_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
+    # Same issue-#99 drop as range_agg / simple_metric: outer agg without by()
+    # means legendFormat {{…}} is a series alias, not a BY dimension.
+    group_fields = _drop_redundant_legend_grouping(context, frag, group_fields)
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
     physical_metric = _resolve_frag_metric_field(

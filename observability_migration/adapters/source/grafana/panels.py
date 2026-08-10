@@ -6000,27 +6000,47 @@ def _strip_scalar_last_time_bucket_keep(query):
     return "\n".join(out)
 
 
+def _percentunit_values_scaled_to_percent_points(panel, esql=None):
+    """True when a ``percentunit`` panel's measure was rewritten to 0-100 points.
+
+    ``bargauge_panel_rule`` (and the display enricher) multiply ratios by 100 so
+    number+% metric tiles render correctly. Threshold / color-domain conversion
+    must follow that same value-domain transform — not the presence of an
+    explicit Grafana ``max``.
+    """
+    defaults = _panel_field_defaults(panel)
+    return (
+        str(defaults.get("unit") or "") == "percentunit"
+        and bool(re.search(r"\*\s*100\b", esql or ""))
+    )
+
+
+def _panel_threshold_mode(panel):
+    """Return Grafana ``fieldConfig.defaults.thresholds.mode`` (lowercased)."""
+    thresholds = _panel_field_defaults(panel).get("thresholds") or {}
+    if not isinstance(thresholds, dict):
+        return ""
+    return str(thresholds.get("mode") or "").strip().lower()
+
+
 def _metric_display_domain(panel, esql=None):
     """Return ``(minimum, maximum)`` for metric color mapping.
 
-    Grafana ``percentunit`` panels store data in 0-1 with ``max: 1``. Curated
-    summaries that scale with ``* 100`` (Node Exporter Pressure) display
-    percent points 0-100; keep color ``range_max`` on that display domain so
-    threshold steps like 70/90 are not dropped against ``max: 1``.
+    Grafana ``percentunit`` panels store data in 0-1 (often with ``max: 1``,
+    sometimes with no ``max``). When the query scales into percent points via
+    ``* 100``, keep color ``range_max`` on that 0-100 display domain so absolute
+    threshold steps land in the same units as the measure.
     """
     defaults = _panel_field_defaults(panel)
     minimum = _coerce_number(defaults.get("min"))
     maximum = _coerce_number(defaults.get("max"))
-    unit = str(defaults.get("unit") or "")
-    if (
-        unit == "percentunit"
-        and maximum is not None
-        and maximum <= 1
-        and re.search(r"\*\s*100\b", esql or "")
-    ):
-        if minimum is not None:
+    if _percentunit_values_scaled_to_percent_points(panel, esql):
+        if minimum is not None and minimum <= 1:
             minimum = minimum * 100.0
-        maximum = 100.0
+        # Absent or fractional max → percent-point domain; leave an already
+        # percent-point max (e.g. 100) alone.
+        if maximum is None or maximum <= 1:
+            maximum = 100.0
     return minimum, maximum
 
 
@@ -6051,13 +6071,12 @@ def _metric_threshold_color(panel, esql=None):
     color = _build_metric_color_mapping(panel, minimum=minimum, maximum=maximum)
     if not color:
         return None
-    defaults = _panel_field_defaults(panel)
-    defaults_max = _coerce_number(defaults.get("max"))
+    # Absolute (raw-domain) fractional cutoffs move with the *100 value
+    # transform. Percentage-mode cutoffs are already percent-of-range and must
+    # not be re-scaled (0.8% of the range stays 0.8 after the domain shift).
     if (
-        str(defaults.get("unit") or "") == "percentunit"
-        and defaults_max is not None
-        and defaults_max <= 1
-        and re.search(r"\*\s*100\b", esql or "")
+        _percentunit_values_scaled_to_percent_points(panel, esql)
+        and _panel_threshold_mode(panel) != "percentage"
     ):
         color = _scale_metric_color_thresholds_to_percent_points(color)
     color["apply_to"] = "background" if color_mode.startswith("background") else "value"

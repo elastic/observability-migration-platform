@@ -10182,6 +10182,106 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         )
 
+    def test_percentunit_bargauge_absolute_threshold_scales_without_explicit_max(self):
+        """Value *100 must move absolute cutoffs even when Grafana omits max."""
+        panel = {
+            "title": "Pressure no max",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ],
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 80.0, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
+
+    def test_percentunit_bargauge_percentage_mode_threshold_is_not_rescaled(self):
+        """Percentage-mode cutoffs are already percent-of-range; leave them."""
+        panel = {
+            "title": "Pressure percentage mode",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "percentage",
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ],
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        # 0.8% of the remapped 0-100 range stays 0.8 — not *100 → 80.
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 0.8, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
+
     def test_nested_count_stat_panel_stays_scalar_metric(self):
         panel = {
             "title": "CPU Cores",

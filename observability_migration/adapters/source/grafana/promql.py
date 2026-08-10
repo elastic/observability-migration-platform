@@ -4016,11 +4016,19 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
     (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
     not already show, so it is dropped.
 
+    Outer aggregations without ``by()`` are the other drop case: ``sum(rate(…))``
+    has already collapsed label dimensions, so a ``legendFormat`` token like
+    ``{{input}}`` is a series *alias*, not a BY field. Emitting ``BY input`` is
+    invalid ES|QL whether or not live field-caps ran (Redis 763 Network I/O).
+    When ``by()`` is present, explicit group labels win in
+    :func:`_merge_group_fields` / the ``_frag_group_labels`` keep-guard below.
+
     Only applies on the ``TS`` path — ``FROM`` has no TSID grouping, so dropping
     the label there would collapse multiple series into one line.
     """
     if frag.outer_agg:
-        return False
+        # No PromQL by()/without() → legend placeholders cannot be dimensions.
+        return not bool(frag.group_labels)
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         # Counters already wrap LAST_OVER_TIME in MAX (no AVG distortion); leave
@@ -4085,6 +4093,13 @@ def _drop_legend_labels_if_redundant(
         return group_fields
     if not _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
         return group_fields
+    # Outer aggregation without by()/without() already collapsed every label
+    # dimension. legendFormat tokens are series aliases only — never restore
+    # them just because the placeholder happens to name a real field (live
+    # caps). The keep-guard below is for bare rate/gauge paths where TSID
+    # still splits series and Kibana needs an explicit breakdown column.
+    if frag.outer_agg and not frag.group_labels:
+        return []
     if _legend_group_fields_are_real(group_fields, resolver):
         # The TSID split is invisible to Kibana. ``TS`` does emit one row per
         # series per bucket, but the chart binds series identity to a breakdown

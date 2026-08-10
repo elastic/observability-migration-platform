@@ -673,6 +673,206 @@ def test_bare_rate_drops_phantom_legend_label():
     assert structural_errors(check_esql_structure(query)) == []
 
 
+def test_sum_rate_phantom_legend_drops_without_field_discovery():
+    """Offline / no field-caps must still refuse legend placeholders as BY fields.
+
+    ``sum(rate(...))`` has already collapsed label dimensions. ``{{ input }}`` is
+    only a series alias — emitting ``BY input`` is invalid ES|QL even when
+    ``field_exists`` returns ``None`` because discovery never ran.
+    """
+    panel = {
+        "id": 2, "type": "timeseries", "title": "Network I/O",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {"expr": 'sum(rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]))',
+             "legendFormat": "{{ input }}", "refId": "A"},
+            {"expr": 'sum(rate(redis_net_output_bytes_total{instance=~"$instance"}[5m]))',
+             "legendFormat": "{{ output }}", "refId": "B"},
+        ],
+    }
+    rule_pack = RulePackConfig()
+    # Deliberately unseeded: mimics migrate without --es-url.
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel, datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rule_pack, resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.status
+    query = yaml_panel["esql"]["query"]
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert re.search(r"\binput\b", by_clause) is None, (
+        f"offline phantom legend must not become a BY field: {query}"
+    )
+    assert re.search(r"\boutput\b", by_clause) is None, (
+        f"offline phantom legend must not become a BY field: {query}"
+    )
+    # Both series fuse; aliases are STATS column names, not dimensions.
+    assert "redis_net_input_bytes_total" in query
+    assert "redis_net_output_bytes_total" in query
+    assert "input =" in stats_line and "output =" in stats_line
+    assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_simple_agg_without_by_drops_legend_group_label():
+    """``sum(metric)`` with no ``by()`` must not keep legendFormat as a BY field.
+
+    ``simple_agg`` previously skipped the issue-#99 legend drop that ``range_agg``
+    / ``simple_metric`` already apply. Offline resolve still maps ``{{instance}}``
+    → ``service.instance.id``, so the panel emitted ``BY …, service.instance.id``
+    and re-introduced a dimension PromQL had already collapsed.
+    """
+    panel = {
+        "id": 3,
+        "type": "timeseries",
+        "title": "Clients",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": "sum(redis_connected_clients)",
+                "legendFormat": "{{instance}}",
+                "refId": "A",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.status
+    query = yaml_panel["esql"]["query"]
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert "service.instance.id" not in by_clause, (
+        f"sum() without by() must not keep legend instance as BY: {query}"
+    )
+    assert re.search(r"\binstance\b", by_clause) is None, (
+        f"sum() without by() must not keep legend instance as BY: {query}"
+    )
+    assert "SUM(" in stats_line
+    assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_simple_agg_with_by_keeps_explicit_group_label():
+    """Explicit PromQL ``by (instance)`` must still survive on simple_agg panels."""
+    panel = {
+        "id": 4,
+        "type": "timeseries",
+        "title": "Clients by instance",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": "sum(redis_connected_clients) by (instance)",
+                "legendFormat": "{{instance}}",
+                "refId": "A",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.status
+    query = yaml_panel["esql"]["query"]
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert "service.instance.id" in by_clause or re.search(r"\binstance\b", by_clause), (
+        f"explicit by(instance) must remain a BY field: {query}"
+    )
+    assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_simple_agg_without_by_drops_legend_even_when_label_field_exists():
+    """Live field-caps must not restore legend BY after an outer agg collapse.
+
+    ``_legend_group_fields_are_real`` keeps real labels for bare ``rate()`` so
+    Kibana has a breakdown column (Hits/Misses). That keep-guard must not apply
+    to ``sum(metric)`` with no ``by()`` — PromQL already collapsed every series.
+    """
+    panel = {
+        "id": 5,
+        "type": "timeseries",
+        "title": "Clients collapsed",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": "sum(redis_connected_clients)",
+                "legendFormat": "{{instance}}",
+                "refId": "A",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack, field_profile="prometheus_native")
+    _seed(resolver, {
+        "labels.instance": _KW,
+        "metrics.redis_connected_clients": _DBL,
+    })
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.status
+    query = yaml_panel["esql"]["query"]
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert "labels.instance" not in by_clause, (
+        f"live caps must not reintroduce collapsed legend BY: {query}"
+    )
+    assert structural_errors(check_esql_structure(query)) == []
+
+
+def test_bare_rate_keeps_real_legend_instance_when_field_exists():
+    """Hits/Misses regression: bare rate + real {{instance}} must keep BY."""
+    panel = {
+        "id": 6,
+        "type": "timeseries",
+        "title": "Hits / Misses per Sec",
+        "datasource": {"type": "prometheus", "uid": "prom"},
+        "targets": [
+            {
+                "expr": 'rate(redis_keyspace_hits_total{instance=~"$instance"}[5m])',
+                "legendFormat": "hits, {{ instance }}",
+                "refId": "A",
+            },
+        ],
+    }
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack, field_profile="prometheus_native")
+    _seed(resolver, {
+        "labels.instance": _KW,
+        "metrics.redis_keyspace_hits_total": _DBL,
+    })
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.status
+    query = yaml_panel["esql"]["query"]
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert "labels.instance" in by_clause, (
+        f"bare rate must keep real legend instance for Kibana series identity: {query}"
+    )
+    assert structural_errors(check_esql_structure(query)) == []
+
+
 def _panel(targets, title="Hit ratio per instance"):
     return {
         "id": 1, "type": "graph", "title": title,
