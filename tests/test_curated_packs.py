@@ -354,6 +354,11 @@ def test_redis_memory_ratio_uses_ts_source():
     assert "MV_CONTAINS(?instance" in query, f"should preserve multi-select binding: {query}"
     assert 'MV_CONTAINS(?instance, ".*")' in query, query
     assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
+    # Dial domain 0–100 must survive sync: emitted query carries ``_gauge_*``
+    # and ``panel_result.esql_query`` must match so validate does not strip them.
+    assert yaml_panel["esql"].get("maximum") == {"field": "_gauge_max"}
+    assert "_gauge_max = 100" in query, query
+    assert result.esql_query == query
 
 
 def test_1860_cpu_busy_curated_override_avoids_boundary_bucket_last():
@@ -645,6 +650,11 @@ def test_panel_query_override_preserves_gauge_shape_from_source_panel():
     assert yaml_panel["esql"].get("appearance", {}).get("shape") == "arc"
     assert yaml_panel["esql"].get("maximum") == {"field": "_gauge_max"}
     assert yaml_panel["esql"].get("goal") == {"field": "_gauge_goal"}
+    # Issue #109 class: curated overrides must record the emitted query (with
+    # ``| EVAL _gauge_*``) so validate-stage sync does not strip dial bounds.
+    query = yaml_panel["esql"]["query"]
+    assert "_gauge_min = 0, _gauge_max = 100, _gauge_goal = 85" in query
+    assert result.esql_query == query
 
 
 def test_panel_query_override_case_insensitive():

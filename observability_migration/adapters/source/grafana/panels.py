@@ -3534,11 +3534,22 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                             ]
                         if panel_type != _override_type:
                             _override_notes.append(_SKIP_APPROXIMATION_NOTE)
+                        # Record the *emitted* panel query, not the bare curated
+                        # override text. Gauge/metric builders append trailing
+                        # ``| EVAL _gauge_*`` (and similar constants) after the
+                        # override query; recording the bare text let the
+                        # validate-stage ``sync_result_queries_to_yaml`` overwrite
+                        # the YAML query and strip those columns, orphaning
+                        # min/max/goal accessors (same failure class as issue
+                        # #109 for native-PROMQL gauges). Memory Usage then
+                        # uploaded without ``metric.max``, so Kibana auto-fit
+                        # the dial to ~0–2% instead of the Grafana 0–100 domain.
+                        _emitted_query = _native_panel.get("query", _curated_query)
                         _panel_result = PanelResult(
                             title, panel_type, _override_type, _status, _score,
                             reasons=_override_warnings,
                             promql_expr=_curated_query,
-                            esql_query=_curated_query,
+                            esql_query=_emitted_query,
                         )
                         return yaml_panel, _enrich_panel_result(
                             _panel_result,
