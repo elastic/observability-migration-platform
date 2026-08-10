@@ -279,10 +279,11 @@ Datadog.
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
-| `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto`; use `native` or `esql` only for explicit operator control |
-| `--kibana-promql-control-params` | Grafana | Opt into native `PROMQL` for panels whose PromQL label matchers bind dashboard controls inside the PromQL expression | Default is off because Kibana builds vary; use only after you verify your Kibana forwards dashboard control values into inner PromQL expressions |
+| `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto` (probe-driven). `esql` forces the ES\|QL translator for every panel. `native` *requests* native `PROMQL` wherever it is safe — panels whose PromQL matchers bind dashboard variables (e.g. `instance=~"$instance"`) still fall back to ES\|QL unless you also pass `--kibana-promql-control-params`. Datadog: no-op. |
+| `--kibana-promql-control-params` | Grafana | Opt into native `PROMQL` for panels whose PromQL label matchers bind dashboard controls inside the PromQL expression | Default is off because Kibana builds vary. Required (together with a PROMQL-capable target) to keep Redis-style `$instance` panels on native `PROMQL`; without it, `auto`/`native` still emit ES\|QL for those panels. Use only after you verify your Kibana forwards control values into inner PromQL. |
+| `--no-curated-packs` | Grafana | Disable automatic curated-pack merge for known `gnetId` dashboards | By default packs (e.g. Redis 763, Node Exporter 1860) merge under any `--rules-file`. Use this to exercise the core translator alone. |
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
-| `--validate` | Grafana, Datadog | Validate emitted ES\|QL queries against Elasticsearch after translation | Requires `--es-url`. Auto-applies safe query fixes and manualizes broken ones before upload. |
+| `--validate` | Grafana, Datadog | Run verification-packet ES\|QL validation against Elasticsearch after translation | Requires `--es-url`. Distinct from the lighter native-`PROMQL` parse check that already runs when `--es-url` is set and PROMQL panels exist. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
 | `--ensure-data-views` | Grafana, Datadog dashboards | Create the Kibana data views referenced by migrated controls before upload | Forwarded to the source adapter. Upload already ensures referenced patterns automatically; use this flag when you want the ensure step without relying only on the upload path. Prefer `obs-migrate cluster ensure-data-views` for an explicit cluster-only ensure. |
 | `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). A requested creation that does not happen **fails the run** rather than warning and exiting `0` — see [Creating Kibana alert rules from a single command](#creating-kibana-alert-rules-from-a-single-command) for the exit codes. |
@@ -331,7 +332,9 @@ for your exported JSON directories. For a zero-setup offline trial, run
 `obs-migrate list-samples` and pass the printed `input_dir` to `--input-dir`.
 
 ```bash
-# Grafana dashboards only (files); native PROMQL is the default
+# Grafana dashboards only (files). Without --es-url the probe cannot confirm
+# PROMQL; panels with $-variable matchers still land on ES|QL unless you later
+# re-run with --es-url and --kibana-promql-control-params on a capable Kibana.
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
@@ -883,18 +886,36 @@ to `--data-view` — when unset it defaults to the source/profile log index
 For Grafana native PromQL validation, this repo is exercised against
 Prometheus-style layouts that Elasticsearch native PROMQL can query directly,
 including the synthetic `metrics-prometheus-*` TSDB seed and the local OTel
-lab's `metrics-*` data view. Grafana migration always emits native PROMQL with
+lab's `metrics-*` data view. Grafana migration prefers native PROMQL with
 automatic ES|QL fallback; when `--es-url` is set it probes the target and
 downgrades to ES|QL translation only when the `PROMQL` command is confirmed
 unsupported (an inconclusive probe keeps native and warns). Use
 `--translation-mode {auto,native,esql}` only when you need to override that
 probe-driven default: `auto` is the normal path, `native` requests native
 PROMQL wherever the translator can safely emit it, and `esql` disables native
-PROMQL so Grafana panels use ES|QL translation. Construct-level unsupported
-cases can still degrade or require manual review. Datadog accepts the flag for
-CLI parity, but it is a no-op because Datadog has no native-PROMQL path. If you
-point `--data-view` at a different Prometheus integration layout, verify the
-target schema first before treating empty panels as a migration bug.
+PROMQL so Grafana panels use ES|QL translation.
+
+Two further gates still push panels to ES|QL even when the target supports
+`PROMQL`:
+
+1. **Control-bound PromQL matchers** (common on Redis 763: `instance=~"$instance"`).
+   Without `--kibana-promql-control-params`, those panels stay on ES|QL under
+   both `auto` and `native`. With the flag on a PROMQL-capable Kibana (9.5+
+   lab builds), Redis 763 typically keeps a minority of panels on native
+   `PROMQL` and the rest on ES|QL.
+2. **Curated pack / construct limits** — pack overrides and unsupported PromQL
+   shapes can still emit ES|QL. Pass `--no-curated-packs` to isolate the core
+   translator.
+
+Construct-level unsupported cases can still degrade or require manual review.
+Datadog accepts `--translation-mode` for CLI parity, but it is a no-op because
+Datadog has no native-PROMQL path. If you point `--data-view` at a different
+Prometheus integration layout, verify the target schema first before treating
+empty panels as a migration bug.
+
+`--es-url` alone enables field discovery and, when native PROMQL panels exist,
+a live PROMQL parse check. It does **not** run the verification-packet ES|QL
+gate — add `--validate` for that (the migrate log says so explicitly).
 
 For Datadog, `--source-execution` additionally executes each panel's source
 query against the live Datadog API (requires `DD_API_KEY`/`DD_APP_KEY` via env
