@@ -3423,11 +3423,28 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                 # Drop live_optional metrics that field-caps proved absent so a
                 # curated override does not hard-require optional collector
                 # fields (e.g. TCPRcvQDrop on TCP Errors).
-                _curated_query = _omit_absent_optional_metrics_from_curated_query(
+                _optional_metric_result = _omit_absent_optional_metrics_from_curated_query_result(
                     _curated_query,
                     rule_pack.live_optional_metrics or [],
                     resolver,
                 )
+                if _optional_metric_result.exhausted_metrics:
+                    missing_panel, panel_result = _make_missing_telemetry_panel(
+                        yaml_panel,
+                        title,
+                        panel_type,
+                        _optional_metric_result.exhausted_metrics,
+                    )
+                    return missing_panel, _enrich_panel_result(
+                        panel_result,
+                        panel=panel,
+                        datasource=datasource,
+                        query_language=query_language,
+                        notes=panel_notes,
+                        inventory=panel_inventory,
+                        yaml_panel=missing_panel,
+                    )
+                _curated_query = _optional_metric_result.query
                 _curated_query = _materialize_curated_query_override(_curated_query, resolver)
                 if _curated_query:
                     _override_warnings = []
@@ -5188,10 +5205,112 @@ def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
     )
 
 
+@dataclass
+class _CuratedOptionalMetricStripResult:
+    query: str
+    removed_aliases: list[str] = field(default_factory=list)
+    exhausted: bool = False
+
+
+@dataclass
+class _CuratedOptionalMetricOmissionResult:
+    query: str
+    exhausted_metrics: list[str] = field(default_factory=list)
+
+
 def _live_optional_metric_is_absent(metric_name: str, resolver) -> bool:
     """Return True when live field-caps prove *metric_name* is missing."""
     return bool(metric_name) and metric_name in _live_missing_metrics_for_expr(
         metric_name, resolver
+    )
+
+
+def _split_top_level_boolean_terms(text: str, keyword: str) -> list[str]:
+    """Split a boolean expression on a top-level keyword such as ``OR``."""
+    parts: list[str] = []
+    remaining = str(text or "").strip()
+    while remaining:
+        head, tail = _split_top_level_keyword(remaining, keyword)
+        if not tail:
+            parts.append(head.strip())
+            break
+        parts.append(head.strip())
+        remaining = tail.strip()
+    return [part for part in parts if part]
+
+
+def _strip_optional_metric_token_from_curated_esql_result(
+    query: str,
+    metric_name: str,
+) -> _CuratedOptionalMetricStripResult:
+    """Remove one optional ``{{metric:...}}`` series from a curated ES|QL override."""
+    if not query or not metric_name:
+        return _CuratedOptionalMetricStripResult(query=query)
+    token_re = _curated_metric_token_pattern(metric_name)
+    if not token_re.search(query):
+        return _CuratedOptionalMetricStripResult(query=query)
+
+    removed_aliases: list[str] = []
+    stripped_stages: list[str] = []
+    removed_alias_set: set[str] = set()
+    for stage in _split_esql_pipeline(query):
+        stripped = str(stage or "").strip()
+        upper = stripped.upper()
+        if upper.startswith("WHERE "):
+            predicates = _split_top_level_boolean_terms(stripped[6:].strip(), "OR")
+            kept_predicates = [
+                predicate for predicate in predicates if not token_re.search(predicate)
+            ]
+            if kept_predicates:
+                stripped_stages.append("WHERE " + " OR ".join(kept_predicates))
+            continue
+        if upper.startswith("STATS "):
+            stats_body = stripped[6:].strip()
+            assignments_text, by_text = _split_top_level_keyword(stats_body, "BY")
+            assignments = [
+                part.strip()
+                for part in _split_top_level_csv(assignments_text)
+                if part.strip()
+            ]
+            kept_assignments: list[str] = []
+            for assignment in assignments:
+                left, right = _split_top_level_assignment(assignment)
+                alias = _canonical_esql_alias(left)
+                if token_re.search(right or assignment):
+                    if alias:
+                        _append_unique(removed_aliases, alias)
+                        removed_alias_set.add(alias)
+                    continue
+                kept_assignments.append(assignment)
+            if not kept_assignments:
+                return _CuratedOptionalMetricStripResult(
+                    query="",
+                    removed_aliases=removed_aliases,
+                    exhausted=True,
+                )
+            rebuilt = "STATS " + ", ".join(kept_assignments)
+            if by_text:
+                rebuilt += f" BY {by_text}"
+            stripped_stages.append(rebuilt)
+            continue
+        if upper.startswith("KEEP ") and removed_aliases:
+            keep_parts = [
+                part.strip()
+                for part in _split_top_level_csv(stripped[5:].strip())
+                if part.strip()
+            ]
+            kept_parts = [
+                part
+                for part in keep_parts
+                if _canonical_esql_alias(part) not in removed_alias_set
+            ]
+            if kept_parts:
+                stripped_stages.append("KEEP " + ", ".join(kept_parts))
+            continue
+        stripped_stages.append(stripped)
+    return _CuratedOptionalMetricStripResult(
+        query=" | ".join(stripped_stages),
+        removed_aliases=removed_aliases,
     )
 
 
@@ -5201,60 +5320,34 @@ def _strip_optional_metric_token_from_curated_esql(query: str, metric_name: str)
     Handles the common Node Exporter shape: an ``OR … IS NOT NULL`` WHERE term,
     a ``alias = AVG(IRATE(...))`` STATS assignment, and the matching KEEP column.
     """
-    if not query or not metric_name:
-        return query
-    token_re = _curated_metric_token_pattern(metric_name)
-    if not token_re.search(query):
-        return query
+    return _strip_optional_metric_token_from_curated_esql_result(query, metric_name).query
 
-    aliases: list[str] = []
-    for match in re.finditer(
-        r"([A-Za-z_][\w]*)\s*=\s*[^,\n|]+",
-        query,
-    ):
-        assignment = match.group(0)
-        if token_re.search(assignment):
-            aliases.append(match.group(1))
 
-    # WHERE: drop ``OR token IS NOT NULL`` / ``token IS NOT NULL OR``.
-    query = re.sub(
-        rf"\s+OR\s+{token_re.pattern}\s+IS\s+NOT\s+NULL",
-        "",
-        query,
-        flags=re.IGNORECASE,
-    )
-    query = re.sub(
-        rf"{token_re.pattern}\s+IS\s+NOT\s+NULL\s+OR\s+",
-        "",
-        query,
-        flags=re.IGNORECASE,
-    )
-
-    # STATS: drop ``alias = …token…`` assignments (with surrounding commas).
-    for alias in aliases:
-        query = re.sub(
-            rf",\s*{re.escape(alias)}\s*=\s*[^,\n|]+",
-            "",
-            query,
-            count=1,
-        )
-        query = re.sub(
-            rf"{re.escape(alias)}\s*=\s*[^,\n|]+\s*,\s*",
-            "",
-            query,
-            count=1,
-        )
-
-    # KEEP: drop the matching aliases.
-    for alias in aliases:
-        query = re.sub(rf",\s*`?{re.escape(alias)}`?", "", query)
-        query = re.sub(rf"`?{re.escape(alias)}`?\s*,\s*", "", query)
-
-    # Tidy leftover double commas from STATS/KEEP edits.
-    query = re.sub(r",\s*,+", ", ", query)
-    query = re.sub(r"\|\s*STATS\s*,", "| STATS ", query, flags=re.IGNORECASE)
-    query = re.sub(r"\|\s*KEEP\s*,", "| KEEP ", query, flags=re.IGNORECASE)
-    return query
+def _omit_absent_optional_metrics_from_curated_query_result(
+    query,
+    optional_metrics,
+    resolver,
+) -> _CuratedOptionalMetricOmissionResult:
+    """Strip live-optional metric tokens that field-caps prove are absent."""
+    if not query:
+        return _CuratedOptionalMetricOmissionResult(query=query)
+    metrics = [str(name).strip() for name in (optional_metrics or []) if str(name).strip()]
+    if not metrics or not resolver:
+        return _CuratedOptionalMetricOmissionResult(query=query)
+    out = str(query)
+    exhausted_metrics: list[str] = []
+    for metric_name in metrics:
+        if not _live_optional_metric_is_absent(metric_name, resolver):
+            continue
+        strip_result = _strip_optional_metric_token_from_curated_esql_result(out, metric_name)
+        if strip_result.exhausted:
+            _append_unique(exhausted_metrics, metric_name)
+            return _CuratedOptionalMetricOmissionResult(
+                query="",
+                exhausted_metrics=exhausted_metrics,
+            )
+        out = strip_result.query
+    return _CuratedOptionalMetricOmissionResult(query=out)
 
 
 def _omit_absent_optional_metrics_from_curated_query(query, optional_metrics, resolver):
@@ -5264,17 +5357,11 @@ def _omit_absent_optional_metrics_from_curated_query(query, optional_metrics, re
     optional collector metric listed in ``live_optional_metrics`` still hard-
     fails the whole panel when referenced in a hand-written override.
     """
-    if not query:
-        return query
-    metrics = [str(name).strip() for name in (optional_metrics or []) if str(name).strip()]
-    if not metrics or not resolver:
-        return query
-    out = str(query)
-    for metric_name in metrics:
-        if not _live_optional_metric_is_absent(metric_name, resolver):
-            continue
-        out = _strip_optional_metric_token_from_curated_esql(out, metric_name)
-    return out
+    return _omit_absent_optional_metrics_from_curated_query_result(
+        query,
+        optional_metrics,
+        resolver,
+    ).query
 
 
 def _live_missing_metrics_for_expr(expr, resolver):
@@ -5502,6 +5589,26 @@ def _build_metric_color_mapping(panel, minimum=None, maximum=None):
     if maximum is not None:
         color["range_max"] = maximum
     return color
+
+
+def _scale_metric_color_thresholds_to_percent_points(color):
+    """Scale 0-1 metric threshold cutoffs into 0-100 percent points."""
+    out = dict(color or {})
+    thresholds = out.get("thresholds")
+    if not isinstance(thresholds, list):
+        return out
+    scaled = []
+    for step in thresholds:
+        if not isinstance(step, dict):
+            scaled.append(step)
+            continue
+        item = dict(step)
+        up_to = item.get("up_to")
+        if isinstance(up_to, (int, float)) and not isinstance(up_to, bool) and 0 <= up_to <= 1:
+            item["up_to"] = up_to * 100.0
+        scaled.append(item)
+    out["thresholds"] = scaled
+    return out
 
 
 _ASCENDING_SORT_STAGE_RE = re.compile(
@@ -5944,6 +6051,15 @@ def _metric_threshold_color(panel, esql=None):
     color = _build_metric_color_mapping(panel, minimum=minimum, maximum=maximum)
     if not color:
         return None
+    defaults = _panel_field_defaults(panel)
+    defaults_max = _coerce_number(defaults.get("max"))
+    if (
+        str(defaults.get("unit") or "") == "percentunit"
+        and defaults_max is not None
+        and defaults_max <= 1
+        and re.search(r"\*\s*100\b", esql or "")
+    ):
+        color = _scale_metric_color_thresholds_to_percent_points(color)
     color["apply_to"] = "background" if color_mode.startswith("background") else "value"
     return color
 

@@ -10134,6 +10134,54 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("I/O", yaml_panel["esql"]["query"])
         self.assertNotIn("breakdowns", yaml_panel["esql"])
 
+    def test_percentunit_bargauge_fractional_thresholds_scale_with_metric_tiles(self):
+        panel = {
+            "title": "Pressure",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ]
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 80.0, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
+
     def test_nested_count_stat_panel_stays_scalar_metric(self):
         panel = {
             "title": "CPU Cores",

@@ -16,6 +16,7 @@ from observability_migration.adapters.source.grafana.panels import (
     _materialize_curated_query_override,
     _omit_absent_optional_metrics_from_curated_query,
     _retarget_esql_param_controls_to_panel_bindings,
+    _strip_optional_metric_token_from_curated_esql,
     translate_dashboard,
     translate_panel,
 )
@@ -922,6 +923,105 @@ def test_curated_tcp_errors_keeps_optional_metric_when_field_caps_present():
         resolver,
     )
     assert "TCPRcvQDrop" in kept
+
+
+def test_strip_optional_metric_handles_nested_stats_assignment():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:required_metric:counter}} IS NOT NULL"
+        " OR {{metric:optional_metric:counter}} IS NOT NULL"
+        " | STATS required = AVG(IRATE({{metric:required_metric:counter}})),"
+        " optional = COALESCE(AVG(IRATE({{metric:optional_metric:counter}})), 0)"
+        " | KEEP required, optional"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(query, "optional_metric")
+
+    assert "required = AVG(IRATE({{metric:required_metric:counter}}))" in stripped
+    assert "optional =" not in stripped
+    assert ", 0)" not in stripped
+    assert "KEEP required" in stripped
+
+
+def test_strip_optional_metric_handles_first_assignment_and_quoted_alias():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:optional_metric:counter}} IS NOT NULL"
+        " OR {{metric:required_metric:counter}} IS NOT NULL"
+        " | STATS `optional alias` = AVG(IRATE({{metric:optional_metric:counter}})),"
+        " required = AVG(IRATE({{metric:required_metric:counter}}))"
+        " | KEEP `optional alias`, required"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(query, "optional_metric")
+
+    assert "`optional alias`" not in stripped
+    assert "STATS required = AVG(IRATE({{metric:required_metric:counter}}))" in stripped
+    assert "KEEP required" in stripped
+
+
+def test_strip_optional_metric_handles_last_assignment():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:required_metric:counter}} IS NOT NULL"
+        " OR {{metric:optional_metric:counter}} IS NOT NULL"
+        " | STATS required = AVG(IRATE({{metric:required_metric:counter}})),"
+        " optional = AVG(IRATE({{metric:optional_metric:counter}}))"
+        " | KEEP required, optional"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(query, "optional_metric")
+
+    assert "required = AVG(IRATE({{metric:required_metric:counter}}))" in stripped
+    assert "optional = AVG(IRATE({{metric:optional_metric:counter}}))" not in stripped
+    assert "KEEP required" in stripped
+
+
+def test_curated_override_with_only_absent_optional_metric_becomes_missing_telemetry_markdown():
+    rule_pack = RulePackConfig(
+        live_optional_metrics=["optional_metric"],
+        panel_query_overrides=[
+            {
+                "title_match": "Optional Only",
+                "kibana_type_override": "metric",
+                "esql_query": (
+                    "TS metrics-*"
+                    " | WHERE {{metric:optional_metric:counter}} IS NOT NULL"
+                    " | STATS optional = AVG(IRATE({{metric:optional_metric:counter}}))"
+                    " | KEEP optional"
+                ),
+            }
+        ],
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {"labels.instance": {"keyword": {"type": "keyword"}}}
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "Optional Only",
+        "targets": [{"expr": 'sum(optional_metric{instance=~"$instance"})', "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" in (yaml_panel or {})
+    assert "optional_metric" in yaml_panel["markdown"]["content"]
+    assert result.status == "migrated_with_warnings"
+
+
+def test_strip_optional_metric_handles_singleton_assignment():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:optional_metric:counter}} IS NOT NULL"
+        " | STATS optional = AVG(IRATE({{metric:optional_metric:counter}}))"
+        " | KEEP optional"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(query, "optional_metric")
+
+    assert stripped == ""
 
 
 def test_missing_live_metric_target_is_dropped_from_multi_target_panel():
