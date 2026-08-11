@@ -13,6 +13,12 @@ scrape_configs:
         labels:
           instance: redis:6379
           namespace: default
+      # Second Redis target for multi-value namespace/instance controls.
+      - targets:
+          - redis_exporter_b:9121
+        labels:
+          instance: redis-b:6379
+          namespace: staging
 
   # Same targets, and the SAME instance/job labels, as redis_scraper.py sends to
   # Elasticsearch. Prometheus can then act as a reference implementation for

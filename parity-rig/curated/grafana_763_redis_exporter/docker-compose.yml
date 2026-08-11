@@ -11,11 +11,13 @@
 #   5602 → Kibana
 #   3001 → Grafana
 #   9091 → Prometheus
-#   9122 → redis_exporter
+#   9122 → redis_exporter (instance redis:6379 / namespace default)
+#   9123 → redis_exporter_b (instance redis-b:6379 / namespace staging)
 #   9101 → node_exporter
 #   9104 → mysqld_exporter
 #   9187 → postgres_exporter
-#   6380 → Redis
+#   6380 → Redis (default)
+#   6381 → Redis B (staging)
 
 services:
   elasticsearch:
@@ -109,6 +111,61 @@ services:
       - redis-rig
     depends_on:
       redis:
+        condition: service_healthy
+
+  # Second Redis target so Grafana/Kibana instance + namespace controls have
+  # more than one concrete option to filter on.
+  redis-b:
+    image: redis:7-alpine
+    container_name: redis-rig-redis-b
+    ports:
+      - "6381:6379"
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 32mb
+      --maxmemory-policy allkeys-lru
+
+  redis-b-load:
+    image: redis:7-alpine
+    container_name: redis-rig-load-b
+    networks:
+      - redis-rig
+    depends_on:
+      redis-b:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          for i in $(seq 1 25); do
+            redis-cli -h redis-b SET "staging:key:$$i" "value:$$i" EX 300 > /dev/null
+            redis-cli -h redis-b GET "staging:key:$$i" > /dev/null
+            redis-cli -h redis-b GET "staging:missing:$$i" > /dev/null
+          done
+          sleep 7
+        done
+
+  redis_exporter_b:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-rig-exporter-b
+    environment:
+      - REDIS_ADDR=redis://redis-b:6379
+    ports:
+      - "9123:9121"
+    networks:
+      - redis-rig
+    depends_on:
+      redis-b:
         condition: service_healthy
 
   # Additional exporters so the parity gate has real data for the dashboards we
@@ -219,6 +276,7 @@ services:
       - redis-rig
     depends_on:
       - redis_exporter
+      - redis_exporter_b
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=1d
@@ -237,6 +295,8 @@ services:
       elasticsearch:
         condition: service_healthy
       redis_exporter:
+        condition: service_started
+      redis_exporter_b:
         condition: service_started
       node_exporter:
         condition: service_started
