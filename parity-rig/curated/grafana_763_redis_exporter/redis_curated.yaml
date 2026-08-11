@@ -144,10 +144,12 @@ dashboards:
       type: line
       query: 'TS metrics-*
 
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+
         | WHERE redis_keyspace_hits_total IS NOT NULL OR redis_keyspace_misses_total IS NOT NULL
 
         | STATS hits = IRATE(redis_keyspace_hits_total, 5m), misses = IRATE(redis_keyspace_misses_total, 5m) BY time_bucket
-        = TBUCKET(100, ?_tstart, ?_tend)
+        = TBUCKET(2 minute)
 
         | KEEP time_bucket, hits, misses
 

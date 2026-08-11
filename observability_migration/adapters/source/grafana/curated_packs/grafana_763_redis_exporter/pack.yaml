@@ -95,11 +95,10 @@ panel:
         | STATS value = LAST(value, time_bucket)
         | KEEP value
       status_override: migrated
-    # The dashboard defaults to a one-hour view while the seeded redis_exporter
-    # counters land every 60s. Adaptive ``TBUCKET(100, ?_tstart, ?_tend)``
-    # collapses those panels to ~36s buckets, which leaves RATE/IRATE with one
-    # sample per bucket and a blank chart. Clamp these rate panels to 2 minutes
-    # and bind the dashboard time range explicitly in WHERE so Kibana still
+    # Adaptive ``TBUCKET(100, ?_tstart, ?_tend)`` can make buckets narrower
+    # than the source scrape interval, which leaves RATE/IRATE with one sample
+    # per bucket and a blank chart. Clamp these rate panels to 2 minutes and
+    # bind the dashboard time range explicitly in WHERE so Kibana still
     # respects the global picker.
     - title_match: "Network I/O"
       esql_query: |
@@ -109,6 +108,16 @@ panel:
         | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
         | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(2 minute)
         | KEEP time_bucket, input, output
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Hits / Misses per Sec"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_keyspace_hits_total:counter}} IS NOT NULL OR {{metric:redis_keyspace_misses_total:counter}} IS NOT NULL
+        | STATS hits = AVG(IRATE({{metric:redis_keyspace_hits_total:counter}})), misses = AVG(IRATE({{metric:redis_keyspace_misses_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.instance
+        | KEEP time_bucket, `labels.instance`, hits, misses
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Average Time Spent by Command / sec"
