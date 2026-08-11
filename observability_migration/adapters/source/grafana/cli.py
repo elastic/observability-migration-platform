@@ -1213,6 +1213,8 @@ def _detect_kibana_version(
             if version is not None:
                 return version
         except (AttributeError, TypeError, ValueError):
+            # Ignore malformed/unexpected /api/status payloads and
+            # fall back to /api/stats version detection below.
             pass
 
     try:
