@@ -52,6 +52,11 @@ REMOVED_FLAGS: dict[str, str] = {
         "The typed Kibana Dashboards API is the only upload path now, so this "
         "flag no longer selects anything. Drop the flag."
     ),
+    "--kibana-promql-control-params": (
+        "Native PROMQL control-param binding is preferred by default and "
+        "auto-confirmed when --kibana-url reports Kibana 9.5+ (Kibana < 9.5 "
+        "keeps the ES|QL fallback). Drop the flag."
+    ),
 }
 
 REMOVED_COMMANDS: dict[str, str] = {

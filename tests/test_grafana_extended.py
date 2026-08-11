@@ -2005,6 +2005,21 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             panels.MINIMUM_KIBANA_VERSION,
         )
 
+    def test_dashboard_min_version_bumps_for_native_promql_control_params(self):
+        native_control = {
+            "esql": {
+                "query": (
+                    "PROMQL index=metrics-* step=60s "
+                    "value=(rate(foo_total{instance=~?instance}[5m]))"
+                )
+            }
+        }
+
+        self.assertEqual(
+            panels._dashboard_minimum_kibana_version([native_control]),
+            "9.5.0",
+        )
+
     def test_native_promql_allows_histogram_quantile_when_feature_supported(self):
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_HISTOGRAM_QUANTILE,
@@ -4664,6 +4679,179 @@ class TestNonPromqlPanelsNameTheirQueryLanguage(unittest.TestCase):
             self._placeholder_reason(panel),
             "No PromQL expression found in panel targets",
         )
+
+
+class TestGrafanaDashboardTimeRangeExtraction(unittest.TestCase):
+    """Grafana ``dashboard.time``/``refresh`` -> IR ``time_range``/``refresh_interval``.
+
+    Covers the Dashboards-API-correctness plan's "preserve dashboard time
+    state" section: relative and absolute ranges, active/paused refresh, and
+    warn-and-drop for values Kibana's typed API cannot express.
+    """
+
+    def _dashboard(self, **extra):
+        dashboard = {
+            "title": "Time State Dashboard",
+            "uid": "time-state",
+            "panels": [],
+        }
+        dashboard.update(extra)
+        return dashboard
+
+    def test_relative_time_range_is_marked_relative(self):
+        result = panels.translate_dashboard(
+            self._dashboard(time={"from": "now-6h", "to": "now"})
+        )
+        self.assertEqual(
+            result.dashboard_ir.time_range,
+            {"from": "now-6h", "to": "now", "mode": "relative"},
+        )
+        self.assertEqual(result.control_warnings, [])
+
+    def test_absolute_time_range_converts_epoch_ms_to_iso8601(self):
+        result = panels.translate_dashboard(
+            self._dashboard(time={"from": "1700000000000", "to": "1700003600000"})
+        )
+        time_range = result.dashboard_ir.time_range
+        self.assertEqual(time_range["mode"], "absolute")
+        self.assertEqual(time_range["from"], "2023-11-14T22:13:20.000Z")
+        self.assertEqual(time_range["to"], "2023-11-14T23:13:20.000Z")
+
+    def test_epoch_seconds_bound_is_dropped_not_misread_as_milliseconds(self):
+        # A bare 10-digit epoch-seconds value must not be divided by 1000 into
+        # a 1970-ish window. Grafana absolute times are epoch ms (13+ digits).
+        result = panels.translate_dashboard(
+            self._dashboard(time={"from": "1700000000", "to": "now"})
+        )
+        self.assertEqual(result.dashboard_ir.time_range, {})
+        self.assertTrue(
+            any("time range" in warning for warning in result.control_warnings)
+        )
+
+    def test_missing_dashboard_time_leaves_time_range_unset(self):
+        result = panels.translate_dashboard(self._dashboard())
+        self.assertEqual(result.dashboard_ir.time_range, {})
+
+    def test_unrecognized_time_bound_is_dropped_with_warning(self):
+        result = panels.translate_dashboard(
+            self._dashboard(time={"from": "not-a-time", "to": "now"})
+        )
+        self.assertEqual(result.dashboard_ir.time_range, {})
+        self.assertTrue(
+            any("time range" in warning for warning in result.control_warnings)
+        )
+
+    def test_one_sided_time_range_is_dropped_with_warning(self):
+        # Kibana only restores a window when both timeFrom and timeTo exist;
+        # emitting a one-sided range would always look lossy on upload.
+        result = panels.translate_dashboard(
+            self._dashboard(time={"from": "now-6h", "to": ""})
+        )
+        self.assertEqual(result.dashboard_ir.time_range, {})
+        self.assertTrue(
+            any("both from and to" in warning for warning in result.control_warnings)
+        )
+
+    def test_refresh_interval_converts_duration_to_milliseconds(self):
+        result = panels.translate_dashboard(self._dashboard(refresh="30s"))
+        self.assertEqual(
+            result.dashboard_ir.refresh_interval, {"pause": False, "value": 30000}
+        )
+
+    def test_refresh_explicitly_off_emits_paused_interval(self):
+        # Author intent was "do not auto-refresh". Leaving the field unset
+        # would let a target Kibana's default win; emit an explicit pause.
+        for refresh in (False, "", None):
+            with self.subTest(refresh=refresh):
+                result = panels.translate_dashboard(self._dashboard(refresh=refresh))
+                self.assertEqual(
+                    result.dashboard_ir.refresh_interval,
+                    {"pause": True, "value": 0},
+                )
+
+    def test_missing_refresh_leaves_refresh_interval_unset(self):
+        result = panels.translate_dashboard(self._dashboard())
+        self.assertEqual(result.dashboard_ir.refresh_interval, {})
+
+    def test_unrecognized_refresh_is_dropped_with_warning(self):
+        result = panels.translate_dashboard(self._dashboard(refresh="soon"))
+        self.assertEqual(result.dashboard_ir.refresh_interval, {})
+        self.assertTrue(
+            any("refresh interval" in warning for warning in result.control_warnings)
+        )
+
+
+class TestGrafanaPanelTimeOverrides(unittest.TestCase):
+    """Panel ``timeFrom``/``timeShift`` -> ES|QL panel-config ``time_range``.
+
+    Covers the "preserve panel time overrides" plan section: ``timeFrom``
+    maps onto the shared ES|QL ``time_range`` field, and ``timeShift`` -- which
+    has no Dashboards API equivalent -- degrades gracefully with a warning.
+    """
+
+    def _panel(self, **extra):
+        panel = {
+            "id": 1,
+            "type": "timeseries",
+            "title": "Panel",
+            "targets": [
+                {
+                    "expr": "node_disk_read_bytes_total",
+                    "refId": "A",
+                    "legendFormat": "__auto",
+                    "range": True,
+                    "datasource": {"type": "prometheus"},
+                }
+            ],
+            "fieldConfig": {"defaults": {}, "overrides": []},
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        }
+        panel.update(extra)
+        return panel
+
+    def _translate(self, panel):
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        resolver = schema.SchemaResolver(rule_pack)
+        return panels.translate_panel(
+            panel,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+    def test_time_from_becomes_relative_esql_time_range(self):
+        yaml_panel, _result = self._translate(self._panel(timeFrom="6h"))
+        self.assertEqual(
+            yaml_panel["esql"]["time_range"],
+            {"from": "now-6h", "to": "now", "mode": "relative"},
+        )
+
+    def test_no_time_from_leaves_esql_time_range_unset(self):
+        yaml_panel, _result = self._translate(self._panel())
+        self.assertNotIn("time_range", yaml_panel["esql"])
+
+    def test_unrecognized_time_from_is_dropped_with_warning(self):
+        yaml_panel, result = self._translate(self._panel(timeFrom="lots"))
+        self.assertNotIn("time_range", yaml_panel["esql"])
+        self.assertTrue(any("timeFrom" in reason for reason in result.reasons))
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_time_shift_has_no_equivalent_and_warns(self):
+        yaml_panel, result = self._translate(self._panel(timeShift="1w"))
+        self.assertNotIn("time_range", yaml_panel["esql"])
+        self.assertTrue(any("timeShift" in reason for reason in result.reasons))
+        self.assertEqual(result.status, "migrated_with_warnings")
+
+    def test_time_from_and_time_shift_together_keeps_time_from_and_warns_on_shift(self):
+        yaml_panel, result = self._translate(
+            self._panel(timeFrom="6h", timeShift="1w")
+        )
+        self.assertEqual(
+            yaml_panel["esql"]["time_range"],
+            {"from": "now-6h", "to": "now", "mode": "relative"},
+        )
+        self.assertTrue(any("timeShift" in reason for reason in result.reasons))
 
 
 if __name__ == "__main__":

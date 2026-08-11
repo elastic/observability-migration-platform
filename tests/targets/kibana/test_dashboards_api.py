@@ -86,6 +86,53 @@ def test_line_becomes_xy():
     assert layer["x"] == {"column": "step"}
     assert layer["y"] == [{"column": "value"}]
     assert layer["breakdown_by"] == {"column": "job"}
+    # PROMQL ``step`` must be temporal so Lens types the x column as date.
+    assert cfg["axis"]["x"]["scale"] == "temporal"
+
+
+def test_xy_promql_step_sets_temporal_x_scale():
+    """Redis-style PROMQL XY (step + breakdown) must emit temporal x scale.
+
+    Without it, Kibana Lens treats ``step`` as a string and the panel shows
+    "No results found" despite a successful query (Redis Total Commands / sec,
+    Total Items per DB).
+    """
+    cfg = _map({
+        "type": "area",
+        "mode": "stacked",
+        "query": (
+            "PROMQL index=metrics-redis.prometheus-default "
+            "start=?_tstart end=?_tend buckets=50 "
+            "value=(sum(rate(metrics.redis_commands_total{instance=~?instance}[1m])) by (cmd))"
+        ),
+        "dimension": {"field": "step", "label": "Time", "data_type": "date"},
+        "metrics": [{"field": "value", "label": "Total Commands / sec"}],
+        "breakdown": {"field": "cmd"},
+    })["config"]
+    assert cfg["layers"][0]["x"] == {"column": "step", "label": "Time"}
+    assert cfg["axis"]["x"]["scale"] == "temporal"
+
+
+def test_xy_time_bucket_sets_temporal_x_scale():
+    cfg = _map({
+        "type": "area",
+        "query": "FROM m | STATS value = AVG(v) BY time_bucket, job",
+        "dimension": {"field": "time_bucket", "label": "Time"},
+        "metrics": [{"field": "value"}],
+        "breakdown": {"field": "job"},
+    })["config"]
+    assert cfg["axis"]["x"]["scale"] == "temporal"
+
+
+def test_xy_respects_explicit_ordinal_x_scale():
+    cfg = _map({
+        "type": "bar",
+        "query": "FROM m",
+        "dimension": {"field": "step"},
+        "metrics": [{"field": "value"}],
+        "axis": {"x": {"scale": "ordinal"}},
+    })["config"]
+    assert cfg["axis"]["x"]["scale"] == "ordinal"
 
 
 def test_bar_becomes_xy():
@@ -420,6 +467,7 @@ def test_xy_builder_accepts_yaml_schema_appearance_axes():
     })["config"]
 
     assert cfg["axis"] == {
+        "x": {"scale": "temporal"},
         "y": {
             "scale": "log",
             "title": {"text": "Throughput", "visible": True},
@@ -454,7 +502,7 @@ def test_xy_omits_inert_y2_axis_when_no_series_uses_the_right_axis():
     assert "y2" not in cfg["axis"], cfg["axis"]
     # The axes that do carry a plotted series keep their hidden-title request.
     assert cfg["axis"]["y"] == {"title": {"visible": False}}
-    assert cfg["axis"]["x"] == {"title": {"visible": False}}
+    assert cfg["axis"]["x"] == {"scale": "temporal", "title": {"visible": False}}
 
 
 def test_xy_keeps_inert_y2_axis_when_a_series_uses_the_right_axis():
@@ -1142,6 +1190,106 @@ def test_native_dashboard_from_ir_returns_native_dashboard_instance():
     assert len(native.controls) == 1
     assert counts.mapped == 1
     assert counts.controls == 1
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard-level time_range / refresh_interval (both mapping paths)
+# --------------------------------------------------------------------------- #
+#
+# Neither field has a slot in the deprecated kb-dashboard-core YAML schema
+# that can carry them faithfully (``refresh_interval`` is absent entirely;
+# ``time_range`` there has no ``mode``), so both the dict-shape and IR-first
+# paths must emit them identically straight onto the typed API payload.
+
+def test_native_dashboard_from_yaml_emits_time_range_and_refresh_interval():
+    dashboard = {
+        "name": "D",
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+        "time_range": {"from": "now-24h", "to": "now", "mode": "relative"},
+        "refresh_interval": {"pause": False, "value": 30000},
+    }
+    native, _counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.time_range == {"from": "now-24h", "to": "now", "mode": "relative"}
+    assert native.refresh_interval == {"pause": False, "value": 30000}
+    payload = native.to_api_payload()
+    assert payload["time_range"] == {"from": "now-24h", "to": "now", "mode": "relative"}
+    assert payload["refresh_interval"] == {"pause": False, "value": 30000}
+
+
+def test_native_dashboard_from_yaml_omits_time_range_and_refresh_interval_when_absent():
+    dashboard = {
+        "name": "D",
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    }
+    native, _counts = api.native_dashboard_from_yaml(dashboard)
+    assert native.time_range == {}
+    assert native.refresh_interval == {}
+    payload = native.to_api_payload()
+    assert "time_range" not in payload
+    assert "refresh_interval" not in payload
+
+
+def test_native_dashboard_from_ir_emits_time_range_and_refresh_interval():
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    dashboard_ir = DashboardIR.from_yaml_dict({
+        "name": "D",
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+    })
+    dashboard_ir.time_range = {"from": "2023-11-14T22:00:00.000Z", "to": "2023-11-14T23:00:00.000Z", "mode": "absolute"}
+    dashboard_ir.refresh_interval = {"pause": False, "value": 5000}
+
+    native, _counts = api.native_dashboard_from_ir(dashboard_ir)
+    assert native.time_range == dashboard_ir.time_range
+    assert native.refresh_interval == dashboard_ir.refresh_interval
+    payload = native.to_api_payload()
+    assert payload["time_range"] == dashboard_ir.time_range
+    assert payload["refresh_interval"] == dashboard_ir.refresh_interval
+
+
+def test_native_dashboard_from_ir_matches_native_dashboard_from_yaml_for_time_state():
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    dashboard = {
+        "name": "D",
+        "panels": [_leaf({"type": "metric", "query": "FROM m", "primary": {"field": "v"}}, "top")],
+        "time_range": {"from": "now-6h", "to": "now", "mode": "relative"},
+        "refresh_interval": {"pause": False, "value": 10000},
+    }
+    yaml_native, _yaml_counts = api.native_dashboard_from_yaml(dashboard)
+    dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
+    dashboard_ir.time_range = dict(dashboard["time_range"])
+    dashboard_ir.refresh_interval = dict(dashboard["refresh_interval"])
+    ir_native, _ir_counts = api.native_dashboard_from_ir(dashboard_ir)
+
+    assert ir_native.to_api_payload() == yaml_native.to_api_payload()
+
+
+# --------------------------------------------------------------------------- #
+# Panel-level time_range (Grafana ``timeFrom``, shared across chart builders)
+# --------------------------------------------------------------------------- #
+
+def test_map_yaml_panel_applies_esql_time_range_to_xy_config():
+    panel = _map({
+        "type": "line", "query": "FROM m",
+        "dimension": {"field": "step"},
+        "metrics": [{"field": "value"}],
+        "time_range": {"from": "now-6h", "to": "now", "mode": "relative"},
+    })
+    assert panel["config"]["time_range"] == {"from": "now-6h", "to": "now", "mode": "relative"}
+
+
+def test_map_yaml_panel_applies_esql_time_range_to_metric_config():
+    panel = _map({
+        "type": "metric", "query": "FROM m", "primary": {"field": "up_count"},
+        "time_range": {"from": "now-6h", "to": "now", "mode": "relative"},
+    })
+    assert panel["config"]["time_range"] == {"from": "now-6h", "to": "now", "mode": "relative"}
+
+
+def test_map_yaml_panel_omits_time_range_when_absent():
+    panel = _map({"type": "metric", "query": "FROM m", "primary": {"field": "up_count"}})
+    assert "time_range" not in panel["config"]
 
 
 def test_native_dashboard_from_yaml_preserves_phrase_filter():
@@ -2375,6 +2523,247 @@ def test_dropped_panel_detection_survives_a_failed_explanation_get():
     assert result.status == "lossy"
     assert [d.title for d in result.dropped_panels] == ["B"]
     assert result.dropped_panels[0].reason == ""
+
+
+# --------------------------------------------------------------------------- #
+# Silent loss of dashboard-level time_range/refresh_interval/pinned controls
+# on an HTTP 200 upload
+#
+# A panel-count comparison cannot see these: every panel can survive intact
+# while Kibana still drops the dashboard's own time window, refresh cadence,
+# or a pinned control.
+# --------------------------------------------------------------------------- #
+
+def _put_200_no_get(data: dict, dashboard_id: str = "d1") -> mock.Mock:
+    """A ``_put_200`` session whose follow-up GET (if any) is a benign no-op."""
+    session = _dashboards_session(_put_200(data, dashboard_id))
+    session.get.return_value = mock.Mock(status_code=200, json=mock.Mock(return_value={"warnings": []}))
+    return session
+
+
+def test_dropped_dashboard_time_range_is_flagged_lossy():
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        time_range={"from": "now-24h", "to": "now", "mode": "relative"},
+    )
+    accepted = {"title": "D", "panels": [_api_leaf("A", x=0)]}
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_properties == ["time_range"]
+    assert "time_range" in result.message
+
+
+def test_dropped_dashboard_refresh_interval_is_flagged_lossy():
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        refresh_interval={"pause": False, "value": 30000},
+    )
+    accepted = {"title": "D", "panels": [_api_leaf("A", x=0)]}
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_properties == ["refresh_interval"]
+
+
+def test_intact_dashboard_time_state_stays_clean_even_with_server_added_keys():
+    # Kibana is free to echo back extra derived keys (e.g. a resolved
+    # ``mode``) without that counting as a drop -- only a value actually
+    # sent going missing or changing does.
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        time_range={"from": "now-24h", "to": "now"},
+        refresh_interval={"value": 30000},
+    )
+    accepted = {
+        "title": "D",
+        "panels": [_api_leaf("A", x=0)],
+        "time_range": {"from": "now-24h", "to": "now", "mode": "relative"},
+        "refresh_interval": {"pause": False, "value": 30000},
+    }
+    session = _dashboards_session(_put_200(accepted))
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_properties == []
+    session.get.assert_not_called()
+
+
+def test_dashboard_time_range_mode_dropped_by_kibana_is_not_flagged_lossy():
+    # Verified against a live Kibana 9.5: the dashboard saved-object model
+    # stores time state as separate timeRestore/timeFrom/timeTo fields, and
+    # its API output transform always rebuilds ``time_range`` as
+    # ``{from, to}`` only -- ``mode`` is accepted on PUT for input
+    # validation but has no persisted slot, so it never survives a GET even
+    # though ``from``/``to`` (and everything else about the dashboard) did.
+    # That is not a real drop and must not be reported as one.
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        time_range={"from": "now-24h", "to": "now", "mode": "relative"},
+    )
+    accepted = {
+        "title": "D",
+        "panels": [_api_leaf("A", x=0)],
+        "time_range": {"from": "now-24h", "to": "now"},
+    }
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_properties == []
+
+
+def test_dropped_pinned_control_is_named_in_the_message():
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        controls=[NativeControl(type="options_list", config={"title": "Env"})],
+    )
+    accepted = {"title": "D", "panels": [_api_leaf("A", x=0)], "pinned_panels": []}
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_controls == ["Env"]
+    assert "Env" in result.message
+
+
+def test_omitted_pinned_panels_key_is_treated_as_total_control_drop():
+    # Kibana's transform_dashboard_out only emits ``pinned_panels`` when the
+    # array is non-empty. A total control drop therefore omits the key
+    # entirely -- the audit must not early-return on a missing key and
+    # silently report a clean upload.
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        controls=[
+            NativeControl(type="options_list", config={"title": "Env"}),
+            NativeControl(type="options_list", config={"title": "Instance"}),
+        ],
+    )
+    accepted = {"title": "D", "panels": [_api_leaf("A", x=0)]}  # no pinned_panels key
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_controls == ["Env", "Instance"]
+    assert "Env" in result.message
+    assert "Instance" in result.message
+
+
+def test_intact_pinned_control_stays_clean():
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel("A", x=0)],
+        controls=[NativeControl(type="options_list", config={"title": "Env"})],
+    )
+    accepted = {
+        "title": "D",
+        "panels": [_api_leaf("A", x=0)],
+        "pinned_panels": [{"type": "options_list", "config": {"title": "Env"}}],
+    }
+    session = _dashboards_session(_put_200(accepted))
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_controls == []
+    session.get.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Silent loss of critical per-panel state (panel time_range, temporal x-scale)
+#
+# A panel can keep its title/section/grid -- passing the leaf-count check --
+# while losing the one property that made it render, which the count alone
+# cannot see.
+# --------------------------------------------------------------------------- #
+
+def _panel_with_config(title: str, config: dict, x: int = 0) -> NativePanel:
+    merged = {"title": title, **config}
+    return NativePanel(grid=NativeGrid(x=x, y=0, w=12, h=6), type="vis", config=merged)
+
+
+def test_dropped_panel_time_range_is_flagged_lossy():
+    sent_config = {"title": "Redis Ops", "time_range": {"from": "now-1h", "to": "now", "mode": "relative"}}
+    dashboard = NativeDashboard(title="D", dashboard_id="d1", items=[_panel_with_config("Redis Ops", sent_config)])
+    accepted = {"title": "D", "panels": [{"grid": {"x": 0, "y": 0, "w": 12, "h": 6}, "type": "vis", "config": {"title": "Redis Ops"}}]}
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_properties == ["Redis Ops: time_range"]
+
+
+def test_dropped_temporal_x_scale_is_flagged_lossy():
+    sent_config = {"title": "Total Commands", "axis": {"x": {"scale": "temporal"}}}
+    dashboard = NativeDashboard(title="D", dashboard_id="d1", items=[_panel_with_config("Total Commands", sent_config)])
+    accepted_config = {"title": "Total Commands", "axis": {"x": {"scale": "ordinal"}}}
+    accepted = {"title": "D", "panels": [{"grid": {"x": 0, "y": 0, "w": 12, "h": 6}, "type": "vis", "config": accepted_config}]}
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_properties == ["Total Commands: temporal_x_scale"]
+
+
+def test_intact_critical_panel_state_stays_clean():
+    sent_config = {
+        "title": "Redis Ops",
+        "time_range": {"from": "now-1h", "to": "now", "mode": "relative"},
+        "axis": {"x": {"scale": "temporal"}},
+    }
+    dashboard = NativeDashboard(title="D", dashboard_id="d1", items=[_panel_with_config("Redis Ops", sent_config)])
+    accepted = {"title": "D", "panels": [{"grid": {"x": 0, "y": 0, "w": 12, "h": 6}, "type": "vis", "config": dict(sent_config)}]}
+    session = _dashboards_session(_put_200(accepted))
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "updated"
+    assert result.dropped_properties == []
+    session.get.assert_not_called()
+
+
+def test_multiple_kinds_of_loss_are_all_reported_in_one_message():
+    # A dropped pinned control and a dropped critical panel property in the
+    # same upload must not have one overwrite the other's message.
+    sent_config = {"title": "Redis Ops", "time_range": {"from": "now-1h", "to": "now", "mode": "relative"}}
+    dashboard = NativeDashboard(
+        title="D", dashboard_id="d1", items=[_panel_with_config("Redis Ops", sent_config)],
+        controls=[NativeControl(type="options_list", config={"title": "Env"})],
+    )
+    accepted = {
+        "title": "D",
+        "panels": [{"grid": {"x": 0, "y": 0, "w": 12, "h": 6}, "type": "vis", "config": {"title": "Redis Ops"}}],
+        "pinned_panels": [],
+    }
+    session = _put_200_no_get(accepted)
+
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        result = api.upload_native_dashboard(dashboard, "https://kibana.example", api_key="k")
+
+    assert result.status == "lossy"
+    assert result.dropped_controls == ["Env"]
+    assert result.dropped_properties == ["Redis Ops: time_range"]
+    assert "Env" in result.message
+    assert "time_range" in result.message
 
 
 # --------------------------------------------------------------------------- #

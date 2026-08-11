@@ -61,9 +61,10 @@ Without a distinguishing label (`__series` via `label_replace`, or equivalent),
 ## Secondary gate (even after `label_replace`)
 
 Shortlist panels bind `$node` / `$job` in matchers. The helper also requires
-`_kibana_binds_promql_control_params` (operator `--kibana-promql-control-params`)
-before emitting native queries with template variables. ES alone cannot prove
-Kibana forwards those params into inner PROMQL.
+`_kibana_binds_promql_control_params` (preferred for offline migration and
+verified when `--kibana-url` reports Kibana >= 9.5) before emitting native
+queries with template variables. A verified older Kibana forces ES|QL; ES
+alone cannot prove Kibana forwards those params into inner PROMQL.
 
 ## Shortlist disposition
 

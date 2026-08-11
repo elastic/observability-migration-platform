@@ -464,22 +464,34 @@ class KibanaTargetAdapter(TargetAdapter):
                 file=sys.stderr,
             )
         elif results[0].status == "lossy":
-            # HTTP 200 with panels missing. Say so loudly: this is the
+            # HTTP 200 with something missing. Say so loudly: this is the
             # failure mode nobody investigates, because everything else
-            # about the run looks green.
-            print(
-                f"    ✗ Kibana accepted {label} but silently dropped "
-                f"{results[0].dropped_panel_count} of {results[0].panels_sent} "
-                "panel(s); the uploaded dashboard is incomplete.",
-                file=sys.stderr,
-            )
-            for dropped in results[0].dropped_panels:
-                # Kibana's validation errors run to thousands of characters;
-                # the console gets a readable head, the JSON report the rest.
-                detail = f": {dropped.reason[:300]}" if dropped.reason else ""
-                where = f" [section {dropped.section}]" if dropped.section else ""
+            # about the run looks green. A "lossy" upload is not always a
+            # dropped panel -- it can also be a dashboard-level time_range/
+            # refresh_interval, a pinned control, or a critical per-panel
+            # property (see ``_audit_accepted_panels``) -- so the panel-count
+            # line only prints when panels actually accounts for the loss.
+            lossy = results[0]
+            if lossy.dropped_panel_count:
                 print(
-                    f"        - {dropped.title or '(untitled)'}{where}{detail}",
+                    f"    ✗ Kibana accepted {label} but silently dropped "
+                    f"{lossy.dropped_panel_count} of {lossy.panels_sent} "
+                    "panel(s); the uploaded dashboard is incomplete.",
+                    file=sys.stderr,
+                )
+                for dropped in lossy.dropped_panels:
+                    # Kibana's validation errors run to thousands of characters;
+                    # the console gets a readable head, the JSON report the rest.
+                    detail = f": {dropped.reason[:300]}" if dropped.reason else ""
+                    where = f" [section {dropped.section}]" if dropped.section else ""
+                    print(
+                        f"        - {dropped.title or '(untitled)'}{where}{detail}",
+                        file=sys.stderr,
+                    )
+            if lossy.dropped_controls or lossy.dropped_properties:
+                print(
+                    f"    ✗ Kibana accepted {label} but silently dropped state: "
+                    f"{lossy.message}",
                     file=sys.stderr,
                 )
         # One payload in, one result out. The multi-result status ranking the

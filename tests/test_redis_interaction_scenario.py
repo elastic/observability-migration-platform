@@ -60,8 +60,12 @@ _QUERY_PANEL_TITLES = (
 )
 
 _LIVE_QUERY_PANEL_TITLES = (
+    "Uptime",
     "Memory Usage",
+    "Commands Executed / sec",
     "Network I/O",
+    "Total Items per DB",
+    "Redis connected clients",
 )
 
 
@@ -202,12 +206,12 @@ def test_redis_native_mapping_and_controls(redis_artifacts: Path) -> None:
 
 def test_redis_instance_affects_all_live_query_panels(redis_artifacts: Path) -> None:
     queries = _native_queries(redis_artifacts)
-    assert len(queries) == 2
+    assert len(queries) == len(_LIVE_QUERY_PANEL_TITLES)
     assert {title for title, _query in queries} == set(_LIVE_QUERY_PANEL_TITLES)
     instance_panels = [
         title for title, query in queries if "instance" in _VALUE_PARAM_TOKEN.findall(query)
     ]
-    assert len(instance_panels) == 2
+    assert len(instance_panels) == len(_LIVE_QUERY_PANEL_TITLES)
 
     contract = derive_panel_contract(
         [
@@ -216,8 +220,8 @@ def test_redis_instance_affects_all_live_query_panels(redis_artifacts: Path) -> 
         ],
         control_keys=("namespace", "pod_name", "instance"),
     )
-    assert len(contract.all_query_panels) == 2
-    assert len(contract.by_control["instance"]) == 2
+    assert len(contract.all_query_panels) == len(_LIVE_QUERY_PANEL_TITLES)
+    assert len(contract.by_control["instance"]) == len(_LIVE_QUERY_PANEL_TITLES)
     assert contract.by_control.get("namespace") is None
     assert contract.by_control.get("pod_name") is None
 
@@ -305,7 +309,7 @@ def test_redis_gap_and_source_only_capabilities() -> None:
 
 def test_redis_decorative_controls_do_not_bind_panel_queries(redis_artifacts: Path) -> None:
     queries = _native_queries(redis_artifacts)
-    assert len(queries) == 2
+    assert len(queries) == len(_LIVE_QUERY_PANEL_TITLES)
     for _title, query in queries:
         assert "?namespace" not in query
         assert "?pod_name" not in query

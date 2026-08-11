@@ -136,11 +136,10 @@ class TestIssue316EsqlAdaptiveTbucket(unittest.TestCase):
 
 class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
     def test_falls_through_to_esql_even_when_target_supports_label_matcher_params(self):
-        """ES supports ?param in PromQL label matchers, but Kibana does not forward
-        dashboard control values as named params inside PROMQL command expressions.
-        The ES-side probe marks the feature supported, yet panels with control-bound
-        label matchers must still fall through to ES|QL so ?instance lands in a
-        WHERE clause that Kibana DOES bind. (#230 / #319)"""
+        """ES supports ?param in PromQL label matchers, but Kibana < 9.5 does not
+        forward dashboard control values as named params inside PROMQL command
+        expressions. Without ``KIBANA_PROMQL_CONTROL_PARAMS``, panels with
+        control-bound label matchers must still fall through to ES|QL (#230 / #319)."""
         features = {
             PROMQL_LABEL_MATCHER_PARAMS: {
                 "supported": True,
@@ -159,7 +158,8 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         self.assertIsNotNone(yaml_panel)
         query = yaml_panel["esql"]["query"]
         # Must fall through to ES|QL regardless of PROMQL_LABEL_MATCHER_PARAMS,
-        # because Kibana does not inject control values into PROMQL expressions.
+        # because Kibana does not inject control values into PROMQL expressions
+        # until 9.5 (and the Kibana feature is unset here).
         self.assertFalse(query.startswith("PROMQL"), query)
         self.assertTrue(query.startswith("TS "), query)
 
@@ -183,7 +183,7 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         self.assertTrue(query.startswith("TS "), query)
         self.assertFalse(query.startswith("PROMQL"))
 
-    def test_user_opt_in_keeps_native_when_both_es_and_kibana_support_are_present(self):
+    def test_kibana_95_keeps_native_when_both_es_and_kibana_support_are_present(self):
         features = {
             PROMQL_LABEL_MATCHER_PARAMS: {
                 "supported": True,
@@ -192,8 +192,8 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
             },
             KIBANA_PROMQL_CONTROL_PARAMS: {
                 "supported": True,
-                "source": "user",
-                "confidence": "assumed",
+                "source": "probe",
+                "confidence": "verified",
             },
         }
         yaml_panel, _ = _translate(
@@ -209,7 +209,33 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         self.assertTrue(query.startswith("PROMQL"), query)
         self.assertIn("{instance=~?instance}", query)
 
-    def test_user_opt_in_keeps_grouped_native_series_when_controls_are_bound(self):
+    def test_kibana_94_falls_through_even_when_es_supports_label_matcher_params(self):
+        features = {
+            PROMQL_LABEL_MATCHER_PARAMS: {
+                "supported": True,
+                "source": "probe",
+                "confidence": "verified",
+            },
+            KIBANA_PROMQL_CONTROL_PARAMS: {
+                "supported": False,
+                "source": "probe",
+                "confidence": "verified",
+                "reason": "Kibana 9.4 predates 9.5",
+            },
+        }
+        yaml_panel, _ = _translate(
+            _make_panel(
+                'rate(redis_commands_processed_total{instance=~"$instance"}[1m])',
+                legend="",
+            ),
+            runtime_features=features,
+            regex_default_params={"instance"},
+        )
+        query = yaml_panel["esql"]["query"]
+        self.assertFalse(query.startswith("PROMQL"), query)
+        self.assertTrue(query.startswith("TS "), query)
+
+    def test_kibana_95_keeps_grouped_native_series_when_controls_are_bound(self):
         features = {
             PROMQL_LABEL_MATCHER_PARAMS: {
                 "supported": True,
@@ -218,8 +244,8 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
             },
             KIBANA_PROMQL_CONTROL_PARAMS: {
                 "supported": True,
-                "source": "user",
-                "confidence": "assumed",
+                "source": "probe",
+                "confidence": "verified",
             },
         }
         yaml_panel, _ = _translate(
@@ -237,7 +263,7 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
         self.assertIn("{instance=~?instance}", query)
         self.assertEqual((esql.get("breakdown") or {}).get("field"), "cmd")
 
-    def test_user_opt_in_still_falls_back_for_multi_target_overlay(self):
+    def test_kibana_95_still_falls_back_for_multi_target_overlay(self):
         features = {
             PROMQL_LABEL_MATCHER_PARAMS: {
                 "supported": True,
@@ -246,8 +272,8 @@ class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):
             },
             KIBANA_PROMQL_CONTROL_PARAMS: {
                 "supported": True,
-                "source": "user",
-                "confidence": "assumed",
+                "source": "probe",
+                "confidence": "verified",
             },
         }
         panel = {

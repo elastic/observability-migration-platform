@@ -9,6 +9,13 @@ from typing import Any
 
 PROMQL_COMMAND_V0 = "promql_command_v0"
 PROMQL_LABEL_MATCHER_PARAMS = "promql_label_matcher_params"
+# Kibana forwards dashboard control values into named params inside an opaque
+# ``PROMQL …`` expression (elastic/kibana#271244). Confirmed on Kibana >= 9.5;
+# verified older Kibana (e.g. 9.4) leaves ``?var`` unbound so migration keeps
+# the ES|QL ``WHERE … RLIKE ?var`` path. When ``--kibana-url`` is absent or the
+# version probe is inconclusive, migration prefers native PROMQL and lets the
+# existing translator / live-validator fallthroughs convert panels to ES|QL
+# when needed. Not probeable through Elasticsearch alone.
 KIBANA_PROMQL_CONTROL_PARAMS = "kibana_promql_control_params"
 # Native ``histogram_quantile`` PromQL support. Landed in Elasticsearch 9.5
 # (elastic/elasticsearch#150578); on stacks reporting it, histogram_quantile

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 
@@ -45,6 +46,31 @@ def test_vendored_schema_is_present_and_is_dashboard_config():
     assert "dashboards" in schema.get("required", [])
 
 
+def _strip_panel_time_range_overrides(entry: dict[str, Any]) -> None:
+    """Remove a panel-level ``esql.time_range`` before schema validation, in place.
+
+    Recurses into ``section`` blocks. The Dashboards API accepts a panel
+    ``config.time_range`` override (Grafana ``timeFrom``, see
+    ``dashboards_api.py::map_yaml_panel``), but the vendored (abandoned)
+    kb-dashboard-core schema predates that field: every ``ESQL*PanelConfig``
+    definition declares ``additionalProperties: false`` with no ``time_range``
+    property at all. Same category of known gap as the dashboard-level
+    ``time_range``/``refresh_interval`` exclusion in ``DashboardIR.to_yaml_dict``
+    -- a real Dashboards API capability the abandoned schema never modeled --
+    so it is stripped here rather than either dropping the feature or letting
+    a known-stale schema fail every corpus dashboard that uses it.
+    """
+    section = entry.get("section")
+    if isinstance(section, dict):
+        for sub in section.get("panels") or []:
+            if isinstance(sub, dict):
+                _strip_panel_time_range_overrides(sub)
+        return
+    esql = entry.get("esql")
+    if isinstance(esql, dict):
+        esql.pop("time_range", None)
+
+
 def _schema_failures(dashboards_dir: Path) -> list[str]:
     """Validate every migrated dashboard under ``dashboards_dir`` against the
     vendored Kibana schema; return human-readable failure strings (empty == ok)."""
@@ -57,6 +83,10 @@ def _schema_failures(dashboards_dir: Path) -> list[str]:
         artifact = json.loads(path.read_text())
         dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
         doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
+        for dashboard in doc["dashboards"]:
+            for entry in dashboard.get("panels") or []:
+                if isinstance(entry, dict):
+                    _strip_panel_time_range_overrides(entry)
         errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
         for err in errors:
             location = "/".join(str(p) for p in err.path) or "<root>"

@@ -22,6 +22,7 @@ import argparse
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -173,7 +174,8 @@ class TestTranslationMode(unittest.TestCase):
             es_url="",
             es_api_key="",
             dataset_filter="",
-            kibana_promql_control_params=False,
+            kibana_url="",
+            kibana_api_key="",
             ca_cert="",
             insecure=False,
             translation_mode="auto",
@@ -234,28 +236,132 @@ class TestTranslationMode(unittest.TestCase):
         args = cli.parse_args([])
         self.assertEqual(args.translation_mode, "auto")
 
+    def test_grafana_cli_has_no_implicit_kibana_target(self):
+        args = cli.parse_args([])
+        self.assertEqual(args.kibana_url, "")
+
     def test_grafana_cli_rejects_invalid_translation_mode(self):
         with self.assertRaises(SystemExit):
             cli.parse_args(["--translation-mode", "bogus"])
 
-    def test_grafana_cli_accepts_kibana_promql_control_param_opt_in(self):
-        args = cli.parse_args(["--kibana-promql-control-params"])
-        self.assertTrue(args.kibana_promql_control_params)
+    def test_grafana_cli_rejects_removed_kibana_promql_control_params_flag(self):
+        with self.assertRaises(SystemExit) as raised:
+            cli.parse_args(["--kibana-promql-control-params"])
+        self.assertEqual(raised.exception.code, 2)
 
-    def test_apply_native_promql_records_kibana_control_param_override(self):
+    def test_kibana_95_enables_promql_control_params(self):
         from observability_migration.adapters.source.grafana.runtime_features import (
             KIBANA_PROMQL_CONTROL_PARAMS,
             get_runtime_features,
         )
 
         rp = rules.RulePackConfig()
-        cli._apply_native_promql_to_rule_pack(
-            rp,
-            self._args(kibana_promql_control_params=True),
+        with mock.patch.object(cli, "_detect_kibana_version", return_value=(9, 5)):
+            cli._apply_native_promql_to_rule_pack(
+                rp,
+                self._args(kibana_url="http://localhost:5601"),
+            )
+        state = get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]
+        self.assertTrue(state["supported"])
+        self.assertEqual(state["source"], "probe")
+        self.assertEqual(state["confidence"], "verified")
+
+    def test_kibana_94_keeps_promql_control_params_off(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            get_runtime_features,
         )
-        self.assertTrue(
-            get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]["supported"]
+
+        rp = rules.RulePackConfig()
+        with mock.patch.object(cli, "_detect_kibana_version", return_value=(9, 4)):
+            cli._apply_native_promql_to_rule_pack(
+                rp,
+                self._args(kibana_url="http://localhost:5601"),
+            )
+        state = get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]
+        self.assertFalse(state["supported"])
+        self.assertEqual(state["source"], "probe")
+        self.assertEqual(state["confidence"], "verified")
+
+    def test_missing_kibana_url_prefers_promql_control_params(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            get_runtime_features,
         )
+
+        rp = rules.RulePackConfig()
+        cli._apply_native_promql_to_rule_pack(rp, self._args())
+        state = get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]
+        self.assertTrue(state["supported"])
+        self.assertEqual(state["source"], "default")
+        self.assertEqual(state["confidence"], "unverified")
+
+    def test_missing_target_urls_keep_control_bound_panel_on_promql(self):
+        rp = rules.RulePackConfig()
+        cli._apply_native_promql_to_rule_pack(rp, self._args())
+        setattr(rp, "_regex_default_param_names", frozenset({"instance"}))
+        panel = _make_panel(
+            1,
+            'rate(redis_commands_processed_total{instance=~"$instance"}[1m])',
+        )
+
+        yaml_panel, _result = _translate_panel(panel, rp)
+
+        query = yaml_panel["esql"]["query"]
+        self.assertTrue(query.startswith("PROMQL"), query)
+        self.assertIn("{instance=~?instance}", query)
+
+    def test_inconclusive_kibana_version_prefers_promql_control_params(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            get_runtime_features,
+        )
+
+        rp = rules.RulePackConfig()
+        with mock.patch.object(cli, "_detect_kibana_version", return_value=None):
+            cli._apply_native_promql_to_rule_pack(
+                rp,
+                self._args(kibana_url="http://localhost:5601"),
+            )
+        state = get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]
+        self.assertTrue(state["supported"])
+        self.assertEqual(state["source"], "probe")
+        self.assertEqual(state["confidence"], "inconclusive")
+
+
+class TestDetectKibanaVersion(unittest.TestCase):
+    def test_prefers_api_status_version_number(self):
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"version": {"number": "9.5.0-SNAPSHOT"}}
+
+        with mock.patch.object(cli.requests, "get", return_value=_Resp()):
+            self.assertEqual(cli._detect_kibana_version("http://kibana:5601"), (9, 5))
+
+    def test_falls_back_to_api_stats(self):
+        class _Status:
+            status_code = 200
+
+            def json(self):
+                return {"status": {"overall": {"level": "available"}}}
+
+        class _Stats:
+            status_code = 200
+
+            def json(self):
+                return {"kibana": {"version": "9.4.2"}}
+
+        def _get(url, **_kwargs):
+            if url.endswith("/api/status"):
+                return _Status()
+            if url.endswith("/api/stats"):
+                return _Stats()
+            raise AssertionError(url)
+
+        with mock.patch.object(cli.requests, "get", side_effect=_get):
+            self.assertEqual(cli._detect_kibana_version("http://kibana:5601"), (9, 4))
 
 
 class TestDatadogTranslationModeNoOp(unittest.TestCase):

@@ -138,7 +138,7 @@ from .verification import annotate_results_with_verification, save_verification_
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
 GRAFANA_USER = os.getenv("GRAFANA_USER", "admin")
 GRAFANA_PASS = os.getenv("GRAFANA_PASS", "admin")
-KIBANA_URL = os.getenv("KIBANA_URL", "http://localhost:5601")
+KIBANA_URL = os.getenv("KIBANA_URL", "")
 ES_URL = os.getenv("ES_URL", "")
 
 
@@ -264,17 +264,6 @@ def parse_args(argv: list[str] | None = None):
             "(emits queries that error against a cluster lacking the command); "
             "'esql' disables native PROMQL entirely so every panel uses the ES|QL "
             "translator."
-        ),
-    )
-    parser.add_argument(
-        "--kibana-promql-control-params",
-        action="store_true",
-        help=(
-            "Opt into native PROMQL for Grafana panels whose label matchers bind "
-            "dashboard controls inside the PromQL expression "
-            "(for example {instance=~\"$instance\"}). Use only on Kibana builds "
-            "you have verified to forward control values into inner PROMQL "
-            "expressions; the default remains the safer ES|QL fallback."
         ),
     )
     parser.add_argument(
@@ -478,7 +467,10 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--kibana-url",
         default=KIBANA_URL,
-        help="Kibana URL for upload",
+        help=(
+            "Optional Kibana URL for target-version detection and upload "
+            "(defaults to KIBANA_URL; required with --upload)"
+        ),
     )
     parser.add_argument(
         "--kibana-api-key",
@@ -1123,6 +1115,12 @@ def _detect_esql_named_param_binding(
 #: natively (elastic/elasticsearch#150578, shipped in 9.5).
 _HISTOGRAM_QUANTILE_MIN_ES = (9, 5)
 
+#: Minimum Kibana (major, minor) that forwards dashboard control values into
+#: named params inside an opaque ``PROMQL …`` expression
+#: (elastic/kibana#271244 / kibana#271215, labeled v9.5.0). Older Kibana
+#: (including 9.4) leaves ``?var`` unbound and panels must stay on ES|QL.
+_KIBANA_PROMQL_CONTROL_PARAMS_MIN = (9, 5)
+
 
 def _detect_es_version(
     es_url: str,
@@ -1155,6 +1153,173 @@ def _detect_es_version(
         return (int(parts[0]), int(parts[1]))
     except (AttributeError, IndexError, ValueError):
         return None
+
+
+def _kibana_headers(api_key: str | None = None) -> dict[str, str]:
+    headers = {"kbn-xsrf": "true", "Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+    return headers
+
+
+def _parse_major_minor_version(number: str) -> tuple[int, int] | None:
+    text = str(number or "").strip()
+    if not text:
+        return None
+    # Strip common suffixes: ``9.5.0-SNAPSHOT``, ``9.5.0+build``.
+    for sep in ("-", "+"):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+    parts = text.split(".")
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except (IndexError, ValueError):
+        return None
+
+
+def _detect_kibana_version(
+    kibana_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+    verify: bool | str = True,
+) -> tuple[int, int] | None:
+    """Return the target Kibana ``(major, minor)`` version, or None.
+
+    Prefers ``GET /api/status`` → ``version.number``. Some local/dev builds
+    omit that field, so fall back to ``GET /api/stats`` → ``kibana.version``.
+    Any transport error, non-200, or unparseable payload yields None so callers
+    keep the safe ES|QL fallback for control-bound PromQL panels.
+    """
+    if not kibana_url:
+        return None
+    base = kibana_url.rstrip("/")
+    headers = _kibana_headers(api_key)
+
+    try:
+        response = requests.get(
+            f"{base}/api/status",
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception:
+        response = None
+    if response is not None and getattr(response, "status_code", 0) == 200:
+        try:
+            payload = response.json()
+            version = _parse_major_minor_version(
+                str((payload.get("version") or {}).get("number") or "")
+            )
+            if version is not None:
+                return version
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    try:
+        response = requests.get(
+            f"{base}/api/stats",
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception:
+        return None
+    if getattr(response, "status_code", 0) != 200:
+        return None
+    try:
+        payload = response.json()
+        return _parse_major_minor_version(
+            str((payload.get("kibana") or {}).get("version") or "")
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _apply_kibana_promql_control_params_feature(
+    rule_pack,
+    *,
+    kibana_url: str,
+    api_key: str | None,
+    verify: bool | str = True,
+) -> None:
+    """Prefer native PROMQL control binding; force ES|QL only on Kibana < 9.5.
+
+    Kibana 9.5+ forwards dashboard controls into ``?var`` placeholders inside
+    an opaque ``PROMQL`` command (elastic/kibana#271244). Older Kibana leaves
+    those params unbound, so verified ``< 9.5`` keeps the ES|QL
+    ``WHERE … RLIKE ?var`` path.
+
+    When ``--kibana-url`` is absent or the version probe is inconclusive,
+    optimistically enable native PROMQL (same posture as offline native PROMQL
+    itself). Panels that still cannot stay native degrade to ES|QL through the
+    existing translator / live-validator fallthroughs.
+    """
+    if not kibana_url:
+        set_runtime_feature(
+            rule_pack,
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            supported=True,
+            source="default",
+            confidence="unverified",
+            level="runtime",
+            reason=(
+                "no --kibana-url configured; prefer native PROMQL control "
+                "binding (panels that cannot stay native fall through to ES|QL)"
+            ),
+        )
+        print(
+            "  Kibana inner-PROMQL control params: preferred "
+            "(no --kibana-url; native PROMQL first, ES|QL fallthrough)"
+        )
+        return
+
+    kibana_version = _detect_kibana_version(kibana_url, api_key, verify=verify)
+    if kibana_version is None:
+        set_runtime_feature(
+            rule_pack,
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            supported=True,
+            source="probe",
+            confidence="inconclusive",
+            level="runtime",
+            reason=(
+                "Kibana version could not be determined; prefer native PROMQL "
+                "control binding (panels that cannot stay native fall through "
+                "to ES|QL)"
+            ),
+        )
+        print(
+            "  Kibana inner-PROMQL control params: preferred "
+            "(Kibana version inconclusive; native PROMQL first, ES|QL fallthrough)"
+        )
+        return
+
+    supported = kibana_version >= _KIBANA_PROMQL_CONTROL_PARAMS_MIN
+    version_label = f"{kibana_version[0]}.{kibana_version[1]}"
+    if supported:
+        reason = (
+            f"Kibana {version_label} forwards dashboard control params into "
+            "inner PROMQL expressions"
+        )
+        print(f"  Kibana inner-PROMQL control params: enabled (Kibana {version_label})")
+    else:
+        reason = (
+            f"Kibana {version_label} predates 9.5; control-bound PromQL panels "
+            "use the ES|QL RLIKE binding path"
+        )
+        print(
+            f"  Kibana inner-PROMQL control params: unsupported "
+            f"(Kibana {version_label}; requires 9.5+)"
+        )
+    set_runtime_feature(
+        rule_pack,
+        KIBANA_PROMQL_CONTROL_PARAMS,
+        supported=supported,
+        source="probe",
+        confidence="verified",
+        level="runtime",
+        reason=reason,
+    )
 
 
 def _detect_target_runtime_features(
@@ -1492,20 +1657,14 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
             "  Target ES|QL named-parameter binding: "
             f"{_runtime_feature_status_label(esql_state)}"
         )
-    if getattr(args, "kibana_promql_control_params", False):
-        set_runtime_feature(
-            rule_pack,
-            KIBANA_PROMQL_CONTROL_PARAMS,
-            supported=True,
-            source="user",
-            confidence="assumed",
-            level="runtime",
-            reason=(
-                "user opted into Kibana forwarding dashboard control params into "
-                "inner PROMQL expressions"
-            ),
-        )
-        print("  Kibana inner-PROMQL control params: enabled by user override")
+    kibana_url = getattr(args, "kibana_url", "") or ""
+    kibana_api_key = getattr(args, "kibana_api_key", "") or None
+    _apply_kibana_promql_control_params_feature(
+        rule_pack,
+        kibana_url=kibana_url,
+        api_key=kibana_api_key,
+        verify=verify,
+    )
 
     native = _resolve_native_promql(args, runtime_profile)
     if native:
@@ -1518,6 +1677,17 @@ def _apply_native_promql_to_rule_pack(rule_pack, args: argparse.Namespace) -> No
                 source="default",
                 confidence="unverified",
                 reason="no --es-url configured; native PROMQL assumed for offline migration",
+            )
+            set_runtime_feature(
+                rule_pack,
+                PROMQL_LABEL_MATCHER_PARAMS,
+                supported=True,
+                source="default",
+                confidence="unverified",
+                reason=(
+                    "no --es-url configured; PromQL label matcher params assumed "
+                    "for offline migration"
+                ),
             )
         if not getattr(args, "dataset_filter", ""):
             rule_pack.metrics_dataset_filter = ""

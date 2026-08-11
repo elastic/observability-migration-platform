@@ -279,8 +279,7 @@ Datadog.
 | `--data-view` | Grafana, Datadog | The Kibana **data view / index pattern the migrated panels bind to in the UI** | When omitted, the source adapter keeps its own default (Grafana: `metrics-*`). For Datadog, non-OTel profiles keep their profile index (for example `prometheus` keeps `metrics-prometheus-*`). See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
-| `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto` (probe-driven). `esql` forces the ES\|QL translator for every panel. `native` *requests* native `PROMQL` wherever it is safe — panels whose PromQL matchers bind dashboard variables (e.g. `instance=~"$instance"`) still fall back to ES\|QL unless you also pass `--kibana-promql-control-params`. Datadog: no-op. |
-| `--kibana-promql-control-params` | Grafana | Opt into native `PROMQL` for panels whose PromQL label matchers bind dashboard controls inside the PromQL expression | Default is off because Kibana builds vary. Required (together with a PROMQL-capable target) to keep Redis-style `$instance` panels on native `PROMQL`; without it, `auto`/`native` still emit ES\|QL for those panels. Use only after you verify your Kibana forwards control values into inner PromQL. |
+| `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto` (probe-driven). `esql` forces the ES\|QL translator for every panel. `native` *requests* native `PROMQL` wherever it is safe — panels whose PromQL matchers bind dashboard variables (e.g. `instance=~"$instance"`) prefer native `PROMQL` by default and when `--kibana-url` reports Kibana 9.5+; only a verified Kibana `< 9.5` forces those panels onto ES\|QL. Datadog: no-op. |
 | `--no-curated-packs` | Grafana | Disable automatic curated-pack merge for known `gnetId` dashboards | By default packs (e.g. Redis 763, Node Exporter 1860) merge under any `--rules-file`. Use this to exercise the core translator alone. |
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
 | `--validate` | Grafana, Datadog | Run verification-packet ES\|QL validation against Elasticsearch after translation | Requires `--es-url`. Distinct from the lighter native-`PROMQL` parse check that already runs when `--es-url` is set and PROMQL panels exist. Auto-applies safe query fixes and manualizes broken ones before upload. |
@@ -332,9 +331,11 @@ for your exported JSON directories. For a zero-setup offline trial, run
 `obs-migrate list-samples` and pass the printed `input_dir` to `--input-dir`.
 
 ```bash
-# Grafana dashboards only (files). Without --es-url the probe cannot confirm
-# PROMQL; panels with $-variable matchers still land on ES|QL unless you later
-# re-run with --es-url and --kibana-promql-control-params on a capable Kibana.
+# Grafana dashboards only (files). Without --es-url / --kibana-url the run
+# still prefers native PROMQL (including control-bound $var matchers); panels
+# that cannot stay native fall through to ES|QL. Pass --kibana-url to confirm
+# the target: Kibana 9.5+ keeps native control binding, Kibana < 9.5 forces
+# those panels onto ES|QL.
 obs-migrate migrate \
   --source grafana \
   --input-mode files \
@@ -899,10 +900,11 @@ Two further gates still push panels to ES|QL even when the target supports
 `PROMQL`:
 
 1. **Control-bound PromQL matchers** (common on Redis 763: `instance=~"$instance"`).
-   Without `--kibana-promql-control-params`, those panels stay on ES|QL under
-   both `auto` and `native`. With the flag on a PROMQL-capable Kibana (9.5+
-   lab builds), Redis 763 typically keeps a minority of panels on native
-   `PROMQL` and the rest on ES|QL.
+   Migration prefers native `PROMQL` for these panels by default (and when
+   `--kibana-url` reports Kibana 9.5+). Only a verified Kibana older than 9.5
+   forces them onto ES|QL as a safety net — the supported product floor remains
+   Kibana 9.5+ (`minimum_kibana_version: 9.5.0`). Other construct / curated-pack
+   limits can still degrade individual panels to ES|QL even on Kibana 9.5+.
 2. **Curated pack / construct limits** — pack overrides and unsupported PromQL
    shapes can still emit ES|QL. Pass `--no-curated-packs` to isolate the core
    translator.
@@ -1224,12 +1226,24 @@ During `obs-migrate migrate --upload`, Grafana and Datadog upload the in-memory
 the persisted `native/*.native.json` artifact — so a one-step run and a
 review-then-upload run deploy identical bodies.
 
-**Silently dropped panels (`lossy`):** `PUT /api/dashboards/{id}` answers `200`/`201`
-even when Kibana could not transform some of the panels it was sent — those panels
-are simply absent from the saved object, and the PUT body carries no `warnings` key
-to say so. Every accepted upload therefore counts the leaf panels it sent against
-the ones the response echoes back in `data.panels` (recursing one level into
-sections). When fewer came back, the upload is reported with status `lossy`:
+**Silently dropped state (`lossy`):** `PUT /api/dashboards/{id}` answers `200`/`201`
+even when Kibana could not transform, or chose not to keep, some of what it was
+sent — with no `warnings` key on the PUT body to say so. Every accepted upload is
+therefore audited against what the response actually echoes back, on three
+independent axes, any of which reports the upload as `lossy`:
+
+- **Panels.** The leaf panels sent are counted against the ones the response
+  echoes back in `data.panels` (recursing one level into sections). Fewer coming
+  back is a dropped panel.
+- **Dashboard-level state.** The dashboard's own `time_range`, `refresh_interval`,
+  and pinned controls (matched by title) are compared sent-versus-accepted — state
+  a panel count cannot see at all.
+- **Critical per-panel properties.** A panel's own `time_range` override and its
+  XY temporal x-scale are compared for every panel that survives the panel-count
+  check, because a panel can keep its title/section/grid while losing the one
+  setting that made it render.
+
+Regardless of which axis triggered it:
 
 - `lossy` is a **failure**, not a warning. It never counts toward `uploaded_ok`,
   so `obs-migrate upload` exits `1` and the per-dashboard `runtime_summary.upload.status`
@@ -1238,16 +1252,20 @@ sections). When fewer came back, the upload is reported with status `lossy`:
 - There is no fallback path it could be re-routed to. The PUT already wrote a
   partial dashboard, and re-rendering it through a second code path would hide the
   loss (the same reasoning as `409 conflict`).
-- The dropped panels are named, not just counted. On a detected mismatch — and only
-  then — one follow-up `GET /api/dashboards/{id}` retrieves Kibana's own
-  `warnings[].message` ("Unable to transform panel config. Error: …") so the operator
-  gets the actual validation error. Detection never depends on that GET succeeding.
+- On a detected panel-count mismatch — and only then — one follow-up
+  `GET /api/dashboards/{id}` retrieves Kibana's own `warnings[].message` ("Unable
+  to transform panel config. Error: …") so the operator gets the actual validation
+  error for each dropped panel. Detection never depends on that GET succeeding.
 - Per-panel detail (`title`, `reason`, `section`, `grid`) is reported on stderr by
   `obs-migrate upload` and `obs-migrate migrate --upload`, in the console migration
   report's `UPLOAD DATA LOSS` section, and in the JSON artifacts:
   `migration_report.json` → `summary.upload_panels_dropped` plus
   `runtime_summary.upload.dropped_panels` per dashboard. The `obs-migrate upload`
-  summary additionally reports `panels_dropped` across the batch.
+  summary additionally reports `panels_dropped` across the batch. Dropped
+  dashboard-level state and critical panel properties are not separate JSON
+  fields; they are named in the upload record's `output` text (the same message
+  printed to stderr), so a run whose only loss is a dropped control or property
+  still names it rather than only showing a bare `lossy` status.
 
 **Same-titled dashboards (`duplicate_id`):** `PUT /api/dashboards/{id}` is an
 upsert, and the dashboard id is the title slug (`obs-migrate-<title-slug>`). Two
