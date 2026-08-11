@@ -422,6 +422,12 @@ IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD: frozenset[str] = frozenset(
         # payload under the plain title slug, and the rebuilt dashboard would
         # upsert over its same-titled sibling on upload.
         "id_disambiguator",
+        # Same "YAML shape cannot carry it" reasoning as ``tags``: neither has
+        # a slot in ``docs/dashboards/schema.json`` (``refresh_interval`` not
+        # at all; ``time_range`` there has no ``mode``), so
+        # ``native_dashboard_from_ir`` reads both straight off the IR.
+        "time_range",
+        "refresh_interval",
         "alerts",
         "annotations",
         "links",

@@ -95,6 +95,7 @@ from observability_migration.core.assets.native_dashboard import (
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
 from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
+from observability_migration.targets.kibana.emit.esql_utils import is_time_like_output_field
 from observability_migration.targets.kibana.native_artifacts import (
     ARTIFACT_ENVELOPE_VERSION,
     NATIVE_ARTIFACT_KIND,
@@ -244,6 +245,18 @@ class UploadResult:
     # ensured-data-view lookup did not know it. A warning, not a failure: the
     # dashboard uploads, that one control renders an error.
     unresolved_data_views: list[UnresolvedDataView] = field(default_factory=list)
+    # Pinned controls (by title) sent in ``pinned_panels`` but absent from the
+    # accepted response -- the same silent-partial-write pattern as
+    # ``dropped_panels``, for the control group instead of the panel grid (see
+    # :func:`_record_dropped_dashboard_state`).
+    dropped_controls: list[str] = field(default_factory=list)
+    # Critical dashboard- or panel-level properties Kibana accepted (2xx)
+    # without preserving: ``"time_range"``, ``"refresh_interval"``, or
+    # ``"<panel title>: time_range"`` / ``"<panel title>: temporal_x_scale"``.
+    # A panel can survive the leaf-panel count check (same title/section/grid)
+    # while still losing state that check cannot see (see
+    # :func:`_record_dropped_panel_properties`).
+    dropped_properties: list[str] = field(default_factory=list)
 
     @property
     def dropped_panel_count(self) -> int:
@@ -815,7 +828,46 @@ def _prune_inert_y2(axis: dict[str, Any] | None, cfg: dict[str, Any]) -> dict[st
 
 def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Return the XY axis config, with any inert second axis pruned."""
-    return _prune_inert_y2(_xy_axis_from_cfg(cfg), cfg)
+    return _ensure_temporal_x_scale(cfg, _prune_inert_y2(_xy_axis_from_cfg(cfg), cfg))
+
+
+def _xy_x_is_time_like(cfg: dict[str, Any]) -> bool:
+    """True when the XY x dimension is a time column Lens must treat as date.
+
+    PROMQL XY panels expose ``step``; ES|QL time series use ``time_bucket`` /
+    ``timestamp_bucket``. Without ``axis.x.scale: temporal``, Lens marks the x
+    column as ``string`` and charts like Redis "Total Commands / sec" render
+    empty ("No results found") even when the query returns rows.
+    """
+    for key in ("dimension", "x_axis"):
+        dim = cfg.get(key)
+        if not isinstance(dim, dict):
+            continue
+        field = str(dim.get("field") or dim.get("column") or "").strip()
+        if is_time_like_output_field(field):
+            return True
+        if str(dim.get("data_type") or "").strip().lower() == "date":
+            return True
+    return False
+
+
+def _ensure_temporal_x_scale(
+    cfg: dict[str, Any], axis: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Set ``axis.x.scale: temporal`` for time-like XY x dimensions.
+
+    Respect an explicit ``ordinal`` / ``linear`` / ``temporal`` scale already
+    present on the panel config.
+    """
+    if not _xy_x_is_time_like(cfg):
+        return axis
+    out = dict(axis) if axis else {}
+    x = dict(out.get("x") or {}) if isinstance(out.get("x"), dict) else {}
+    if x.get("scale") in {"ordinal", "linear", "temporal"}:
+        return axis
+    x["scale"] = "temporal"
+    out["x"] = x
+    return out
 
 
 def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -1815,6 +1867,14 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=reason, kind=kind)
         if hide_title:
             esql_config["hide_title"] = True
+        # Panel-level time override (Grafana ``timeFrom``, mapped upstream to
+        # ``esql.time_range``). Every ES|QL chart-type schema (xy, metric,
+        # datatable, pie, ...) accepts ``config.time_range`` identically, so
+        # this single copy after chart-type dispatch covers all of them
+        # rather than threading it through each ``_build_esql_*`` builder.
+        time_range = esql.get("time_range")
+        if isinstance(time_range, dict) and time_range:
+            esql_config["time_range"] = dict(time_range)
         panel_payload = {"grid": grid, "type": "vis", "config": esql_config}
         if description:
             panel_payload["description"] = description
@@ -2186,6 +2246,8 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     control-budget gate below.
     """
     filters, dropped_filters = map_yaml_filters(dashboard.get("filters"))
+    time_range = dashboard.get("time_range")
+    refresh_interval = dashboard.get("refresh_interval")
     return _native_dashboard_from_parts(
         title=str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard"),
         description=str(dashboard.get("description") or ""),
@@ -2195,6 +2257,8 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
         control_entries=dashboard.get("controls") or [],
         dashboard_id=_stable_dashboard_id(dashboard),
         tags=[],
+        time_range=time_range if isinstance(time_range, dict) else {},
+        refresh_interval=refresh_interval if isinstance(refresh_interval, dict) else {},
     )
 
 
@@ -2208,6 +2272,8 @@ def _native_dashboard_from_parts(
     control_entries: list[Any],
     dashboard_id: str,
     tags: list[str],
+    time_range: dict[str, Any] | None = None,
+    refresh_interval: dict[str, Any] | None = None,
 ) -> tuple[NativeDashboard, NativeMappingCounts]:
     """Assemble a :class:`NativeDashboard` from already-extracted parts.
 
@@ -2217,6 +2283,8 @@ def _native_dashboard_from_parts(
     dicts are a stable wire shape, but routing dashboard-level fields through
     the YAML document shape silently drops anything its schema cannot express
     (it declares ``additionalProperties: false``), which the API does support.
+    ``time_range``/``refresh_interval`` follow that same rule (see
+    :func:`native_dashboard_from_ir`).
     """
     native = NativeDashboard(
         title=title,
@@ -2224,6 +2292,8 @@ def _native_dashboard_from_parts(
         dashboard_id=dashboard_id,
         filters=filters,
         tags=[str(tag).strip() for tag in (tags or []) if str(tag).strip()],
+        time_range=dict(time_range) if isinstance(time_range, dict) else {},
+        refresh_interval=dict(refresh_interval) if isinstance(refresh_interval, dict) else {},
     )
     counts = NativeMappingCounts()
     if dropped_filters:
@@ -2319,8 +2389,10 @@ def native_dashboard_from_ir(dashboard_ir: DashboardIR) -> tuple[NativeDashboard
     ``docs/dashboards/schema.json``, which declares ``additionalProperties:
     false``; routing dashboard fields through it silently discarded anything
     the API supports but the (deprecated) YAML schema does not -- dashboard
-    ``tags`` being the worked example. The API path must not be limited by the
-    YAML format's vocabulary.
+    ``tags`` being the worked example, ``refresh_interval`` (absent from the
+    YAML schema entirely) and ``time_range`` (present there, but without a
+    ``mode``) being two more. The API path must not be limited by the YAML
+    format's vocabulary.
     """
     filters, dropped_filters = map_yaml_filters(list(dashboard_ir.filters or []))
     return _native_dashboard_from_parts(
@@ -2334,6 +2406,8 @@ def native_dashboard_from_ir(dashboard_ir: DashboardIR) -> tuple[NativeDashboard
         ],
         dashboard_id=_stable_dashboard_id_from_ir(dashboard_ir),
         tags=list(dashboard_ir.tags or []),
+        time_range=dict(dashboard_ir.time_range or {}),
+        refresh_interval=dict(dashboard_ir.refresh_interval or {}),
     )
 
 
@@ -2828,22 +2902,198 @@ def _record_panel_loss(res: UploadResult, payload: dict[str, Any], body: Any) ->
         dropped.append(descriptor)
     res.dropped_panels = dropped
     res.status = "lossy"
-    res.message = _panel_loss_message(res)
+    # ``res.message`` is composed once, in ``_audit_accepted_panels``, after
+    # every accepted-state check has run (and the dropped-panel explanation
+    # GET, if any) -- so a run that also lost a pinned control or a critical
+    # panel property is not overwritten by whichever check happened to run
+    # last.
 
 
-def _panel_loss_message(res: UploadResult) -> str:
-    named = ", ".join(
-        f"{item.title or '(untitled)'}"
-        + (f" [in section {item.section}]" if item.section else "")
-        + (f": {item.reason}" if item.reason else "")
-        for item in res.dropped_panels
-    )
-    detail = f" Dropped: {named}." if named else ""
-    return (
-        f"Kibana accepted the upload but kept only {res.panels_accepted} of "
-        f"{res.panels_sent} panel(s); {res.dropped_panel_count} panel(s) were "
-        f"silently dropped.{detail}"
-    )[:2000]
+def _dict_subset_matches(sent: dict[str, Any], accepted: Any) -> bool:
+    """True when every key/value *sent* declares is present in *accepted*.
+
+    A subset check rather than exact equality: Kibana is free to echo back
+    extra derived keys (a default ``mode``, resolved ids, ...) without that
+    counting as a drop. Only a value actually sent going missing or changing
+    does.
+    """
+    if not isinstance(accepted, dict):
+        return False
+    return all(accepted.get(key) == value for key, value in sent.items())
+
+
+def _record_dropped_dashboard_state(res: UploadResult, payload: dict[str, Any], body: Any) -> None:
+    """Flag dashboard-level ``time_range``/``refresh_interval``/pinned controls
+    a 2xx PUT accepted without keeping.
+
+    Same discipline as :func:`_record_panel_loss` applied to the fields a
+    panel-count comparison cannot see: the dashboard's own time window and
+    refresh cadence, and its pinned control group (matched by title, since
+    the API assigns controls no stable id of their own to key on).
+    """
+    if not isinstance(body, dict):
+        return
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return
+
+    for prop in ("time_range", "refresh_interval"):
+        sent_value = payload.get(prop)
+        if not isinstance(sent_value, dict) or not sent_value:
+            continue
+        compare_value = sent_value
+        if prop == "time_range":
+            # The dashboard-level (not panel-level) ``time_range`` is stored by
+            # Kibana as separate ``timeRestore``/``timeFrom``/``timeTo`` saved-object
+            # fields, and its output transform always rebuilds ``time_range`` as
+            # ``{from, to}`` only (verified against
+            # src/platform/plugins/shared/dashboard/server/api/transforms/out/
+            # transform_dashboard_out.ts). ``mode`` is accepted on PUT for input
+            # validation but has no persisted slot to round-trip through, so it
+            # must be excluded here or every relative/absolute dashboard range
+            # would be misreported as dropped. Panel-level ``time_range`` lives
+            # inside an opaque Lens/ES|QL panel config blob instead and does
+            # preserve ``mode``, so it keeps the strict subset comparison.
+            compare_value = {k: v for k, v in sent_value.items() if k != "mode"}
+        if not _dict_subset_matches(compare_value, data.get(prop)):
+            res.dropped_properties.append(prop)
+            res.status = "lossy"
+
+    sent_controls = [c for c in (payload.get("pinned_panels") or []) if isinstance(c, dict)]
+    if not sent_controls:
+        return
+    # Kibana's output transform only includes ``pinned_panels`` when the array
+    # is non-empty (``...(pinnedPanelsOut.length && { pinned_panels: ... })``
+    # in transform_dashboard_out.ts). A total control drop therefore omits the
+    # key entirely rather than echoing ``[]`` -- treat a missing/non-list value
+    # the same as an empty list so that case is still flagged lossy.
+    accepted_raw = data.get("pinned_panels")
+    accepted_controls = accepted_raw if isinstance(accepted_raw, list) else []
+    remaining_titles = [
+        str((c.get("config") or {}).get("title") or "")
+        for c in accepted_controls
+        if isinstance(c, dict)
+    ]
+    for control in sent_controls:
+        title = str((control.get("config") or {}).get("title") or "")
+        if title in remaining_titles:
+            remaining_titles.remove(title)
+            continue
+        res.dropped_controls.append(title or "(untitled control)")
+    if res.dropped_controls:
+        res.status = "lossy"
+
+
+def _panel_critical_state(panel: dict[str, Any]) -> dict[str, Any]:
+    """Critical per-panel state a silent-drop check must not miss.
+
+    ``time_range`` (a panel time override silently dropped) and the XY
+    temporal x-scale (Lens treating a time column as a string -- the Redis
+    "Total Commands / sec" empty-render bug) are both settings a 2xx PUT can
+    accept while quietly stripping. Unlike a whole missing panel, nothing
+    about the *panel count* would show either one.
+    """
+    config = panel.get("config")
+    config = config if isinstance(config, dict) else {}
+    state: dict[str, Any] = {}
+    time_range = config.get("time_range")
+    if isinstance(time_range, dict) and time_range:
+        state["time_range"] = time_range
+    axis = config.get("axis")
+    x_axis = axis.get("x") if isinstance(axis, dict) else None
+    if isinstance(x_axis, dict) and x_axis.get("scale") == "temporal":
+        state["temporal_x_scale"] = True
+    return state
+
+
+def _panel_critical_state_survived(prop: str, sent_value: Any, accepted_config: dict[str, Any]) -> bool:
+    if prop == "time_range":
+        return _dict_subset_matches(sent_value, accepted_config.get("time_range"))
+    if prop == "temporal_x_scale":
+        axis = accepted_config.get("axis")
+        x_axis = axis.get("x") if isinstance(axis, dict) else None
+        return isinstance(x_axis, dict) and x_axis.get("scale") == "temporal"
+    return False
+
+
+def _leaf_panels_by_key(container: dict[str, Any]) -> dict[tuple[str, str, int, int, int, int], list[dict[str, Any]]]:
+    """Every leaf panel dict in *container*, grouped by its ``(section, title,
+    grid)`` identity -- the same key :func:`_record_panel_loss` uses to pair a
+    sent panel with its surviving twin in the accepted response."""
+    out: dict[tuple[str, str, int, int, int, int], list[dict[str, Any]]] = {}
+    for section, panel in iter_payload_leaf_panels(container):
+        key = _descriptor_key(_leaf_descriptor(panel, section=section))
+        out.setdefault(key, []).append(panel)
+    return out
+
+
+def _record_dropped_panel_properties(res: UploadResult, payload: dict[str, Any], body: Any) -> None:
+    """Flag critical per-panel state a 2xx PUT accepted without keeping.
+
+    Runs even when every panel survives the leaf-count check in
+    :func:`_record_panel_loss`: a panel can keep its title/section/grid while
+    losing ``config.time_range`` or its temporal x-scale, which the count
+    alone cannot see.
+    """
+    if not isinstance(body, dict):
+        return
+    data = body.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("panels"), list):
+        return
+    sent_by_key = _leaf_panels_by_key(payload)
+    accepted_by_key = _leaf_panels_by_key(data)
+    dropped: list[str] = []
+    for key, sent_panels in sent_by_key.items():
+        accepted_panels = accepted_by_key.get(key) or []
+        for sent_panel, accepted_panel in zip(sent_panels, accepted_panels):
+            sent_state = _panel_critical_state(sent_panel)
+            if not sent_state:
+                continue
+            accepted_config = accepted_panel.get("config")
+            accepted_config = accepted_config if isinstance(accepted_config, dict) else {}
+            title = str((sent_panel.get("config") or {}).get("title") or "") or "(untitled)"
+            for prop, value in sent_state.items():
+                if not _panel_critical_state_survived(prop, value, accepted_config):
+                    dropped.append(f"{title}: {prop}")
+    if dropped:
+        res.dropped_properties.extend(dropped)
+        res.status = "lossy"
+
+
+def _accepted_state_loss_message(res: UploadResult) -> str:
+    """Compose ``UploadResult.message`` from every accepted-state check.
+
+    Called once, after :func:`_record_panel_loss`,
+    :func:`_record_dropped_dashboard_state`, and
+    :func:`_record_dropped_panel_properties` have all run (and after the
+    dropped-panel explanation GET, if any), so a run with more than one kind
+    of loss reports all of them instead of whichever check ran last.
+    """
+    parts: list[str] = []
+    if res.dropped_panel_count:
+        named = ", ".join(
+            f"{item.title or '(untitled)'}"
+            + (f" [in section {item.section}]" if item.section else "")
+            + (f": {item.reason}" if item.reason else "")
+            for item in res.dropped_panels
+        )
+        detail = f" Dropped: {named}." if named else ""
+        parts.append(
+            f"Kibana accepted the upload but kept only {res.panels_accepted} of "
+            f"{res.panels_sent} panel(s); {res.dropped_panel_count} panel(s) were "
+            f"silently dropped.{detail}"
+        )
+    if res.dropped_controls:
+        parts.append(
+            f"Kibana accepted the upload without {len(res.dropped_controls)} "
+            f"pinned control(s): {', '.join(res.dropped_controls)}."
+        )
+    if res.dropped_properties:
+        parts.append(
+            "Kibana accepted the upload without preserving: "
+            f"{', '.join(res.dropped_properties)}."
+        )
+    return " ".join(parts)[:2000]
 
 
 def _explain_dropped_panels(
@@ -2889,7 +3139,6 @@ def _explain_dropped_panels(
         return
     for descriptor in res.dropped_panels:
         descriptor.reason = reasons_by_title.get(descriptor.title, "")
-    res.message = _panel_loss_message(res)
 
 
 def _audit_accepted_panels(
@@ -2901,12 +3150,27 @@ def _audit_accepted_panels(
     base: str = "",
     timeout: int = 60,
 ) -> None:
-    """Detect, then (only on a detected loss) explain, silently dropped panels."""
+    """Detect, then (only on a detected loss) explain, silently dropped state.
+
+    Three independent checks against the same PUT/POST response: leaf panels
+    (:func:`_record_panel_loss`), dashboard-level time/refresh/pinned controls
+    (:func:`_record_dropped_dashboard_state`), and critical per-panel state
+    that survives the panel-count check (:func:`_record_dropped_panel_properties`).
+    Any of the three can mark the upload ``"lossy"``; the follow-up GET that
+    explains *why* a panel vanished still fires only once, after all three
+    have run, so a loss on more than one axis costs one extra request rather
+    than three.
+    """
     if payload is None:
         return
     _record_panel_loss(res, payload, body)
-    if res.status == "lossy" and session is not None and base:
+    _record_dropped_dashboard_state(res, payload, body)
+    _record_dropped_panel_properties(res, payload, body)
+    if res.status != "lossy":
+        return
+    if session is not None and base:
         _explain_dropped_panels(res, session, base, timeout=timeout)
+    res.message = _accepted_state_loss_message(res)
 
 
 def _classify_response(

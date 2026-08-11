@@ -462,12 +462,14 @@ parameter (issue #131 / #132).
   matchers and warns — that path has no controls to bind.
 - A verified-unsupported probe state is never overridden: no unbound `?var` is
   uploaded.
-- Native `PROMQL` stays conservative by default even when Elasticsearch accepts
-  `?var` inside PromQL label matchers, because Kibana builds differ in whether
-  they forward dashboard control values into the *inner* PromQL expression. If
-  you have verified a Kibana build that does forward them, pass
-  `--kibana-promql-control-params` to keep those panels on the native `PROMQL`
-  path instead of the ES|QL `RLIKE ?var` fallback.
+- Native `PROMQL` is preferred for control-bound label matchers by default
+  (no `--kibana-url`, or an inconclusive Kibana version probe), matching the
+  offline native-PROMQL posture. Panels that still cannot stay native fall
+  through to ES|QL via the existing translator / live-validator gates.
+  When `--kibana-url` reports Kibana 9.5+, control binding is confirmed
+  (elastic/kibana#271244). A verified Kibana older than 9.5 (for example 9.4)
+  forces the ES|QL `RLIKE ?var` path as a safety net — the supported product
+  floor remains Kibana 9.5+ (`minimum_kibana_version: 9.5.0`).
 
 Exercised by `build_label_matcher_param_canary` (also uploaded by
 `scripts/run_render_audit_local.sh`).
@@ -530,6 +532,36 @@ Use that doc for:
 - integrated `--smoke`, `--browser-audit`, and `--capture-screenshots` migration flows
 - extension catalog commands
 - standalone post-upload smoke validation commands
+
+## Dashboard and Panel Time State
+
+- The source dashboard's own time window (`dashboard.time.{from,to}`) and
+  auto-refresh (`dashboard.refresh`) are normalized onto `DashboardIR.time_range`
+  / `.refresh_interval` and carried straight through to the Dashboards API's
+  own `time_range: {from, to, mode}` / `refresh_interval: {pause, value}`
+  fields -- not through the deprecated kb-dashboard-core YAML shape, which has
+  no slot for `refresh_interval` at all and no `mode` on `time_range`. A
+  relative bound (`now-6h`, `now/d`) passes through unchanged as Elasticsearch
+  date math; an absolute bound (epoch milliseconds, 13+ digits) converts to
+  ISO 8601. A bare shorter all-digit string (e.g. epoch seconds) is refused
+  rather than misread as milliseconds. Kibana only restores a window when
+  both `from` and `to` are present, so a one-sided source range is dropped
+  with a warning instead of being emitted and then flagged lossy on upload.
+  `dashboard.refresh` (e.g. `"30s"`) converts to milliseconds; an explicit
+  off (`refresh: false`, `""`, or `null`) emits `{pause: true, value: 0}` so
+  the author's "do not auto-refresh" intent survives a target Kibana whose
+  own default may auto-refresh. A missing `refresh` key leaves
+  `refresh_interval` unset so Kibana keeps its default. An unrecognized
+  `from`/`to`/`refresh` value is dropped with a `control_warnings` entry
+  instead of shipping something the API would reject.
+- A panel's "Override relative time" (`timeFrom`, e.g. `"6h"`) becomes that
+  panel's own `esql.time_range` -- Kibana's per-panel `time_range` override,
+  applied uniformly across every ES|QL chart type. `timeShift` (a "compare to
+  last week"-style window shift) has no Dashboards API equivalent -- the API's
+  panel `time_range` is an absolute override, not a shift -- so it degrades
+  gracefully to a migration-report warning instead of emitting a `time_range`
+  that would silently show the wrong window. Setting both on the same panel
+  keeps the `timeFrom` override and still warns about the dropped `timeShift`.
 
 ## Grafana-Specific Notes
 

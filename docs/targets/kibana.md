@@ -73,7 +73,16 @@ Upload itself lives in `dashboards_api.py` and `adapter.py`:
 
 - `dashboards_api.native_dashboard_from_ir()` builds the typed API payload from
   a `DashboardIR`; `upload_native_dashboard()` upserts it with a stable
-  dashboard ID.
+  dashboard ID. Dashboard-level `tags`, `time_range`
+  (`{from, to, mode}`), and `refresh_interval` (`{pause, value}`) are read
+  straight off the IR rather than through the dict shape, which cannot
+  express `refresh_interval` at all and has no `mode` on `time_range`
+  (`docs/dashboards/schema.json` declares `additionalProperties: false`).
+  `native_dashboard_from_yaml()` accepts the same two keys directly on its
+  dict input for parity on that path. A panel-level time override
+  (`esql.time_range` on the dict-shape leaf entry, from Grafana `timeFrom`)
+  is applied identically across every ES\|QL chart-type builder in
+  `map_yaml_panel()`.
 - `native_artifacts.write_native_artifact()` / `write_ir_artifact()` persist
   that same typed API payload and its source `DashboardIR` to disk for
   review; `dashboards_api.upload_native_artifact()` deploys a persisted
@@ -103,12 +112,36 @@ second renderer to silently re-derive the dashboard from, and the
 
 An accepted (2xx) upload is not automatically a clean one: Kibana drops panels it
 cannot transform and still answers `200`, with no `warnings` key on the PUT body.
-`_record_panel_loss` therefore compares the leaf panels sent against the ones the
-response echoes in `data.panels` and downgrades the result to status `lossy` when
-fewer came back, then issues a single follow-up `GET /api/dashboards/{id}` — only on
-a detected mismatch — to attach Kibana's own `warnings[].message` to each dropped
-panel. `lossy` is a failure (it never counts as `uploaded_ok`) and, like `conflict`,
-is terminal. See `docs/command-contract.md` for the operator-facing contract.
+`_audit_accepted_panels` runs three independent checks against that same
+response, any of which can downgrade the result to status `lossy`:
+
+- `_record_panel_loss` compares the leaf panels sent against the ones the
+  response echoes in `data.panels` (a whole panel silently dropped).
+- `_record_dropped_dashboard_state` compares dashboard-level `time_range`,
+  `refresh_interval`, and pinned controls (matched by title) sent versus
+  accepted -- state a panel-count comparison cannot see at all. Dashboard-level
+  `time_range.mode` is excluded from the comparison: Kibana accepts it on PUT
+  for input validation but its saved-object model has no slot to round-trip it,
+  so the echoed `time_range` is always `{from, to}` only. A missing
+  `pinned_panels` key is treated as an empty list -- Kibana's output transform
+  omits the key entirely when every control was dropped, and that total-drop
+  case must still be flagged lossy.
+- `_record_dropped_panel_properties` compares critical per-panel state --
+  a panel `time_range` override and the XY temporal x-scale -- between sent
+  and accepted leaves matched by `(section, title, grid)`, so a panel that
+  keeps its title/grid while losing the one setting that made it render is
+  still caught.
+
+Each check uses a subset comparison (`_dict_subset_matches`): Kibana is free to
+echo back extra derived keys (a resolved `mode`, ...) without that counting as
+a drop, but a value actually sent going missing or changing does. Only after
+all three checks run does a detected loss issue a single follow-up
+`GET /api/dashboards/{id}` to attach Kibana's own `warnings[].message` to each
+dropped panel; `UploadResult.dropped_controls` / `.dropped_properties` name the
+non-panel losses, and `UploadResult.message` reports every kind of loss the
+upload hit, not just whichever check ran last. `lossy` is a failure (it never
+counts as `uploaded_ok`) and, like `conflict`, is terminal. See
+`docs/command-contract.md` for the operator-facing contract.
 
 #### Dashboard ids and title collisions
 
@@ -303,7 +336,7 @@ Use `scripts/audit_migrated_rules.py` (or `cluster`-level queries against `GET /
 - **Pre-upload query validation** currently lives in source adapters because it needs source-aware query rewrite and manualization logic before upload.
 - **The YAML lint stage and the compiled-layout validation stage are gone.** `targets/kibana/lint.py` and `targets/kibana/layout.py` are retained as library code — `lint.py` also hosts `unbound_param_findings`, which the interaction audit uses — but no user-facing command calls `lint_dashboard_yaml` or `validate_compiled_layout` any more.
 - **Post-upload smoke validation** is now shared under `targets/kibana/smoke.py`, with a Grafana wrapper retained for backward-compatible CLI usage.
-- **Structural payload guards** live in `tests/native_payload_guard.py`: `assert_payload_matches_ir` (the load-bearing check — the shipped payload versus the `DashboardIR` it was built from) and `assert_payload_matches_dict_shape_bridge` (a second construction through the in-memory dict shape, which pins the dashboard-level derivations). Neither reads or writes YAML.
+- **Structural payload guards** live in `tests/native_payload_guard.py`: `assert_payload_matches_ir` (the load-bearing check — the shipped payload versus the `DashboardIR` it was built from), `assert_payload_matches_dict_shape_bridge` (a second construction through the in-memory dict shape, which pins the dashboard-level derivations), `assert_payload_has_no_kibana_rejections` (shapes a live Kibana is known to refuse), and `assert_payload_preserves_time_state` (the payload's `time_range`/`refresh_interval` versus the IR's own — the dict-shape bridge deliberately excludes both, since the dict shape cannot express `refresh_interval` at all or `time_range`'s `mode`, so this is the only offline check that either field actually survived onto the native payload). None of the four reads or writes YAML.
 
 ### Payload Fields Kibana Does Not Store
 

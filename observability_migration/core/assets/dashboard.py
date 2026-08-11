@@ -47,6 +47,17 @@ class DashboardIR:
     settings: dict[str, Any] = field(default_factory=dict)
     minimum_kibana_version: str = ""
 
+    # Dashboard-level ``time_range``/``refresh_interval`` the typed Dashboards
+    # API accepts (``{"from", "to", "mode"}`` / ``{"pause", "value"}``). Read
+    # straight off the IR by ``native_dashboard_from_ir`` rather than through
+    # :meth:`to_yaml_dict`, same discipline as ``tags``: the kb-dashboard-core
+    # YAML schema has no ``refresh_interval`` at all and only a partial
+    # (mode-less) ``time_range``, so routing these through it would silently
+    # drop what the API supports (see
+    # ``targets/kibana/dashboards_api.py::native_dashboard_from_ir``).
+    time_range: dict[str, Any] = field(default_factory=dict)
+    refresh_interval: dict[str, Any] = field(default_factory=dict)
+
     panels: list[PanelIR] = field(default_factory=list)
     controls: list[ControlIR] = field(default_factory=list)
     alerts: list[AlertingIR] = field(default_factory=list)
@@ -83,6 +94,8 @@ class DashboardIR:
         settings = raw.get("settings")
         metadata = raw.get("metadata")
         source_extension = raw.get("source_extension")
+        time_range = raw.get("time_range")
+        refresh_interval = raw.get("refresh_interval")
         return cls(
             title=str(raw.get("title") or ""),
             uid=str(raw.get("uid") or ""),
@@ -98,6 +111,8 @@ class DashboardIR:
             filters=[item for item in (raw.get("filters") or []) if isinstance(item, dict)],
             settings=dict(settings) if isinstance(settings, dict) else {},
             minimum_kibana_version=str(raw.get("minimum_kibana_version") or ""),
+            time_range=dict(time_range) if isinstance(time_range, dict) else {},
+            refresh_interval=dict(refresh_interval) if isinstance(refresh_interval, dict) else {},
             panels=[
                 PanelIR.from_dict(panel)
                 for panel in (raw.get("panels") or [])

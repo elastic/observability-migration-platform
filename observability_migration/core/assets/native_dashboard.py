@@ -280,6 +280,12 @@ class NativeDashboard:
     # the YAML document shape, whose schema forbids unknown keys.
     tags: list[str] = field(default_factory=list)
     dashboard_id: str = ""
+    # Dashboard-level ``time_range``/``refresh_interval``
+    # (``{"from", "to", "mode"}`` / ``{"pause", "value"}``), sourced from
+    # ``DashboardIR.time_range``/``.refresh_interval``. Empty means "unset":
+    # Kibana keeps its own default rather than being told to guess one.
+    time_range: dict[str, Any] = field(default_factory=dict)
+    refresh_interval: dict[str, Any] = field(default_factory=dict)
 
     def enforce_item_cap(
         self,
@@ -331,6 +337,10 @@ class NativeDashboard:
             payload["filters"] = self.filters
         if self.tags:
             payload["tags"] = list(self.tags)
+        if self.time_range:
+            payload["time_range"] = dict(self.time_range)
+        if self.refresh_interval:
+            payload["refresh_interval"] = dict(self.refresh_interval)
         return payload
 
 

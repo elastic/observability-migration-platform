@@ -7557,6 +7557,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         ir.source_extension = {"grafana": {"schemaVersion": 39}}
         ir.annotations = [AnnotationIR(name="Deploys")]
         ir.links = [LinkIR(title="Runbook")]
+        ir.time_range = {"from": "now-24h", "to": "now", "mode": "relative"}
+        ir.refresh_interval = {"pause": False, "value": 30000}
         result.dashboard_ir = ir
         return result, ir
 
@@ -7590,11 +7592,19 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual([entry.name for entry in rebuilt.annotations], ["Deploys"])
         self.assertEqual([entry.title for entry in rebuilt.links], ["Runbook"])
         self.assertEqual(rebuilt.source_adapter, "grafana")
+        self.assertEqual(
+            rebuilt.time_range, {"from": "now-24h", "to": "now", "mode": "relative"}
+        )
+        self.assertEqual(rebuilt.refresh_interval, {"pause": False, "value": 30000})
         # The user-visible symptom: the tags must still be in the payload this
         # run uploads to Kibana.
+        payload = result.native_dashboard.to_api_payload()
+        self.assertEqual(payload.get("tags"), ["prometheus", "redis"])
         self.assertEqual(
-            result.native_dashboard.to_api_payload().get("tags"),
-            ["prometheus", "redis"],
+            payload.get("time_range"), {"from": "now-24h", "to": "now", "mode": "relative"}
+        )
+        self.assertEqual(
+            payload.get("refresh_interval"), {"pause": False, "value": 30000}
         )
 
     def test_sync_result_queries_deep_copies_carried_ir_collections(self):
@@ -7614,9 +7624,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         rebuilt.tags.append("mutated")
         rebuilt.metadata["touched"] = True
         rebuilt.annotations[0].name = "Renamed"
+        rebuilt.time_range["from"] = "now-1h"
+        rebuilt.refresh_interval["value"] = 5000
         self.assertEqual(original.tags, ["prometheus", "redis"])
         self.assertEqual(original.metadata, {"gnet_id": 763})
         self.assertEqual(original.annotations[0].name, "Deploys")
+        self.assertEqual(original.time_range["from"], "now-24h")
+        self.assertEqual(original.refresh_interval["value"], 30000)
 
     def test_sync_result_queries_keeps_non_grafana_source_adapter(self):
         # `sync_result_queries_to_ir` lives in shared `targets/kibana/` code and
@@ -9300,6 +9314,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
             ESQL_NAMED_PARAM_BINDING,
+            KIBANA_PROMQL_CONTROL_PARAMS,
             PROMQL_COMMAND_V0,
             PROMQL_LABEL_MATCHER_PARAMS,
             is_feature_supported,
@@ -9326,10 +9341,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             _apply_native_promql_to_rule_pack(rule_pack, args)
 
         self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.runtime_features[PROMQL_COMMAND_V0], profile[PROMQL_COMMAND_V0])
         self.assertEqual(
-            rule_pack.runtime_features,
-            {**profile, ESQL_NAMED_PARAM_BINDING: esql_state},
+            rule_pack.runtime_features[PROMQL_LABEL_MATCHER_PARAMS],
+            profile[PROMQL_LABEL_MATCHER_PARAMS],
         )
+        self.assertEqual(rule_pack.runtime_features[ESQL_NAMED_PARAM_BINDING], esql_state)
+        self.assertTrue(is_feature_supported(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS))
         self.assertFalse(is_feature_supported(rule_pack, PROMQL_LABEL_MATCHER_PARAMS))
 
     def test_apply_native_promql_auto_default_clears_default_dataset_filter(self):
@@ -9367,6 +9385,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_COMMAND_V0,
+            PROMQL_LABEL_MATCHER_PARAMS,
         )
 
         args = SimpleNamespace(
@@ -9394,6 +9413,19 @@ class TranslatorRegressionTests(unittest.TestCase):
                 "reason": "no --es-url configured; native PROMQL assumed for offline migration",
             },
         )
+        self.assertEqual(
+            rule_pack.runtime_features[PROMQL_LABEL_MATCHER_PARAMS],
+            {
+                "supported": True,
+                "source": "default",
+                "confidence": "unverified",
+                "level": "runtime",
+                "reason": (
+                    "no --es-url configured; PromQL label matcher params assumed "
+                    "for offline migration"
+                ),
+            },
+        )
 
     def test_apply_native_promql_records_detected_subfeatures(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -9401,8 +9433,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         from observability_migration.adapters.source.grafana.runtime_features import (
             ESQL_NAMED_PARAM_BINDING,
+            KIBANA_PROMQL_CONTROL_PARAMS,
             PROMQL_COMMAND_V0,
             PROMQL_LABEL_MATCHER_PARAMS,
+            is_feature_supported,
         )
 
         args = SimpleNamespace(
@@ -9426,10 +9460,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             _apply_native_promql_to_rule_pack(rule_pack, args)
 
         self.assertTrue(rule_pack.native_promql)
+        self.assertEqual(rule_pack.runtime_features[PROMQL_COMMAND_V0], profile[PROMQL_COMMAND_V0])
         self.assertEqual(
-            rule_pack.runtime_features,
-            {**profile, ESQL_NAMED_PARAM_BINDING: esql_state},
+            rule_pack.runtime_features[PROMQL_LABEL_MATCHER_PARAMS],
+            profile[PROMQL_LABEL_MATCHER_PARAMS],
         )
+        self.assertEqual(rule_pack.runtime_features[ESQL_NAMED_PARAM_BINDING], esql_state)
+        self.assertTrue(is_feature_supported(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS))
 
     def test_apply_native_promql_confirmed_absent_falls_back_but_probes_esql_binding(self):
         """Issue #158 + #132: when the target is *confirmed* to lack the PROMQL

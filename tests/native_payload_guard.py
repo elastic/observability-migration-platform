@@ -29,9 +29,21 @@ used by the Grafana and Datadog CLI artifact tests:
    upload proves nothing about them; this is the offline stand-in for that
    authority. Every rule cites the live error message that motivated it.
 
+4. :func:`assert_payload_preserves_time_state` — the payload versus the IR's
+   own ``time_range``/``refresh_interval``. Check 2 deliberately excludes both
+   from its comparison (``_BRIDGE_DIVERGENT_KEYS`` in
+   ``tests/vacuity/registry.py``): the kb-dashboard-core YAML schema has no
+   slot for ``refresh_interval`` at all, and no ``mode`` on ``time_range``, so
+   a bridge built through that schema can never agree with the native payload
+   on either field. That exclusion is correct for check 2's job (pinning the
+   two mapper entry points against each other) but it means neither check 1
+   nor check 2 proves the native payload actually *kept* whatever time state
+   the IR declared — this check closes that gap directly.
+
 Check 1 is the load-bearing one: it can catch a lost or rewritten query. Check 2
 is cheap and pins the dashboard-level fields. Check 3 is the only one that can
-catch a payload Kibana will drop panels over. Neither reads or writes YAML.
+catch a payload Kibana will drop panels over. Check 4 is the one check 2's own
+blind spot needs. Neither reads or writes YAML.
 
 All three are registered in ``tests/vacuity/registry.py`` with mutations that
 must make them fail, so a future edit cannot quietly turn one of them into a
@@ -208,6 +220,42 @@ def assert_payload_matches_dict_shape_bridge(
         k: v for k, v in bridged.items() if k not in allow_divergent_keys
     }, f"payload/bridge mismatch outside the allowed keys{where}"
     return bridged
+
+
+def assert_payload_preserves_time_state(
+    payload: dict[str, Any],
+    dashboard_ir: DashboardIR,
+    *,
+    label: str = "",
+) -> None:
+    """The payload must keep whatever ``time_range``/``refresh_interval`` the
+    IR declares.
+
+    Deliberately independent of :func:`assert_payload_matches_dict_shape_bridge`,
+    which *excludes* both fields from its comparison (they have no faithful
+    round trip through the kb-dashboard-core YAML schema — see
+    ``_BRIDGE_DIVERGENT_KEYS``). Excluding them there is correct for that
+    check's job, but it means a native payload that silently dropped the IR's
+    time window or refresh cadence would pass every existing offline check.
+    This one reads both dashboard-level fields straight off ``DashboardIR`` (the
+    same source ``native_dashboard_from_ir`` itself reads) and asserts the
+    payload matches exactly. An IR with neither field set makes both
+    assertions vacuously true, matching "Kibana keeps its own default" being
+    the correct behavior for a source dashboard that specified no override.
+    """
+    where = f" [{label}]" if label else ""
+    if dashboard_ir.time_range:
+        assert payload.get("time_range") == dict(dashboard_ir.time_range), (
+            f"IR declares dashboard time_range {dashboard_ir.time_range!r} but the "
+            f"payload does not preserve it (payload has: "
+            f"{payload.get('time_range')!r}){where}"
+        )
+    if dashboard_ir.refresh_interval:
+        assert payload.get("refresh_interval") == dict(dashboard_ir.refresh_interval), (
+            f"IR declares dashboard refresh_interval {dashboard_ir.refresh_interval!r} "
+            f"but the payload does not preserve it (payload has: "
+            f"{payload.get('refresh_interval')!r}){where}"
+        )
 
 
 # --------------------------------------------------------------------------- #

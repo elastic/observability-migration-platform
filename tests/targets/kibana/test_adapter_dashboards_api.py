@@ -346,6 +346,55 @@ class TestUploadDashboardNativePath(unittest.TestCase):
             {"metrics-*": "generated-id"},
         )
 
+    def test_lossy_dropped_control_does_not_print_a_misleading_zero_panel_count(self):
+        # A "lossy" upload is not always a dropped panel: a dashboard-level
+        # time_range/refresh_interval, a pinned control, or a critical
+        # per-panel property can be the loss (see `_audit_accepted_panels`).
+        # The panel-count line must not print at all when no panel was
+        # dropped -- "dropped 0 of N panel(s)" would misreport a real loss
+        # as no loss.
+        import io
+        from contextlib import redirect_stderr
+
+        native_dashboard = NativeDashboard(
+            title="Direct IR",
+            dashboard_id="direct-ir",
+            items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        )
+        lossy = UploadResult(
+            dashboard="Direct IR",
+            dashboard_id="direct-ir",
+            status="lossy",
+            http_status=200,
+            mapped=1,
+            panels_sent=1,
+            panels_accepted=1,
+            dropped_controls=["Env"],
+            message="Kibana accepted the upload without 1 pinned control(s): Env.",
+        )
+        with mock.patch(
+            "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+            return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+        ), mock.patch(
+            "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_dashboard",
+            return_value=lossy,
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = KibanaTargetAdapter().upload_dashboard(
+                    kibana_url="https://kibana.example",
+                    kibana_api_key="secret",
+                    native_dashboard=native_dashboard,
+                    native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+                )
+
+        self.assertEqual(result["status"], "lossy")
+        self.assertFalse(result["success"])
+        self.assertIn("Env", result["output"])
+        printed = stderr.getvalue()
+        self.assertNotIn("dropped 0 of", printed)
+        self.assertIn("Env", printed)
+
     def test_upload_passes_es_credentials_to_native_artifact_upload(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_dir = _artifact_dir_with_one_dashboard(tmpdir)

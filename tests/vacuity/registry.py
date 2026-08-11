@@ -297,10 +297,47 @@ def _check_dict_shape_bridge(subject: subjects.PayloadSubject) -> None:
     )
 
 
-# ``tags`` is read straight off the IR by the native path; the dict shape
-# declares ``additionalProperties: false`` and cannot carry it. Pinned as a known
-# gap rather than ignored (see ``native_dashboard_from_ir``).
-_BRIDGE_DIVERGENT_KEYS = frozenset({"tags"})
+# ``tags``/``time_range``/``refresh_interval`` are read straight off the IR by
+# the native path; the dict shape declares ``additionalProperties: false`` and
+# cannot carry ``refresh_interval`` at all, or ``time_range``'s ``mode``.
+# Pinned as a known gap rather than ignored (see ``native_dashboard_from_ir``).
+_BRIDGE_DIVERGENT_KEYS = frozenset({"tags", "time_range", "refresh_interval"})
+
+
+def _time_state_subject() -> subjects.PayloadSubject:
+    """The multi-pattern corpus dashboard, with an explicit dashboard time
+    window and refresh cadence set on its IR.
+
+    The committed fixture itself declares neither (real dashboards mostly
+    don't), so the two fields are set here rather than pulled from the
+    corpus — the one deliberate exception to "never a hand-written fixture"
+    in this module, and it stops at the two IR fields, not the shape under
+    test: the payload is still produced by the real
+    ``native_dashboard_from_ir`` afterwards, uncached, exactly like every
+    other per-dashboard subject.
+    """
+    dashboard_ir = subjects.grafana_dashboard_ir(subjects.MULTI_PATTERN)
+    dashboard_ir.time_range = {"from": "now-24h", "to": "now", "mode": "relative"}
+    dashboard_ir.refresh_interval = {"pause": False, "value": 30000}
+    native, _stats = api.native_dashboard_from_ir(dashboard_ir)
+    entries = guard.ir_leaf_entries(dashboard_ir)
+    return subjects.PayloadSubject(
+        name=f"{subjects.MULTI_PATTERN} (time state)",
+        dashboard_ir=dashboard_ir,
+        payload=native.to_api_payload(),
+        ir_leaf_count=len(entries),
+        ir_query_count=sum(1 for entry in entries if guard.entry_queries(entry)),
+    )
+
+
+def _check_time_state_preserved(subject: subjects.PayloadSubject) -> None:
+    guard.assert_payload_preserves_time_state(
+        subject.payload, subject.dashboard_ir, label=subject.name
+    )
+
+
+def _time_state_witness(subject: subjects.PayloadSubject) -> int:
+    return int(bool(subject.dashboard_ir.time_range)) + int(bool(subject.dashboard_ir.refresh_interval))
 
 
 def _check_no_kibana_rejections(subject: CorpusSubject) -> None:
@@ -667,6 +704,48 @@ GUARD_CASES: tuple[GuardCase, ...] = (
                     "hand-listed subset of it"
                 ),
                 apply=lambda s: (s.payload.__setitem__("__unexpected__", 1), s)[1],
+            ),
+        ),
+    ),
+    GuardCase(
+        guard="tests.native_payload_guard.assert_payload_preserves_time_state",
+        why=(
+            "the dict-shape bridge above deliberately excludes time_range/"
+            "refresh_interval from its comparison (_BRIDGE_DIVERGENT_KEYS): the "
+            "kb-dashboard-core YAML schema has no slot for refresh_interval at "
+            "all and no mode on time_range, so that bridge can never agree with "
+            "the native payload on either field. Nothing else proves the native "
+            "payload actually kept whatever time state the IR declared."
+        ),
+        catches=(
+            "the gap left open by _BRIDGE_DIVERGENT_KEYS -- a silently dropped "
+            "dashboard time window or refresh cadence would pass every other "
+            "offline check"
+        ),
+        subject=_time_state_subject,
+        check=_check_time_state_preserved,
+        witness=_time_state_witness,
+        min_witness=2,
+        mutations=(
+            Mutation(
+                name="drop_the_time_range",
+                why="an IR-declared time window silently missing from the payload is data loss",
+                apply=lambda s: (s.payload.pop("time_range", None), s)[1],
+            ),
+            Mutation(
+                name="drop_the_refresh_interval",
+                why="an IR-declared refresh cadence silently missing from the payload is data loss",
+                apply=lambda s: (s.payload.pop("refresh_interval", None), s)[1],
+            ),
+            Mutation(
+                name="rewrite_the_time_range",
+                why="a changed (not just dropped) time window must also be caught",
+                apply=lambda s: (
+                    s.payload.__setitem__(
+                        "time_range", {"from": "now-1h", "to": "now", "mode": "relative"}
+                    ),
+                    s,
+                )[1],
             ),
         ),
     ),

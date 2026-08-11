@@ -303,15 +303,6 @@ def _build_parser() -> argparse.ArgumentParser:
              "target and prefers native PROMQL; 'native' forces native PROMQL; "
              "'esql' forces ES|QL translation for every panel. No-op for Datadog.",
     )
-    migrate.add_argument(
-        "--kibana-promql-control-params",
-        action="store_true",
-        help=(
-            "Grafana only: opt into native PROMQL for panels whose label matchers "
-            "bind dashboard controls inside the PromQL expression. Use only on "
-            "Kibana builds you have verified to forward those control values."
-        ),
-    )
     migrate.add_argument("--smoke", action="store_true")
     migrate.add_argument("--browser-audit", action="store_true")
     migrate.add_argument("--capture-screenshots", action="store_true")
@@ -1163,8 +1154,6 @@ def _run_grafana_migration(args: Any) -> None:
     _translation_mode = getattr(args, "translation_mode", "auto") or "auto"
     if _translation_mode != "auto":
         legacy_argv.extend(["--translation-mode", _translation_mode])
-    if getattr(args, "kibana_promql_control_params", False):
-        legacy_argv.append("--kibana-promql-control-params")
     if args.smoke_report:
         legacy_argv.extend(["--smoke-report", args.smoke_report])
     if getattr(args, "create_alert_rules", False):

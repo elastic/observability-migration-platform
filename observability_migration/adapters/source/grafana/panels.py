@@ -9,6 +9,7 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field, fields, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from observability_migration.core.assets.dashboard import DashboardIR
@@ -171,6 +172,10 @@ KIBANA_GRID_COLS = 48
 GRAFANA_ROW_HEIGHT_PX = 30
 KIBANA_ROW_HEIGHT_PX = 20
 MINIMUM_KIBANA_VERSION = "9.5.0"
+# Kibana forwards dashboard variable values into named params inside native
+# PROMQL label matchers starting in 9.5 (elastic/kibana#271244). Kept as an
+# explicit floor marker even though it currently equals MINIMUM_KIBANA_VERSION.
+NATIVE_PROMQL_CONTROL_PARAMS_MIN_VERSION = "9.5.0"
 # Floor required by panels that pass histogram_quantile through the native
 # PROMQL path (Elasticsearch >= 9.5; elastic/elasticsearch#150578). Only the
 # native path keeps the literal ``histogram_quantile(`` in the emitted ES|QL —
@@ -206,17 +211,200 @@ def _source_dashboard_tags(dashboard):
     return out
 
 
+# Duration units accepted by both Grafana (dashboard ``refresh``, panel
+# ``timeFrom``) and Elasticsearch date math (``now-<n><unit>``). Case matters:
+# ``m`` is minutes, ``M`` is months, matching ES date math.
+_GRAFANA_DURATION_RE = re.compile(r"^(\d+)(ms|s|m|h|d|w|M|y)$")
+_GRAFANA_DURATION_UNIT_MS = {
+    "ms": 1,
+    "s": 1_000,
+    "m": 60_000,
+    "h": 3_600_000,
+    "d": 86_400_000,
+    "w": 7 * 86_400_000,
+    "M": 30 * 86_400_000,
+    "y": 365 * 86_400_000,
+}
+
+
+def _grafana_duration_to_ms(text):
+    """Convert a Grafana duration string (``"5s"``, ``"1h"``) to milliseconds.
+
+    Returns ``None`` when *text* is not a recognized duration. ``None`` is the
+    signal callers use to warn-and-drop rather than guess.
+    """
+    match = _GRAFANA_DURATION_RE.match(str(text or "").strip())
+    if not match:
+        return None
+    amount, unit = match.groups()
+    return int(amount) * _GRAFANA_DURATION_UNIT_MS[unit]
+
+
+def _grafana_time_bound_to_api(value):
+    """Normalize one Grafana ``dashboard.time`` bound to the API's shape.
+
+    Returns ``(normalized, ok)``. Relative bounds (``now-6h``, ``now/d``)
+    already use Elasticsearch date-math syntax and pass through unchanged.
+    Absolute bounds arrive as epoch-millisecond numbers/strings (Grafana's
+    usual form: 13+ digits) and are converted to ISO 8601 so the API's
+    date-math-or-ISO-8601 ``time_range`` schema accepts them. Shorter all-
+    digit strings (e.g. a bare epoch-seconds value) are refused rather than
+    misread as milliseconds -- guessing a 1970-ish window is worse than
+    dropping the bound with a warning.
+    """
+    if value is None:
+        return "", True
+    if isinstance(value, bool):
+        return "", False
+    text = str(value).strip()
+    if not text:
+        return "", True
+    if text.lower().startswith("now"):
+        return text, True
+    # Grafana absolute times are epoch milliseconds (13+ digits from ~2001
+    # onward). Require that length so a 10-digit epoch-seconds value is not
+    # silently divided by 1000 into a 1970-ish date.
+    if re.fullmatch(r"\d{13,}", text):
+        try:
+            dt = datetime.fromtimestamp(int(text) / 1000.0, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return "", False
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", True
+    if re.fullmatch(r"\d+", text):
+        return "", False
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return "", False
+    return text, True
+
+
+def _grafana_dashboard_time_range(dashboard, warnings):
+    """Normalize Grafana ``dashboard.time`` into the API's ``time_range`` shape.
+
+    Missing/empty leaves ``time_range`` unset (Kibana's own default) rather
+    than guessing a window. An unrecognized ``from``/``to`` value is dropped
+    with an explicit warning instead of shipping something Kibana would
+    reject. Kibana's saved-object model only restores a time window when
+    *both* ``timeFrom`` and ``timeTo`` are present, so a one-sided range is
+    also refused rather than emitted and then flagged lossy on upload.
+    """
+    raw_time = dashboard.get("time") if isinstance(dashboard, dict) else None
+    if not isinstance(raw_time, dict):
+        return {}
+    raw_from = raw_time.get("from")
+    raw_to = raw_time.get("to")
+    if raw_from in (None, "") and raw_to in (None, ""):
+        return {}
+    norm_from, from_ok = _grafana_time_bound_to_api(raw_from)
+    norm_to, to_ok = _grafana_time_bound_to_api(raw_to)
+    if not from_ok or not to_ok:
+        warnings.append(
+            f"Dashboard time range from={raw_from!r} to={raw_to!r} is dropped: "
+            "unrecognized date-math or timestamp value"
+        )
+        return {}
+    if not norm_from or not norm_to:
+        warnings.append(
+            f"Dashboard time range from={raw_from!r} to={raw_to!r} is dropped: "
+            "Kibana requires both from and to bounds"
+        )
+        return {}
+    return {
+        "from": norm_from,
+        "to": norm_to,
+        "mode": (
+            "relative"
+            if all(str(bound).lower().startswith("now") for bound in (norm_from, norm_to))
+            else "absolute"
+        ),
+    }
+
+
+def _grafana_dashboard_refresh_interval(dashboard, warnings):
+    """Normalize Grafana ``dashboard.refresh`` into the API's ``refresh_interval``.
+
+    A missing ``refresh`` key leaves ``refresh_interval`` unset so Kibana
+    keeps its own default. Explicit auto-refresh off (``False`` or ``""``)
+    emits a paused interval so a dashboard whose author disabled refresh
+    does not silently inherit a target Kibana's auto-refresh default. An
+    unrecognized value is dropped with an explicit warning.
+    """
+    if not isinstance(dashboard, dict):
+        return {}
+    if "refresh" not in dashboard:
+        return {}
+    raw_refresh = dashboard.get("refresh")
+    if raw_refresh is False:
+        return {"pause": True, "value": 0}
+    if raw_refresh is None:
+        # Explicit ``refresh: null`` is the same author intent as ``false``.
+        return {"pause": True, "value": 0}
+    text = str(raw_refresh).strip()
+    if not text:
+        return {"pause": True, "value": 0}
+    value_ms = _grafana_duration_to_ms(text)
+    if value_ms is None:
+        warnings.append(f"Dashboard refresh interval {text!r} is dropped: unrecognized format")
+        return {}
+    return {"pause": False, "value": value_ms}
+
+
+def _grafana_panel_time_range_override(panel):
+    """Convert a Grafana panel's ``timeFrom`` into the API's panel ``time_range``.
+
+    Grafana's "Override relative time" panel option shows ``now-<timeFrom>``
+    through ``now`` regardless of the dashboard's own time range -- the same
+    date-math shape the Dashboards API panel-config ``time_range`` accepts.
+    Returns ``(time_range, warning)``; *time_range* is ``{}`` when the panel
+    sets no override, *warning* is set when ``timeFrom`` is present but not a
+    recognized relative duration.
+    """
+    raw = str((panel or {}).get("timeFrom") or "").strip()
+    if not raw:
+        return {}, ""
+    if _grafana_duration_to_ms(raw) is None:
+        return {}, f"Panel time override timeFrom={raw!r} is dropped: unrecognized duration"
+    return {"from": f"now-{raw}", "to": "now", "mode": "relative"}, ""
+
+
+def _grafana_panel_time_shift_warning(panel):
+    """Semantic-loss warning for a Grafana panel's ``timeShift``, if set.
+
+    ``timeShift`` moves a panel's whole window into the past (e.g. "compare to
+    last week") -- a shift, not a fixed range -- which the Dashboards API
+    panel-config ``time_range`` cannot express (it is an absolute override).
+    Graceful degradation: drop it with an operator-visible warning rather than
+    emitting a ``time_range`` that would silently change what the panel shows.
+    """
+    raw = str((panel or {}).get("timeShift") or "").strip()
+    if not raw:
+        return ""
+    return (
+        f"Panel time shift timeShift={raw!r} has no Kibana Dashboards API "
+        "equivalent (time_range is an absolute override, not a shift) and is dropped"
+    )
+
+
 def _dashboard_minimum_kibana_version(flat_panels):
     """Return the dashboard ``minimum_kibana_version`` floor for *flat_panels*.
 
-    Defaults to :data:`MINIMUM_KIBANA_VERSION`, raised to
-    :data:`NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION` when any panel emits a native
-    ``histogram_quantile`` PROMQL query (ES >= 9.5). The dashboard schema only
-    carries this field per-dashboard, so the floor is the max across panels.
+    Defaults to :data:`MINIMUM_KIBANA_VERSION` (product floor: Kibana 9.5+).
+    Raised further only if a future panel capability needs a higher version;
+    today control-param forwarding and native ``histogram_quantile`` also
+    require 9.5. The dashboard schema only carries this field per-dashboard,
+    so the floor is the max across panels.
     """
     minimum = MINIMUM_KIBANA_VERSION
     for panel in flat_panels or []:
         query = (panel.get("esql") or {}).get("query", "") if isinstance(panel, dict) else ""
+        if (
+            query.lstrip().upper().startswith("PROMQL ")
+            and _PROMQL_LABEL_MATCHER_PARAM_RE.search(query)
+            and _parse_kibana_version(NATIVE_PROMQL_CONTROL_PARAMS_MIN_VERSION)
+            > _parse_kibana_version(minimum)
+        ):
+            minimum = NATIVE_PROMQL_CONTROL_PARAMS_MIN_VERSION
         # Match the call form (``histogram_quantile(``), not a bare token, so a
         # metric/label whose name merely contains it does not trip the floor.
         if _PROMQL_HISTOGRAM_QUANTILE_RE.search(query) and _parse_kibana_version(
@@ -1018,6 +1206,12 @@ _PROMQL_UNSUPPORTED_RE = re.compile(
 # blockers above so it can pass through when the target advertises the
 # PROMQL_HISTOGRAM_QUANTILE runtime feature.
 _PROMQL_HISTOGRAM_QUANTILE_RE = re.compile(r"\bhistogram_quantile\s*\(", re.IGNORECASE)
+# Named params in native PROMQL label matchers, for example
+# ``{instance=~?instance}``. Time params such as ``?_tstart`` occur in command
+# arguments and deliberately do not match this pattern.
+_PROMQL_LABEL_MATCHER_PARAM_RE = re.compile(
+    r"(?:=~|!~|=|!=)\s*\?[A-Za-z_][A-Za-z0-9_]*"
+)
 
 
 _GRAFANA_VAR_TOKEN_PATTERN = (
@@ -2283,23 +2477,21 @@ def _translate_panel_native_promql(
     # is rewritten to ``{instance=~?instance}`` inside the opaque PromQL string.
     # ES 9.5+ accepts ``?param`` in PromQL label filters when the HTTP request
     # supplies the param in its body — ``PROMQL_LABEL_MATCHER_PARAMS`` probes
-    # this ES-side capability.  However, Kibana does NOT forward dashboard
-    # control values as named params inside the PROMQL command's PromQL
-    # expression; it only injects ``?_tstart``/``?_tend`` at the command-
-    # argument level.  Keeping the panel native therefore leaves ``?instance``
-    # unbound and Kibana reports "Parameter [?instance] value not found".
-    # Fall through to ES|QL where the filter lands in ``WHERE … RLIKE ?instance``
-    # at the outer ES|QL level, which Kibana DOES bind correctly.
-    # Revisit when Kibana forwards control params into PROMQL expressions.
+    # this ES-side capability. Kibana forwards dashboard control values into
+    # that inner PromQL context on builds >= 9.5
+    # (``KIBANA_PROMQL_CONTROL_PARAMS``). Migration prefers that native path by
+    # default; only a verified Kibana older than 9.5 forces ES|QL where the
+    # filter lands in ``WHERE … RLIKE ?instance``. Other construct / validator
+    # gates can still degrade individual panels to ES|QL.
     if (
         _promql_label_matcher_has_template_variable(expr)
         and not _kibana_binds_promql_control_params(runtime_features)
     ):
         _append_unique(
             panel_notes,
-            "Native PROMQL skipped: Kibana does not forward dashboard control params "
-            "into PromQL label matchers unless explicitly enabled "
-            "(uses ES|QL RLIKE binding instead)",
+            "Native PROMQL skipped: Kibana does not forward dashboard control "
+            "params into PromQL label matchers on this target "
+            "(requires Kibana 9.5+; uses ES|QL RLIKE binding instead)",
         )
         return None
     # Pre-flight type check: if the source PromQL applies a counter-style
@@ -2625,9 +2817,9 @@ def _translate_multi_target_native_promql(
                 )
             return None
         # Kibana-side forwarding of control params into inner PROMQL expressions
-        # is not probeable through Elasticsearch alone, so keep the safe ES|QL
-        # fallback unless the operator explicitly opts into a verified Kibana
-        # build.
+        # is gated by ``KIBANA_PROMQL_CONTROL_PARAMS`` (preferred by default;
+        # forced off only for verified Kibana < 9.5). Keep the ES|QL fallback
+        # when that feature is unsupported.
         if (
             _promql_label_matcher_has_template_variable(expr)
             and not _kibana_binds_promql_control_params(runtime_features)
@@ -2854,6 +3046,36 @@ def _prune_non_semantic_panel_warnings(panel_result, yaml_panel):
         panel_result.confidence = max(panel_result.confidence, 0.85)
 
 
+def _apply_panel_time_overrides(panel, yaml_panel, panel_result):
+    """Translate Grafana panel ``timeFrom``/``timeShift`` onto *yaml_panel*.
+
+    Only meaningful for a data (ES|QL) panel -- markdown/links/image panels
+    have no query and no ``time_range`` slot to carry it. ``timeFrom`` becomes
+    the panel-config ``time_range`` every ES|QL chart builder shares (applied
+    uniformly in ``dashboards_api.map_yaml_panel``); ``timeShift`` has no API
+    equivalent (it shifts the whole window, ``time_range`` only overrides it),
+    so it degrades gracefully to an operator-visible warning instead of
+    emitting a silently wrong ``time_range``.
+    """
+    esql_cfg = yaml_panel.get("esql") if isinstance(yaml_panel, dict) else None
+    if not isinstance(esql_cfg, dict):
+        return
+    time_range, time_from_warning = _grafana_panel_time_range_override(panel)
+    if time_range:
+        esql_cfg["time_range"] = time_range
+    elif time_from_warning:
+        _append_unique(panel_result.reasons, time_from_warning)
+        if panel_result.status == "migrated":
+            panel_result.status = "migrated_with_warnings"
+            panel_result.confidence = min(panel_result.confidence, 0.85)
+    time_shift_warning = _grafana_panel_time_shift_warning(panel)
+    if time_shift_warning:
+        _append_unique(panel_result.reasons, time_shift_warning)
+        if panel_result.status == "migrated":
+            panel_result.status = "migrated_with_warnings"
+            panel_result.confidence = min(panel_result.confidence, 0.85)
+
+
 def _artifact_to_dict(value):
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -2944,6 +3166,7 @@ def _enrich_panel_result(
         _append_unique(panel_result.reasons, approximation_note)
         panel_result.status = "migrated_with_warnings"
         panel_result.confidence = min(panel_result.confidence, 0.8)
+    _apply_panel_time_overrides(panel, yaml_panel, panel_result)
     _prune_non_semantic_panel_warnings(panel_result, yaml_panel)
     # Notes that verification treats as semantic losses (e.g. field overrides
     # needing manual verify) must land in the With-warnings scorecard, not as
@@ -10036,6 +10259,9 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     # Captured before ``_expand_repeat_panels`` rebuilds ``dashboard`` into a
     # panel-focused copy that does not carry dashboard-level metadata.
     source_tags = _source_dashboard_tags(dashboard)
+    dashboard_settings_warnings: list[str] = []
+    dashboard_time_range = _grafana_dashboard_time_range(dashboard, dashboard_settings_warnings)
+    dashboard_refresh_interval = _grafana_dashboard_refresh_interval(dashboard, dashboard_settings_warnings)
 
     result = MigrationResult(
         dashboard_title=title,
@@ -10044,6 +10270,10 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         folder_title=str((dashboard.get("_grafana_meta") or {}).get("folderTitle") or ""),
         inventory=build_dashboard_inventory(dashboard),
     )
+    # Dashboard time/refresh has no PanelResult-style tracking of its own
+    # (same rationale as ``control_warnings`` for template-variable controls),
+    # so an unrecognized value surfaces here rather than vanishing silently.
+    result.control_warnings.extend(dashboard_settings_warnings)
 
     # L4: expand ``repeat: $var`` panels into one concrete clone per
     # resolved variable value BEFORE any downstream logic walks the
@@ -10350,6 +10580,8 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     dashboard_ir = DashboardIR.from_yaml_dict(yaml_doc["dashboards"][0], source_adapter="grafana")
     dashboard_ir.uid = uid
     dashboard_ir.tags = source_tags
+    dashboard_ir.time_range = dashboard_time_range
+    dashboard_ir.refresh_interval = dashboard_refresh_interval
     # Set before `native_dashboard_from_ir`: it is what keeps two same-titled
     # dashboards off one Kibana dashboard id (the upsert key).
     dashboard_ir.id_disambiguator = str(id_disambiguator or "")

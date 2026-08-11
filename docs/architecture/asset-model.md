@@ -25,8 +25,22 @@ All migrated assets use the unified `AssetStatus` enum:
 ## DashboardIR
 
 The top-level container: `title`, `description`, `filters`, `settings`,
-`minimum_kibana_version`, plus `panels` (`PanelIR`), `controls` (`ControlIR`),
-`alerts`, `annotations`, `links`, and `transforms`.
+`minimum_kibana_version`, `time_range`, `refresh_interval`, plus `panels`
+(`PanelIR`), `controls` (`ControlIR`), `alerts`, `annotations`, `links`, and
+`transforms`.
+
+`time_range` (`{"from", "to", "mode"}`) and `refresh_interval` (`{"pause",
+"value"}`) mirror the Dashboards API's own dashboard-level shape and are
+normalized from the source's dashboard-level time window/auto-refresh
+(Grafana's `dashboard.time`/`dashboard.refresh`, see
+`adapters/source/grafana/panels.py::_grafana_dashboard_time_range` /
+`_grafana_dashboard_refresh_interval`). An empty dict means unset -- Kibana
+keeps its own default rather than the translator guessing one. An explicit
+source "auto-refresh off" emits a paused interval (`{pause: true, value: 0}`)
+so that author intent survives a target Kibana whose default may auto-refresh.
+An unrecognized source value (or a one-sided time range Kibana cannot restore)
+is dropped with a `control_warnings` entry rather than shipping something the
+API would reject.
 
 **Adapter status (IR-first for both sources):**
 
@@ -67,11 +81,16 @@ by `docs/dashboards/schema.json` (`additionalProperties: false`), so
 `minimum_kibana_version`, `settings`, `panels`, `filters` and `controls`. Every
 other `DashboardIR` field -- `uid`, `folder`, `tags`, `source_file`, `metadata`,
 `source_extension`, `alerts`, `annotations`, `links`, `transforms`, `version`,
-`source_adapter`, `id_disambiguator` -- has to be carried across the rebuild
-explicitly, or it reverts to its dataclass default. `native_dashboard_from_ir` reads dashboard
+`source_adapter`, `id_disambiguator`, `time_range`, `refresh_interval` -- has
+to be carried across the rebuild explicitly, or it reverts to its dataclass
+default. `native_dashboard_from_ir` reads dashboard
 `tags` straight off the IR precisely because the dict shape cannot express them,
 so dropping them on the rebuild uploaded the dashboard to Kibana with its tags
-stripped. `targets/kibana/compile.py` owns the classification
+stripped; `time_range`/`refresh_interval` need the same treatment for a
+different reason -- `docs/dashboards/schema.json` has no slot for
+`refresh_interval` at all, and its `time_range` has no `mode`, so routing
+either through the dict shape would silently narrow what the native payload
+can express even though the API supports both fully. `targets/kibana/compile.py` owns the classification
 (`YAML_ROUND_TRIPPED_IR_FIELDS` vs `IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD`) and
 carries over everything outside the round-tripped set by iterating
 `dataclasses.fields(DashboardIR)`; a new IR field is therefore preserved
@@ -91,6 +110,17 @@ or `image`), while `presentation.config` preserves that block's configuration
 (`kind="section"`) carries `children: list[PanelIR]` instead.
 `PanelIR.to_yaml_panel_entry()` / `PanelIR.from_yaml_panel_entry()` round-trip
 one kb-dashboard-core `panels[]` entry (leaf or nested `section`).
+
+A panel-level time override (Grafana's per-panel "Override relative time",
+`timeFrom`) lives inside that same `esql` block as `esql.time_range`, in the
+same `{"from", "to", "mode"}` shape as the dashboard-level field above --
+`targets/kibana/dashboards_api.py::map_yaml_panel` copies it onto the API
+panel config after chart-type dispatch, so every ES|QL chart builder (xy,
+metric, datatable, pie, ...) picks it up identically rather than each needing
+its own plumbing. Grafana's `timeShift` has no equivalent (it shifts the
+whole window; the API's panel `time_range` only overrides it), so it degrades
+gracefully to a `PanelResult` warning instead of emitting a `time_range` that
+would silently show the wrong window.
 
 ### ControlIR
 
