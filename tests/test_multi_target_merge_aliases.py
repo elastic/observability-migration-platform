@@ -667,9 +667,17 @@ def test_bare_rate_drops_phantom_legend_label():
         rule_pack=rule_pack, resolver=resolver,
     )
     query = yaml_panel["esql"]["query"]
-    assert "input" not in query.split("| STATS")[-1].split("BY")[-1], (
+    stats_line = next(ln for ln in query.splitlines() if ln.startswith("| STATS"))
+    by_clause = stats_line.split(" BY ", 1)[-1] if " BY " in stats_line else ""
+    assert re.search(r"\binput\b", by_clause) is None, (
         f"phantom legend label must not become a BY field: {query}"
     )
+    # Lens must not bind series identity to the alias either (Kibana Unknown column).
+    breakdown = yaml_panel["esql"].get("breakdown")
+    if isinstance(breakdown, dict):
+        assert breakdown.get("field") != "input", breakdown
+    else:
+        assert breakdown not in {"input", "output"}
     assert structural_errors(check_esql_structure(query)) == []
 
 
