@@ -433,6 +433,12 @@ selected.
   the emitted ES|QL. Unsupported visible `query_result()` variables, textbox
   variables, unresolved fields, incompatible field types, and non-aggregatable
   fields use the same surfaced warning path.
+- **Cascade parents are not treated as inert.** A variable such as `$namespace`
+  that no panel binds, but that still appears in a dependent control's
+  populate query (`?namespace` narrowing `$instance` options), is kept without
+  the "renders but changes no panel" warning — selecting it does change the
+  downstream dropdown. The inert-control warning still fires when a variable is
+  unused by both panels and other controls.
 - **A control whose target field is absent is kept with a data-readiness
   warning.** When live schema discovery (`--es-url`) positively confirms a
   variable's resolved field doesn't exist on the target, the control remains

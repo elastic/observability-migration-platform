@@ -8100,6 +8100,9 @@ class TranslatorRegressionTests(unittest.TestCase):
                 "type": "query",
                 "name": "device_filtered",
                 "multi": True,
+                # Regex filter means selections can still be regex-shaped, so the
+                # exact-vs-regex MV_CONTAINS delta must stay operator-visible.
+                "regex": "/sda.*/",
                 "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
             }],
             datasource_index="metrics-*",
@@ -8121,6 +8124,36 @@ class TranslatorRegressionTests(unittest.TestCase):
                 and "exact" in warning
                 for warning in warnings
             ),
+            warnings,
+        )
+
+    def test_query_variable_multi_select_label_values_skips_regex_warning(self):
+        """Concrete label_values() multi-select is exact-match equivalent; no warning."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+            collect_warnings=warnings,
+        )
+        self.assertTrue(controls)
+        self.assertIs(controls[0]["multiple"], True)
+        self.assertFalse(
+            any("multi-select" in warning and "MV_CONTAINS" in warning for warning in warnings),
             warnings,
         )
 
@@ -14701,6 +14734,25 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         self.assertEqual(len(inert), 2)
         self.assertTrue(any("variable 'instance'" in w for w in inert))
         self.assertTrue(any("variable 'id'" in w for w in inert))
+
+    def test_cascade_parent_bound_by_child_control_is_not_inert(self):
+        """A parent used only to scope another control's options is not inert.
+
+        Redis ``$namespace`` → ``$instance`` is the canonical case: no panel
+        binds ``?namespace``, but the instance control populate query does.
+        """
+        result, doc = self._translate(self.resolver)
+        controls = {c["variable_name"]: c for c in doc["controls"]}
+        self.assertIn("instance", controls)
+        self.assertIn("id", controls)
+        self.assertIn("?instance", controls["id"]["query"])
+        self.assertFalse(
+            any(
+                "no migrated panel" in w and "variable 'instance'" in w
+                for w in result.control_warnings
+            ),
+            result.control_warnings,
+        )
 
 
 class LokiDashboardIntegrationTests(unittest.TestCase):

@@ -187,19 +187,37 @@ def _override_property_is_supported(prop: dict[str, Any]) -> bool:
     return False
 
 
+def _override_property_is_cosmetic_gap(prop: dict[str, Any]) -> bool:
+    """True for unsupported overrides that change legend/tooltip chrome only.
+
+    Grafana's ``custom.hideFrom`` (commonly paired with ``byValue`` /
+    ``allIsZero`` to hide empty series from the legend) has no Kibana XY
+    equivalent. Surfacing it with the generic "verify visual mappings"
+    note Yellows panels that otherwise migrate cleanly (e.g. Redis Total
+    Items per DB). Report it as an informational note instead — same
+    pattern as value-mapping display-text loss.
+    """
+    return str(prop.get("id") or "").strip() == "custom.hideFrom"
+
+
 def collect_panel_inventory(panel: dict[str, Any]) -> dict[str, Any]:
     field_config = panel.get("fieldConfig") or {}
     overrides = field_config.get("overrides") if isinstance(field_config, dict) else []
     override_properties = _field_override_properties(field_config)
+    unsupported = [
+        prop for prop in override_properties if not _override_property_is_supported(prop)
+    ]
+    cosmetic = [prop for prop in unsupported if _override_property_is_cosmetic_gap(prop)]
+    actionable = [prop for prop in unsupported if not _override_property_is_cosmetic_gap(prop)]
     return {
         "targets": len(panel.get("targets", [])),
         "links": len(panel.get("links", []) or []),
         "transformations": len(panel.get("transformations", []) or []),
         "field_overrides": len(overrides or []),
         "field_override_properties": len(override_properties),
-        "non_color_field_override_properties": sum(
-            1 for prop in override_properties if not _override_property_is_supported(prop)
-        ),
+        "non_color_field_override_properties": len(unsupported),
+        "actionable_field_override_properties": len(actionable),
+        "cosmetic_field_override_properties": len(cosmetic),
         "value_mappings": _value_mapping_count(field_config),
         "has_repeat": bool(panel.get("repeat")),
         "has_library_panel": bool(panel.get("libraryPanel")),
@@ -214,12 +232,17 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
         notes.append(f"Grafana panel has {inventory['links']} link(s); verify drilldowns manually")
     if inventory["transformations"]:
         notes.append(f"Grafana panel has {inventory['transformations']} transformation(s); manual review recommended")
-    if inventory["non_color_field_override_properties"]:
+    if inventory["actionable_field_override_properties"]:
         notes.append(
             "Grafana panel has "
             f"{inventory['field_overrides']} field override(s) including "
-            f"{inventory['non_color_field_override_properties']} non-color override property "
+            f"{inventory['actionable_field_override_properties']} non-color override property "
             "(e.g. stacking, transforms); verify visual mappings manually"
+        )
+    elif inventory["cosmetic_field_override_properties"]:
+        notes.append(
+            "Grafana hide-from-legend/tooltip field override(s) are not applied in Kibana; "
+            "matching series still appear in the legend"
         )
     if inventory["value_mappings"]:
         notes.append(

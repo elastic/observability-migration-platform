@@ -7489,6 +7489,31 @@ def _collect_multi_select_param_names(variables):
     return names
 
 
+_REGEX_META_RE = re.compile(r"[.\\^$*+?{}[\]|()]")
+
+
+def _variable_multi_select_has_regex_risk(variable) -> bool:
+    """True when a multi-select variable can still carry a regex selection.
+
+    Concrete ``label_values()`` options matched via ``MV_CONTAINS`` are
+    equivalent to Grafana's ``a|b|c`` literal alternation. Warn only when the
+    variable can still inject a real regex (custom type, ``regex`` filter, or a
+    non-trivial ``allValue``).
+    """
+    if not isinstance(variable, dict):
+        return False
+    if str(variable.get("type") or "").strip().lower() == "custom":
+        return True
+    if str(variable.get("regex") or "").strip():
+        return True
+    all_value = variable.get("allValue")
+    if isinstance(all_value, str):
+        stripped = all_value.strip()
+        if stripped and stripped not in {".*", ".+", ".+?"} and _REGEX_META_RE.search(stripped):
+            return True
+    return False
+
+
 def _build_esql_param_control(
     variable_name,
     label,
@@ -7946,15 +7971,20 @@ def query_variable_rule(context):
                 "than silently merging them"
             )
         elif multi_select:
-            # Multi-select IS preserved, but exact-match instead of regex --
-            # state the delta rather than let it be discovered later.
-            context.control_warnings.append(
-                f"variable '{name}' is multi-select: panel filters bind it with "
-                f"MV_CONTAINS(?{name}, <field>) and the control allows several values "
-                "at once. Matching is exact rather than regex (ES|QL RLIKE takes only "
-                "a literal pattern), so a Grafana value written as a regex will not "
-                "match the way it did in Grafana"
-            )
+            # Multi-select IS preserved via MV_CONTAINS (exact match). Warn only
+            # when the Grafana variable can still carry a regex selection
+            # (custom values, variable regex filter, or a non-trivial allValue):
+            # plain label_values() multi-select of concrete label values is
+            # equivalent under exact match and should not Yellow Redis-style
+            # dashboards with a theoretical regex delta.
+            if _variable_multi_select_has_regex_risk(context.variable):
+                context.control_warnings.append(
+                    f"variable '{name}' is multi-select: panel filters bind it with "
+                    f"MV_CONTAINS(?{name}, <field>) and the control allows several values "
+                    "at once. Matching is exact rather than regex (ES|QL RLIKE takes only "
+                    "a literal pattern), so a Grafana value written as a regex will not "
+                    "match the way it did in Grafana"
+                )
         context.handled = True
         return f"translated variable {name} as ES|QL parameter control"
     if scope_refs:
@@ -8427,22 +8457,39 @@ def _ensure_param_controls(
         and control.get("variable_name")
     }
     missing = sorted(name for name in emitted_params if name not in bound)
-    # Inert controls (the reverse of ``missing``): a control whose ``?var`` no
-    # migrated panel query binds. Grafana variables that exist only to scope
-    # another variable's ``label_values()`` selector (e.g. ``$namespace``
-    # narrowing the ``$instance`` option list) produce exactly this — Kibana
-    # renders a populated, clickable dropdown that changes nothing, because
-    # ES|QL controls have no cross-control dependency mechanism to re-apply.
-    # That is worse than a missing control: it looks functional. Surface it
-    # rather than let the operator discover it by clicking (degrade-gracefully
-    # rule: never hide a semantic gap).
+    # Inert controls (the reverse of ``missing``): a control whose ``?var`` is
+    # bound by neither a migrated panel query nor another control's populate
+    # query. Grafana cascade parents (e.g. ``$namespace`` narrowing the
+    # ``$instance`` option list) are *not* inert when the dependent control's
+    # ES|QL still references ``?namespace`` — selecting them does change the
+    # downstream dropdown. Only warn when the variable is unused end-to-end
+    # (degrade-gracefully: never hide a truly dead control).
     if control_warnings is not None:
-        emitted = set(emitted_params or ())
+        useful = set(emitted_params or ())
+        # Built-in time-range params are always bound by Kibana; ignore them.
+        useful -= {"_tstart", "_tend"}
+        # Fixed-point: a control for a useful var may itself reference other
+        # params that therefore need a binding control (cascade parents).
+        changed = True
+        while changed:
+            changed = False
+            for control in controls:
+                if not isinstance(control, dict) or control.get("type") != "esql":
+                    continue
+                name = control.get("variable_name")
+                if not name or name not in useful:
+                    continue
+                for needed in _query_param_names(control.get("query")):
+                    if needed in {"_tstart", "_tend", name}:
+                        continue
+                    if needed not in useful:
+                        useful.add(needed)
+                        changed = True
         for control in controls:
             if not isinstance(control, dict) or control.get("type") != "esql":
                 continue
             name = control.get("variable_name")
-            if name and name not in emitted:
+            if name and name not in useful:
                 control_warnings.append(
                     f"variable '{name}' has a Kibana control, but no migrated panel "
                     f"query binds ?{name} — the control renders and is selectable "

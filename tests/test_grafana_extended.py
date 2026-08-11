@@ -4422,6 +4422,58 @@ class TestFieldOverrideNotesPromoteWarningStatus(unittest.TestCase):
         packet = build_verification_packet("Node", enriched)
         self.assertEqual(packet["semantic_gate"], "Yellow")
 
+    def test_hide_from_legend_override_is_cosmetic_not_yellow(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+        from observability_migration.adapters.source.grafana.panels import (
+            _enrich_panel_result,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+            panel_notes_imply_warning,
+        )
+        from observability_migration.core.reporting.report import PanelResult
+
+        panel = {
+            "title": "Total Items per DB",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {
+                            "id": "byValue",
+                            "options": {"op": "gte", "reducer": "allIsZero", "value": 0},
+                        },
+                        "properties": [
+                            {
+                                "id": "custom.hideFrom",
+                                "value": {"legend": True, "tooltip": True, "viz": False},
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertTrue(any("hide-from-legend" in note for note in notes), notes)
+        self.assertFalse(any("verify visual mappings" in note for note in notes), notes)
+        self.assertFalse(panel_notes_imply_warning(notes), notes)
+
+        panel_result = PanelResult(
+            title="Total Items per DB",
+            grafana_type="timeseries",
+            kibana_type="area",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(keys)",
+            promql_expr='sum(redis_db_keys) by (db, instance)',
+        )
+        enriched = _enrich_panel_result(panel_result, panel=panel, notes=notes)
+        self.assertEqual(enriched.status, "migrated")
+        packet = build_verification_packet("Redis", enriched)
+        self.assertEqual(packet["semantic_gate"], "Green")
+
 
 class TestValueMappingsAreReported(unittest.TestCase):
     """Grafana value mappings have no Kibana equivalent and must not vanish silently.
