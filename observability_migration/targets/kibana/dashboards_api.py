@@ -3,21 +3,23 @@
 
 """Native Kibana Dashboards API target (typed, ES|QL-first).
 
-This is an alternative to the ``kb-dashboard-cli`` compile+``_import`` path.
-The schema authority for this module is the typed Kibana Dashboards API
-itself — see ``observability_migration.core.assets.native_dashboard`` for the
+This is the only path a migration deploys through. The schema authority for
+this module is the typed Kibana Dashboards API itself — see
+``observability_migration.core.assets.native_dashboard`` for the
 :class:`NativeDashboard`/:class:`NativePanel`/:class:`NativeSection`/
 :class:`NativeControl` IR that mirrors that API's own payload shape (``panels``
-/ ``pinned_panels`` / ``grid`` / ``config``, plus native API item caps). YAML and
-the flat migration report are *bridge inputs* into that IR, not the schema
-itself; neither one decides what the native API accepts.
+/ ``pinned_panels`` / ``grid`` / ``config``, plus native API item caps). The
+``DashboardIR`` dict shape and the flat migration report are *bridge inputs*
+into that IR, not the schema itself; neither one decides what the native API
+accepts.
 
 Why this exists
 ---------------
-``kb-dashboard-cli`` compiles YAML into legacy stringified ``panelsJSON`` saved
-objects and uploads them through ``POST /api/saved_objects/_import``. That path
-accepts blobs the typed UI contract would reject, so "compiled" is not the same
-as "valid". The Dashboards API validates structurally at write time.
+The removed ``kb-dashboard-cli`` path compiled dashboard YAML into legacy
+stringified ``panelsJSON`` saved objects and uploaded them through ``POST
+/api/saved_objects/_import``. That path accepted blobs the typed UI contract
+rejects, so "compiled" was never the same as "valid". The Dashboards API
+validates structurally at write time.
 
 Coverage (verified live against Elastic Serverless 9.5.0)
 ---------------------------------------------------------
@@ -32,20 +34,26 @@ The column references in each chart's config are the ES|QL *output column*
 names — exactly what ``visual_ir.presentation.config`` already records as
 ``field``.
 
-Two entry points
-----------------
+Entry points
+------------
+* **IR-based** (``native_dashboard_from_ir`` /
+  ``build_dashboard_payload_from_ir`` / ``upload_native_dashboard``): the path
+  every migration takes. Maps a :class:`DashboardIR` straight to the native API
+  shape, reconstructing nested sections and dashboard-level controls
+  (``pinned_panels``). Prefer this path.
+* **Dict-shape based** (``native_dashboard_from_yaml`` /
+  ``build_payload_from_yaml``): the same mapping driven from the internal
+  ``DashboardIR.to_yaml_dict()`` dict shape rather than the IR object. Despite
+  the ``*_yaml_*`` names this is an in-memory dict, not a file format -- no
+  dashboard YAML is read or written anywhere. It survives as an independent
+  second construction of the payload, which the structural equivalence guards
+  use to cross-check what ``native_dashboard_from_ir`` produced.
 * **Report-based** (``native_dashboard_from_report`` / ``build_dashboard_payload``
   / ``upload_report``): maps the *flat* ``migration_report.json`` panels via
   ``visual_ir.presentation``. The flat report carries no controls and no
   nested sections.
-* **YAML-based** (``native_dashboard_from_yaml`` / ``build_payload_from_yaml``
-  / ``upload_yaml_files``): maps the canonical kb-dashboard-core **YAML** —
-  the richest bridge input. It reconstructs nested ``section`` blocks into
-  native API sections and dashboard-level ``controls`` into native API
-  ``pinned_panels`` (ES|QL controls), on top of the same 11 chart types +
-  markdown. Prefer this path.
 
-Both entry points build a :class:`NativeDashboard` first and then call
+All entry points build a :class:`NativeDashboard` first and then call
 ``NativeDashboard.to_api_payload()`` for the actual JSON body — the
 ``build_dashboard_payload*`` functions are thin, backward-compatible wrappers
 around that IR, kept so existing callers do not need the object form.
@@ -62,11 +70,12 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
-import yaml
 
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import (
@@ -85,18 +94,21 @@ from observability_migration.core.assets.native_dashboard import (
 )
 from observability_migration.core.http import apply_tls
 from observability_migration.targets.kibana.compile import kibana_url_for_space
+from observability_migration.targets.kibana.emit.display import sanitize_axis_title_text
 from observability_migration.targets.kibana.native_artifacts import (
     ARTIFACT_ENVELOPE_VERSION,
     NATIVE_ARTIFACT_KIND,
 )
 
-# Current typed Dashboards API caps. The API schema is still preview and its
-# full reference is externally hosted, so keep these in sync with
-# ``scripts/fetch_dashboards_api_schema.py`` and Elastic's Dashboards API docs.
+# Current typed Dashboards API caps. Keep these in sync with the committed
+# OpenAPI pin at ``docs/dashboards/kibana_dashboards_api.openapi.yaml``
+# (``make check-native-schema`` / ``make refresh-native-schema``).
 _MAX_DASHBOARD_ITEMS = MAX_DASHBOARD_ITEMS
 _MAX_SECTION_PANELS = MAX_SECTION_PANELS
 _MAX_PINNED_CONTROLS = MAX_PINNED_CONTROLS
 _MAX_TOTAL_ITEMS = MAX_TOTAL_ITEMS
+_CONTROL_QUERY_PARAM_RE = re.compile(r"(?<!\?)\?(?!\?)([A-Za-z_][A-Za-z0-9_]*)")
+_CONTROL_QUERY_WINDOW = timedelta(hours=1)
 
 # Partition charts (pie/treemap/waffle) reject a ``group_by`` with more than 3
 # non-collapsed dimensions: "The number of non-collapsed group_by dimensions
@@ -134,23 +146,113 @@ _SUMMARY_TYPES = {"sum", "avg", "count", "min", "max"}
 
 @dataclass
 class PanelMapping:
-    """Result of mapping one report panel to the typed API."""
+    """Result of mapping one report panel to the typed API.
+
+    ``reason`` explains a panel that could NOT be mapped. ``losses`` is the
+    other half of the story: reason keys for panels that mapped fine but lost
+    source detail the target cannot express (a ``data_table`` metric's
+    conditional colour, today). Callers fold them into
+    ``NativeMappingCounts.reasons`` so a fidelity gap is recorded instead of
+    disappearing -- one entry per lost thing.
+    """
 
     api_panel: dict[str, Any] | None
     reason: str = ""
     kind: str = ""
+    losses: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DroppedPanel:
+    """One leaf panel Kibana accepted the upload without.
+
+    ``reason`` is Kibana's own ``warnings[].message`` when the follow-up GET
+    could supply it, and ``""`` when it could not -- detection never depends on
+    that second request succeeding.
+    """
+
+    title: str = ""
+    reason: str = ""
+    section: str = ""
+    grid: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "reason": self.reason,
+            "section": self.section,
+            "grid": dict(self.grid),
+        }
+
+
+@dataclass
+class UnresolvedDataView:
+    """A control whose ``data_view_id`` upload could not resolve to a real id.
+
+    ``data_view`` is the value left in place (an index pattern such as
+    ``metrics-*.prometheus-*``) and ``control`` names the control carrying it.
+    Kibana renders such a control as "An error occurred", so the fallback is
+    reported rather than taken silently -- ``ensure_migration_data_views`` is
+    meant to make the lookup complete by construction, and a miss means
+    ensuring failed.
+    """
+
+    data_view: str = ""
+    control: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"data_view": self.data_view, "control": self.control}
 
 
 @dataclass
 class UploadResult:
     dashboard: str
     dashboard_id: str = ""
-    status: str = ""  # created | updated | conflict | rejected | empty
+    # created | updated | conflict | rejected | empty | lossy | duplicate_id
+    #
+    # ``lossy`` is a 2xx upload that Kibana accepted *without* some of the leaf
+    # panels that were sent (see :func:`_record_panel_loss`). It is a failure,
+    # not a warning: a silent partial write looks like a clean success, so
+    # nobody investigates it. Only ``created``/``updated`` count as success
+    # downstream, which makes ``lossy`` fail the upload exit code, the
+    # per-dashboard runtime summary, and the manifest's ``uploaded_ok``.
+    #
+    # ``duplicate_id`` follows the same discipline for the other silent partial
+    # write: a second payload in one batch resolving to an id the batch already
+    # uploaded would upsert *over* the first dashboard and report ``"updated"``.
+    # Nothing is sent, and the batch fails, because a loud stop beats a run that
+    # claims two dashboards and leaves one.
+    #
+    # A fourth status, ``data_view_unavailable``, never originates here: the
+    # Kibana adapter applies it to the upload *record* when a control's data view
+    # could not be created (see ``adapter._fail_record_on_unavailable_data_view``),
+    # which is knowledge only the layer that ran the ensure has. It reuses this
+    # same discipline -- a status outside ``created``/``updated`` -- rather than a
+    # mechanism of its own.
+    status: str = ""
     mapped: int = 0
     unmapped: int = 0
     http_status: int = 0
     message: str = ""
     unmapped_reasons: dict[str, int] = field(default_factory=dict)
+    # Sent-vs-accepted leaf panel counts for a 2xx upload. Both stay 0 when the
+    # response carried no ``data.panels`` to compare against (unverifiable).
+    panels_sent: int = 0
+    panels_accepted: int = 0
+    dropped_panels: list[DroppedPanel] = field(default_factory=list)
+    # Controls whose ``data_view_id`` stayed a raw index pattern because the
+    # ensured-data-view lookup did not know it. A warning, not a failure: the
+    # dashboard uploads, that one control renders an error.
+    unresolved_data_views: list[UnresolvedDataView] = field(default_factory=list)
+
+    @property
+    def dropped_panel_count(self) -> int:
+        """How many leaf panels the upload lost, from the counts themselves.
+
+        Kept independent of ``len(dropped_panels)`` so a loss is still reported
+        when the per-panel identification cannot name every casualty.
+        """
+        return max(self.panels_sent - self.panels_accepted, 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -209,14 +311,60 @@ def _api_format(fmt: Any) -> dict[str, Any] | None:
         # (kbn-lens-embeddable-utils/config_builder/transforms/columns/
         # format.ts). So an unspecified duration format renders exactly like
         # Kibana's own default "Duration" value-format selection would.
-        out = {"type": fmt_type}
-        out.update(_keep_keys(fmt, ("decimals", "suffix", "compact")))
-        out["from"] = str(fmt["from"]) if fmt.get("from") else "seconds"
-        out["to"] = str(fmt["to"]) if fmt.get("to") else "humanize"
-        return out
+        # The duration branch of the transform schema is closed: it accepts
+        # ``type``/``from``/``to`` only. Forwarding ``decimals`` (valid on the
+        # number/bytes branches) is rejected with "Additional properties are not
+        # allowed ('decimals' was unexpected)" and fails the whole panel.
+        return {
+            "type": fmt_type,
+            "from": _duration_unit(fmt.get("from"), default="s"),
+            "to": _duration_output(fmt.get("to")),
+        }
     if fmt_type == "custom" and fmt.get("pattern"):
         return {"type": fmt_type, "pattern": str(fmt["pattern"])}
     return None
+
+
+# Kibana's field-format layer names duration units in full ("seconds"), but the
+# Lens-as-code transform the Dashboards API runs accepts only the abbreviated
+# units. Sending the long name is rejected:
+#   [layers[0].y[0].format]: [from]: expected value to equal [ps|ns|us|ms|s|min|h|d|w|mo|y]
+# This was invisible for a long time because a rejected payload silently fell
+# back to the (now removed) kb-dashboard-cli compiler, which accepted it -- the
+# run reported success while never using the API path at all.
+_DURATION_UNIT_ALIASES = {
+    "picoseconds": "ps", "nanoseconds": "ns", "microseconds": "us",
+    "milliseconds": "ms", "seconds": "s", "minutes": "min", "hours": "h",
+    "days": "d", "weeks": "w", "months": "mo", "years": "y",
+}
+_DURATION_UNITS = frozenset(_DURATION_UNIT_ALIASES.values())
+
+
+def _duration_unit(value: Any, *, default: str) -> str:
+    """Normalise a duration unit to the abbreviation the API accepts."""
+    text = str(value or "").strip()
+    if not text:
+        return default
+    if text in _DURATION_UNITS:
+        return text
+    return _DURATION_UNIT_ALIASES.get(text.lower(), default)
+
+
+# ``to`` has its own vocabulary: the transform accepts the abbreviated units
+# plus "auto"/"auto-approximate". Kibana's internal output method is
+# "humanize", which the transform does NOT accept -- it is spelled "auto" here.
+_DURATION_OUTPUT_ALIASES = {"humanize": "auto", "humanizePrecise": "auto-approximate"}
+
+
+def _duration_output(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "auto"
+    if text in _DURATION_UNITS or text in {"auto", "auto-approximate"}:
+        return text
+    if text in _DURATION_OUTPUT_ALIASES:
+        return _DURATION_OUTPUT_ALIASES[text]
+    return _DURATION_UNIT_ALIASES.get(text.lower(), "auto")
 
 
 def _api_color_mapping(color: dict[str, Any]) -> dict[str, Any] | None:
@@ -242,6 +390,26 @@ def _api_color_mapping(color: dict[str, Any]) -> dict[str, Any] | None:
     if "unassigned" in color:
         out["unassigned"] = color["unassigned"]
     return out
+
+
+def _dynamic_palette(color_type: str, range_kind: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a dynamic color palette, collapsing a single step to a static color.
+
+    Kibana rejects a one-step dynamic palette: its schema validates the step list
+    pairwise and reports ``[steps.1]: At least one of "gte", "lt", or "lte" must
+    be provided``, which makes the whole panel fail transform and get **dropped**
+    from the saved dashboard (observed on a Datadog metric whose only threshold
+    was ``gte: 0``). A lone step has no boundary to switch at, so it means "always
+    this color" -- which is exactly a static color, not a threshold.
+
+    Roles that disallow ``static`` (gauge/heatmap/datatable metrics, see
+    :data:`_COLOR_TYPES_BY_ROLE`) drop the color entirely in
+    :func:`_api_color_for_role` and fall back to Kibana's default, which is
+    correct: better no color than a panel that never renders.
+    """
+    if len(steps) == 1:
+        return {"type": "static", "color": steps[0]["color"]}
+    return {"type": color_type, "range": range_kind, "steps": steps}
 
 
 def _api_color(color: Any) -> dict[str, Any] | None:
@@ -275,7 +443,7 @@ def _api_color(color: Any) -> dict[str, Any] | None:
             if {"gte", "lt"} & set(step):
                 legacy_steps.append(step)
         if legacy_steps:
-            return {"type": "dynamic", "range": "absolute", "steps": legacy_steps}
+            return _dynamic_palette("dynamic", "absolute", legacy_steps)
     color_type = str(color.get("type") or "")
     if color_type in {"auto", "none"}:
         return {"type": color_type}
@@ -292,7 +460,7 @@ def _api_color(color: Any) -> dict[str, Any] | None:
             steps.append(out_step)
     if not steps:
         return None
-    return {"type": color_type, "range": color["range"], "steps": steps}
+    return _dynamic_palette(color_type, color["range"], steps)
 
 
 # Roles whose API schema exposes NO ``color`` property at all (emitting one
@@ -328,13 +496,71 @@ def _api_color_for_role(color: Any, role: str) -> dict[str, Any] | None:
     if role in _MAPPING_ONLY_ROLES:
         return mapped if mode in {"categorical", "gradient"} else None
     if role == "datatable_metric":
-        # colorByValue (dynamic) | colorMapping (categorical/gradient) | auto — no static.
-        return mapped if color_type in {"dynamic", "auto"} or mode in {"categorical", "gradient"} else None
+        # No colour shape survives a data_table metric, so send none. Probed
+        # live on a throwaway dashboard (PUT then GET back):
+        #
+        #   dynamic (3-step)              -> 200, stored as ``color: null``
+        #   dynamic + apply_to cell/text  -> 400
+        #   dynamic with range percentage -> 200, not persisted
+        #   static                        -> 400
+        #   auto                          -> 200, not persisted
+        #
+        # The two shapes that used to be emitted here (dynamic/auto) were
+        # therefore write-only: they cost payload bytes, showed up as a false
+        # divergence in the round-trip oracle, and never coloured a cell. This
+        # is a real fidelity loss when the source had conditional formatting,
+        # so it is *recorded* rather than silently dropped -- see
+        # :data:`DROPPED_DATATABLE_COLOR_REASON` and :func:`_refused_color_count`.
+        return None
     allowed = _COLOR_TYPES_BY_ROLE.get(role)
     if allowed is not None:
         return mapped if color_type in allowed else None
     # Unknown role: only the universally-safe shapes.
     return mapped if color_type in {"static", "auto"} else None
+
+
+# One unmapped-reason key per ``data_table`` metric whose source colour the
+# API cannot store. It travels the same channel as
+# :data:`_DROPPED_FILTER_REASON` -- ``NativeMappingCounts.reasons`` -- which is
+# this module's existing record for "the dashboard mapped, but something the
+# source expressed did not survive". :func:`upload_warnings_from_reasons` turns
+# it into an operator-facing warning.
+DROPPED_DATATABLE_COLOR_REASON = "dropped_unsupported_datatable_metric_color"
+
+# YAML/visual-IR chart types that build a ``data_table`` API panel.
+_DATATABLE_KINDS = {"datatable", "data_table"}
+
+
+def _refused_color_count(items: Any, role: str) -> int:
+    """How many columns carried a colour this API role cannot store.
+
+    Defined in terms of the two functions that already decide, so the count can
+    never drift from the drop: :func:`_api_color` says the source *had* a colour
+    this emitter could shape, and :func:`_api_color_for_role` refusing it says
+    the target cannot express it. That difference is exactly the semantic loss.
+    """
+    if not isinstance(items, list):
+        return 0
+    return sum(
+        1
+        for item in items
+        if isinstance(item, dict)
+        and _api_color(item.get("color")) is not None
+        and _api_color_for_role(item.get("color"), role) is None
+    )
+
+
+def _chart_semantic_losses(chart_type: str, cfg: dict[str, Any]) -> list[str]:
+    """Reason keys for source detail this chart's API mapping cannot carry.
+
+    One entry per lost thing (not per panel), so the histogram in
+    ``NativeMappingCounts.reasons`` counts occurrences the way the dropped-filter
+    reason already does.
+    """
+    if str(chart_type or "").lower() not in _DATATABLE_KINDS:
+        return []
+    dropped = _refused_color_count(cfg.get("metrics"), "datatable_metric")
+    return [DROPPED_DATATABLE_COLOR_REASON] * dropped
 
 
 def _api_summary(summary: Any) -> dict[str, Any] | None:
@@ -351,8 +577,12 @@ def _api_column(obj: Any, role: str = "generic") -> dict[str, Any] | None:
     col = _column(obj)
     if col is None or not isinstance(obj, dict):
         return col
-    if obj.get("label"):
+    if obj.get("label") is not None and str(obj.get("label")) != "":
         col["label"] = str(obj["label"])
+    elif "label" in obj and obj.get("label") == "":
+        # Explicit empty label: hide the measure field name on breakdown
+        # metric tiles (otherwise Lens shows "gauge_value" truncated).
+        col["label"] = ""
     fmt = _api_format(obj.get("format"))
     if fmt and role not in {"gauge_bound", "region"}:
         col["format"] = fmt
@@ -369,6 +599,10 @@ def _api_column(obj: Any, role: str = "generic") -> dict[str, Any] | None:
         collapse_by = obj.get("collapse_by") or obj.get("collapse")
         if collapse_by in _COLLAPSE_BY:
             col["collapse_by"] = collapse_by
+    if role == "metric_breakdown":
+        columns = obj.get("columns")
+        if isinstance(columns, int | float) and 1 <= int(columns) <= 12:
+            col["columns"] = int(columns)
     if role in {"datatable_metric", "datatable_row"}:
         if isinstance(obj.get("width"), int | float) and obj["width"] >= 0:
             col["width"] = obj["width"]
@@ -482,12 +716,187 @@ def _api_legend(legend: Any, kind: str) -> dict[str, Any] | None:
     return out or None
 
 
+_FORMAT_TYPE_TO_Y_AXIS_TITLE: dict[str, str] = {
+    "bytes": "Bytes",
+    "bytes_si": "Bytes",
+    "percent": "%",
+    "percent_decimal": "%",
+    "duration": "Seconds",
+    "seconds": "Seconds",
+    "milliseconds": "Milliseconds",
+}
+
+
+def _infer_y_axis_title(metrics: list[Any]) -> str:
+    """Return a Y-axis title inferred from a uniform metric format, or ''."""
+    left_formats = set()
+    for m in metrics:
+        if not isinstance(m, dict) or m.get("axis") == "right":
+            continue
+        fmt = m.get("format")
+        if isinstance(fmt, dict):
+            left_formats.add(str(fmt.get("type") or ""))
+        else:
+            left_formats.add("")
+    if len(left_formats) == 1:
+        fmt_type = next(iter(left_formats))
+        return _FORMAT_TYPE_TO_Y_AXIS_TITLE.get(fmt_type, "")
+    return ""
+
+
+def _xy_metrics(cfg: dict[str, Any]) -> list[Any]:
+    """Every metric an XY config plots, including per-layer metrics.
+
+    Cross-data-stream XY panels carry their series under ``layers[*].metrics``
+    rather than the top-level ``metrics``, so an axis decision that only reads
+    the top level would misjudge them.
+    """
+    raw = cfg.get("metrics")
+    metrics: list[Any] = list(raw) if isinstance(raw, list) else []
+    layers = cfg.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if isinstance(layer, dict) and isinstance(layer.get("metrics"), list):
+                metrics.extend(layer["metrics"])
+    return metrics
+
+
+# YAML/visual-IR spellings that put a series on the right-hand axis. Kept in
+# sync with the ``axis`` mapping in :func:`_api_column` (role ``xy_y``).
+_RIGHT_AXIS_VALUES = {"right", "y2"}
+
+
+def _has_right_axis_series(cfg: dict[str, Any]) -> bool:
+    """True when at least one series is plotted against the right-hand axis."""
+    return any(
+        isinstance(metric, dict) and str(metric.get("axis") or "") in _RIGHT_AXIS_VALUES
+        for metric in _xy_metrics(cfg)
+    )
+
+
+def _axis_requests_configuration(axis: Any) -> bool:
+    """True when an axis config asks Kibana for something it can render.
+
+    A title with no ``text`` is the one exception: on its own it neither names
+    the axis nor changes a default, so an axis whose *only* content is such a
+    title is inert.
+    """
+    if not isinstance(axis, dict):
+        return False
+    for key, value in axis.items():
+        if key != "title":
+            return True
+        if isinstance(value, dict) and str(value.get("text") or ""):
+            return True
+    return False
+
+
+def _prune_inert_y2(axis: dict[str, Any] | None, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Drop a ``y2`` entry that configures an axis nothing is plotted on.
+
+    Datadog XY widgets declare all three axes with a hidden title
+    (``appearance.y_right_axis: {"title": false}``) whether or not any series
+    uses the right axis. With no right-axis series that ``y2`` block styles
+    an axis Kibana never draws, and Kibana discards it -- measured at 157
+    occurrences across the 13-dashboard Datadog corpus.
+
+    Two guards keep a *real* second axis: a panel that puts a series on the
+    right axis keeps its ``y2`` (hiding that axis's title is then a genuine
+    request), and so does a ``y2`` that carries any configuration of its own
+    (a title text, a scale, a domain, grid/tick/label settings).
+    """
+    if not axis or "y2" not in axis:
+        return axis
+    if _has_right_axis_series(cfg) or _axis_requests_configuration(axis["y2"]):
+        return axis
+    pruned = {name: item for name, item in axis.items() if name != "y2"}
+    return pruned or None
+
+
+def _resolve_xy_axis(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the XY axis config, with any inert second axis pruned."""
+    return _prune_inert_y2(_xy_axis_from_cfg(cfg), cfg)
+
+
+def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the XY axis config, falling back to format-inferred Y title."""
+    axis = _api_xy_axis(_cfg_axis_source(cfg))
+    if axis and (axis.get("y") or {}).get("title"):
+        return axis
+    metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
+    inferred = _infer_y_axis_title(metrics)
+    if not inferred:
+        # No unit-derived title available. With two or more left-axis series
+        # Kibana falls back to the FIRST series' name, which mislabels the whole
+        # axis ("not expiring" on a chart plotting not-expiring AND expiring;
+        # "hits" on hits AND misses). Grafana showed no axis title at all here
+        # (axisLabel is empty), so hide it rather than let Kibana invent a
+        # wrong one. A single series keeps the default, where the column name
+        # does describe the axis.
+        left = [
+            m for m in metrics
+            if isinstance(m, dict) and m.get("axis") != "right"
+        ]
+        if len(left) >= 2:
+            # ``visible: false`` alone hides the title; a companion ``text: ""``
+            # names nothing and Kibana does not store it (see _api_axis_title).
+            hidden: dict[str, Any] = {"title": {"visible": False}}
+            if axis:
+                merged_hidden = dict(axis)
+                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
+                return merged_hidden
+            return {"y": hidden}
+        if len(left) == 1 and _xy_single_metric_uses_placeholder_name(cfg, left[0]):
+            hidden = {"title": {"visible": False}}
+            if axis:
+                merged_hidden = dict(axis)
+                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
+                return merged_hidden
+            return {"y": hidden}
+        return axis
+    y_title: dict[str, Any] = {"title": {"text": inferred, "visible": True}}
+    if axis:
+        merged = dict(axis)
+        merged["y"] = {**merged.get("y", {}), **y_title}
+        return merged
+    return {"y": y_title}
+
+
+def _xy_single_metric_uses_placeholder_name(cfg: dict[str, Any], metric: Any) -> bool:
+    """True when Kibana would invent a useless y-axis title from a synthetic metric.
+
+    Long-form XY panels with a single numeric metric and a breakdown commonly use
+    placeholder metric names like ``value`` or ``computed_value``. When Grafana
+    did not ask for a y-axis title, showing that synthetic column name is
+    actively misleading, so hide it.
+    """
+    if not isinstance(metric, dict):
+        return False
+    breakdown = cfg.get("breakdown")
+    breakdowns = cfg.get("breakdowns")
+    if not breakdown and not breakdowns:
+        return False
+    field_name = str(metric.get("field") or metric.get("column") or "").strip()
+    return field_name in {"value", "computed_value"}
+
+
 def _api_axis_title(title: Any) -> dict[str, Any] | None:
+    """Map an axis title, omitting a ``text`` that says nothing.
+
+    An empty ``text`` is not a title: Kibana stores no ``text`` key for it at
+    all (measured by PUT-then-GET round trip over both corpora -- 15 Grafana
+    panels sent ``axis.y.title.text: ""`` and got it back absent). Emitting one
+    is payload noise that also shows up as a false divergence in any
+    round-trip oracle, so drop it and keep only the ``visible`` request.
+    """
     if not isinstance(title, dict):
         return None
     out: dict[str, Any] = {}
-    if title.get("text") is not None:
-        out["text"] = str(title["text"])
+    text = title.get("text")
+    if text is not None:
+        safe_text = sanitize_axis_title_text(str(text))
+        if safe_text:
+            out["text"] = safe_text
     if isinstance(title.get("visible"), bool):
         out["visible"] = title["visible"]
     return out or None
@@ -496,8 +905,11 @@ def _api_axis_title(title: Any) -> dict[str, Any] | None:
 def _yaml_axis_title(title: Any) -> dict[str, Any] | None:
     if isinstance(title, bool):
         return {"visible": title}
-    if isinstance(title, str) and title:
-        return {"text": title, "visible": True}
+    if isinstance(title, str):
+        safe_text = sanitize_axis_title_text(title)
+        if safe_text:
+            return {"text": safe_text, "visible": True}
+        return None
     if isinstance(title, dict):
         return _api_axis_title(title)
     return None
@@ -639,6 +1051,9 @@ def _api_metric_styling(styling: Any) -> dict[str, Any] | None:
     if not isinstance(styling, dict):
         return None
     out = {key: styling[key] for key in ("primary", "secondary", "icon") if isinstance(styling.get(key), dict)}
+    density = styling.get("density")
+    if density in {"compact", "default"}:
+        out["density"] = density
     return out or None
 
 
@@ -734,7 +1149,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         legend = _api_legend(cfg.get("legend"), kind="xy")
         if legend:
             out["legend"] = legend
-        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        axis = _resolve_xy_axis(cfg)
         if axis:
             out["axis"] = axis
         styling_source = cfg.get("styling")
@@ -763,7 +1178,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
         legend = _api_legend(cfg.get("legend"), kind="xy")
         if legend:
             out["legend"] = legend
-        axis = _api_xy_axis(_cfg_axis_source(cfg))
+        axis = _resolve_xy_axis(cfg)
         if axis:
             out["axis"] = axis
         return out
@@ -784,7 +1199,7 @@ def _cfg_xy(title: str, cfg: dict[str, Any], query: str) -> dict[str, Any]:
     legend = _api_legend(cfg.get("legend"), kind="xy")
     if legend:
         out["legend"] = legend
-    axis = _api_xy_axis(_cfg_axis_source(cfg))
+    axis = _resolve_xy_axis(cfg)
     if axis:
         out["axis"] = axis
     styling_source = cfg.get("styling")
@@ -1186,7 +1601,11 @@ def map_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=f"esql chart type '{chart_type}' has no API builder", kind=chart_type)
         config = builder(title, cfg, query)
 
-    return PanelMapping({"grid": grid, "type": "vis", "config": config}, kind=chart_type)
+    return PanelMapping(
+        {"grid": grid, "type": "vis", "config": config},
+        kind=chart_type,
+        losses=_chart_semantic_losses(chart_type, cfg),
+    )
 
 
 def native_dashboard_from_report(dashboard: dict[str, Any]) -> tuple[NativeDashboard, NativeMappingCounts]:
@@ -1210,9 +1629,21 @@ def native_dashboard_from_report(dashboard: dict[str, Any]) -> tuple[NativeDashb
             continue
         result = map_panel(panel)
         counts.record(result.api_panel is not None, result.reason)
+        _record_losses(counts, result)
         if result.api_panel is not None:
             native.items.append(NativePanel.from_api_dict(result.api_panel))
     return native, counts
+
+
+def _record_losses(counts: NativeMappingCounts, result: PanelMapping) -> None:
+    """Fold a mapped panel's semantic losses into the unmapped-reason histogram.
+
+    Deliberately the *same* channel unmapped panels and dropped dashboard
+    filters use: a fidelity gap the target cannot express is reported to the
+    operator, not hidden behind a clean ``mapped`` count.
+    """
+    for loss in result.losses:
+        counts.add_reason(loss)
 
 
 def build_dashboard_payload(dashboard: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int], dict[str, int]]:
@@ -1279,9 +1710,63 @@ def _stable_dashboard_id(dashboard: dict[str, Any]) -> str:
     return f"obs-migrate-{slug or 'dashboard'}"
 
 
+def _dashboard_id_slug(text: str) -> str:
+    """The id-safe slug of ``text``, using :func:`_stable_dashboard_id`'s rules."""
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+
+
+def _stable_dashboard_id_from_ir(dashboard_ir: DashboardIR) -> str:
+    """Deterministic API dashboard id for an IR-sourced dashboard.
+
+    The base is the title slug :func:`_stable_dashboard_id` has always
+    produced, because the id is the *upsert key*: rederiving it from
+    ``dashboard_ir.uid`` (or from the artifact stem, which sources truncate at
+    their own filename lengths) would change every migrated dashboard's id,
+    orphaning previously uploaded copies and -- measured -- getting the payload
+    rejected outright.
+
+    A title slug alone is not unique, though. Artifact *stems* are allocated to
+    be unique, dashboard ids were not, so two source dashboards sharing a title
+    silently upserted onto one id and Kibana kept only the second -- reported as
+    a routine ``"updated"``. ``dashboard_ir.id_disambiguator`` closes that: it
+    is empty unless the run allocated this dashboard's stem against a title
+    collision, in which case the same token that disambiguated the stem is
+    appended here. Unique titles -- every dashboard in both corpora -- are
+    therefore byte-identical to the pre-collision-handling id by construction,
+    and collisions get distinct ids that match their artifact names.
+    """
+    base = _stable_dashboard_id(
+        {"name": str(getattr(dashboard_ir, "title", "") or "")}
+    )
+    suffix = _dashboard_id_slug(getattr(dashboard_ir, "id_disambiguator", "") or "")
+    return f"{base}-{suffix}" if suffix else base
+
+
+def dashboard_id_disambiguation_note(dashboard_ir: DashboardIR) -> str:
+    """Operator-visible note when a title collision moved the id off the slug.
+
+    Returns ``""`` for the unique-title case. The plain title slug is named
+    alongside the id actually used, because that slug is what someone looking
+    for the dashboard in Kibana (or in an older manifest) will search for.
+    """
+    if not str(getattr(dashboard_ir, "id_disambiguator", "") or "").strip():
+        return ""
+    title = str(getattr(dashboard_ir, "title", "") or "")
+    plain = _stable_dashboard_id({"name": title})
+    resolved = _stable_dashboard_id_from_ir(dashboard_ir)
+    if resolved == plain:
+        return ""
+    return (
+        f"'{title}' shares its title with another dashboard in this run, so its "
+        f"Kibana dashboard id is disambiguated to '{resolved}' rather than the "
+        f"plain title slug '{plain}'."
+    )
+
+
 def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
     """Map one YAML leaf panel (``esql``/``markdown``/``links``/``image``) to the API."""
     title = str(panel.get("title") or "")
+    description = str(panel.get("description") or "")
     grid = _grid_from_yaml(panel)
     hide_title = bool(panel.get("hide_title"))
 
@@ -1294,7 +1779,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
         }
         if hide_title:
             markdown_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "markdown", "config": markdown_config}, kind="markdown")
+        panel_payload: dict[str, Any] = {"grid": grid, "type": "markdown", "config": markdown_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="markdown")
 
     links = panel.get("links")
     if isinstance(links, dict):
@@ -1303,7 +1791,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason="links panel has no mappable url/dashboard entries", kind="links")
         if hide_title:
             links_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "links", "config": links_config}, kind="links")
+        panel_payload = {"grid": grid, "type": "links", "config": links_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="links")
 
     image = panel.get("image")
     if isinstance(image, dict):
@@ -1312,7 +1803,10 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason="image panel has no from_url", kind="image")
         if hide_title:
             image_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "image", "config": image_config}, kind="image")
+        panel_payload = {"grid": grid, "type": "image", "config": image_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(panel_payload, kind="image")
 
     esql = panel.get("esql")
     if isinstance(esql, dict):
@@ -1321,7 +1815,14 @@ def map_yaml_panel(panel: dict[str, Any]) -> PanelMapping:
             return PanelMapping(None, reason=reason, kind=kind)
         if hide_title:
             esql_config["hide_title"] = True
-        return PanelMapping({"grid": grid, "type": "vis", "config": esql_config}, kind=kind)
+        panel_payload = {"grid": grid, "type": "vis", "config": esql_config}
+        if description:
+            panel_payload["description"] = description
+        return PanelMapping(
+            panel_payload,
+            kind=kind,
+            losses=_chart_semantic_losses(kind, esql),
+        )
 
     return PanelMapping(None, reason="panel has none of esql/markdown/links/image", kind="")
 
@@ -1342,6 +1843,25 @@ def _selected_options(control: dict[str, Any]) -> list[str | int | float]:
     return []
 
 
+def _api_selected_options(control: dict[str, Any]) -> list[str | int | float]:
+    """Selected options to serialize into Kibana's Dashboard API payload.
+
+    Grafana query variables use ``.*`` as the source-side "All" sentinel. The
+    translator keeps that default so offline artifacts and parity helpers can
+    still reason about the intended matcher semantics. Kibana's control group,
+    however, treats ``selected_options: [".*"]`` as a literal option
+    selection, which filters the dashboard to zero rows for values controls.
+
+    For the native Dashboard API payload we therefore omit that one sentinel and
+    let the control start unselected instead of encoding an exact-match filter
+    that empties the dashboard on first render.
+    """
+    defaults = _selected_options(control)
+    if len(defaults) == 1 and defaults[0] == ".*":
+        return []
+    return defaults
+
+
 def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
     """Map a YAML dashboard ``control`` to a native ``pinned_panels`` item.
 
@@ -1353,7 +1873,7 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
         return None
     control_type = str(control.get("type") or "").lower()
     title = str(control.get("label") or control.get("title") or control.get("field") or control.get("variable_name") or "")
-    defaults = _selected_options(control)
+    defaults = _api_selected_options(control)
     if control_type in {"options", "option", "options_list", "options_list_control"}:
         data_view_id = str(control.get("data_view_id") or control.get("data_view") or "")
         field_name = str(control.get("field_name") or control.get("field") or "")
@@ -1383,6 +1903,14 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
         return None
     title = title or variable_name
     variable_type = str(control.get("variable_type") or "values")
+    # Kibana types a multi-value control as MULTI_VALUES, not VALUES. Its own
+    # helper picks the type from whether the parameter accepts several values
+    # (``canBeMultiValue ? MULTI_VALUES : VALUES``), and MV_CONTAINS is exactly
+    # such a parameter. The API accepts "values" with single_select=false and
+    # the panel still renders, so this is invisible to black-box probing -- but
+    # the declared type is wrong and the control editor keys off it.
+    if control.get("multiple") and variable_type == "values":
+        variable_type = "multi_values"
     query = str(control.get("query") or "").strip()
     if query:
         esql_config: dict[str, Any] = {
@@ -1426,12 +1954,11 @@ def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     ``payload["panels"]`` holds both leaf panels (each carrying a ``type``) and
     sections (no ``type`` discriminator, their leaves nested under a ``panels``
     list). A payload whose only items are empty sections has zero leaves and
-    must count as empty so the upload path routes it to the legacy-import
-    fallback instead of creating a dashboard of empty collapsibles with the
-    source panels silently dropped. A zero-leaf payload is degenerate even
-    when it carries ``pinned_panels``: controls filter nothing without panels,
-    so the emptiness gate deliberately ignores controls and keys only on
-    leaves, letting a controls-only-but-panel-dropped dashboard fall back too.
+    must count as empty so the upload path reports it rather than creating a
+    dashboard of empty collapsibles with the source panels silently dropped. A
+    zero-leaf payload is degenerate even when it carries ``pinned_panels``:
+    controls filter nothing without panels, so the emptiness gate deliberately
+    ignores controls and keys only on leaves.
     """
     for item in payload.get("panels") or []:
         if not isinstance(item, dict):
@@ -1443,26 +1970,38 @@ def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _reason_count(unmapped_reasons: dict[str, Any], reason: str) -> int:
+    try:
+        return int(unmapped_reasons.get(reason, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def upload_warnings_from_reasons(unmapped_reasons: Any) -> list[str]:
     """Render user-facing upload warnings from a native mapper's unmapped-reason
     histogram.
 
-    The typed upload silently omits dashboard-level filters it can't express;
-    surfacing that here lets every ``--upload`` caller warn instead of
-    reporting a clean upload while quietly broadening the queried dataset.
+    The typed upload silently omits things it can't express -- dashboard-level
+    filters, and conditional colour on table metrics; surfacing them here lets
+    every ``--upload`` caller warn instead of reporting a clean upload while
+    quietly broadening the queried dataset or losing threshold formatting.
     """
     warnings: list[str] = []
     if not isinstance(unmapped_reasons, dict):
         return warnings
-    raw = unmapped_reasons.get(_DROPPED_FILTER_REASON, 0)
-    try:
-        dropped_filters = int(raw)
-    except (TypeError, ValueError):
-        dropped_filters = 0
+    dropped_filters = _reason_count(unmapped_reasons, _DROPPED_FILTER_REASON)
     if dropped_filters > 0:
         warnings.append(
             f"dropped {dropped_filters} unsupported dashboard filter(s); "
             "affected panels may query a broader dataset than the source"
+        )
+    dropped_colors = _reason_count(unmapped_reasons, DROPPED_DATATABLE_COLOR_REASON)
+    if dropped_colors > 0:
+        warnings.append(
+            f"dropped conditional colour on {dropped_colors} data_table metric "
+            "column(s); Kibana stores no colour for table metrics, so the "
+            "source's threshold formatting is not shown -- restyle those "
+            "columns in Kibana if the colour carried meaning"
         )
     return warnings
 
@@ -1646,21 +2185,52 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     total) are enforced by :meth:`NativeDashboard.enforce_item_cap` plus the
     control-budget gate below.
     """
-    title = str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard")
-    description = dashboard.get("description")
     filters, dropped_filters = map_yaml_filters(dashboard.get("filters"))
+    return _native_dashboard_from_parts(
+        title=str(dashboard.get("name") or dashboard.get("title") or "migrated dashboard"),
+        description=str(dashboard.get("description") or ""),
+        filters=filters,
+        dropped_filters=dropped_filters,
+        panel_entries=dashboard.get("panels") or [],
+        control_entries=dashboard.get("controls") or [],
+        dashboard_id=_stable_dashboard_id(dashboard),
+        tags=[],
+    )
+
+
+def _native_dashboard_from_parts(
+    *,
+    title: str,
+    description: str,
+    filters: list[dict[str, Any]],
+    dropped_filters: int,
+    panel_entries: list[Any],
+    control_entries: list[Any],
+    dashboard_id: str,
+    tags: list[str],
+) -> tuple[NativeDashboard, NativeMappingCounts]:
+    """Assemble a :class:`NativeDashboard` from already-extracted parts.
+
+    Both entry points share this so the leaf mapping (``map_yaml_panel`` /
+    ``map_yaml_control``) is written once, while dashboard-LEVEL fields are
+    supplied by the caller. That separation is the point: the panel/control
+    dicts are a stable wire shape, but routing dashboard-level fields through
+    the YAML document shape silently drops anything its schema cannot express
+    (it declares ``additionalProperties: false``), which the API does support.
+    """
     native = NativeDashboard(
         title=title,
-        description=str(description) if description else "",
-        dashboard_id=_stable_dashboard_id(dashboard),
+        description=description,
+        dashboard_id=dashboard_id,
         filters=filters,
+        tags=[str(tag).strip() for tag in (tags or []) if str(tag).strip()],
     )
     counts = NativeMappingCounts()
     if dropped_filters:
         counts.add_reason(_DROPPED_FILTER_REASON, dropped_filters)
     next_y = 0
 
-    for panel in dashboard.get("panels", []) or []:
+    for panel in panel_entries:
         if not isinstance(panel, dict):
             continue
         section = panel.get("section")
@@ -1676,6 +2246,7 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
                     counts.add_reason("dropped_over_section_panel_cap")
                     continue
                 counts.record(result.api_panel is not None, result.reason)
+                _record_losses(counts, result)
                 if result.api_panel is not None:
                     sec_panels.append(NativePanel.from_api_dict(result.api_panel))
             native.items.append(
@@ -1691,6 +2262,7 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
             continue
         result = map_yaml_panel(panel)
         counts.record(result.api_panel is not None, result.reason)
+        _record_losses(counts, result)
         if result.api_panel is not None:
             native_panel = NativePanel.from_api_dict(result.api_panel)
             native.items.append(native_panel)
@@ -1710,7 +2282,7 @@ def native_dashboard_from_yaml(dashboard: dict[str, Any]) -> tuple[NativeDashboa
     pinned: list[NativeControl] = []
     available_control_slots = max(0, min(_MAX_PINNED_CONTROLS, _MAX_TOTAL_ITEMS - dashboard_item_count(native.items)))
     mapped_control_count = 0
-    for control in dashboard.get("controls") or []:
+    for control in control_entries:
         mapped_control = map_yaml_control(control)
         if mapped_control is not None:
             if mapped_control_count >= available_control_slots:
@@ -1738,12 +2310,31 @@ def native_dashboard_from_ir(dashboard_ir: DashboardIR) -> tuple[NativeDashboard
     working artifact (see ``adapters/source/grafana/panels.py``) and maps it
     straight to the native API shape here, without a YAML re-parse. It
     reuses the exact same leaf builders (:func:`map_yaml_panel` /
-    :func:`map_yaml_control` / :func:`map_yaml_filters`) the YAML path uses,
-    via :meth:`DashboardIR.to_yaml_dict` -- the kb-dashboard-core dict shape
-    is the shared wire format those builders already speak, so there is no
-    parallel/duplicated mapping logic to keep in sync between the two paths.
+    :func:`map_yaml_control` / :func:`map_yaml_filters`) the YAML path uses --
+    the panel/control dicts are a stable wire shape shared by both paths, so
+    there is no parallel mapping logic to keep in sync.
+
+    Dashboard-LEVEL fields are read straight off the IR rather than through
+    :meth:`DashboardIR.to_yaml_dict`. That document shape is validated against
+    ``docs/dashboards/schema.json``, which declares ``additionalProperties:
+    false``; routing dashboard fields through it silently discarded anything
+    the API supports but the (deprecated) YAML schema does not -- dashboard
+    ``tags`` being the worked example. The API path must not be limited by the
+    YAML format's vocabulary.
     """
-    return native_dashboard_from_yaml(dashboard_ir.to_yaml_dict())
+    filters, dropped_filters = map_yaml_filters(list(dashboard_ir.filters or []))
+    return _native_dashboard_from_parts(
+        title=str(dashboard_ir.title or "migrated dashboard"),
+        description=str(dashboard_ir.description or ""),
+        filters=filters,
+        dropped_filters=dropped_filters,
+        panel_entries=[panel.to_yaml_panel_entry() for panel in dashboard_ir.panels],
+        control_entries=[
+            control.to_yaml_control() for control in (dashboard_ir.controls or [])
+        ],
+        dashboard_id=_stable_dashboard_id_from_ir(dashboard_ir),
+        tags=list(dashboard_ir.tags or []),
+    )
 
 
 def build_dashboard_payload_from_ir(
@@ -1808,13 +2399,204 @@ def build_payload_from_yaml(yaml_doc: dict[str, Any]) -> tuple[dict[str, Any], d
 # Deploy
 # --------------------------------------------------------------------------- #
 
+# Public Dashboards API version this emitter's payload shape targets. Kibana
+# negotiates versioned public APIs via ``elastic-api-version``; omitting it
+# silently resolves to whatever that Kibana build defaults to, so a future
+# version bump could change payload handling under us without an error. Pin it
+# so a mismatch surfaces as an explicit 400 ("No version ... available")
+# instead of a behaviour change. Verified against Kibana 9.5:
+# ``Available versions are: [2023-10-31]``.
+DASHBOARDS_API_VERSION = "2023-10-31"
+
+
 def _session(api_key: str = "", verify: bool | str = True) -> requests.Session:
     session = requests.Session()
     apply_tls(session, verify)
-    session.headers.update({"kbn-xsrf": "true", "Content-Type": "application/json"})
+    session.headers.update({
+        "kbn-xsrf": "true",
+        "Content-Type": "application/json",
+        "elastic-api-version": DASHBOARDS_API_VERSION,
+    })
     if api_key:
         session.headers["Authorization"] = f"ApiKey {api_key}"
     return session
+
+
+def _iso_z(moment: datetime) -> str:
+    text = moment.astimezone(UTC).isoformat(timespec="milliseconds")
+    return text.replace("+00:00", "Z")
+
+
+def _control_param_default(name: str, query: str, control_configs: dict[str, dict[str, Any]]) -> Any:
+    if name in {"_tstart", "_tend"}:
+        end = datetime.now(UTC)
+        start = end - _CONTROL_QUERY_WINDOW
+        return _iso_z(start if name == "_tstart" else end)
+    hinted = control_configs.get(name) or {}
+    if hinted.get("variable_type") == "multi_values":
+        return []
+    param = re.escape(name)
+    if re.search(rf"\bRLIKE\s+\?{param}\b", query, re.IGNORECASE):
+        return ".*"
+    if re.search(rf"(?:[+\-*/]\s*\?{param}\b|\?{param}\b\s*[+\-*/])", query):
+        return 0
+    return ""
+
+
+def _control_selected_options(config: dict[str, Any]) -> list[str | int | float]:
+    raw = config.get("selected_options")
+    if not isinstance(raw, list):
+        return []
+    return [
+        item for item in raw
+        if isinstance(item, str | int | float) and not isinstance(item, bool)
+    ]
+
+
+def _control_is_multi_value(config: dict[str, Any]) -> bool:
+    variable_type = str(config.get("variable_type") or "")
+    if variable_type == "multi_values":
+        return True
+    return config.get("single_select") is False
+
+
+def _control_binding_value(config: dict[str, Any]) -> Any:
+    selected = _control_selected_options(config)
+    if not selected:
+        return None
+    if _control_is_multi_value(config):
+        return list(selected)
+    return selected[0]
+
+
+def _control_query_params(
+    query: str,
+    bound_values: dict[str, Any],
+    control_configs: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    names: list[str] = []
+    for name in _CONTROL_QUERY_PARAM_RE.findall(query or ""):
+        if name not in names:
+            names.append(name)
+    params: list[dict[str, Any]] = []
+    for name in names:
+        if name in bound_values:
+            value = bound_values[name]
+        else:
+            value = _control_param_default(name, query, control_configs)
+        params.append({name: value})
+    return params
+
+
+def _query_control_options(
+    session: requests.Session,
+    es_url: str,
+    query: str,
+    *,
+    bound_values: dict[str, Any],
+    control_configs: dict[str, dict[str, Any]],
+    timeout: int,
+) -> list[str | int | float]:
+    if not es_url or not query:
+        return []
+    payload: dict[str, Any] = {"query": str(query).strip()}
+    params = _control_query_params(query, bound_values, control_configs)
+    if params:
+        payload["params"] = params
+    try:
+        response = session.post(
+            f"{es_url.rstrip('/')}/_query",
+            json=payload,
+            params={"format": "json"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return []
+        body = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+    options: list[str | int | float] = []
+    for row in body.get("values") or []:
+        if not isinstance(row, list) or not row:
+            continue
+        value = row[0]
+        if not isinstance(value, str | int | float) or isinstance(value, bool):
+            continue
+        if value not in options:
+            options.append(value)
+    return options
+
+
+def _hydrated_selected_options(
+    options: list[str | int | float],
+    config: dict[str, Any],
+) -> list[str | int | float]:
+    if not options:
+        return []
+    concrete = [option for option in options if option != ".*"]
+    if _control_is_multi_value(config):
+        return concrete or options[:1]
+    if concrete:
+        return [concrete[0]]
+    return [options[0]]
+
+
+def _hydrate_values_query_control_defaults(
+    payload: dict[str, Any],
+    *,
+    es_url: str = "",
+    es_api_key: str = "",
+    verify: bool | str = True,
+    timeout: int = 15,
+) -> None:
+    """Populate empty ES|QL values-query defaults from live Elasticsearch data.
+
+    Kibana's Dashboard API cleanly stores ES|QL controls, but an empty
+    ``selected_options`` on first render does not reliably mean "unfiltered" for
+    values-query controls. For chained Grafana-style variables this leaves the
+    control bar blank and downstream panels empty even though the source
+    dashboard expected "All" or a concrete current value.
+
+    When live ES access is available, walk the controls in order, execute each
+    values-query control against ``/_query`` with the already-resolved earlier
+    control values bound as params, and seed ``selected_options`` with concrete
+    options before upload. Multi-value controls get every concrete option (the
+    Kibana-safe replacement for Grafana's ``.*`` all-sentinel); single-select
+    controls get the first concrete option.
+    """
+    controls = payload.get("pinned_panels")
+    if not es_url or not isinstance(controls, list):
+        return
+    bound_values: dict[str, Any] = {}
+    control_configs: dict[str, dict[str, Any]] = {}
+    session = _session(es_api_key, verify=verify)
+    for control in controls:
+        if not isinstance(control, dict):
+            continue
+        if control.get("type") != "esql_control":
+            continue
+        config = control.get("config")
+        if not isinstance(config, dict):
+            continue
+        variable_name = str(config.get("variable_name") or "")
+        if config.get("control_type") == "VALUES_FROM_QUERY" and not _control_selected_options(config):
+            query = str(config.get("esql_query") or "").strip()
+            options = _query_control_options(
+                session,
+                es_url,
+                query,
+                bound_values=bound_values,
+                control_configs=control_configs,
+                timeout=timeout,
+            )
+            selected = _hydrated_selected_options(options, config)
+            if selected:
+                config["selected_options"] = selected
+        if variable_name:
+            control_configs[variable_name] = config
+            bound = _control_binding_value(config)
+            if bound is not None:
+                bound_values[variable_name] = bound
 
 
 def upload_report(
@@ -1830,9 +2612,8 @@ def upload_report(
     """Deploy each dashboard in a migration report via the typed API.
 
     ``fallback`` (optional) is called ``fallback(dashboard)`` when the typed
-    payload is rejected, so callers can route the rejected dashboard through the
-    legacy ``kb-dashboard-cli`` ``_import`` path. This module does not import
-    that path itself to keep the dependency direction clean.
+    payload is rejected, so a caller can decide what to do with it. No caller
+    supplies one today: there is no second deploy path to degrade to.
     """
     session = _session(api_key, verify=verify)
     base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
@@ -1857,9 +2638,15 @@ def upload_report(
         if 200 <= response.status_code < 300:
             res.status = "created"
             try:
-                res.dashboard_id = str(response.json().get("id") or "")
+                body = response.json()
             except ValueError:
-                pass
+                body = None
+            if isinstance(body, dict):
+                res.dashboard_id = str(body.get("id") or "")
+            # A 2xx POST can also drop panels it could not transform.
+            _audit_accepted_panels(
+                res, payload, body, session=session, base=base, timeout=timeout,
+            )
         else:
             res.status = "rejected"
             try:
@@ -1873,25 +2660,290 @@ def upload_report(
     return results
 
 
-def _classify_response(res: UploadResult, response: requests.Response) -> None:
+# --------------------------------------------------------------------------- #
+# Silent panel loss on an accepted (2xx) upload
+# --------------------------------------------------------------------------- #
+#
+# ``PUT /api/dashboards/{id}`` answers 200 even when Kibana could not transform
+# some of the panels it was given: those panels are simply absent from the saved
+# object. The PUT body carries no ``warnings`` key at all (only ``id``/``data``/
+# ``meta``), so nothing in the response *says* a panel was lost -- but the
+# echoed ``data.panels`` already reflects the drop. Counting leaves sent against
+# leaves echoed therefore detects the loss from the PUT alone, with no extra
+# request, for any panel type. Verified live on 9.x: a metric panel with a
+# single-step dynamic colour palette is dropped this way.
+
+
+def _leaf_panel_descriptors(panels: Any) -> list[DroppedPanel]:
+    """Flatten an API ``panels`` list into one descriptor per leaf panel.
+
+    Top-level entries are either leaves (they carry a ``type``) or sections
+    (no ``type``, their leaves nested under ``panels``), so leaves are collected
+    one level deep. Grid coordinates restart inside every section, which makes
+    ``(x, y, w, h)`` unique only *within* a container -- the section title (or
+    its ordinal, when untitled) is part of the identity so two same-sized panels
+    at the same position in different sections do not alias.
+    """
+    out: list[DroppedPanel] = []
+    for index, item in enumerate(panels or []):
+        if not isinstance(item, dict):
+            continue
+        if "type" in item:
+            out.append(_leaf_descriptor(item, section=""))
+            continue
+        nested = item.get("panels")
+        if not isinstance(nested, list):
+            continue
+        section = str(item.get("title") or "") or f"#{index}"
+        for sub in nested:
+            if isinstance(sub, dict):
+                out.append(_leaf_descriptor(sub, section=section))
+    return out
+
+
+def iter_payload_leaf_panels(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """``(section_title, leaf_panel)`` for every leaf panel in an API payload.
+
+    Panels nest exactly one level: a section is an entry with a nested
+    ``panels`` list and no ``type``; its leaves are the panels inside it. An
+    untitled section is identified by its ordinal so two same-titled leaves in
+    different sections stay distinguishable.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
+    for index, item in enumerate(payload.get("panels") or []):
+        if not isinstance(item, dict):
+            continue
+        if "type" in item:
+            out.append(("", item))
+            continue
+        nested = item.get("panels")
+        if not isinstance(nested, list):
+            continue
+        section = str(item.get("title") or "") or f"#{index}"
+        for sub in nested:
+            if isinstance(sub, dict):
+                out.append((section, sub))
+    return out
+
+
+def _collect_esql_queries(node: Any, out: list[str]) -> None:
+    if isinstance(node, dict):
+        source = node.get("data_source")
+        if isinstance(source, dict) and source.get("type") == "esql":
+            query = str(source.get("query") or "")
+            if query:
+                out.append(query)
+        for key, child in node.items():
+            if key == "data_source":
+                continue
+            _collect_esql_queries(child, out)
+    elif isinstance(node, list):
+        for child in node:
+            _collect_esql_queries(child, out)
+
+
+def payload_panel_queries(payload: dict[str, Any]) -> dict[tuple[str, str], list[str]]:
+    """``{(section, panel_title): [esql query, ...]}`` for every leaf panel.
+
+    The ES|QL query is **not** always at ``config.data_source.query``: an ``xy``
+    panel carries one query per layer under ``config.layers[*].data_source``.
+    Queries are therefore collected by walking the panel config, so a panel with
+    any number of layers reports all of them, in document order. Panels with no
+    ES|QL (markdown, links, image) map to an empty list.
+
+    Exposed so a structural guard can check the payload the run ships against
+    the ``DashboardIR`` it was built from, independently of the mapping code
+    that produced it.
+    """
+    index: dict[tuple[str, str], list[str]] = {}
+    for section, panel in iter_payload_leaf_panels(payload):
+        config = panel.get("config")
+        config = config if isinstance(config, dict) else {}
+        queries: list[str] = []
+        _collect_esql_queries(config, queries)
+        index[(section, str(config.get("title") or ""))] = queries
+    return index
+
+
+def _leaf_descriptor(panel: dict[str, Any], *, section: str) -> DroppedPanel:
+    config = panel.get("config")
+    config = config if isinstance(config, dict) else {}
+    raw_grid = panel.get("grid")
+    raw_grid = raw_grid if isinstance(raw_grid, dict) else {}
+    grid: dict[str, int] = {}
+    for axis in ("x", "y", "w", "h"):
+        try:
+            grid[axis] = int(raw_grid.get(axis) or 0)
+        except (TypeError, ValueError):
+            grid[axis] = 0
+    return DroppedPanel(title=str(config.get("title") or ""), section=section, grid=grid)
+
+
+def _descriptor_key(descriptor: DroppedPanel) -> tuple[str, str, int, int, int, int]:
+    grid = descriptor.grid
+    return (
+        descriptor.section,
+        descriptor.title,
+        grid.get("x", 0),
+        grid.get("y", 0),
+        grid.get("w", 0),
+        grid.get("h", 0),
+    )
+
+
+def _record_panel_loss(res: UploadResult, payload: dict[str, Any], body: Any) -> None:
+    """Flag a 2xx upload as ``"lossy"`` when Kibana kept fewer leaves than sent.
+
+    The authoritative signal is the count: ``panels_accepted < panels_sent`` is
+    data loss regardless of whether every casualty can be named. Identification
+    is best-effort on top of that -- surviving panels keep their grid, so the
+    multiset difference of ``(section, title, x, y, w, h)`` keys names the
+    dropped panels for the operator.
+
+    A response that echoes no ``data.panels`` is *unverifiable*, not lossy: the
+    check stays silent rather than failing every upload on absent evidence.
+    """
+    if not isinstance(body, dict):
+        return
+    data = body.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("panels"), list):
+        return
+    sent = _leaf_panel_descriptors(payload.get("panels"))
+    accepted = _leaf_panel_descriptors(data.get("panels"))
+    res.panels_sent = len(sent)
+    res.panels_accepted = len(accepted)
+    if res.panels_accepted >= res.panels_sent:
+        return
+
+    remaining: dict[tuple[str, str, int, int, int, int], int] = {}
+    for descriptor in accepted:
+        key = _descriptor_key(descriptor)
+        remaining[key] = remaining.get(key, 0) + 1
+    dropped: list[DroppedPanel] = []
+    for descriptor in sent:
+        key = _descriptor_key(descriptor)
+        if remaining.get(key):
+            remaining[key] -= 1
+            continue
+        dropped.append(descriptor)
+    res.dropped_panels = dropped
+    res.status = "lossy"
+    res.message = _panel_loss_message(res)
+
+
+def _panel_loss_message(res: UploadResult) -> str:
+    named = ", ".join(
+        f"{item.title or '(untitled)'}"
+        + (f" [in section {item.section}]" if item.section else "")
+        + (f": {item.reason}" if item.reason else "")
+        for item in res.dropped_panels
+    )
+    detail = f" Dropped: {named}." if named else ""
+    return (
+        f"Kibana accepted the upload but kept only {res.panels_accepted} of "
+        f"{res.panels_sent} panel(s); {res.dropped_panel_count} panel(s) were "
+        f"silently dropped.{detail}"
+    )[:2000]
+
+
+def _explain_dropped_panels(
+    res: UploadResult,
+    session: requests.Session,
+    base: str,
+    *,
+    timeout: int,
+) -> None:
+    """Attach Kibana's own ``warnings[].message`` to the dropped panels.
+
+    Costs one ``GET /api/dashboards/{id}``, and is issued *only* after a count
+    mismatch has already been established. The PUT response omits ``warnings``
+    entirely, so this GET is the only way to turn "a panel vanished" into
+    Kibana's actual validation error ("Unable to transform panel config.
+    Error: ..."), which is what an operator needs to fix the panel. Paying it on
+    every upload would tax the overwhelmingly common clean path for nothing, and
+    the loss is already proven without it -- so any failure here is swallowed
+    and the reasons simply stay empty.
+    """
+    if not res.dashboard_id:
+        return
+    try:
+        response = session.get(f"{base}/api/dashboards/{res.dashboard_id}", timeout=timeout)
+        if not 200 <= response.status_code < 300:
+            return
+        body = response.json()
+    except (requests.exceptions.RequestException, ValueError):
+        return
+    if not isinstance(body, dict):
+        return
+    reasons_by_title: dict[str, str] = {}
+    for warning in body.get("warnings") or []:
+        if not isinstance(warning, dict):
+            continue
+        message = str(warning.get("message") or "")
+        if not message:
+            continue
+        panel_config = warning.get("panel_config")
+        panel_config = panel_config if isinstance(panel_config, dict) else {}
+        reasons_by_title.setdefault(str(panel_config.get("title") or ""), message)
+    if not reasons_by_title:
+        return
+    for descriptor in res.dropped_panels:
+        descriptor.reason = reasons_by_title.get(descriptor.title, "")
+    res.message = _panel_loss_message(res)
+
+
+def _audit_accepted_panels(
+    res: UploadResult,
+    payload: dict[str, Any] | None,
+    body: Any,
+    *,
+    session: requests.Session | None = None,
+    base: str = "",
+    timeout: int = 60,
+) -> None:
+    """Detect, then (only on a detected loss) explain, silently dropped panels."""
+    if payload is None:
+        return
+    _record_panel_loss(res, payload, body)
+    if res.status == "lossy" and session is not None and base:
+        _explain_dropped_panels(res, session, base, timeout=timeout)
+
+
+def _classify_response(
+    res: UploadResult,
+    response: requests.Response,
+    *,
+    payload: dict[str, Any] | None = None,
+    session: requests.Session | None = None,
+    base: str = "",
+    timeout: int = 60,
+) -> None:
     """Fill an ``UploadResult`` from a ``PUT /api/dashboards/{id}`` response.
 
     A 409 is classified as ``"conflict"`` rather than ``"rejected"``. Dashboards
     are a *shareable* saved-object type, so their ids are cluster-global rather
     than space-scoped: the deterministic name-based id succeeds (201/200) within
     the space that owns it, but PUTting the same id from a different space
-    returns 409. That is an id-ownership collision, not a payload defect, so the
-    legacy ``kb-dashboard-cli`` ``_import`` fallback cannot fix it (and would
-    only re-introduce the compiler dependency the native path removes). Callers
-    treat ``"conflict"`` as a terminal, actionable failure and skip the fallback.
+    returns 409. That is an id-ownership collision, not a payload defect, so
+    there is nothing to retry: callers treat ``"conflict"`` as a terminal,
+    actionable failure.
+
+    A 2xx is *not* automatically a clean success. When ``payload`` is supplied,
+    the leaf panels it sent are compared against the ones the response echoes
+    back, and an upload Kibana accepted without some of them is downgraded to
+    ``"lossy"`` (see :func:`_record_panel_loss`). ``session``/``base`` enable the
+    single follow-up GET that recovers Kibana's explanation for the drop.
     """
     res.http_status = response.status_code
     if 200 <= response.status_code < 300:
         res.status = "created" if response.status_code == 201 else "updated"
         try:
-            res.dashboard_id = str(response.json().get("id") or "")
+            body = response.json()
         except ValueError:
-            pass
+            return
+        if isinstance(body, dict):
+            res.dashboard_id = str(body.get("id") or "")
+        _audit_accepted_panels(res, payload, body, session=session, base=base, timeout=timeout)
     else:
         res.status = "conflict" if response.status_code == 409 else "rejected"
         try:
@@ -1904,7 +2956,7 @@ def _classify_response(res: UploadResult, response: requests.Response) -> None:
 # Retryable server-side conditions: rate limiting and transient gateway/service
 # failures on a slow or momentarily overloaded cluster. Genuine 4xx schema
 # rejections (400, 404, ...) are not retried -- retrying would not change a
-# real payload defect, only waste time before the legacy fallback kicks in.
+# real payload defect, only waste time before reporting it.
 _RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 _UPLOAD_MAX_ATTEMPTS = 3
 _UPLOAD_BACKOFF_SECONDS = 1.5
@@ -1920,12 +2972,12 @@ def _put_with_retry(
     backoff_seconds: float = _UPLOAD_BACKOFF_SECONDS,
 ) -> tuple[requests.Response | None, str]:
     """``PUT`` with retry-with-backoff so a transient failure doesn't
-    permanently downgrade a valid dashboard to the legacy import fallback.
+    permanently fail a valid dashboard.
 
     A 20-30 dashboard live batch test found that ~58% of dashboards whose
-    payload the typed API independently accepted on retry still fell back to
-    legacy ``_import`` during the real run, on a slow/shared staging
-    cluster -- almost certainly transient 5xx/timeouts with no retry before
+    payload the typed API independently accepted on retry were reported as
+    rejected during the real run, on a slow/shared staging cluster -- almost
+    certainly transient 5xx/timeouts with no retry before
     ``_classify_response`` marked them ``"rejected"``. Retry connection
     errors, read timeouts, and ``_RETRYABLE_STATUS_CODES`` a few times with
     exponential backoff before giving up.
@@ -1933,9 +2985,8 @@ def _put_with_retry(
     Returns ``(response, error)``. ``response`` is ``None`` only when every
     attempt raised a network-level exception (no HTTP response was ever
     received); ``error`` then holds a short description so the caller can
-    report a ``"rejected"`` :class:`UploadResult` (and let its existing
-    fallback path run) instead of the exception propagating and crashing the
-    whole batch upload.
+    report a ``"rejected"`` :class:`UploadResult` instead of the exception
+    propagating and crashing the whole batch upload.
     """
     data = json.dumps(payload)
     last_error = ""
@@ -1955,7 +3006,12 @@ def _put_with_retry(
     return None, last_error or "request failed after retries"
 
 
-def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: dict[str, str] | None) -> None:
+def _resolve_pinned_panel_data_view_ids(
+    payload: dict[str, Any],
+    data_view_ids: dict[str, str] | None,
+    *,
+    data_view_inventory: Iterable[str] | None = None,
+) -> list[UnresolvedDataView]:
     """Rewrite ``pinned_panels[].config.data_view_id`` from title to Kibana id.
 
     ``map_yaml_control`` copies a control's YAML ``data_view``/``data_view_id``
@@ -1964,9 +3020,19 @@ def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: 
     without this rewrite the typed API rejects the control and the whole
     dashboard falls back to legacy import. ``data_view_ids`` maps
     title -> created id, as returned by :func:`ensure_migration_data_views`.
+
+    Returns the controls whose value had to be left as-is *and* names nothing
+    Kibana holds -- the case that renders as "An error occurred" with nothing in
+    the run output pointing at it. Two fallbacks are legitimate and are not
+    reported: a value that is already a real saved-object id, and a data view
+    whose title is its own id (which ``adapter._data_view_id_lookup`` omits,
+    because rewriting it would be a no-op). Telling those apart needs
+    ``data_view_inventory`` -- every title and id Kibana actually has. Callers
+    that supply none have given no basis for the judgement, so nothing is
+    reported.
     """
-    if not data_view_ids:
-        return
+    known = frozenset(str(ref) for ref in (data_view_inventory or ()))
+    unresolved: list[UnresolvedDataView] = []
     for control in payload.get("pinned_panels") or []:
         if not isinstance(control, dict):
             continue
@@ -1974,8 +3040,19 @@ def _resolve_pinned_panel_data_view_ids(payload: dict[str, Any], data_view_ids: 
         if not isinstance(config, dict):
             continue
         current = config.get("data_view_id")
-        if isinstance(current, str) and current in data_view_ids:
+        if not isinstance(current, str) or not current.strip():
+            continue
+        if data_view_ids and current in data_view_ids:
             config["data_view_id"] = data_view_ids[current]
+            continue
+        if not known or current in known:
+            continue
+        unresolved.append(
+            UnresolvedDataView(
+                data_view=current, control=str(config.get("title") or ""),
+            )
+        )
+    return unresolved
 
 
 def _upload_native_api_payload(
@@ -1984,6 +3061,8 @@ def _upload_native_api_payload(
     title: str,
     kibana_url: str,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
@@ -1992,6 +3071,8 @@ def _upload_native_api_payload(
     reasons: dict[str, int] | None = None,
     dashboard_id: str = "",
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Shared ``PUT /api/dashboards/{id}`` body for a typed API payload.
 
@@ -2000,6 +3081,13 @@ def _upload_native_api_payload(
     resolve down to this: one already-built payload dict plus the mapping
     stats/dashboard id to report, so the two entry points can never diverge
     in how they talk to Kibana.
+
+    ``seen_dashboard_ids`` is the batch's id ledger, shared across every upload
+    in one run. The dashboard id is the upsert key, so a second payload landing
+    on an id the batch already wrote would silently replace that dashboard and
+    report ``"updated"``. Passing the ledger turns that into a ``"duplicate_id"``
+    failure with nothing sent -- the last line of defence behind unique id
+    derivation, not a substitute for it.
     """
     res = UploadResult(
         dashboard=title,
@@ -2007,7 +3095,16 @@ def _upload_native_api_payload(
         unmapped=unmapped,
         unmapped_reasons=dict(reasons or {}),
     )
-    _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
+    _hydrate_values_query_control_defaults(
+        payload,
+        es_url=es_url,
+        es_api_key=es_api_key,
+        verify=verify,
+        timeout=min(timeout, 15),
+    )
+    res.unresolved_data_views = _resolve_pinned_panel_data_view_ids(
+        payload, data_view_ids, data_view_inventory=data_view_inventory,
+    )
     if not _payload_has_leaf_panels(payload):
         res.status = "empty"
         return res
@@ -2015,6 +3112,18 @@ def _upload_native_api_payload(
     session = _session(api_key, verify=verify)
     base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
     resolved_dashboard_id = dashboard_id or _stable_dashboard_id({"name": title})
+    if seen_dashboard_ids is not None:
+        if resolved_dashboard_id in seen_dashboard_ids:
+            res.status = "duplicate_id"
+            res.dashboard_id = resolved_dashboard_id
+            res.message = (
+                f"another dashboard in this upload already used dashboard id "
+                f"'{resolved_dashboard_id}'; uploading this one would overwrite it. "
+                "Nothing was sent. Give the two dashboards distinct titles, or "
+                "upload them separately."
+            )
+            return res
+        seen_dashboard_ids.add(resolved_dashboard_id)
     response, error = _put_with_retry(
         session, f"{base}/api/dashboards/{resolved_dashboard_id}", payload, timeout=timeout,
     )
@@ -2022,7 +3131,9 @@ def _upload_native_api_payload(
         res.status = "rejected"
         res.message = error[:2000]
         return res
-    _classify_response(res, response)
+    _classify_response(
+        res, response, payload=payload, session=session, base=base, timeout=timeout,
+    )
     return res
 
 
@@ -2031,21 +3142,27 @@ def upload_native_dashboard(
     kibana_url: str,
     *,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
     native_stats: dict[str, Any] | None = None,
     dashboard_id: str = "",
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Deploy one pre-built :class:`NativeDashboard` via the typed API.
 
-    Source translators can hand the emitted native artifact straight to upload
-    instead of forcing a disk YAML reparse. YAML remains available as the
-    legacy/debug fallback artifact, but this path makes the in-memory IR the
-    canonical native payload for Grafana/Datadog CLI uploads. ``data_view_ids``
+    Source translators hand the emitted native payload straight to upload: the
+    in-memory IR is the canonical native payload for Grafana/Datadog CLI
+    uploads, and nothing is re-read from disk. ``data_view_ids``
     (title -> created id) resolves data-view-backed pinned controls before
-    upload; see :func:`_resolve_pinned_panel_data_view_ids`.
+    upload and ``data_view_inventory`` decides which unresolved values are worth
+    warning about; see :func:`_resolve_pinned_panel_data_view_ids`.
+    ``seen_dashboard_ids`` is the run's shared id ledger (see
+    :func:`_upload_native_api_payload`).
     """
     stats = native_stats if isinstance(native_stats, dict) else {}
     raw_reasons = stats.get("reasons")
@@ -2061,6 +3178,8 @@ def upload_native_dashboard(
         title=dashboard.title,
         kibana_url=kibana_url,
         api_key=api_key,
+        es_url=es_url,
+        es_api_key=es_api_key,
         space_id=space_id,
         verify=verify,
         timeout=timeout,
@@ -2069,6 +3188,8 @@ def upload_native_dashboard(
         reasons=reasons,
         dashboard_id=dashboard_id or dashboard.dashboard_id,
         data_view_ids=data_view_ids,
+        data_view_inventory=data_view_inventory,
+        seen_dashboard_ids=seen_dashboard_ids,
     )
 
 
@@ -2115,10 +3236,14 @@ def upload_native_artifact(
     kibana_url: str,
     *,
     api_key: str = "",
+    es_url: str = "",
+    es_api_key: str = "",
     space_id: str = "",
     verify: bool | str = True,
     timeout: int = 60,
     data_view_ids: dict[str, str] | None = None,
+    data_view_inventory: Iterable[str] | None = None,
+    seen_dashboard_ids: set[str] | None = None,
 ) -> UploadResult:
     """Deploy one persisted native review artifact envelope via the typed API.
 
@@ -2127,10 +3252,8 @@ def upload_native_artifact(
     ``version``, ``dashboard_id``, ``title``, ``payload``, ``mapping``). This
     is the delayed-upload counterpart of :func:`upload_native_dashboard`: it
     sends the *exact* payload a reviewer already inspected on disk, with no
-    YAML re-mapping and no legacy fallback -- a rejection is reported as-is
-    so a reviewed artifact never silently degrades to a different upload
-    path (``obs-migrate upload --artifact-format yaml`` remains available
-    for that, explicitly).
+    re-mapping -- a rejection is reported as-is so a reviewed artifact never
+    silently degrades to a different upload path.
     """
     envelope_error = _validate_native_artifact_envelope(artifact)
     if envelope_error:
@@ -2164,6 +3287,8 @@ def upload_native_artifact(
         title=title,
         kibana_url=kibana_url,
         api_key=api_key,
+        es_url=es_url,
+        es_api_key=es_api_key,
         space_id=space_id,
         verify=verify,
         timeout=timeout,
@@ -2172,74 +3297,9 @@ def upload_native_artifact(
         reasons=reasons,
         dashboard_id=dashboard_id,
         data_view_ids=data_view_ids,
+        data_view_inventory=data_view_inventory,
+        seen_dashboard_ids=seen_dashboard_ids,
     )
-
-
-def upload_yaml_files(
-    yaml_paths: list[str],
-    kibana_url: str,
-    *,
-    api_key: str = "",
-    space_id: str = "",
-    verify: bool | str = True,
-    timeout: int = 60,
-    fallback: Any = None,
-    data_view_ids: dict[str, str] | None = None,
-) -> list[UploadResult]:
-    """Deploy each dashboard in each kb-dashboard-core YAML file via the typed API.
-
-    This is the richest path: it reconstructs nested sections and dashboard
-    controls (``pinned_panels``) that the flat report cannot express. Each YAML
-    file may contain one or more dashboards. ``fallback`` (optional) is called
-    ``fallback(yaml_path, dashboard)`` when a dashboard's typed payload is rejected, so
-    callers can route it through the legacy ``kb-dashboard-cli`` ``_import`` path.
-    ``data_view_ids`` (title -> created id) resolves data-view-backed pinned
-    controls before upload; see :func:`_resolve_pinned_panel_data_view_ids`.
-    """
-    session = _session(api_key, verify=verify)
-    base = kibana_url_for_space(kibana_url, space_id).rstrip("/")
-    results: list[UploadResult] = []
-    seen_ids: set[str] = set()
-
-    for path in yaml_paths:
-        with open(path, encoding="utf-8") as handle:
-            doc = yaml.safe_load(handle)
-        for dashboard in _iter_yaml_dashboards(doc):
-            payload, counts, reasons = build_dashboard_payload_from_yaml(dashboard)
-            _resolve_pinned_panel_data_view_ids(payload, data_view_ids)
-            res = UploadResult(
-                dashboard=str(dashboard.get("name") or dashboard.get("title") or ""),
-                mapped=counts["mapped"],
-                unmapped=counts["unmapped"],
-                unmapped_reasons=dict(reasons),
-            )
-            if not _payload_has_leaf_panels(payload):
-                res.status = "empty"
-                if fallback is not None:
-                    fallback(path, dashboard)
-                results.append(res)
-                continue
-            # Distinct dashboards that slug to the same id (e.g. duplicate
-            # titles) must not overwrite each other via idempotent PUT.
-            dashboard_id = _stable_dashboard_id(dashboard)
-            if dashboard_id in seen_ids:
-                suffix = 2
-                while f"{dashboard_id}-{suffix}" in seen_ids:
-                    suffix += 1
-                dashboard_id = f"{dashboard_id}-{suffix}"
-            seen_ids.add(dashboard_id)
-            response, error = _put_with_retry(
-                session, f"{base}/api/dashboards/{dashboard_id}", payload, timeout=timeout,
-            )
-            if response is None:
-                res.status = "rejected"
-                res.message = error[:2000]
-            else:
-                _classify_response(res, response)
-            if res.status == "rejected" and fallback is not None:
-                fallback(path, dashboard)
-            results.append(res)
-    return results
 
 
 def delete_dashboard(
@@ -2259,22 +3319,26 @@ def delete_dashboard(
 
 
 __all__ = [
+    "DroppedPanel",
     "PanelMapping",
+    "UnresolvedDataView",
     "UploadResult",
     "build_dashboard_payload",
     "build_dashboard_payload_from_ir",
     "build_dashboard_payload_from_yaml",
     "build_payload_from_yaml",
+    "dashboard_id_disambiguation_note",
     "delete_dashboard",
+    "iter_payload_leaf_panels",
     "map_panel",
     "map_yaml_control",
     "map_yaml_panel",
     "native_dashboard_from_ir",
     "native_dashboard_from_report",
     "native_dashboard_from_yaml",
+    "payload_panel_queries",
     "upload_native_artifact",
     "upload_native_dashboard",
     "upload_report",
     "upload_warnings_from_reasons",
-    "upload_yaml_files",
 ]

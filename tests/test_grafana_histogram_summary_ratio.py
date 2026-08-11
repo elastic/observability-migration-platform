@@ -41,6 +41,31 @@ def test_sum_over_increase_sum_div_count_approximates_as_ratio_of_sums():
     )
 
 
-def test_sum_over_unrelated_ratio_stays_not_feasible():
+def test_sum_over_colocated_ratio_is_now_translated():
+    """Superseded: this shape is exactly the co-located per-element case.
+
+    ``avail / size`` carries no ``on()``/``ignoring()`` modifier, so PromQL
+    matches on ALL labels -- the operands are the same node_filesystem series,
+    and every Prometheus->Elasticsearch layout stores them on one document per
+    label-set. ``colocated_binary_agg_family`` therefore evaluates the division
+    per document and aggregates the result, which is precisely
+    ``sum(A / B)``.
+
+    The old expectation was the conservative default from before that rule
+    existed. Verified numerically on the equivalent Redis memory ratio: the
+    generated query returns 1.2333526611328125, identical to the hand-written
+    curated-pack query it replaced.
+
+    Genuinely unaligned joins (those carrying vector_matching/join_labels) are
+    still refused -- see test_join_with_on_modifier_stays_not_feasible.
+    """
     result = _translate("sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)")
+    assert result.feasibility == "feasible"
+    assert "node_filesystem_avail_bytes" in (result.esql_query or "")
+    assert "node_filesystem_size_bytes" in (result.esql_query or "")
+
+
+def test_join_with_on_modifier_stays_not_feasible():
+    """An explicit vector-matching join is NOT co-located and must still refuse."""
+    result = _translate("sum(node_a / on(x) group_left node_b)")
     assert result.feasibility == "not_feasible"

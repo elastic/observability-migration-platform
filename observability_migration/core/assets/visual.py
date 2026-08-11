@@ -46,6 +46,39 @@ class VisualIR:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, raw: Any) -> VisualIR:
+        """Rebuild a :class:`VisualIR` from its :meth:`to_dict` form.
+
+        Inverse of :meth:`to_dict`, used to read back the on-disk
+        ``ir/<stem>.ir.json`` artifact (see
+        ``targets/kibana/native_artifacts.py``). ``layout`` and
+        ``presentation`` are nested dataclasses that ``dataclasses.asdict``
+        flattened to plain dicts, so they are re-wrapped here.
+        """
+        raw = raw if isinstance(raw, dict) else {}
+        layout = raw.get("layout") if isinstance(raw.get("layout"), dict) else {}
+        presentation = raw.get("presentation") if isinstance(raw.get("presentation"), dict) else {}
+        config = presentation.get("config")
+        return cls(
+            title=str(raw.get("title") or ""),
+            source_panel_id=str(raw.get("source_panel_id") or ""),
+            grafana_type=str(raw.get("grafana_type") or ""),
+            kibana_type=str(raw.get("kibana_type") or ""),
+            layout=VisualLayout(
+                x=_safe_int(layout.get("x", 0) or 0),
+                y=_safe_int(layout.get("y", 0) or 0),
+                w=_safe_int(layout.get("w", 0) or 0),
+                h=_safe_int(layout.get("h", 0) or 0),
+            ),
+            presentation=VisualPresentation(
+                kind=str(presentation.get("kind") or ""),
+                config=dict(config) if isinstance(config, dict) else {},
+            ),
+            warnings=[str(item) for item in (raw.get("warnings") or [])],
+            metadata=dict(raw["metadata"]) if isinstance(raw.get("metadata"), dict) else {},
+        )
+
     def to_yaml_panel(self) -> dict[str, Any]:
         panel: dict[str, Any] = {}
         if self.title:

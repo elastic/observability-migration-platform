@@ -1,7 +1,0 @@
-title: Service Error Logs
-grafana_type: logs
-status: migrated_with_warnings
-chart_type: datatable
-metrics: ['message']
-breakdowns: ['@timestamp', 'service']
-warning: Approximated Loki logs panel as an ES|QL datatable

@@ -143,7 +143,7 @@ def run_fetch(corpus_dir: Path, slice_name: str, manifest: str | None) -> None:
 
 def run_migrate(corpus_dir: Path, out_dir: Path) -> Path:
     cmd = [_venv_bin("obs-migrate"), "migrate", "--source", "grafana",
-           "--input-dir", str(corpus_dir), "--output-dir", str(out_dir), "--compile"]
+           "--input-dir", str(corpus_dir), "--output-dir", str(out_dir)]
     _run(cmd, check=False)  # migrate exits non-zero on partial failures; we score from artifacts
     packets = out_dir / "dashboards" / "verification_packets.json"
     if not packets.exists():

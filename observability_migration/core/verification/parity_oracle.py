@@ -12,9 +12,12 @@ ES traffic goes through the shared make_es_request adapter (honors resolve_tls).
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+
+from observability_migration.core.sample_data import NetworkError
 
 # Labels Prometheus/remote-write attach automatically; scrub so series keys match
 # between the translated output and the native PROMQL output.
@@ -76,11 +79,36 @@ class Comparison:
     mean_relative_error: float = 0.0
     notes: list[str] = field(default_factory=list)
 
+    # "Unknown column" means the metric is not in the target yet. That is data
+    # readiness, not a translation defect, and conflating the two turns every
+    # not-yet-ingested metric into a red CI failure -- which trains people to
+    # ignore the gate. Classified separately so a real ERROR still means a real
+    # ERROR. (Grafana renders such a panel empty; ES|QL rejects the column, so
+    # the same absent data looks like a hard failure in Kibana.)
+    #
+    # RATE/IRATE rejecting a non-counter field is the same kind of gap. PromQL
+    # ``rate()`` is counter-only, so the source asserts the field is a counter;
+    # when the target's ingest types it as a gauge instead, the translator stays
+    # source-faithful and warns ("...but the target currently types this field
+    # as gauge..."). Many real exporters emit counters as ``# TYPE untyped``
+    # (node_exporter does this for node_netstat_*, node_vmstat_*), so the
+    # mapping lands on gauge and the query is rejected. That is an ingest-typing
+    # gap the run already predicted and told the operator how to fix -- not a
+    # translation defect, and not something the gate should call an ERROR.
+    _DATA_GAP_MARKERS = ("Unknown column", "Unknown index", "verification_exception")
+    _COUNTER_TYPING_MARKERS = ("counter_long", "counter_integer", "counter_double")
+
+    def _is_data_gap(self) -> bool:
+        blob = f"{self.translated_error} {self.native_error}"
+        if "Unknown column" in blob or "Unknown index" in blob:
+            return True
+        return "must be [" in blob and any(m in blob for m in self._COUNTER_TYPING_MARKERS)
+
     def verdict(self) -> str:
         if self.skipped_reason:
             return "SKIP"
         if self.translated_error or self.native_error:
-            return "ERROR"
+            return "DATA_GAP" if self._is_data_gap() else "ERROR"
         if self.common_series == 0:
             return "FAIL"
         if self.compared_points == 0:
@@ -957,6 +985,103 @@ def is_single_value_reduction(esql: str) -> bool:
     return not _stats_groups_by_time_bucket(stats_stages[-1])
 
 
+
+# PromQL metric-name token: Prometheus allows [a-zA-Z_:][a-zA-Z0-9_:]*. Anything
+# followed by "(" is a function call, and anything already containing "." is an
+# ES field path, so both are left alone.
+_PROMQL_METRIC_TOKEN_RE = re.compile(r"(?<![\w.:])([a-zA-Z_][a-zA-Z0-9_:]*)(?![\w.:]*\s*\()")
+
+# PromQL keywords / modifiers that are not metric names.
+_PROMQL_RESERVED = frozenset({
+    "by", "without", "on", "ignoring", "group_left", "group_right", "offset",
+    "bool", "and", "or", "unless", "inf", "nan", "start", "end", "step",
+})
+
+
+def qualify_source_metric_names(expr: str, resolve_field) -> str:
+    """Rewrite bare Prometheus metric names to their resolved ES field paths.
+
+    Elasticsearch's native PROMQL command addresses fields by their real path.
+    On the prometheus_native layout the metric lives at ``metrics.<name>``, so
+    feeding it the bare Prometheus name silently matches nothing:
+
+        value=(redis_connected_clients)          -> 0 rows
+        value=(metrics.redis_connected_clients)  -> 2 rows
+
+    Without this the oracle's reference side is always empty and every panel
+    degrades to "no reference data" -- i.e. the numeric gate reports PASS having
+    verified nothing. ``resolve_field`` is the translator's own resolver, so
+    both sides of the comparison address identical fields.
+    """
+    if not expr:
+        return expr
+
+    # Label positions must never be rewritten as metrics: `{cmd="x"}` matchers
+    # and `by (cmd)` / `on (id)` grouping lists name LABELS, which live under a
+    # different prefix entirely (labels.cmd, not metrics.cmd). Mask those spans
+    # first so only true metric tokens are left to rewrite.
+    masked = list(expr)
+    for match in re.finditer(r"\{[^{}]*\}", expr):
+        for i in range(*match.span()):
+            masked[i] = "\0"
+    for match in re.finditer(
+        r"\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^()]*)\)",
+        expr, re.IGNORECASE,
+    ):
+        for i in range(*match.span(1)):
+            masked[i] = "\0"
+    masked_expr = "".join(masked)
+
+    out = []
+    last = 0
+    for match in _PROMQL_METRIC_TOKEN_RE.finditer(masked_expr):
+        name = match.group(1)
+        start, end = match.span(1)
+        if name in _PROMQL_RESERVED:
+            continue
+        try:
+            resolved = resolve_field(name)
+        except Exception:
+            continue
+        if not resolved or resolved == name:
+            continue
+        out.append(expr[last:start])
+        out.append(resolved)
+        last = end
+    out.append(expr[last:])
+    return "".join(out)
+
+
+
+# Qualified metric field paths the translator emits, e.g.
+# ``metrics.redis_connected_clients`` or ``prometheus.foo_total.counter``.
+_TRANSLATED_FIELD_PATH_RE = re.compile(
+    r"\b((?:metrics|prometheus)\.[A-Za-z_][A-Za-z0-9_.]*)"
+)
+
+
+def derive_field_map_from_translated(esql: str) -> dict[str, str]:
+    """Map bare Prometheus metric names to the field paths the translation used.
+
+    Taking the mapping from the translated query rather than re-resolving means
+    both sides of the comparison address the same fields by construction: if the
+    translator resolved ``redis_connected_clients`` to
+    ``metrics.redis_connected_clients``, the oracle's reference query is pointed
+    at exactly that field. Re-deriving it independently could drift and produce a
+    false FAIL (or a false PASS against the wrong field).
+    """
+    mapping: dict[str, str] = {}
+    for match in _TRANSLATED_FIELD_PATH_RE.finditer(esql or ""):
+        path = match.group(1)
+        bare = path.split(".", 1)[1]
+        # Fleet's typed leaves are ``prometheus.<metric>.<counter|value|rate>``.
+        if path.startswith("prometheus.") and bare.rsplit(".", 1)[-1] in {"counter", "value", "rate"}:
+            bare = bare.rsplit(".", 1)[0]
+        if bare and bare not in mapping:
+            mapping[bare] = path
+    return mapping
+
+
 def sanitize_source_for_oracle(expr: str, step: int) -> str:
     """Make a Grafana source PromQL expression runnable by native PROMQL.
 
@@ -1054,7 +1179,85 @@ def _exact_control_param_names(esql: str) -> set[str]:
     return _control_param_names(esql) - _regex_control_param_names(esql)
 
 
-def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
+
+_MV_CONTAINS_PARAM_RE = re.compile(r"MV_CONTAINS\s*\(\s*\?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+
+def _mv_contains_param_names(esql: str) -> set[str]:
+    """Params bound inside ``MV_CONTAINS(?var, field)`` (multi-select controls)."""
+    return {
+        m.group(1) for m in _MV_CONTAINS_PARAM_RE.finditer(esql or "")
+        if m.group(1) not in _TIME_PARAM_NAMES
+    }
+
+
+def build_control_bindings(controls) -> dict[str, object]:
+    """Bind each dashboard control the way Kibana binds it at render time.
+
+    This is the difference between "the query parses" and "the panel works".
+    Kibana derives the parameter's *type* from the control: a multi-select
+    control binds a LIST, a single-select control binds a SCALAR. A query that
+    is valid under one is not necessarily valid under the other -- a scalar
+    ``RLIKE ?instance`` against a multi-select control fails at parse time with
+    "expected string, found list", which no hand-picked test binding reproduces.
+
+    Feeding these bindings to the oracle makes that class of failure a gate
+    result instead of something only a browser render can reveal.
+    """
+    bindings: dict[str, object] = {}
+    for control in controls or []:
+        if not isinstance(control, dict):
+            continue
+        cfg = control.get("config") if isinstance(control.get("config"), dict) else control
+        name = cfg.get("variable_name")
+        if not name:
+            continue
+        selected = cfg.get("selected_options")
+        if selected is None:
+            selected = cfg.get("default")
+        # ``multiple: true`` (YAML) / ``single_select: false`` (native API).
+        multi = cfg.get("multiple")
+        if multi is None and "single_select" in cfg:
+            multi = not cfg.get("single_select")
+        if multi:
+            if isinstance(selected, list):
+                bindings[name] = selected or [".*"]
+            else:
+                bindings[name] = [selected if selected not in (None, "") else ".*"]
+        else:
+            if isinstance(selected, list):
+                selected = selected[0] if selected else None
+            bindings[name] = selected if selected not in (None, "") else ".*"
+    return bindings
+
+
+
+_ESQL_TIME_FILTER_RE = re.compile(r"@timestamp\s*(?:>=|<=|>|<)", re.IGNORECASE)
+
+
+def _ensure_oracle_time_window(esql: str) -> str:
+    """Scope a panel query to ``?_tstart``/``?_tend`` for out-of-Kibana execution.
+
+    Panel ES|QL references the time params only inside ``TBUCKET``/``BUCKET``;
+    Kibana itself applies the dashboard time range when it renders. Running the
+    same query directly against Elasticsearch therefore scans all history, which
+    is both slower and unaligned with the windowed reference query. Insert the
+    filter immediately after the source command when one is not already present.
+    """
+    if not esql or _ESQL_TIME_FILTER_RE.search(esql):
+        return esql
+    lines = esql.splitlines()
+    if not lines:
+        return esql
+    head = lines[0]
+    if not re.match(r"\s*(?:TS|FROM)\s", head, re.IGNORECASE):
+        return esql
+    window = "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+    return "\n".join([head, window, *lines[1:]])
+
+
+def run_translated(request, esql: str, tstart: str, tend: str,
+                   control_bindings: dict | None = None) -> dict:
     """Run the emitted ES|QL, binding time params and any dashboard-control params.
 
     Beyond ``?_tstart`` / ``?_tend``, a templated panel's ES|QL references the
@@ -1066,15 +1269,147 @@ def run_translated(request, esql: str, tstart: str, tend: str) -> dict:
     ``field == ?var`` require the concrete dashboard default; compare_panel()
     skips those honestly rather than binding ".*" as a literal value.
     """
-    params: list[dict[str, str]] = [{"_tstart": tstart}, {"_tend": tend}]
-    for name in sorted(_regex_control_param_names(esql)):
+    # Kibana scopes an ES|QL panel to the dashboard time picker; a raw _query
+    # call does not, so without this the translated side reads the whole index
+    # while the native side is windowed, and their buckets never line up
+    # (surfacing as a false "no overlapping time buckets" FAIL). Apply the same
+    # window here when the emitted query does not already filter on time.
+    esql = _ensure_oracle_time_window(esql)
+    params: list[dict] = [{"_tstart": tstart}, {"_tend": tend}]
+    bindings = dict(control_bindings or {})
+    bound: set[str] = set()
+    # Control-derived bindings win: they carry the real Kibana type (list vs
+    # scalar), which is what makes a type mismatch visible here.
+    for name in sorted(_control_param_names(esql)):
+        if name in bindings:
+            params.append({name: bindings[name]})
+            bound.add(name)
+    for name in sorted(_regex_control_param_names(esql) - bound):
         params.append({name: ".*"})
+        bound.add(name)
+    # MV_CONTAINS takes a multi-value argument; ".*" alone is the All sentinel.
+    for name in sorted(_mv_contains_param_names(esql) - bound):
+        params.append({name: [".*"]})
     return _run_query(request, esql, params=params)
 
 
 def run_native_promql(request, expr: str, index: str, step: int, start_iso: str, end_iso: str) -> dict:
     query = f'PROMQL index={index} step={step}s start="{start_iso}" end="{end_iso}" value=({expr})'
     return _run_query(request, query)
+
+
+def data_time_bounds(request, index: str) -> tuple[str, str] | None:
+    """Actual ``@timestamp`` span of the index, or None if it cannot be determined.
+
+    Best-effort by design: narrowing the comparison window is a convenience, so
+    a probe that cannot answer must leave the run alone rather than abort it.
+    ``NetworkError`` still propagates -- an unreachable cluster is the caller's
+    to report, and it reports it far better than "could not clamp" would.
+    """
+    try:
+        res = _run_query(request, f"FROM {index} | STATS mn = MIN(@timestamp), mx = MAX(@timestamp)")
+    except NetworkError:
+        raise
+    except Exception:
+        # Advisory probe: any failure means "don't narrow", never "abort the run".
+        return None
+    if not isinstance(res, dict) or res.get("error"):
+        return None
+    values = res.get("values") or []
+    if not values or len(values[0]) < 2:
+        return None
+    lo, hi = values[0][0], values[0][1]
+    if not lo or not hi:
+        return None
+    return str(lo), str(hi)
+
+
+def clamp_window_to_data(
+    request, index: str, start_iso: str, end_iso: str
+) -> tuple[str, str, str]:
+    """Shrink a comparison window to the data that actually exists.
+
+    The gate defaults to ``now - window_minutes .. now``. Point that at an index
+    seeded minutes ago and almost the whole window is empty: the reference query
+    and the translated query each return a couple of buckets, they land in
+    different places, and every panel reports "no overlapping time buckets".
+    Measured on a freshly seeded node_exporter index: 174 of 356 panels FAILed
+    for this reason alone, which is indistinguishable at a glance from the
+    translator being broken -- the exact kind of noise that gets a gate ignored.
+
+    Only ever narrows the window, never widens it, and returns a note describing
+    what it did so a clamped run is never silently mistaken for a full one.
+    """
+    bounds = data_time_bounds(request, index)
+    if not bounds:
+        return start_iso, end_iso, ""
+    data_lo, data_hi = bounds
+    new_start = max(start_iso, data_lo)
+    new_end = min(end_iso, data_hi)
+    if new_start >= new_end:
+        return start_iso, end_iso, (
+            f"index {index} has data from {data_lo} to {data_hi}, which does not overlap "
+            f"the requested window {start_iso}..{end_iso}; comparisons will not be meaningful"
+        )
+    if (new_start, new_end) == (start_iso, end_iso):
+        return start_iso, end_iso, ""
+    return new_start, new_end, (
+        f"window clamped to available data in {index}: {new_start}..{new_end} "
+        f"(requested {start_iso}..{end_iso})"
+    )
+
+
+
+def run_prometheus_range(prometheus_url, expr, start_iso, end_iso, step):
+    """Evaluate ``expr`` in real Prometheus, shaped like native PROMQL output.
+
+    The ES|QL PROMQL command is the primary oracle, but it rejects a real slice
+    of PromQL -- ``> bool``, ``on(..) group_left(..)``, ``or``, nested binary
+    expressions. Panels using those were SKIPped, which reads as "fine" and is
+    how a wrong query survives review. Prometheus itself has no such gaps.
+
+    The result is converted to native PROMQL's own ``columns``/``values`` shape
+    so the existing normalisation and series comparison run unchanged -- the
+    fallback is a different REFERENCE, never a different or weaker comparison.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    query = urllib.parse.urlencode(
+        {"query": expr, "start": start_iso, "end": end_iso, "step": f"{int(step)}s"}
+    )
+    url = f"{str(prometheus_url).rstrip('/')}/api/v1/query_range?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return {"error": exc.read().decode()[:200]}
+    except (OSError, ValueError) as exc:
+        return {"error": str(exc)[:200]}
+    if payload.get("status") != "success":
+        return {"error": str(payload.get("error"))[:200]}
+
+    results = payload.get("data", {}).get("result", []) or []
+    label_names: list[str] = []
+    for series in results:
+        for name in (series.get("metric") or {}):
+            if name != "__name__" and name not in label_names:
+                label_names.append(name)
+    columns = [{"name": "value"}, {"name": "step"}] + [{"name": n} for n in label_names]
+    rows: list[list] = []
+    for series in results:
+        labels = series.get("metric") or {}
+        for timestamp, value in series.get("values") or []:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isnan(numeric):  # NaN: Prometheus emits it for 0/0
+                continue
+            stamp = datetime.fromtimestamp(float(timestamp), UTC).isoformat().replace("+00:00", "Z")
+            rows.append([numeric, stamp] + [labels.get(n) for n in label_names])
+    return {"columns": columns, "values": rows}
 
 
 def native_promql_available(request, index: str) -> bool:
@@ -1092,7 +1427,10 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
                   step: int, start_iso: str, end_iso: str,
                   translated_value_column: str | None = None,
                   translated_ignore_columns: frozenset[str] = frozenset(),
-                  translated_label_filter: tuple[str, str] | None = None) -> Comparison:
+                  translated_label_filter: tuple[str, str] | None = None,
+                  control_bindings: dict | None = None,
+                  metric_renames: dict | None = None,
+                  prometheus_url: str = "") -> Comparison:
     """Compare an emitted ES|QL panel query against native PROMQL of its source.
 
     ``translated_value_column``/``translated_ignore_columns`` scope the
@@ -1132,12 +1470,22 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             f"{names}; numeric parity requires concrete control defaults"
         )
         return cmp_
-    exact_control_params = _exact_control_param_names(cmp_.esql)
+    # A param is only unbindable if the dashboard's own controls do not define
+    # it and it is not a form we can bind ourselves. Previously every exact
+    # param skipped, which silently disabled numeric parity on ~95% of real
+    # panels -- the gate reported PASS having compared nothing.
+    bindable = (
+        set(control_bindings or {})
+        | _regex_control_param_names(cmp_.esql)
+        | _mv_contains_param_names(cmp_.esql)
+    )
+    exact_control_params = _exact_control_param_names(cmp_.esql) - bindable
     if exact_control_params:
         names = ", ".join(f"?{name}" for name in sorted(exact_control_params))
         cmp_.skipped_reason = (
             "translated query uses exact dashboard control param(s) "
-            f"{names}; numeric parity requires concrete control defaults"
+            f"{names} that no emitted control defines; numeric parity needs a "
+            "concrete binding"
         )
         return cmp_
     scalar_reductions = None
@@ -1154,12 +1502,37 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     native_query = sanitize_source_for_oracle(source_query, step)
     if native_query != source_query:
         cmp_.notes.append("source sanitized for oracle (template vars / range macros resolved)")
+    # Native PROMQL addresses real field paths. On the prometheus_native layout
+    # the metric lives at ``metrics.<name>``, so the bare Prometheus name matches
+    # nothing and the reference side comes back empty -- which reads as "no data
+    # to verify against" rather than the setup error it is. Point the reference
+    # at the same fields the translation used.
+    field_map = derive_field_map_from_translated(cmp_.esql)
+    # Explicit renames win: inference cannot bridge a renamed metric.
+    for source_name, target_field in (metric_renames or {}).items():
+        field_map.setdefault(source_name, target_field)
+    if field_map:
+        qualified = qualify_source_metric_names(native_query, lambda n: field_map.get(n, n))
+        if qualified != native_query:
+            native_query = qualified
+            cmp_.notes.append("source metric names qualified to the translated field paths")
     native_raw = run_native_promql(request, native_query, index, step, start_iso, end_iso)
     if isinstance(native_raw, dict) and native_raw.get("error"):
-        cmp_.skipped_reason = f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
-        return cmp_
+        # Fall back to real Prometheus rather than skipping. A skip reads as
+        # "fine" and is how a wrong query survives review.
+        fallback = (
+            run_prometheus_range(prometheus_url, native_query, start_iso, end_iso, step)
+            if prometheus_url else {"error": "no --prometheus-url"}
+        )
+        if isinstance(fallback, dict) and fallback.get("error"):
+            cmp_.skipped_reason = (
+                f"native PROMQL could not run: {str(native_raw['error'])[:120]}"
+            )
+            return cmp_
+        native_raw = fallback
+        cmp_.notes.append("reference evaluated by Prometheus (ES|QL PROMQL rejected it)")
 
-    translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso)
+    translated_raw = run_translated(request, cmp_.esql, start_iso, end_iso, control_bindings=control_bindings)
     if isinstance(translated_raw, dict) and translated_raw.get("error"):
         cmp_.translated_error = str(translated_raw["error"])[:200]
         return cmp_
@@ -1272,6 +1645,23 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
     cmp_.mean_relative_error = rmean
     if cmp_.common_series == 0:
         if not translated:
+            # Distinguish "the query produced nothing" from "the oracle could
+            # not attribute what it produced". If rows came back but no series
+            # could be derived, that is an oracle attribution limit, not a
+            # translation defect, and FAIL would blame the wrong thing.
+            #
+            # This is NOT what caused the four "returned no series" corpus
+            # failures on Node Exporter Full / Node.js: those came from control
+            # bindings being merged across dashboards, so the panels were
+            # filtered by another dashboard's ``job`` default and legitimately
+            # matched nothing. Fixed at the source in _artifact_control_bindings.
+            if (translated_raw or {}).get("values"):
+                cmp_.skipped_reason = (
+                    "translated query returned rows but the oracle could not attribute "
+                    "them to series (multi-metric panel with no pinned value column); "
+                    "numeric parity needs per-target provenance"
+                )
+                return cmp_
             cmp_.fail_reason = (
                 f"translated query returned no series; native returned {cmp_.native_series}"
             )

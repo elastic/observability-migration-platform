@@ -641,6 +641,13 @@ def _apply_organize(
         if resolved is None:
             raise _TransformSkip(f"could not resolve organize rename field '{old_name}'")
         new_col = _safe_alias(str(new_name))
+        if new_col == resolved:
+            # Grafana dashboards really do carry identity entries in
+            # renameByName (PolicyReport Details ships
+            # ``"renameByName": {"namespace": "namespace"}``). Emitting
+            # ``EVAL namespace = namespace`` and then dropping/re-adding the
+            # same column is a no-op that only adds noise to the query.
+            continue
         query = _append_pipeline_stage(
             query,
             f"| EVAL {_esql_ident(new_col)} = {_esql_ident(resolved)}",

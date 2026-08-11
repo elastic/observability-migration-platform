@@ -5,6 +5,6 @@ warning: label_replace('short') approximated with an anchored ES|QL GROK; rows w
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| STATS http_requests_total = AVG(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute), service.name
 | GROK service.name "^prefix-%{GREEDYDATA:short}$"
 | SORT time_bucket ASC

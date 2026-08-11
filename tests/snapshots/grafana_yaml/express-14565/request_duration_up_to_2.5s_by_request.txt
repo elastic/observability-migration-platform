@@ -1,7 +1,0 @@
-title: Request duration up to 2.5s by request
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['http_request_duration_seconds_bucket']
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

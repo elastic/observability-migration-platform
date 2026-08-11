@@ -1,0 +1,248 @@
+[
+  {
+    "title": "Memory Pages In / Out",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 2,
+      "legends": [
+        "Pagesin - Page in operations",
+        "Pagesout - Page out operations"
+      ],
+      "exprs": [
+        "irate(node_vmstat_pgpgin{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_vmstat_pgpgout{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg_effective": true,
+      "neg_matchers": [
+        [
+          "byRegexp",
+          "/.*out/"
+        ]
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "Pagesin_Page_in_operations",
+          "label": "Pagesin - Page in operations",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "Pagesout_Page_out_operations",
+          "label": "Pagesout - Page out operations",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": true,
+      "has_neg": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_vmstat_pgpgin IS NOT NULL OR metrics.node_vmstat_pgpgout IS NOT NULL\n| STATS Pagesin_Page_in_operations = AVG(IRATE(metrics.node_vmstat_pgpgin)), node_vmstat_pgpgout_B = AVG(IRATE(metrics.node_vmstat_pgpgout)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL Pagesout_Page_out_operations = (-1 * node_vmstat_pgpgout_B)\n| DROP node_vmstat_pgpgout_B\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        60.57142857142858,
+        19804.0
+      ]
+    ]
+  },
+  {
+    "title": "Memory Pages Swap In / Out",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 2,
+      "legends": [
+        "Pswpin - Pages swapped in",
+        "Pswpout - Pages swapped out"
+      ],
+      "exprs": [
+        "irate(node_vmstat_pswpin{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_vmstat_pswpout{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg_effective": true,
+      "neg_matchers": [
+        [
+          "byRegexp",
+          "/.*out/"
+        ]
+      ]
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "Pswpin_Pages_swapped_in",
+          "label": "Pswpin - Pages swapped in",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "Pswpout_Pages_swapped_out",
+          "label": "Pswpout - Pages swapped out",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": true,
+      "has_neg": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_vmstat_pswpin IS NOT NULL OR metrics.node_vmstat_pswpout IS NOT NULL\n| STATS Pswpin_Pages_swapped_in = AVG(IRATE(metrics.node_vmstat_pswpin)), node_vmstat_pswpout_B = AVG(IRATE(metrics.node_vmstat_pswpout)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL Pswpout_Pages_swapped_out = (-1 * node_vmstat_pswpout_B)\n| DROP node_vmstat_pswpout_B\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        0.0,
+        20.0
+      ]
+    ]
+  },
+  {
+    "title": "Memory Page Faults",
+    "grafana": {
+      "unit": "short",
+      "stack": "normal",
+      "draw": "line",
+      "n_targets": 3,
+      "legends": [
+        "Pgfault - Page major and minor fault operations",
+        "Pgmajfault - Major page fault operations",
+        "Pgminfault - Minor page fault operations"
+      ],
+      "exprs": [
+        "irate(node_vmstat_pgfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_vmstat_pgmajfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_vmstat_pgfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])  - irate(node_vmstat_pgmajfault{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg_effective": false,
+      "neg_matchers": [],
+      "n_targets_effective": 3
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "layers": 2,
+      "metrics": [
+        {
+          "field": "Pgmajfault_Major_page_fault_operations",
+          "label": "Pgmajfault - Major page fault operations",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        },
+        {
+          "field": "Pgminfault_Minor_page_fault_operations",
+          "label": "Pgminfault - Minor page fault operations",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": true,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_vmstat_pgfault IS NOT NULL OR metrics.node_vmstat_pgmajfault IS NOT NULL\n| STATS Pgfault_Page_major_and_minor_fault_operations = AVG(IRATE(metrics.node_vmstat_pgfault)), Pgmajfault_Major_page_fault_operations = AVG(IRATE(metrics.node_vmstat_pgmajfault)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| EVAL Pgminfault_Minor_page_fault_operations = (Pgfault_Page_major_and_minor_fault_operations - Pgmajfault_Major_page_fault_operations)\n| SORT time_bucket ASC",
+      "overlay_field": "Pgfault_Page_major_and_minor_fault_operations"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        2.125,
+        84.0
+      ]
+    ],
+    "note": "Pgfault is stack:false overlay on line_1 datasource layer; first-layer-only metric count undercounted (2 vs 3)."
+  },
+  {
+    "title": "OOM Killer",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n_targets": 1,
+      "legends": [
+        "oom killer invocations "
+      ],
+      "exprs": [
+        "irate(node_vmstat_oom_kill{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg_effective": false,
+      "neg_matchers": []
+    },
+    "kibana": {
+      "series": "area",
+      "layers": 1,
+      "metrics": [
+        {
+          "field": "node_vmstat_oom_kill",
+          "label": "oom killer invocations",
+          "format": {
+            "id": "number",
+            "params": {
+              "decimals": 2,
+              "compact": true
+            }
+          }
+        }
+      ],
+      "curated": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "has_irate": true,
+      "has_neg": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_vmstat_oom_kill IS NOT NULL\n| STATS node_vmstat_oom_kill = AVG(IRATE(metrics.node_vmstat_oom_kill)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "stack_ok": true,
+    "live_ok": true,
+    "live": [
+      [
+        9645,
+        0.0,
+        0.0
+      ]
+    ]
+  }
+]

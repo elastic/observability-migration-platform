@@ -1,8 +1,8 @@
 """Pairwise drift detection between the five tiers of a panel record.
 
-The naive ``a == b`` check is wrong here: kb-dashboard-cli compiles
-YAML to NDJSON with predictable whitespace normalisation, and Lens may
-inject ``BUCKET(@timestamp,...)`` columns that the YAML didn't have.
+The naive ``a == b`` check is wrong here: compilation to NDJSON applies
+predictable whitespace normalisation, and Lens may inject
+``BUCKET(@timestamp,...)`` columns the emitted query didn't have.
 
 So we compare on a canonical form (stripped + collapsed whitespace +
 unified single quotes) and surface the side-by-side detail in
@@ -20,15 +20,15 @@ from .records import DRIFT_AXES, PanelRecord, Verdict
 _WHITESPACE = re.compile(r"\s+")
 
 # Known/expected post-translator transforms that mutate ES|QL between
-# T1 (migration_report.json) and T2 (YAML) or beyond. When all of the
-# right-side-only differences match one of these patterns the drift is
-# downgraded to PASS rather than DRIFT.
+# T1 (migration_report.json) and T2 (the ``ir/*.ir.json`` export) or
+# beyond. When all of the right-side-only differences match one of these
+# patterns the drift is downgraded to PASS rather than DRIFT.
 _KNOWN_T1_T2_RIGHT_ONLY_PATTERNS = (
     # Strip the full pipe-clause including all CONCAT arguments so the
     # remainder can be compared with exact equality against the left side.
     re.compile(r"\|\s*EVAL\s+legend\s*=\s*CONCAT\([^|]*\)", re.IGNORECASE),
     re.compile(r",\s*legend\b"),  # extended KEEP that includes synthetic legend
-    # gauge panels: YAML emitter appends synthetic min/max/goal constants
+    # gauge panels: the emitter appends synthetic min/max/goal constants
     # so Lens can render the gauge with the user's expected bounds.
     re.compile(r"\|\s*EVAL\s+_gauge_(?:min|max|goal)\s*=", re.IGNORECASE),
 )
@@ -62,14 +62,27 @@ def compare_panel_record(record: PanelRecord) -> Verdict:
         record.notes.append("no translator output (panel may be markdown / manual)")
         return record.verdict
 
+    # A tier nobody could look at is not a tier that changed. When no T3 source
+    # existed at all (no Kibana URL and no ``compiled/`` dir), comparing T2
+    # against an empty T3 manufactures one "right side empty" finding per panel,
+    # and the pair T3=T4 does the same -- pure noise about an unperformed check.
+    t3_unavailable = bool(record.t3_unavailable_reason)
+    t4_unavailable = bool(record.t4_unavailable_reason)
+    skipped_axes = set()
+    if t3_unavailable:
+        skipped_axes |= {"T2=T3", "T3=T4"}
+    if t4_unavailable:
+        skipped_axes |= {"T3=T4", "T4=T5"}
     pairs: Iterable[tuple[str, str, str]] = (
         ("T0=T1", record.t0_source_promql, record.t1_translator_esql),
-        ("T1=T2", record.t1_translator_esql, record.t2_yaml_esql),
-        ("T2=T3", record.t2_yaml_esql, record.t3_ndjson_esql),
+        ("T1=T2", record.t1_translator_esql, record.t2_ir_esql),
+        ("T2=T3", record.t2_ir_esql, record.t3_ndjson_esql),
         ("T3=T4", record.t3_ndjson_esql, record.t4_cluster_esql),
         ("T4=T5", record.t4_cluster_esql, record.t5_live_query_body),
     )
     for axis, left, right in pairs:
+        if axis in skipped_axes:
+            continue
         verdict = _compare_pair(axis, left, right, record)
         if verdict:
             record.drift_axes.append(axis)
@@ -83,8 +96,19 @@ def compare_panel_record(record: PanelRecord) -> Verdict:
         return record.verdict
 
     if not record.t3_ndjson_esql and not record.t4_cluster_esql:
+        if t3_unavailable:
+            # Nothing on the target side was consulted. NOT_UPLOADED would
+            # assert a fact that was never checked, and PASS would claim a
+            # verification that never happened -- so any real drift found in the
+            # tiers that *were* compared still wins, and otherwise the panel is
+            # explicitly unverified.
+            if record.drift_axes:
+                record.verdict = Verdict.DRIFT
+                return record.verdict
+            record.verdict = Verdict.SKIP
+            return record.verdict
         record.verdict = Verdict.NOT_UPLOADED
-        record.notes.append("no compiled NDJSON or cluster saved object available")
+        record.notes.append("no stored Kibana dashboard or cluster saved object available")
         return record.verdict
 
     if record.drift_axes:
@@ -133,8 +157,8 @@ def _is_known_t1_t2_drift(left: str, right: str) -> bool:
     The composite-legend splice (``EVAL legend = CONCAT(...)`` plus an
     extended ``KEEP`` clause) is the canonical example: the translator
     records the bare query in ``migration_report.json:esql`` but the
-    YAML emitter adds the legend column. That is intentional and should
-    not be flagged as drift.
+    emitter adds the legend column before the query lands in the IR
+    export. That is intentional and should not be flagged as drift.
     """
     if right.startswith(left.rstrip()):
         suffix = right[len(left.rstrip()):].strip()

@@ -4,7 +4,7 @@ widgets: 11
 panels: 11
 controls: 2
 filters: 0
-statuses: {'ok': 8, 'requires_manual': 1, 'warning': 2}
+statuses: {'ok': 9, 'requires_manual': 1, 'warning': 1}
 - title='CPU Usage by Host'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Memory Usage with Rollup'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
 - title='Current CPU Average'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

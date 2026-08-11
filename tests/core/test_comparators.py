@@ -14,7 +14,7 @@ class TestComparisonSemantics(unittest.TestCase):
         query_ir = {
             "output_shape": "time_series",
             "source_expression": 'sum(rate(http_server_requests_total{service="api"}[5m])) by (service)',
-            "target_query": "TS metrics-* | STATS requests = SUM(RATE(http_server_requests_total, 5m)) BY time_bucket, service",
+            "target_query": "TS metrics-* | STATS requests = SUM(RATE(http_server_requests_total)) BY time_bucket, service",
         }
         source_execution = {
             "status": "pass",

@@ -219,7 +219,7 @@ class SingleValueReductionTests(unittest.TestCase):
     def test_multi_bucket_series_is_not_single_value(self):
         # A genuine time series whose terminal STATS still groups BY time_bucket must NOT be flagged.
         esql = ("TS metrics-* | WHERE m IS NOT NULL "
-                "| STATS m = AVG(RATE(m, 5m)) BY time_bucket = TBUCKET(5 minute), device | SORT time_bucket ASC")
+                "| STATS m = AVG(RATE(m)) BY time_bucket = TBUCKET(5 minute), device | SORT time_bucket ASC")
         self.assertFalse(po.is_single_value_reduction(esql))
 
     def test_multi_bucket_with_eval_after_is_not_single_value(self):
@@ -438,7 +438,7 @@ class SanitizeSourceForOracleTests(unittest.TestCase):
             request,
             source_query="sum(rate(metric[5m])) by ($grouping)",
             translated_query=(
-                "TS metrics-* | STATS value = SUM(RATE(metric, 5m)) "
+                "TS metrics-* | STATS value = SUM(RATE(metric)) "
                 "BY grouping = ??grouping"
             ),
             index="metrics-*",
@@ -720,7 +720,7 @@ class ExecutionTests(unittest.TestCase):
         # (excluding the time bucket / bucket-expression assignments).
         esql = (
             "TS metrics-* "
-            "| STATS m_A = SUM(RATE(http_requests_total, 5m)), m_B = SUM(RATE(http_errors_total, 5m)) "
+            "| STATS m_A = SUM(RATE(http_requests_total)), m_B = SUM(RATE(http_errors_total)) "
             "BY time_bucket = TBUCKET(5 minute), code "
             "| EVAL A = m_A | EVAL B = m_B | KEEP time_bucket, code, A, B"
         )
@@ -1295,3 +1295,332 @@ class PromqlPassthroughOracleTests(unittest.TestCase):
                                   index="metrics-*", step=300, start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
         self.assertEqual(result.verdict(), "STRICT_PASS")
         self.assertGreaterEqual(result.compared_points, 1)
+
+
+# --- Kibana-faithful control binding -------------------------------------- #
+#
+# The numeric gate reported PASS on Redis 763 having compared 0 of 19 panels:
+# 18 skipped on "translated query uses exact dashboard control param(s)
+# ?instance" and the rest found no reference data. Two independent defects, both
+# of which made the one gate that can prove semantic correctness a no-op.
+
+
+def test_multi_select_control_binds_a_list():
+    """Kibana derives the param TYPE from the control.
+
+    A multi-select control binds a LIST. Binding a scalar in tests is what let a
+    scalar ``RLIKE ?instance`` ship against a multi-select control and fail only
+    in the browser with "expected string, found list".
+    """
+    bindings = po.build_control_bindings([
+        {"type": "esql_control", "config": {
+            "variable_name": "instance", "single_select": False,
+            "selected_options": [".*"]}},
+    ])
+    assert bindings["instance"] == [".*"]
+
+
+def test_single_select_control_binds_a_scalar():
+    bindings = po.build_control_bindings([
+        {"variable_name": "namespace", "multiple": False, "default": ".*"},
+    ])
+    assert bindings["namespace"] == ".*"
+
+
+def test_mv_contains_params_are_recognised_as_bindable():
+    esql = '| WHERE MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, labels.instance)'
+    assert po._mv_contains_param_names(esql) == {"instance"}
+
+
+def test_source_metric_names_are_qualified_to_es_field_paths():
+    """Native PROMQL addresses real field paths, not bare Prometheus names.
+
+    Verified on ES 9.5: ``value=(redis_connected_clients)`` returns 0 rows while
+    ``value=(metrics.redis_connected_clients)`` returns 2. Without qualification
+    the oracle's reference side is always empty, so every panel degrades to "no
+    reference data" and the gate verifies nothing.
+    """
+    resolve = lambda name: f"metrics.{name}"  # noqa: E731
+    out = po.qualify_source_metric_names("sum(rate(redis_commands_total[5m]))", resolve)
+    assert out == "sum(rate(metrics.redis_commands_total[5m]))"
+
+
+def test_label_positions_are_never_qualified_as_metrics():
+    """``by (cmd)`` and ``{db="db0"}`` name LABELS, which live under labels.*."""
+    resolve = lambda name: f"metrics.{name}"  # noqa: E731
+    out = po.qualify_source_metric_names('sum(redis_db_keys{db="db0"}) by (db, instance)', resolve)
+    assert out == 'sum(metrics.redis_db_keys{db="db0"}) by (db, instance)'
+
+
+def test_field_map_is_derived_from_the_translated_query():
+    """Both sides must address the same fields by construction, not by re-deriving."""
+    esql = ("TS metrics-redis.prometheus-default\n"
+            "| STATS x = SUM(metrics.redis_connected_clients) BY labels.instance")
+    assert po.derive_field_map_from_translated(esql) == {
+        "redis_connected_clients": "metrics.redis_connected_clients"
+    }
+
+
+def test_field_map_strips_fleet_typed_leaf_suffix():
+    esql = "FROM i | STATS y = MAX(prometheus.node_cpu_total.counter)"
+    assert po.derive_field_map_from_translated(esql) == {
+        "node_cpu_total": "prometheus.node_cpu_total.counter"
+    }
+
+
+def test_oracle_applies_the_dashboard_time_window():
+    """Panel ES|QL uses ?_tstart/?_tend only inside TBUCKET; Kibana supplies the
+    range filter when it renders. Executed directly the query scans all history,
+    so its buckets never align with the windowed reference query -- which showed
+    up as a false "no overlapping time buckets" FAIL on 4 panels.
+    """
+    out = po._ensure_oracle_time_window("TS idx\n| WHERE a IS NOT NULL\n| STATS x=SUM(a)")
+    assert out.splitlines()[1] == "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+
+
+def test_oracle_does_not_double_apply_an_existing_time_filter():
+    esql = "TS idx\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| STATS x=SUM(a)"
+    assert po._ensure_oracle_time_window(esql) == esql
+
+
+def test_missing_column_is_a_data_gap_not_an_error():
+    """Telemetry that has not landed must not read as a translation defect.
+
+    Grafana renders a panel for an absent metric as empty; ES|QL rejects the
+    unknown column, so the same missing data looks like a hard failure. Scoring
+    it ERROR turns every not-yet-ingested metric into a red CI result, which
+    trains people to ignore the gate.
+    """
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = MAX(metrics.absent)")
+    cmp_.translated_error = "verification_exception - Unknown column [metrics.absent]"
+    assert cmp_.verdict() == "DATA_GAP"
+
+
+def test_unexplained_execution_failure_is_still_an_error():
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = MAX(y)")
+    cmp_.translated_error = "circuit_breaking_exception - parent request too large"
+    assert cmp_.verdict() == "ERROR"
+
+
+def test_explicit_renames_bridge_a_metric_map_gap():
+    """A renamed metric cannot be inferred from the translated query alone.
+
+    metric_map turns ``redis_memory_fragmentation_ratio`` into
+    ``metrics.redis_mem_fragmentation_ratio``; the source name and the emitted
+    field share no common token, so derive_field_map_from_translated cannot pair
+    them and the reference query silently matched nothing.
+    """
+    esql = "TS i | STATS a = AVG(metrics.redis_mem_fragmentation_ratio)"
+    inferred = po.derive_field_map_from_translated(esql)
+    assert "redis_memory_fragmentation_ratio" not in inferred
+
+    renames = {"redis_memory_fragmentation_ratio": "metrics.redis_mem_fragmentation_ratio"}
+    merged = dict(inferred)
+    for src, target in renames.items():
+        merged.setdefault(src, target)
+    out = po.qualify_source_metric_names(
+        "avg(redis_memory_fragmentation_ratio)", lambda n: merged.get(n, n)
+    )
+    assert out == "avg(metrics.redis_mem_fragmentation_ratio)"
+
+
+def test_control_bindings_are_scoped_per_dashboard(tmp_path):
+    """Control names collide across dashboards; bindings must not be merged.
+
+    Node Exporter Full defaults ``job`` to ``.*`` while the PostgreSQL pack
+    defaults it to ``postgres``. A single merged dict lets whichever dashboard
+    loads last win, so Node Exporter Full panels get filtered by ``job RLIKE
+    "postgres"``, match nothing, and are reported as translation FAILs even
+    though the emitted query is correct. This was the root cause of four
+    long-standing "translated query returned no series" corpus failures.
+    """
+    from observability_migration.app.cli import (
+        _artifact_control_bindings,
+        _bindings_for_dashboard,
+    )
+
+    native = tmp_path / "native"
+    native.mkdir()
+
+    def write(slug, title, variable, default):
+        (native / f"{slug}.native.json").write_text(json.dumps({
+            "payload": {
+                "title": title,
+                "pinned_panels": [{
+                    "type": "esql_control",
+                    "config": {
+                        "variable_name": variable,
+                        "single_select": True,
+                        "selected_options": [default],
+                    },
+                }],
+            }
+        }), encoding="utf-8")
+
+    # "postgresql_..." sorts after "node_exporter_full", so under the old
+    # merge-everything behaviour it overwrote the node dashboard's binding.
+    write("node_exporter_full", "Node Exporter Full", "job", ".*")
+    write("postgresql_exporter", "PostgreSQL Exporter", "job", "postgres")
+
+    by_dashboard = _artifact_control_bindings(tmp_path, {})
+
+    assert _bindings_for_dashboard(by_dashboard, "Node Exporter Full") == {"job": ".*"}
+    assert _bindings_for_dashboard(by_dashboard, "PostgreSQL Exporter") == {"job": "postgres"}
+
+
+def test_unknown_dashboard_falls_back_to_packet_controls(tmp_path):
+    """A panel from a dashboard with no emitted controls still binds something."""
+    from observability_migration.app.cli import (
+        _artifact_control_bindings,
+        _bindings_for_dashboard,
+    )
+
+    by_dashboard = _artifact_control_bindings(tmp_path, {
+        "controls": [{"config": {"variable_name": "instance", "single_select": True,
+                                 "selected_options": [".*"]}}],
+    })
+    assert _bindings_for_dashboard(by_dashboard, "Some Other Dashboard") == {"instance": ".*"}
+
+
+def test_rate_on_gauge_typed_field_is_a_data_gap_not_an_error():
+    """RATE() rejecting a gauge-typed field is an ingest gap, not a bad translation.
+
+    PromQL rate() is counter-only, so the source asserts the field is a counter.
+    Real exporters emit many counters as `# TYPE untyped` (node_exporter does
+    for node_netstat_* / node_vmstat_*), the mapping lands on gauge, and ES
+    rejects RATE(). The translator deliberately stays source-faithful and warns.
+    Calling that an ERROR blames the translation for the target's typing.
+    """
+    cmp_ = po.Comparison(expr="rate(node_netstat_Tcp_InSegs[5m])", esql="TS i | STATS a = RATE(x)")
+    cmp_.translated_error = (
+        "verification_exception: Found 1 problem\nline 4:31: first argument of "
+        "[RATE(node_netstat_Tcp_InSegs)] must be [counter_long, counter_integer "
+        "or counter_double], found value [node_netstat_Tcp_InSegs] type [double]"
+    )
+    assert cmp_.verdict() == "DATA_GAP"
+
+
+def test_other_verification_exceptions_are_still_errors():
+    """The counter carve-out must not swallow unrelated ES|QL failures."""
+    cmp_ = po.Comparison(expr="x", esql="TS i | STATS a = TBUKCET(1)")
+    cmp_.translated_error = (
+        "verification_exception: Found 1 problem\nline 2:9: Unknown function [TBUKCET]"
+    )
+    assert cmp_.verdict() == "ERROR"
+
+
+def test_window_is_clamped_to_available_data():
+    """A window reaching past the data must narrow, not produce mass FAILs.
+
+    The gate defaults to `now - window_minutes .. now`. Against a freshly
+    seeded index almost the whole window is empty, the two sides bucket into
+    different places, and every panel reports "no overlapping time buckets" --
+    174 of 356 panels on a real run, indistinguishable from a broken translator.
+    """
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-07-31T12:56:00.000Z", "2026-07-31T13:01:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "metrics-node.prometheus-default",
+        "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert start == "2026-07-31T12:56:00.000Z"
+    assert end == "2026-07-31T13:00:00Z"
+    assert "clamped" in note
+
+
+def test_window_is_not_widened_when_data_is_abundant():
+    """Clamping must only ever narrow the requested window."""
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-07-01T00:00:00.000Z", "2026-08-01T00:00:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "i", "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert (start, end) == ("2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z")
+    assert note == ""
+
+
+def test_non_overlapping_window_is_reported_not_silently_clamped():
+    """Data that misses the window entirely must say so, not fake an overlap."""
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}],
+                "values": [["2026-06-01T00:00:00.000Z", "2026-06-02T00:00:00.000Z"]]}
+
+    start, end, note = po.clamp_window_to_data(
+        request, "i", "2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z",
+    )
+    assert (start, end) == ("2026-07-31T12:00:00Z", "2026-07-31T13:00:00Z")
+    assert "does not overlap" in note
+
+
+def test_empty_index_leaves_the_window_untouched():
+    def request(method, path, body=None, content_type=None):
+        return {"columns": [{"name": "mn"}, {"name": "mx"}], "values": [[None, None]]}
+
+    start, end, note = po.clamp_window_to_data(request, "i", "a", "b")
+    assert (start, end, note) == ("a", "b", "")
+
+
+def test_param_label_matcher_treats_an_absent_label_as_empty():
+    """PromQL has no NULL: an absent label behaves as "", so All (".*") matches it.
+
+    ES|QL NULL propagates, so `release RLIKE ?release` drops every document that
+    does not carry `release` -- measured on a node index, 1006 documents carry
+    process_open_fds, none carry release, and the "All" default matched 0 of them
+    while Prometheus matched all 1006.
+
+    The emitted form must ALSO keep the filter pushable to Lucene. Wrapping the
+    field (`COALESCE(field, "") RLIKE ?p`) is correct but scans 176 documents
+    where the bare form scans 16. The OR form keeps a bare field comparison as
+    its first disjunct, so pushdown survives.
+    """
+    from observability_migration.adapters.source.grafana.promql import _absent_aware
+
+    out = _absent_aware(
+        "labels.release", "labels.release RLIKE ?release", '"" RLIKE ?release'
+    )
+    assert out == (
+        '(labels.release RLIKE ?release OR '
+        '(labels.release IS NULL AND "" RLIKE ?release))'
+    )
+    # The field must appear bare in the first disjunct, never wrapped.
+    assert not out.startswith("(COALESCE")
+
+
+def test_negated_literal_matchers_also_treat_an_absent_label_as_empty():
+    """PromQL `label!="x"` and `label!~"x"` MATCH a series lacking the label.
+
+    Absent == "" in PromQL, and "" != "prod" is true. ES|QL NULL propagates, so
+    `labels.release != "prod"` dropped every such document: 2640 documents carry
+    process_open_fds, none carry release, and the old form matched 0 of them.
+
+    The emitted form keeps the bare comparison as its first disjunct so the
+    filter still pushes down to Lucene.
+    """
+    from observability_migration.adapters.source.grafana.promql import _matcher_to_esql
+
+    class _R:
+        def resolve_label(self, name):
+            return name
+        def field_exists(self, name):
+            return None
+
+    resolver = _R()
+    neq = _matcher_to_esql({"label": "release", "op": "!=", "value": "prod"}, resolver)
+    assert neq == '(release != "prod" OR (release IS NULL AND "" != "prod"))'
+
+    nre = _matcher_to_esql({"label": "release", "op": "!~", "value": "prod.*"}, resolver)
+    assert nre == (
+        '(NOT (release RLIKE "prod.*") OR '
+        '(release IS NULL AND NOT ("" RLIKE "prod.*")))'
+    )
+
+    # Positive literal matchers stay a plain comparison: PromQL does not match an
+    # absent label for `=`, so no widening is needed and pushdown is untouched.
+    eq = _matcher_to_esql({"label": "release", "op": "=", "value": "prod"}, resolver)
+    assert eq == 'release == "prod"'
+
+

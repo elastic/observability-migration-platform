@@ -190,7 +190,7 @@ def test_cli_field_gap_warns_and_does_not_fail(tmp_path):
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: _FIELD_GAP_DOM,
-        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+        field_fetcher=lambda _index: {"@timestamp", "value", "host.name"},
     )
     assert rc == 0
 
@@ -211,7 +211,7 @@ def test_cli_field_gap_with_duplicate_marker_in_one_panel_does_not_fail(tmp_path
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: dom,
-        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+        field_fetcher=lambda _index: {"@timestamp", "value", "host.name"},
     )
     assert rc == 0
 
@@ -223,7 +223,7 @@ def test_cli_render_error_with_present_field_still_fails(tmp_path):
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: _FIELD_GAP_DOM,
-        field_fetcher=lambda: {"@timestamp", "value", "method"},
+        field_fetcher=lambda _index: {"@timestamp", "value", "method"},
     )
     assert rc == 1
 
@@ -235,7 +235,7 @@ def test_cli_render_marker_fails_when_no_field_metadata(tmp_path):
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: _FIELD_GAP_DOM,
-        field_fetcher=lambda: None,
+        field_fetcher=lambda _index: None,
     )
     assert rc == 1
 
@@ -255,7 +255,7 @@ def test_cli_unsegmented_render_error_still_fails(tmp_path):
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: "embPanel__error An error occurred while loading this panel",
-        field_fetcher=lambda: {"@timestamp"},
+        field_fetcher=lambda _index: {"@timestamp"},
     )
 
     assert rc == 1
@@ -277,7 +277,7 @@ def test_cli_extra_unattributed_marker_is_not_swallowed_by_visible_field_gap(tmp
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: dom,
-        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+        field_fetcher=lambda _index: {"@timestamp", "value", "host.name"},
     )
 
     assert rc == 1
@@ -297,6 +297,243 @@ def test_cli_untitled_panel_text_inside_field_gap_does_not_fail(tmp_path):
     rc = run_audit_cli(
         args,
         dom_fetcher=lambda _u: dom,
-        field_fetcher=lambda: {"@timestamp", "value", "host.name"},
+        field_fetcher=lambda _index: {"@timestamp", "value", "host.name"},
     )
     assert rc == 0
+
+
+def test_missing_migration_out_warns_on_stderr_and_keeps_stdout_valid_json(capsys):
+    """Announce the missing attribution, but never on stdout.
+
+    Without --migration-out the audit still detects that a dashboard rendered
+    errors, but returns "panels": [] -- it cannot say WHICH panel, which is the
+    whole reason to run it. Degrading silently sent a real investigation down the
+    path of re-executing every panel query by hand.
+
+    stdout carries the JSON report, so the notice goes to stderr: a stray line on
+    stdout makes the report unparseable for every downstream consumer.
+    """
+    import argparse
+    import json as _json
+
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    args = argparse.Namespace(
+        kibana_url="https://kb", dashboard_id="d", space="", user_data_dir="",
+        time_from="now-1h", time_to="now", elements=False, migration_out="",
+        es_url="", es_api_key="", es_index="", insecure=False,
+        agent_browser=False, chrome_no_sandbox=False, fail_on_error=False,
+    )
+    run_audit_cli(args, dom_fetcher=lambda _url: _CLEAN_DOM)
+    captured = capsys.readouterr()
+
+    assert "--migration-out" in captured.err
+    assert "per-panel attribution" in captured.err
+    assert "--migration-out" not in captured.out
+    assert _json.loads(captured.out)["render"]["status"] == "pass"
+
+
+def test_kibana_client_side_parse_failure_is_a_render_error():
+    """A query Kibana cannot even build never reaches ES, so it carries no ES marker.
+
+    Observed live: a native PROMQL panel referencing a dashboard control renders
+    "Couldn't parse Elasticsearch ES|QL query ... Parameter [?instance] value not
+    found", because Kibana does not forward control values into a PROMQL
+    command's PromQL expression. The audit scored that dashboard `pass` -- a
+    visibly broken panel counted as healthy, which is the one thing this gate
+    exists to prevent.
+    """
+    from observability_migration.targets.kibana.render_audit import classify_render
+
+    dom = (
+        "<div>Couldn't parse Elasticsearch ES|QL query. Check your query and try "
+        "again. Error: line 1:134: Parameter [?instance] value not found</div>"
+    )
+    verdict = classify_render(dom)
+    assert verdict.status == "fail"
+    assert verdict.rendered_error_markers
+
+
+def _empty_panel_report(tmp_path, *panels):
+    """Write a migration report holding ``panels`` and return its directory."""
+    import json as _json
+    (tmp_path / "migration_report.json").write_text(
+        _json.dumps({"dashboards": [{"panels": list(panels)}]})
+    )
+    return str(tmp_path)
+
+
+def _metric_panel(title, query):
+    return {"title": title, "kibana_type": "line",
+            "yaml_panel": {"esql": {"type": "line", "query": query}}}
+
+
+def _panels_from_cli(args, dom, fetch):
+    """Run the CLI and return its per-panel verdicts keyed by title."""
+    import io as _io
+    import json as _json
+    from contextlib import redirect_stdout
+
+    from observability_migration.targets.kibana.render_audit_driver import run_audit_cli
+
+    buffer = _io.StringIO()
+    with redirect_stdout(buffer):
+        rc = run_audit_cli(args, dom_fetcher=lambda _u: dom, field_fetcher=fetch)
+    output = _json.loads(buffer.getvalue())
+    return rc, {p["title"]: p for p in output["render"]["panels"]}, output
+
+
+_APACHE_QUERY = (
+    "FROM metrics-* | WHERE @timestamp >= ?_tstart "
+    "| STATS value = AVG(apache_workers) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+)
+_LOGS_QUERY = (
+    "FROM logs-* | WHERE @timestamp >= ?_tstart AND service.name == \"apache\" "
+    "| KEEP @timestamp, message, log.level, service.name | LIMIT 100"
+)
+
+
+def test_cli_empty_panel_with_absent_metric_is_a_data_gap(tmp_path):
+    """The CLI never passed metrics_by_title, so data_gap was unreachable.
+
+    An empty panel whose metric column is absent from the index it queries is a
+    diagnosable data gap; reporting it as unexpected_empty ("we don't know why
+    this is empty") throws that diagnosis away.
+    """
+    out = _empty_panel_report(tmp_path, _metric_panel("Apache workers", _APACHE_QUERY))
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="http://es", es_index="metrics-*")
+    dom = 'StaticText "Apache workers" StaticText "No results found"'
+
+    rc, panels, _ = _panels_from_cli(
+        args, dom, lambda _index: {"@timestamp", "host.name", "redis_keys"}
+    )
+
+    assert rc == 0  # a data gap is a warn, not a fail
+    assert panels["Apache workers"]["error_class"] == "data_gap"
+    assert panels["Apache workers"]["missing_fields"] == ["apache_workers"]
+
+
+def test_cli_empty_panel_with_present_metric_is_not_a_data_gap(tmp_path):
+    out = _empty_panel_report(tmp_path, _metric_panel("Apache workers", _APACHE_QUERY))
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="http://es", es_index="metrics-*")
+    dom = 'StaticText "Apache workers" StaticText "No results found"'
+
+    rc, panels, _ = _panels_from_cli(
+        args, dom, lambda _index: {"@timestamp", "apache_workers"}
+    )
+
+    assert rc == 0
+    assert panels["Apache workers"]["error_class"] == "unexpected_empty"
+    assert "apache_workers" in panels["Apache workers"]["detail"]
+
+
+def test_cli_does_not_claim_a_data_gap_without_field_caps(tmp_path):
+    """Absent evidence must not downgrade the diagnosis, only record why."""
+    out = _empty_panel_report(tmp_path, _metric_panel("Apache workers", _APACHE_QUERY))
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="", es_index="metrics-*")
+    dom = 'StaticText "Apache workers" StaticText "No results found"'
+
+    rc, panels, _ = _panels_from_cli(args, dom, lambda _index: None)
+
+    assert rc == 0
+    assert panels["Apache workers"]["error_class"] == "unexpected_empty"
+    assert "field caps" in panels["Apache workers"]["detail"]
+
+
+def test_cli_resolves_a_logs_panel_against_the_logs_index(tmp_path):
+    """--es-index metrics-* cannot contain a FROM logs-* panel's columns.
+
+    Looking them up there is an unfounded answer: it would report every logs
+    panel as a metric gap when the columns exist in the index it actually reads.
+    """
+    out = _empty_panel_report(tmp_path, _metric_panel("Log Events", _LOGS_QUERY))
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="http://es", es_index="metrics-*")
+    dom = 'StaticText "Log Events" StaticText "No results found"'
+    asked: list[str] = []
+
+    def fetch(index):
+        asked.append(index)
+        if index == "logs-*":
+            return {"@timestamp", "message", "log.level", "service.name", "host.name"}
+        return {"@timestamp", "host.name", "redis_keys"}
+
+    rc, panels, _ = _panels_from_cli(args, dom, fetch)
+
+    assert "logs-*" in asked
+    assert rc == 0
+    # Its columns all exist in logs-*, so the emptiness is value-level, not a
+    # metric gap -- and must not be misreported as one.
+    assert panels["Log Events"]["error_class"] == "unexpected_empty"
+    assert panels["Log Events"]["missing_fields"] == []
+
+
+def test_cli_mixed_index_dashboard_resolves_each_panel_against_its_own_index(tmp_path):
+    out = _empty_panel_report(
+        tmp_path,
+        _metric_panel("Apache workers", _APACHE_QUERY),
+        _metric_panel("Log Events", _LOGS_QUERY),
+        _metric_panel("Redis keys", "FROM metrics-* | STATS value = MAX(redis_keys)"),
+    )
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="http://es", es_index="metrics-*")
+    dom = (
+        'StaticText "Apache workers" StaticText "No results found" '
+        'StaticText "Log Events" StaticText "No results found" '
+        'StaticText "Redis keys" StaticText "No results found"'
+    )
+    asked: list[str] = []
+
+    def fetch(index):
+        asked.append(index)
+        if index == "logs-*":
+            return {"@timestamp", "message", "log.level", "service.name"}
+        return {"@timestamp", "redis_keys"}
+
+    rc, panels, _ = _panels_from_cli(args, dom, fetch)
+
+    assert rc == 0
+    # metrics-* lacks apache_workers -> a real metric gap.
+    assert panels["Apache workers"]["error_class"] == "data_gap"
+    # logs-* has every column the logs panel projects -> not a metric gap.
+    assert panels["Log Events"]["error_class"] == "unexpected_empty"
+    # metrics-* has redis_keys -> not a metric gap either.
+    assert panels["Redis keys"]["error_class"] == "unexpected_empty"
+    # One lookup per distinct index, cached -- not one per panel.
+    assert sorted(set(asked)) == ["logs-*", "metrics-*"]
+    assert len(asked) == 2
+
+
+def test_cli_logs_panel_error_names_a_column_its_own_index_has(tmp_path):
+    """Per-index caps keep a genuine bug hard.
+
+    "message" is absent from metrics-* but present in logs-*, so an error naming
+    it on a logs panel is a real failure -- resolving against metrics-* would
+    have excused it as a field gap.
+    """
+    out = _empty_panel_report(tmp_path, _metric_panel("Log Events", _LOGS_QUERY))
+    args = _cli_args(migration_out=out, fail_on_error=True, es_url="http://es", es_index="metrics-*")
+    dom = (
+        'StaticText "Log Events" StaticText "Unexpected error from Elasticsearch: '
+        'verification_exception - Found 1 problem" StaticText "line 3:22: Unknown column [message]"'
+    )
+
+    def fetch(index):
+        if index == "logs-*":
+            return {"@timestamp", "message", "log.level", "service.name"}
+        return {"@timestamp", "redis_keys"}
+
+    rc, panels, _ = _panels_from_cli(args, dom, fetch)
+
+    assert panels["Log Events"]["error_class"] == "render_error"
+    assert rc == 1
+
+
+def test_unbound_parameter_is_not_downgraded_to_a_data_gap():
+    """An unbound param is a construction bug, not data readiness."""
+    from observability_migration.targets.kibana.render_audit import classify_panel
+
+    result = classify_panel(
+        "P", "Parameter [?instance] value not found",
+        breakdown_fields=["instance"], expects_data=True,
+        available_fields=set(), available_metrics=set(),
+    )
+    assert result.status == "error", result.status

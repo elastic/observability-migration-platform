@@ -6,24 +6,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from observability_migration.adapters.source.grafana import smoke as grafana_smoke
 from observability_migration.core.interfaces.registries import target_registry
 from observability_migration.core.interfaces.target_adapter import TargetAdapter
 
 from . import dashboards_api
 from .compile import (
-    compile_all,
-    compile_yaml,
     detect_space_id_from_kibana_url,
     kibana_url_for_space,
-    lint_dashboard_yaml,
-    upload_yaml,
-    validate_compiled_layout,
 )
 from .serverless import (
     delete_dashboards as serverless_delete_dashboards,
@@ -31,6 +24,7 @@ from .serverless import (
 from .serverless import (
     detect_serverless,
     ensure_migration_data_views,
+    list_data_views,
 )
 from .serverless import (
     list_dashboards as serverless_list_dashboards,
@@ -38,30 +32,13 @@ from .serverless import (
 from .smoke import run_smoke_report
 
 
-def _resolve_yaml_files(path: Path) -> list[Path]:
-    if path.is_file():
-        return [path] if path.suffix in {".yaml", ".yml"} else []
-    yaml_files = sorted(path.glob("*.yaml"))
-    if yaml_files:
-        return yaml_files
-    nested = path / "yaml"
-    if nested.is_dir():
-        nested_files = sorted(nested.glob("*.yaml"))
-        if nested_files:
-            return nested_files
-    parent_nested = sorted(path.parent.glob("yaml/*.yaml"))
-    return parent_nested
-
-
 def _resolve_native_artifact_files(path: Path) -> list[Path]:
-    """Discover ``*.native.json`` review artifacts, mirroring ``_resolve_yaml_files``.
+    """Discover the ``*.native.json`` review artifacts to upload.
 
-    Accepts the same three shapes as YAML discovery: a ``native/`` directory
-    directly, a dashboard artifact root that holds a ``native/``
-    subdirectory (e.g. ``migration_output/dashboards``), or a sibling
-    directory whose parent holds ``native/`` (e.g. pointing at
-    ``migration_output/dashboards/yaml`` or ``.../compiled`` still finds
-    ``migration_output/dashboards/native``).
+    Accepts three shapes: a ``native/`` directory directly, a dashboard
+    artifact root that holds a ``native/`` subdirectory (e.g.
+    ``migration_output/dashboards``), or a sibling directory whose parent holds
+    ``native/`` (so pointing at any child of the artifact root still resolves).
     """
     if path.is_file():
         return [path] if path.name.endswith(".native.json") else []
@@ -77,21 +54,13 @@ def _resolve_native_artifact_files(path: Path) -> list[Path]:
     return parent_nested
 
 
-def _native_artifact_stem(path: Path) -> str:
-    name = path.name
-    suffix = ".native.json"
-    return name[: -len(suffix)] if name.endswith(suffix) else path.stem
+def _records_panels_dropped(records: list[dict[str, Any]]) -> int:
+    """Total leaf panels Kibana silently dropped across a batch of uploads.
 
-
-def _iter_leaf_panels(panels: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    leaf_panels: list[dict[str, Any]] = []
-    for panel in panels:
-        section = panel.get("section")
-        if isinstance(section, dict):
-            leaf_panels.extend(_iter_leaf_panels(section.get("panels") or []))
-        else:
-            leaf_panels.append(panel)
-    return leaf_panels
+    A non-zero value means at least one dashboard was written incomplete behind
+    an HTTP 200, so it belongs in the upload summary next to ``uploaded_ok``.
+    """
+    return sum(len(item.get("dropped_panels") or []) for item in records)
 
 
 def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
@@ -104,18 +73,235 @@ def _data_view_id_lookup(data_views: list[dict[str, Any]]) -> dict[str, str]:
     return lookup
 
 
-def _rewrite_data_view_refs(value: Any, data_view_ids: dict[str, str]) -> Any:
-    if isinstance(value, dict):
-        rewritten: dict[str, Any] = {}
-        for key, child in value.items():
-            if key == "data_view" and isinstance(child, str):
-                rewritten[key] = data_view_ids.get(child, child)
-            else:
-                rewritten[key] = _rewrite_data_view_refs(child, data_view_ids)
-        return rewritten
-    if isinstance(value, list):
-        return [_rewrite_data_view_refs(item, data_view_ids) for item in value]
-    return value
+def _data_view_inventory(data_views: list[dict[str, Any]]) -> frozenset[str]:
+    """Every title *and* id in ``data_views``.
+
+    The complement of :func:`_data_view_id_lookup`, which deliberately omits a
+    data view whose title is its own id because rewriting it would be a no-op.
+    A control ``data_view_id`` outside this set names nothing Kibana holds, so
+    leaving it in place is the silent failure worth warning about -- while a
+    value already naming a real data view (by id, or by a title that *is* its
+    id) is a correct fallback and must stay quiet. See
+    ``dashboards_api._resolve_pinned_panel_data_view_ids``.
+    """
+    refs: set[str] = set()
+    for data_view in data_views:
+        for key in ("title", "id"):
+            value = str(data_view.get(key) or "")
+            if value:
+                refs.add(value)
+    return frozenset(refs)
+
+
+def _report_unresolved_data_views(
+    result: Any,
+    label: str,
+    kibana_url: str = "",
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    verify: bool | str = True,
+) -> None:
+    """Warn, per control, about a ``data_view_id`` that stayed a raw pattern.
+
+    ``ensure_migration_data_views`` is supposed to make the lookup complete by
+    construction, so a miss means ensuring failed for that pattern and Kibana
+    will render the control as "An error occurred". The dashboard itself
+    uploaded, so this is a warning -- but a named one, because the symptom is
+    otherwise indistinguishable from a product bug.
+
+    The *ensured* data views are the wrong yardstick for "does this data view
+    exist": a control can legitimately point at one the operator (or an earlier
+    ingest) already created, which this upload had no reason to ensure. So a
+    reported fallback is re-checked against every data view in the space before
+    it is warned about -- and that listing happens only when there is something
+    to re-check, never on the clean path. Listing is best effort: if it fails,
+    the resolver's own verdict stands rather than the warning being dropped.
+    """
+    unresolved = list(getattr(result, "unresolved_data_views", None) or [])
+    if not unresolved:
+        return
+    live: frozenset[str] = frozenset()
+    try:
+        live = _data_view_inventory(
+            list_data_views(kibana_url, api_key=api_key, space_id=space_id, verify=verify)
+        )
+    except Exception:
+        pass
+    unresolved = [item for item in unresolved if item.data_view not in live]
+    # Pruned on the result too, so the JSON upload record cannot carry a
+    # false positive the console decided not to print.
+    result.unresolved_data_views = unresolved
+    for item in unresolved:
+        control = item.control or "(untitled)"
+        print(
+            f"    warning: {label}: control '{control}' points at data view "
+            f"'{item.data_view}', which matches no Kibana data view id or title; "
+            "the control will render an error until that data view exists.",
+            file=sys.stderr,
+        )
+
+
+# The data views every migration output is assumed to need, whatever the
+# payload happens to reference. Kept as the floor rather than replaced by the
+# referenced set so an upload of a dashboard with no controls still leaves the
+# space usable, exactly as before.
+_DEFAULT_DATA_VIEW_PATTERNS = ("metrics-prometheus-*", "metrics-*", "logs-*")
+
+
+def _extra_data_view_patterns(extra_patterns: list[str] | None) -> list[str]:
+    """The referenced patterns the defaults do not already cover, deduped."""
+    return [
+        pattern
+        for pattern in dict.fromkeys(extra_patterns or ())
+        if pattern and pattern not in _DEFAULT_DATA_VIEW_PATTERNS
+    ]
+
+
+def _merged_data_view_patterns(extras: list[str]) -> list[str]:
+    """The defaults first, then anything extra the payload asked for."""
+    return list(dict.fromkeys([*_DEFAULT_DATA_VIEW_PATTERNS, *extras]))
+
+
+def _payload_data_view_patterns(payload: Any) -> list[str]:
+    """Every ``data_view``/``data_view_id`` value in a typed API payload.
+
+    In first-seen order, deduped. Shared by the two upload entry points so the
+    in-memory pipeline payload and the persisted review artifact are read the
+    same way.
+    """
+    found: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key in {"data_view", "data_view_id"} and isinstance(child, str):
+                    text = child.strip()
+                    # A real saved-object id is already resolved; only patterns
+                    # (which look like index expressions) need ensuring.
+                    if text and text not in found:
+                        found.append(text)
+                else:
+                    _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(payload)
+    return found
+
+
+def _referenced_data_view_patterns(native_dashboard: Any) -> list[str]:
+    """Index patterns the payload references as a data view, in first-seen order.
+
+    ``_ensure_default_data_views`` only ensures a fixed default list
+    (metrics-prometheus-*, metrics-*, logs-*). A control pointing at anything
+    else -- e.g. the Datadog prometheus_native profile's
+    ``metrics-*.prometheus-*`` -- therefore had no data view to resolve against,
+    so ``dashboards_api._resolve_pinned_panel_data_view_ids`` left the raw
+    pattern in ``data_view_id`` and Kibana rendered the control as "An error
+    occurred". Ensuring exactly what the payload asks for makes the lookup
+    complete by construction.
+    """
+    if native_dashboard is None:
+        return []
+    try:
+        payload = native_dashboard.to_api_payload()
+    except Exception:
+        return []
+    return _payload_data_view_patterns(payload)
+
+
+def _artifact_data_view_patterns(artifact_file: Path) -> list[str]:
+    """The data view patterns one persisted ``*.native.json`` references.
+
+    The batch upload path (:meth:`KibanaTargetAdapter.upload`) sends reviewed
+    artifacts from disk rather than an in-memory ``NativeDashboard``, so it
+    needs the artifact-envelope counterpart of
+    :func:`_referenced_data_view_patterns`. A file that cannot be read or parsed
+    contributes nothing: ``_native_artifact_upload_file`` reads it again and
+    reports the same corruption as a per-record rejection, which is where that
+    failure belongs -- collecting patterns must not be the thing that decides an
+    artifact is broken.
+    """
+    try:
+        artifact = json.loads(Path(artifact_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(artifact, dict):
+        return []
+    return _payload_data_view_patterns(artifact.get("payload"))
+
+
+def _batch_data_view_patterns(
+    artifact_files: list[Path],
+) -> tuple[dict[Path, list[str]], list[str]]:
+    """Per-artifact and batch-wide data view patterns for one upload.
+
+    Returned together because both are needed and each artifact should be read
+    once: the union drives a *single* ensure round-trip for the whole batch (13
+    artifacts naming ``metrics-*`` must not ensure it 13 times), while the
+    per-artifact lists are what attributes an ensure failure back to the
+    dashboards it actually breaks.
+    """
+    per_artifact = {
+        artifact_file: _artifact_data_view_patterns(artifact_file)
+        for artifact_file in artifact_files
+    }
+    batch: list[str] = []
+    for patterns in per_artifact.values():
+        for pattern in patterns:
+            if pattern not in batch:
+                batch.append(pattern)
+    return per_artifact, batch
+
+
+def _fail_record_on_unavailable_data_view(
+    record: dict[str, Any],
+    referenced_patterns: list[str],
+    unavailable: dict[str, str],
+) -> None:
+    """Downgrade an otherwise-successful upload whose data view could not exist.
+
+    Ensuring is attempted for every pattern the payload references, so a
+    refusal (bad pattern, missing privilege, target error) means the data view
+    is *not* there and the control bound to it will render "An error occurred".
+    That is a 2xx upload that is knowably incomplete, which is exactly the
+    ``lossy`` case: only ``created``/``updated`` count as success, so the record
+    stops counting toward ``uploaded_ok`` and the run exits non-zero. No new
+    mechanism -- the same status/``success`` path ``lossy`` and ``duplicate_id``
+    already use, with the target's own reason carried in ``output`` so it
+    reaches both the console and the JSON upload record.
+
+    Only a record that currently reports success is downgraded: a rejection or a
+    panel loss is the more specific failure and keeps its status.
+
+    The console line names the artifact and the pattern but not the target's
+    reason: ``_ensure_data_views_for_upload`` already printed that once, and a
+    batch where 13 artifacts share one refused pattern would otherwise repeat a
+    multi-line HTTP error 13 times. The reason still travels per record in
+    ``output``, which is what the CLI prints on the ``[FAIL]`` line and what the
+    JSON upload record keeps.
+    """
+    if not unavailable or not record.get("success"):
+        return
+    blocking = [pattern for pattern in referenced_patterns if pattern in unavailable]
+    if not blocking:
+        return
+    detail = "; ".join(f"'{pattern}': {unavailable[pattern][:300]}" for pattern in blocking)
+    record["status"] = "data_view_unavailable"
+    record["success"] = False
+    record["output"] = (
+        f"{record.get('output') or '(untitled)'} — data view {detail}; "
+        "the control(s) bound to it will render an error in Kibana"
+    )
+    named = ", ".join(f"'{pattern}'" for pattern in blocking)
+    print(
+        f"    ✗ {record.get('artifact') or '(native payload)'} uploaded, but the "
+        f"data view its control needs ({named}) could not be created, so that "
+        "control will render an error in Kibana.",
+        file=sys.stderr,
+    )
 
 
 @target_registry.register
@@ -129,293 +315,203 @@ class KibanaTargetAdapter(TargetAdapter):
         api_key: str = "",
         space_id: str = "",
         verify: bool | str = True,
+        extra_patterns: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Create the default migration data views before importing dashboards."""
+        """Create the migration data views before importing dashboards.
+
+        ``extra_patterns`` carries the patterns the payload actually references,
+        on top of the defaults, so every ``data_view``/``data_view_id`` in the
+        payload has something to resolve to. A referenced pattern the defaults
+        already cover adds nothing, so the request stays byte-identical to the
+        default-only call rather than re-stating the same three patterns --
+        which is what keeps a payload that only names ``metrics-*`` off this
+        code path entirely.
+        """
+        extras = _extra_data_view_patterns(extra_patterns)
+        patterns = _merged_data_view_patterns(extras) if extras else None
         return ensure_migration_data_views(
             kibana_url,
-            data_view_patterns=None,
+            data_view_patterns=patterns,
             api_key=api_key,
             space_id=space_id,
             verify=verify,
         )
 
-    def _prepare_upload_yaml(
+    def _ensure_data_views_for_upload(
         self,
-        yaml_path: Path,
-        output_dir: Path,
-        data_views: list[dict[str, Any]],
-    ) -> Path:
-        data_view_ids = _data_view_id_lookup(data_views)
-        if not data_view_ids:
-            return yaml_path
-        doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        rewritten = _rewrite_data_view_refs(doc, data_view_ids)
-        if rewritten == doc:
-            return yaml_path
-        upload_input_dir = output_dir / "_upload_input"
-        upload_input_dir.mkdir(parents=True, exist_ok=True)
-        upload_path = upload_input_dir / yaml_path.name
-        upload_path.write_text(
-            yaml.safe_dump(rewritten, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-        return upload_path
+        kibana_url: str,
+        *,
+        api_key: str = "",
+        space_id: str = "",
+        verify: bool | str = True,
+        extra_patterns: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Ensure the upload's data views, attributing any refusal to a pattern.
 
-    def emit_dashboard(self, dashboard_ir: Any, output_dir: Path, **kwargs: Any) -> Path:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        filename = kwargs.get("filename") or kwargs.get("name") or "dashboard.yaml"
-        output_path = output_dir / str(filename)
-        if isinstance(dashboard_ir, str):
-            output_path.write_text(dashboard_ir, encoding="utf-8")
-        else:
-            output_path.write_text(
-                yaml.safe_dump(dashboard_ir, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
+        Returns ``(data_views, unavailable)`` where ``unavailable`` maps a
+        pattern that could not be ensured to the target's reason. One refused
+        pattern must not cost the operator every *other* dashboard in the batch,
+        and an exception escaping here would do exactly that -- before any
+        artifact was sent, with a traceback instead of a reason.
+
+        The happy path is one call with the whole list, unchanged: a batch that
+        needs nothing beyond the defaults issues precisely the request it always
+        did. Only after a failure is the list retried pattern by pattern, to
+        find out *which* pattern the target refused. Re-ensuring the patterns
+        that already succeeded is free -- ``ensure_data_view`` returns an
+        existing data view rather than recreating it -- and those extra requests
+        only ever happen on a run that is already failing.
+        """
+        try:
+            return (
+                self._ensure_default_data_views(
+                    kibana_url,
+                    api_key=api_key,
+                    space_id=space_id,
+                    verify=verify,
+                    extra_patterns=extra_patterns,
+                ),
+                {},
             )
-        return output_path
-
-    def compile(self, yaml_dir: Path, output_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        yaml_dir = Path(yaml_dir)
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        yaml_lint_ok, yaml_lint_output = lint_dashboard_yaml(str(yaml_dir))
-        compile_results = compile_all(str(yaml_dir), str(output_dir))
-        compiled_ok = sum(1 for _, ok, _ in compile_results if ok)
-        layout_ok = None
-        layout_output = ""
-        if compiled_ok:
-            layout_ok, layout_output = validate_compiled_layout(str(output_dir))
-        return {
-            "yaml_lint": {"ok": yaml_lint_ok, "output": yaml_lint_output},
-            "compile_results": [
-                {"name": name, "success": success, "output": output}
-                for name, success, output in compile_results
-            ],
-            "summary": {
-                "compiled_ok": compiled_ok,
-                "total": len(compile_results),
-            },
-            "layout": {"ok": layout_ok, "output": layout_output},
-        }
-
-    def compile_dashboard(self, yaml_path: str | Path, output_dir: str | Path) -> tuple[bool, str]:
-        return compile_yaml(str(yaml_path), str(output_dir))
-
-    def validate_queries(self, run_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        run_dir = Path(run_dir)
-        es_url = str(kwargs.get("es_url", "") or "")
-        timeout = int(kwargs.get("timeout", 30) or 30)
-        es_api_key = str(kwargs.get("es_api_key", "") or "")
-        verify = kwargs.get("verify", True)
-        if not es_url:
-            return {
-                "summary": {"queries": 0, "pass": 0, "fail": 0, "empty": 0, "skipped": 1},
-                "records": [],
-            }
-        records: list[dict[str, Any]] = []
-        pass_count = 0
-        fail_count = 0
-        empty_count = 0
-        for yaml_file in _resolve_yaml_files(run_dir):
-            payload = yaml.safe_load(yaml_file.read_text(encoding="utf-8")) or {}
-            for dashboard in payload.get("dashboards") or []:
-                for panel in _iter_leaf_panels(dashboard.get("panels") or []):
-                    esql = panel.get("esql")
-                    if not isinstance(esql, dict):
-                        continue
-                    query = str(esql.get("query", "") or "").strip()
-                    if not query:
-                        continue
-                    validation = grafana_smoke.validate_esql(
-                        es_url,
-                        query,
-                        timeout=timeout,
-                        es_api_key=es_api_key,
+        except Exception:
+            pass
+        data_views: list[dict[str, Any]] = []
+        unavailable: dict[str, str] = {}
+        for pattern in _merged_data_view_patterns(_extra_data_view_patterns(extra_patterns)):
+            try:
+                data_views.extend(
+                    ensure_migration_data_views(
+                        kibana_url,
+                        data_view_patterns=[pattern],
+                        api_key=api_key,
+                        space_id=space_id,
                         verify=verify,
                     )
-                    status = "empty" if validation["status"] == "pass" and validation["rows"] == 0 else validation["status"]
-                    if status == "pass":
-                        pass_count += 1
-                    elif status == "fail":
-                        fail_count += 1
-                    else:
-                        empty_count += 1
-                    records.append(
-                        {
-                            "yaml_file": yaml_file.name,
-                            "dashboard": dashboard.get("title", ""),
-                            "panel": panel.get("title", ""),
-                            "query": query,
-                            "status": status,
-                            "rows": validation.get("rows", 0),
-                            "columns": validation.get("columns", []),
-                            "error": validation.get("error", ""),
-                            "materialized_query": validation.get("materialized_query", ""),
-                        }
-                    )
-        return {
-            "summary": {
-                "queries": len(records),
-                "pass": pass_count,
-                "fail": fail_count,
-                "empty": empty_count,
-                "skipped": 0,
-            },
-            "records": records,
-        }
-
-    def _legacy_upload_file(
-        self,
-        yaml_file: Path,
-        out_dir: Path,
-        data_views: list[dict[str, Any]],
-        *,
-        kibana_url: str,
-        space_id: str,
-        kibana_api_key: str,
-        verify: bool | str,
-    ) -> tuple[bool, str]:
-        """Compile + ``_import`` one YAML file via the legacy kb-dashboard-cli path."""
-        out_dir.mkdir(parents=True, exist_ok=True)
-        upload_yaml_path = self._prepare_upload_yaml(yaml_file, out_dir, data_views)
-        return upload_yaml(
-            str(upload_yaml_path),
-            str(out_dir),
-            kibana_url,
-            space_id=space_id,
-            kibana_api_key=kibana_api_key,
-            verify=verify,
-        )
+                )
+            except Exception as exc:
+                unavailable[pattern] = str(exc) or exc.__class__.__name__
+        for pattern, reason in unavailable.items():
+            print(
+                f"    warning: could not ensure data view '{pattern}': {reason[:300]}",
+                file=sys.stderr,
+            )
+        return data_views, unavailable
 
     def _native_upload_file(
         self,
-        yaml_file: Path,
-        out_dir: Path,
         data_views: list[dict[str, Any]],
         *,
         kibana_url: str,
         space_id: str,
         kibana_api_key: str,
+        es_url: str,
+        es_api_key: str,
         verify: bool | str,
         upload_kibana_url: str,
         target_space: str,
-        native_dashboard: Any = None,
+        native_dashboard: Any,
         native_dashboard_stats: dict[str, Any] | None = None,
+        artifact_label: str = "",
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        """Deploy one dashboard via the typed Dashboards API with legacy fallback.
+        """Deploy one in-memory ``NativeDashboard`` via the typed Dashboards API.
 
-        Rejected (and empty) dashboards degrade gracefully to the legacy
-        compile + ``_import`` path so nothing silently vanishes.
+        Nothing is written to disk: the payload is sent as held in memory. A
+        rejection is reported as-is so the operator sees that the typed API
+        refused the payload instead of a green "uploaded" produced by a
+        different renderer.
         """
-        out_dir.mkdir(parents=True, exist_ok=True)
-        fallback_state: dict[str, Any] = {"used": False, "count": 0, "success": True, "output": []}
-
-        def _fallback(_path: str, dashboard: dict[str, Any] | None = None) -> tuple[bool, str]:
-            fallback_state["used"] = True
-            fallback_state["count"] = int(fallback_state["count"]) + 1
-            fallback_yaml = yaml_file
-            if isinstance(dashboard, dict):
-                fallback_input_dir = out_dir / "_fallback_input"
-                fallback_input_dir.mkdir(parents=True, exist_ok=True)
-                fallback_yaml = fallback_input_dir / f"dashboard_{fallback_state['count']}.yaml"
-                fallback_yaml.write_text(
-                    yaml.safe_dump({"dashboards": [dashboard]}, sort_keys=False, allow_unicode=True),
-                    encoding="utf-8",
-                )
-            ok, out = self._legacy_upload_file(
-                fallback_yaml,
-                out_dir,
-                data_views,
-                kibana_url=kibana_url,
-                space_id=space_id,
-                kibana_api_key=kibana_api_key,
-                verify=verify,
-            )
-            fallback_state["success"] = bool(fallback_state["success"]) and ok
-            fallback_state["output"].append(out)
-            return ok, out
+        label = artifact_label or "(native payload)"
+        if native_dashboard is None:
+            raise ValueError("_native_upload_file needs a native_dashboard payload")
 
         data_view_ids = _data_view_id_lookup(data_views)
-        if native_dashboard is not None:
-            results = [
-                dashboards_api.upload_native_dashboard(
-                    native_dashboard,
-                    kibana_url,
-                    api_key=kibana_api_key,
-                    space_id=space_id,
-                    verify=verify,
-                    native_stats=native_dashboard_stats,
-                    data_view_ids=data_view_ids,
-                )
-            ]
-            # Only a genuine payload rejection degrades to the legacy compiler
-            # path. A "conflict" (409) from the native PUT is NOT retried here:
-            # it is reported as a terminal failure so the operator can decide
-            # whether to use --legacy-import (which calls _import?overwrite=true
-            # and can overwrite same-space [DELETED] placeholders) or to
-            # investigate a cross-space id collision manually.
-            if results[0].status == "rejected":
-                _fallback(str(yaml_file))
-        else:
-            results = dashboards_api.upload_yaml_files(
-                [str(yaml_file)],
+        results = [
+            dashboards_api.upload_native_dashboard(
+                native_dashboard,
                 kibana_url,
                 api_key=kibana_api_key,
+                es_url=es_url,
+                es_api_key=es_api_key,
                 space_id=space_id,
                 verify=verify,
-                fallback=_fallback,
+                native_stats=native_dashboard_stats,
                 data_view_ids=data_view_ids,
+                data_view_inventory=_data_view_inventory(data_views),
+                seen_dashboard_ids=seen_dashboard_ids,
             )
-        # Defensive compatibility: the current helper calls fallback per empty
-        # dashboard with a dashboard payload, but older/mocked helpers may only
-        # report the empty status. Route such files through legacy rather than
-        # silently dropping them.
-        if not fallback_state["used"] and any(r.status == "empty" for r in results):
-            _fallback(str(yaml_file))
-        mapped = sum(r.mapped for r in results)
-        unmapped = sum(r.unmapped for r in results)
-        unmapped_reasons: dict[str, int] = {}
-        for r in results:
-            for reason, count in (r.unmapped_reasons or {}).items():
-                unmapped_reasons[reason] = unmapped_reasons.get(reason, 0) + int(count)
-        if len(results) == 1:
-            status = results[0].status
-        elif results:
-            statuses = {r.status for r in results}
-            status = (
-                "rejected" if "rejected" in statuses
-                else "conflict" if "conflict" in statuses
-                else "empty" if "empty" in statuses
-                else "created" if "created" in statuses
-                else "updated"
+        ]
+        _report_unresolved_data_views(
+            results[0],
+            label,
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+            verify=verify,
+        )
+        # A "conflict" (409) is reported as a terminal failure so the operator
+        # can investigate a cross-space id collision rather than having it
+        # silently overwritten.
+        if results[0].status == "rejected":
+            print(f"    ✗ Dashboards API rejected the payload for {label}.")
+        elif results[0].status == "duplicate_id":
+            # Same discipline as "lossy": the upload that would have looked like
+            # a success is the one that destroys data.
+            print(
+                f"    ✗ {label} resolves to dashboard id "
+                f"'{results[0].dashboard_id}', which another dashboard in this "
+                "upload already wrote; nothing was sent for this one.",
+                file=sys.stderr,
             )
-        else:
-            status = "empty"
-        dashboard_ids = [r.dashboard_id for r in results if r.dashboard_id]
-
-        if fallback_state["used"]:
-            success = bool(fallback_state["success"])
-            output = "; ".join(str(item) for item in fallback_state["output"])
-        else:
-            success = bool(results) and all(r.status in {"created", "updated"} for r in results)
-            output = "; ".join(
-                f"{r.dashboard or '(untitled)'}: {r.status}" for r in results
-            ) or "no dashboards mapped"
-
+        elif results[0].status == "lossy":
+            # HTTP 200 with panels missing. Say so loudly: this is the
+            # failure mode nobody investigates, because everything else
+            # about the run looks green.
+            print(
+                f"    ✗ Kibana accepted {label} but silently dropped "
+                f"{results[0].dropped_panel_count} of {results[0].panels_sent} "
+                "panel(s); the uploaded dashboard is incomplete.",
+                file=sys.stderr,
+            )
+            for dropped in results[0].dropped_panels:
+                # Kibana's validation errors run to thousands of characters;
+                # the console gets a readable head, the JSON report the rest.
+                detail = f": {dropped.reason[:300]}" if dropped.reason else ""
+                where = f" [section {dropped.section}]" if dropped.section else ""
+                print(
+                    f"        - {dropped.title or '(untitled)'}{where}{detail}",
+                    file=sys.stderr,
+                )
+        # One payload in, one result out. The multi-result status ranking the
+        # YAML batch path needed is gone with it.
+        result = results[0]
         return {
-            "yaml_file": yaml_file.name,
-            "success": success,
-            "output": output,
+            "artifact": label,
+            "success": result.status in {"created", "updated"},
+            "output": (
+                f"{result.dashboard or '(untitled)'}: {result.status}"
+                # A "lossy"/"duplicate_id" status alone reads like a shrug; the
+                # message names what the operator lost, so it travels with it
+                # into ``upload_error`` and the migration report.
+                + (
+                    f" — {result.message}"
+                    if result.status in {"lossy", "duplicate_id"} and result.message
+                    else ""
+                )
+            ),
             "space_id": space_id or target_space,
             "kibana_url": upload_kibana_url,
-            "status": status,
-            "mapped": mapped,
-            "unmapped": unmapped,
-            "unmapped_reasons": unmapped_reasons,
-            "fallback_used": bool(fallback_state["used"]),
-            "fallback_count": int(fallback_state["count"]),
-            "dashboard_ids": dashboard_ids,
+            "status": result.status,
+            "mapped": result.mapped,
+            "unmapped": result.unmapped,
+            "unmapped_reasons": dict(result.unmapped_reasons or {}),
+            "dashboard_ids": [result.dashboard_id] if result.dashboard_id else [],
+            "panels_sent": result.panels_sent,
+            "panels_accepted": result.panels_accepted,
+            "dropped_panels": [dropped.to_dict() for dropped in (result.dropped_panels or [])],
+            "unresolved_data_views": [
+                unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
+            ],
         }
 
     def _native_artifact_upload_file(
@@ -425,24 +521,27 @@ class KibanaTargetAdapter(TargetAdapter):
         kibana_url: str,
         space_id: str,
         kibana_api_key: str,
+        es_url: str,
+        es_api_key: str,
         verify: bool | str,
         upload_kibana_url: str,
         target_space: str,
         data_view_ids: dict[str, str] | None = None,
+        data_view_inventory: frozenset[str] = frozenset(),
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        """Deploy one persisted native review artifact file, no legacy fallback.
+        """Deploy one persisted native review artifact file.
 
         A native artifact is a reviewed, already-built typed API payload (see
-        ``targets/kibana/native_artifacts.py``). There is no on-disk YAML to
-        re-derive here, so a rejection is reported as-is instead of silently
-        degrading to a different representation -- pass
-        ``--artifact-format yaml`` explicitly if that fallback is wanted.
+        ``targets/kibana/native_artifacts.py``). It is uploaded exactly as
+        reviewed; a rejection is reported as-is, with no re-derivation through
+        any other representation.
         """
         try:
             artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             return {
-                "yaml_file": artifact_path.name,
+                "artifact": artifact_path.name,
                 "success": False,
                 "output": f"failed to read native artifact: {exc}",
                 "space_id": space_id or target_space,
@@ -451,20 +550,43 @@ class KibanaTargetAdapter(TargetAdapter):
                 "mapped": 0,
                 "unmapped": 0,
                 "unmapped_reasons": {},
-                "fallback_used": False,
-                "fallback_count": 0,
                 "dashboard_ids": [],
+                "panels_sent": 0,
+                "panels_accepted": 0,
+                "dropped_panels": [],
+                "unresolved_data_views": [],
             }
         result = dashboards_api.upload_native_artifact(
             artifact,
             kibana_url,
             api_key=kibana_api_key,
+            es_url=es_url,
+            es_api_key=es_api_key,
             space_id=space_id,
             verify=verify,
             data_view_ids=data_view_ids,
+            data_view_inventory=data_view_inventory,
+            seen_dashboard_ids=seen_dashboard_ids,
         )
+        _report_unresolved_data_views(
+            result,
+            artifact_path.name,
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+            verify=verify,
+        )
+        if result.status == "duplicate_id":
+            # Two reviewed artifacts resolving to one id would leave Kibana
+            # holding whichever was uploaded last, with both reported OK.
+            print(
+                f"    ✗ {artifact_path.name} resolves to dashboard id "
+                f"'{result.dashboard_id}', which another artifact in this upload "
+                "already wrote; nothing was sent for this one.",
+                file=sys.stderr,
+            )
         return {
-            "yaml_file": artifact_path.name,
+            "artifact": artifact_path.name,
             "success": result.status in {"created", "updated"},
             "output": f"{result.dashboard or '(untitled)'}: {result.status}"
             if not result.message
@@ -475,29 +597,41 @@ class KibanaTargetAdapter(TargetAdapter):
             "mapped": result.mapped,
             "unmapped": result.unmapped,
             "unmapped_reasons": dict(result.unmapped_reasons or {}),
-            "fallback_used": False,
-            "fallback_count": 0,
             "dashboard_ids": [result.dashboard_id] if result.dashboard_id else [],
+            "panels_sent": result.panels_sent,
+            "panels_accepted": result.panels_accepted,
+            "dropped_panels": [dropped.to_dict() for dropped in (result.dropped_panels or [])],
+            "unresolved_data_views": [
+                unresolved.to_dict() for unresolved in (result.unresolved_data_views or [])
+            ],
         }
 
-    def upload(self, compiled_dir: Path, **kwargs: Any) -> dict[str, Any]:
-        compiled_dir = Path(compiled_dir)
+    def upload(self, artifact_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        """Deploy the ``native/*.native.json`` artifacts under ``artifact_dir``.
+
+        Native Dashboard-as-Code artifacts are the only upload input: they are
+        what ``obs-migrate migrate`` writes and what a reviewer inspects, and
+        they are sent to the typed Kibana Dashboards API byte-for-byte.
+
+        The data views the batch's controls reference are ensured before the
+        first artifact is sent, from the union of what those artifacts actually
+        ask for -- not a fixed default list. A reviewed artifact naming
+        ``metrics-*.prometheus-*`` (the Datadog ``prometheus_native`` profile)
+        otherwise had nothing to resolve against, so its control shipped
+        carrying the raw pattern and Kibana rendered it as "An error occurred".
+        """
+        artifact_dir = Path(artifact_dir)
         kibana_url = str(kwargs.get("kibana_url", "") or "")
         space_id = str(kwargs.get("space_id", "") or "")
         kibana_api_key = str(kwargs.get("kibana_api_key", "") or "")
+        es_url = str(kwargs.get("es_url", "") or "")
+        es_api_key = str(kwargs.get("es_api_key", "") or "")
         verify = kwargs.get("verify", True)
-        use_dashboards_api = bool(kwargs.get("use_dashboards_api", True))
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
 
-        # Legacy import can only compile+import YAML, so it forces yaml
-        # regardless of the requested --artifact-format.
-        requested_format = str(kwargs.get("artifact_format", "") or "auto") if use_dashboards_api else "yaml"
-        native_files: list[Path] = []
-        yaml_files: list[Path] = []
-        if requested_format in {"native", "auto"}:
-            native_files = _resolve_native_artifact_files(compiled_dir)
-        if requested_format == "native" and not native_files:
+        native_files = _resolve_native_artifact_files(artifact_dir)
+        if not native_files:
             return {
                 "summary": {
                     "uploaded_ok": 0,
@@ -509,181 +643,118 @@ class KibanaTargetAdapter(TargetAdapter):
                 "records": [],
             }
 
-        if requested_format == "auto" and native_files and compiled_dir.name != "native":
-            yaml_files = _resolve_yaml_files(compiled_dir)
-            if yaml_files:
-                native_stems = {_native_artifact_stem(path) for path in native_files}
-                yaml_stems = {path.stem for path in yaml_files}
-                if native_stems != yaml_stems:
-                    return {
-                        "summary": {
-                            "uploaded_ok": 0,
-                            "total": 0,
-                            "space_id": space_id or target_space,
-                            "kibana_url": upload_kibana_url,
-                            "error": "mixed_native_yaml_artifacts",
-                            "native_count": len(native_files),
-                            "yaml_count": len(yaml_files),
-                            "missing_native_artifacts": sorted(yaml_stems - native_stems),
-                            "extra_native_artifacts": sorted(native_stems - yaml_stems),
-                        },
-                        "records": [],
-                    }
-
-        if native_files:
-            data_views = self._ensure_default_data_views(
-                kibana_url,
-                api_key=kibana_api_key,
-                space_id=space_id,
-                verify=verify,
-            )
-            data_view_ids = _data_view_id_lookup(data_views)
-            records = [
-                self._native_artifact_upload_file(
-                    artifact_file,
-                    kibana_url=kibana_url,
-                    space_id=space_id,
-                    kibana_api_key=kibana_api_key,
-                    verify=verify,
-                    upload_kibana_url=upload_kibana_url,
-                    target_space=target_space,
-                    data_view_ids=data_view_ids,
-                )
-                for artifact_file in native_files
-            ]
-            summary = {
-                "uploaded_ok": sum(1 for item in records if item["success"]),
-                "total": len(records),
-                "space_id": space_id or target_space,
-                "kibana_url": upload_kibana_url,
-                "artifact_format": "native",
-            }
-            return {"summary": summary, "records": records}
-
-        records: list[dict[str, Any]] = []
-        if not yaml_files:
-            yaml_files = _resolve_yaml_files(compiled_dir)
-        data_views = []
-        if yaml_files:
-            data_views = self._ensure_default_data_views(
-                kibana_url,
-                api_key=kibana_api_key,
-                space_id=space_id,
-                verify=verify,
-            )
-        for yaml_file in yaml_files:
-            out_dir = compiled_dir / yaml_file.stem
-            if use_dashboards_api:
-                records.append(
-                    self._native_upload_file(
-                        yaml_file,
-                        out_dir,
-                        data_views,
-                        kibana_url=kibana_url,
-                        space_id=space_id,
-                        kibana_api_key=kibana_api_key,
-                        verify=verify,
-                        upload_kibana_url=upload_kibana_url,
-                        target_space=target_space,
-                    )
-                )
-                continue
-            success, output = self._legacy_upload_file(
-                yaml_file,
-                out_dir,
-                data_views,
+        patterns_by_artifact, batch_patterns = _batch_data_view_patterns(native_files)
+        data_views, unavailable = self._ensure_data_views_for_upload(
+            kibana_url,
+            api_key=kibana_api_key,
+            space_id=space_id,
+            verify=verify,
+            extra_patterns=batch_patterns,
+        )
+        data_view_ids = _data_view_id_lookup(data_views)
+        data_view_inventory = _data_view_inventory(data_views)
+        # One ledger for the whole batch: artifact *stems* are unique, dashboard
+        # ids are the upsert key, and two artifacts reaching one id would leave
+        # Kibana holding only the last while both records said OK.
+        seen_dashboard_ids: set[str] = set()
+        records = []
+        for artifact_file in native_files:
+            record = self._native_artifact_upload_file(
+                artifact_file,
                 kibana_url=kibana_url,
                 space_id=space_id,
                 kibana_api_key=kibana_api_key,
+                es_url=es_url,
+                es_api_key=es_api_key,
                 verify=verify,
+                upload_kibana_url=upload_kibana_url,
+                target_space=target_space,
+                data_view_ids=data_view_ids,
+                data_view_inventory=data_view_inventory,
+                seen_dashboard_ids=seen_dashboard_ids,
             )
-            records.append(
-                {
-                    "yaml_file": yaml_file.name,
-                    "success": success,
-                    "output": output,
-                    "space_id": space_id or target_space,
-                    "kibana_url": upload_kibana_url,
-                }
+            _fail_record_on_unavailable_data_view(
+                record, patterns_by_artifact.get(artifact_file, []), unavailable,
             )
+            records.append(record)
         summary = {
             "uploaded_ok": sum(1 for item in records if item["success"]),
             "total": len(records),
             "space_id": space_id or target_space,
             "kibana_url": upload_kibana_url,
+            "artifact_format": "native",
+            "panels_dropped": _records_panels_dropped(records),
         }
-        if use_dashboards_api:
-            summary["fallbacks"] = sum(int(item.get("fallback_count", 0)) for item in records)
-        return {
-            "summary": summary,
-            "records": records,
-        }
+        if unavailable:
+            # Only present when something was refused, so the clean path's
+            # summary is byte-identical to what it has always been.
+            summary["data_views_unavailable"] = dict(unavailable)
+        return {"summary": summary, "records": records}
 
     def upload_dashboard(
         self,
-        yaml_path: str | Path,
-        output_dir: str | Path,
         *,
         kibana_url: str,
         space_id: str = "",
         kibana_api_key: str = "",
+        es_url: str = "",
+        es_api_key: str = "",
         verify: bool | str = True,
-        use_dashboards_api: bool = True,
-        native_dashboard: Any = None,
+        native_dashboard: Any,
         native_dashboard_stats: dict[str, Any] | None = None,
+        artifact_label: str = "",
+        seen_dashboard_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        data_views = self._ensure_default_data_views(
+        """Deploy one dashboard from the in-memory ``NativeDashboard`` payload.
+
+        The migration pipeline holds the typed payload it just built and uploads
+        that, passing ``artifact_label`` (the artifact stem) for reporting.
+        ``seen_dashboard_ids`` is the caller's per-run id ledger: a pipeline
+        uploading many dashboards passes one set across the loop so a repeated
+        dashboard id fails instead of overwriting an earlier dashboard.
+        """
+        if native_dashboard is None:
+            raise ValueError("upload_dashboard requires a native_dashboard payload")
+        referenced_patterns = _referenced_data_view_patterns(native_dashboard)
+        data_views, unavailable = self._ensure_data_views_for_upload(
             kibana_url,
             api_key=kibana_api_key,
             space_id=space_id,
             verify=verify,
+            extra_patterns=referenced_patterns,
         )
         target_space = detect_space_id_from_kibana_url(kibana_url) or "default"
         upload_kibana_url = kibana_url_for_space(kibana_url, space_id)
-        if use_dashboards_api:
-            record = self._native_upload_file(
-                Path(yaml_path),
-                Path(output_dir),
-                data_views,
-                kibana_url=kibana_url,
-                space_id=space_id,
-                kibana_api_key=kibana_api_key,
-                verify=verify,
-                upload_kibana_url=upload_kibana_url,
-                target_space=target_space,
-                native_dashboard=native_dashboard,
-                native_dashboard_stats=native_dashboard_stats,
-            )
-            return {
-                "success": record["success"],
-                "output": record["output"],
-                "space_id": record["space_id"],
-                "kibana_url": record["kibana_url"],
-                "status": record["status"],
-                "mapped": record["mapped"],
-                "unmapped": record["unmapped"],
-                "unmapped_reasons": record.get("unmapped_reasons", {}),
-                "fallback_used": record["fallback_used"],
-                "dashboard_ids": record["dashboard_ids"],
-            }
-        upload_yaml_path = self._prepare_upload_yaml(
-            Path(yaml_path),
-            Path(output_dir),
+        record = self._native_upload_file(
             data_views,
-        )
-        success, output = upload_yaml(
-            str(upload_yaml_path),
-            str(output_dir),
-            kibana_url,
+            kibana_url=kibana_url,
             space_id=space_id,
             kibana_api_key=kibana_api_key,
+            es_url=es_url,
+            es_api_key=es_api_key,
             verify=verify,
+            upload_kibana_url=upload_kibana_url,
+            target_space=target_space,
+            native_dashboard=native_dashboard,
+            native_dashboard_stats=native_dashboard_stats,
+            artifact_label=artifact_label,
+            seen_dashboard_ids=seen_dashboard_ids,
         )
+        _fail_record_on_unavailable_data_view(record, referenced_patterns, unavailable)
         return {
-            "success": success,
-            "output": output,
-            "space_id": space_id or target_space,
-            "kibana_url": upload_kibana_url,
+            "success": record["success"],
+            "output": record["output"],
+            "space_id": record["space_id"],
+            "kibana_url": record["kibana_url"],
+            "status": record["status"],
+            "mapped": record["mapped"],
+            "unmapped": record["unmapped"],
+            "unmapped_reasons": record.get("unmapped_reasons", {}),
+            "dashboard_ids": record["dashboard_ids"],
+            "panels_sent": record.get("panels_sent", 0),
+            "panels_accepted": record.get("panels_accepted", 0),
+            "dropped_panels": record.get("dropped_panels", []),
+            "unresolved_data_views": record.get("unresolved_data_views", []),
         }
 
     def smoke(self, **kwargs: Any) -> dict[str, Any]:

@@ -61,6 +61,32 @@ class IndexRewriteRuleModel(_StrictModel):
     replace: str
 
 
+class PanelQueryOverrideModel(_StrictModel):
+    title_match: str
+    esql_query: str
+    status_override: str = "migrated"
+    # Optional Lens presentation override when the curated ES|QL shape does
+    # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
+    kibana_type_override: str | None = None
+
+
+class PanelPositionOverrideModel(_StrictModel):
+    x: int | None = None
+    y: int | None = None
+
+
+class PanelSizeOverrideModel(_StrictModel):
+    w: int | None = None
+    h: int | None = None
+
+
+class PanelLayoutOverrideModel(_StrictModel):
+    title_match: str
+    position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
+    size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
+    collapsed: bool | None = None
+
+
 class QueryConfigModel(_StrictModel):
     not_feasible_patterns: list[PatternRuleModel] = Field(default_factory=list)
     warning_patterns: list[PatternRuleModel] = Field(default_factory=list)
@@ -83,6 +109,7 @@ class QueryConfigModel(_StrictModel):
     ignored_labels: list[str] = Field(default_factory=list)
     index_rewrites: list[IndexRewriteRuleModel] = Field(default_factory=list)
     metric_kinds: dict[str, str] = Field(default_factory=dict)
+    live_optional_metrics: list[str] = Field(default_factory=list)
     metric_map: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("label_candidates", mode="before")
@@ -113,6 +140,8 @@ class QueryConfigModel(_StrictModel):
 class PanelConfigModel(_StrictModel):
     type_map: dict[str, str] = Field(default_factory=dict)
     skip_types: list[str] = Field(default_factory=list)
+    query_overrides: list[PanelQueryOverrideModel] = Field(default_factory=list)
+    layout_overrides: list[PanelLayoutOverrideModel] = Field(default_factory=list)
 
 
 class ControlsConfigModel(_StrictModel):
@@ -175,6 +204,7 @@ def normalize_rule_pack_payload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "ignored_labels",
                 "index_rewrites",
                 "metric_kinds",
+                "live_optional_metrics",
                 "metric_map",
             }:
                 query_payload[field_name] = data.pop(field_name)
@@ -199,6 +229,10 @@ __all__ = [
     "GrafanaRulePackModel",
     "IndexRewriteRuleModel",
     "PanelConfigModel",
+    "PanelLayoutOverrideModel",
+    "PanelPositionOverrideModel",
+    "PanelQueryOverrideModel",
+    "PanelSizeOverrideModel",
     "PatternRuleModel",
     "QueryConfigModel",
     "SchemaConfigModel",

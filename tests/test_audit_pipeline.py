@@ -12,7 +12,9 @@ from scripts.audit_pipeline import (
     DashboardAudit,
     PanelAudit,
     _section_dashboard_summary,
+    _section_panel_type_summary,
     _section_per_dashboard_traces,
+    _to_json,
     _verdict,
     generate_pipeline_trace_md,
 )
@@ -62,6 +64,69 @@ class PipelineTraceSummaryTests(unittest.TestCase):
         self.assertIn("| datadog | Nested widgets | 4 | 1 | 1 | 1 | 1 | 0 |", trace_doc)
         self.assertIn("**File:** `nested.json` — **Panels:** 4", trace_doc)
 
+    def test_panel_type_summary_tracks_dashboards_api_family(self):
+        audit = DashboardAudit(
+            source="grafana",
+            file_name="types.json",
+            dashboard_title="Types",
+            total_panels=3,
+            panels=[
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="timeseries",
+                    kibana_type="line",
+                    dashboards_api_type="vis:xy",
+                    status="migrated",
+                ),
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="timeseries",
+                    kibana_type="line",
+                    dashboards_api_type="vis:xy",
+                    status="migrated_with_warnings",
+                ),
+                PanelAudit(
+                    source_type="grafana",
+                    source_panel_type="text",
+                    kibana_type="markdown",
+                    dashboards_api_type="markdown",
+                    status="skipped",
+                ),
+            ],
+        )
+
+        summary = _section_panel_type_summary([audit])
+
+        self.assertIn(
+            "| grafana | `timeseries` | `line` | `vis:xy` | 2 | 1 | 1 | 0 | 0 | 0 | 0 |",
+            summary,
+        )
+        self.assertIn(
+            "| grafana | `text` | `markdown` | `markdown` | 1 | 0 | 0 | 0 | 0 | 1 | 0 |",
+            summary,
+        )
+
+    def test_json_audit_emits_dashboards_api_type(self):
+        audit = DashboardAudit(
+            source="datadog",
+            file_name="types.json",
+            dashboard_title="Types",
+            panels=[
+                PanelAudit(
+                    source_type="datadog",
+                    source_panel_type="query_value",
+                    kibana_type="metric",
+                    dashboards_api_type="vis:metric",
+                    status="ok",
+                )
+            ],
+        )
+
+        payload = _to_json([audit])
+
+        self.assertIn('"source_type": "datadog"', payload)
+        self.assertIn('"dashboards_api_type": "vis:metric"', payload)
+
     def test_omitted_or_unbound_template_filter_is_not_classified_correct(self):
         for warning in (
             "Scope filter with template variable could not be bound exactly",
@@ -102,6 +167,160 @@ class PipelineTraceSummaryTests(unittest.TestCase):
                 output_path.read_text(encoding="utf-8"),
                 "combined cross-source trace",
             )
+
+
+class GrafanaAuditControlsTests(unittest.TestCase):
+    """Controls are read from ``result.dashboard_ir``, not from emitted YAML.
+
+    The audit used to re-parse the dashboard YAML the translator had just
+    written and reported ``controls = []`` whenever that read failed, so a
+    dashboard with template variables looked like a dashboard with none.
+    """
+
+    def _dashboard_with_a_template_variable(self) -> dict:
+        return {
+            "title": "Controls Audit",
+            "uid": "controls-audit-1",
+            "schemaVersion": 30,
+            "templating": {
+                "list": [
+                    {
+                        "name": "instance",
+                        "type": "query",
+                        "datasource": {"type": "prometheus"},
+                        "query": "label_values(up, instance)",
+                        "multi": True,
+                        "current": {"text": "All", "value": "$__all"},
+                    }
+                ]
+            },
+            "panels": [
+                {
+                    "title": "Up",
+                    "type": "stat",
+                    "gridPos": {"w": 12, "h": 8, "x": 0, "y": 0},
+                    "targets": [{"refId": "A", "expr": "up", "instant": True}],
+                }
+            ],
+        }
+
+    def test_grafana_audit_reports_declared_controls(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_a_template_variable()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_grafana_dashboard(source, "metrics-*")
+
+        self.assertTrue(
+            audit.controls,
+            "expected the audit to report the dashboard's template variable",
+        )
+        names = {
+            str(control.get("variable_name") or control.get("field_name") or "")
+            for control in audit.controls
+        }
+        self.assertIn("instance", names)
+
+
+class DatadogAuditControlsTests(unittest.TestCase):
+    """The Datadog branch reports controls from the same IR Grafana reads.
+
+    It used to call ``generate_dashboard_yaml``, which discards the
+    ``DashboardIR`` it builds internally, so every Datadog dashboard was
+    audited as ``controls = 0`` — including dashboards whose template
+    variables the translator had turned into real Kibana controls.
+    """
+
+    def _dashboard_with_template_variables(self) -> dict:
+        return {
+            "id": "controls-audit-dd-1",
+            "title": "Datadog Controls Audit",
+            "layout_type": "ordered",
+            "template_variables": [
+                {
+                    "name": "host",
+                    "tag": "host",
+                    "prefix": "host",
+                    "default": "*",
+                    "defaults": ["*"],
+                    "available_values": ["web-1", "web-2"],
+                },
+                # No tag/prefix and unresolvable by name: dropped on purpose,
+                # so the count is "controls the translator could build", not
+                # "template variables declared".
+                {"name": "scope", "default": "*"},
+            ],
+            "widgets": [
+                {
+                    "id": 1,
+                    "definition": {
+                        "type": "timeseries",
+                        "title": "CPU",
+                        "requests": [
+                            {
+                                "queries": [
+                                    {
+                                        "data_source": "metrics",
+                                        "name": "query1",
+                                        "query": "avg:system.cpu.user{$host} by {host}",
+                                    }
+                                ],
+                                "formulas": [{"formula": "query1"}],
+                                "response_format": "timeseries",
+                            }
+                        ],
+                    },
+                    "layout": {"x": 0, "y": 0, "w": 4, "h": 2},
+                }
+            ],
+        }
+
+    def test_datadog_audit_reports_translated_controls(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_template_variables()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_datadog_dashboard(source, "metrics-otel-default")
+
+        self.assertEqual(len(audit.template_variables), 2)
+        self.assertEqual(
+            len(audit.controls),
+            1,
+            f"expected the resolvable template variable to be audited: {audit.controls}",
+        )
+        control = audit.controls[0]
+        self.assertEqual(control.get("variable_name"), "host")
+        self.assertEqual(control.get("variable_type"), "datadog_template")
+        self.assertEqual(control.get("available_options"), ["web-1", "web-2"])
+        # The trace docs render ``label`` + ``type``; both must survive.
+        self.assertEqual(control.get("label"), "host")
+        self.assertEqual(control.get("type"), "options")
+
+    def test_datadog_audit_still_emits_yaml(self):
+        """The switch to ``generate_dashboard_artifacts`` keeps the YAML view."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "dash.json"
+            source.write_text(
+                json.dumps(self._dashboard_with_template_variables()),
+                encoding="utf-8",
+            )
+
+            audit = audit_pipeline._audit_datadog_dashboard(source, "metrics-otel-default")
+
+        self.assertIn("dashboards:", audit.yaml_content)
+        self.assertNotIn("YAML generation failed", audit.yaml_content)
 
 
 if __name__ == "__main__":

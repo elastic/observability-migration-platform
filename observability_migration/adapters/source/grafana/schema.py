@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from typing import Any
 
 import requests
 
@@ -160,6 +161,45 @@ class SchemaResolver:
         self._metric_map_warnings: list[str] = []
         self._metric_map_applied: dict[str, str] = {}
 
+    def _profile_metric_candidates(self, metric_name, profile):
+        if not metric_name:
+            return []
+        ordered: list[str] = []
+
+        def add(candidate):
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+
+        if profile == "prometheus_native":
+            add(f"metrics.{metric_name}")
+            add(metric_name)
+        elif profile == "prometheus_metrics":
+            add(f"prometheus.metrics.{metric_name}")
+            add(f"metrics.{metric_name}")
+            add(metric_name)
+        elif profile == "prometheus_remote_write":
+            add(f"prometheus.{metric_name}.value")
+            add(f"prometheus.{metric_name}.counter")
+            add(f"prometheus.{metric_name}.rate")
+            add(metric_name)
+        else:
+            add(metric_name)
+            add(f"metrics.{metric_name}")
+        return ordered
+
+    def copy_with_pack(self, rule_pack) -> SchemaResolver:
+        """Return a new resolver sharing this resolver's ES field cache but using a different rule_pack.
+
+        Used when a per-dashboard curated pack supplies different label_candidates than the
+        base pack the shared resolver was built with.  The ES field cache is reused to avoid
+        a second network round-trip, but the new resolver is otherwise independent.
+        """
+        clone = SchemaResolver.__new__(SchemaResolver)
+        clone.__dict__.update(self.__dict__)
+        clone._rule_pack = rule_pack
+        clone._cooccurrence_cache = {}
+        return clone
+
     def metric_map_gaps(self) -> list[str]:
         return list(self._metric_map_gaps)
 
@@ -189,6 +229,21 @@ class SchemaResolver:
                 if field_name not in candidates:
                     candidates.append(field_name)
         return candidates
+
+    def _profile_namespaced_label_candidates(self, label, profile):
+        prefix = ""
+        if profile in {"prometheus_remote_write", "prometheus_metrics"}:
+            prefix = "prometheus.labels."
+        elif profile == "prometheus_native":
+            prefix = "labels."
+        if not prefix:
+            return []
+        ordered = [f"{prefix}{label}"]
+        for candidate in self._candidate_fields(label):
+            field_name = f"{prefix}{candidate}"
+            if field_name not in ordered:
+                ordered.append(field_name)
+        return ordered
 
     def _es_headers(self):
         headers = {}
@@ -469,9 +524,67 @@ class SchemaResolver:
         }
         if self._field_profile == "auto" and self._auto_resolved_profile == "otel":
             summary["auto_fallback"] = "otel"
+        guidance = self._operator_guidance(summary)
+        if guidance:
+            summary["operator_guidance"] = guidance
         if self._profile_warnings:
             summary["profile_warnings"] = list(self._profile_warnings)
         return summary
+
+    def _operator_guidance(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        field_profile = str(summary.get("field_profile") or "")
+        planned = summary.get("planned_schema_profile")
+        detected = summary.get("detected_schema_profile")
+        status = str(summary.get("status") or "")
+        index_pattern = str(summary.get("index_pattern") or self._index_pattern or "metrics-*")
+
+        if field_profile == "otel" and detected in self._NAMED_PROMETHEUS_PLANS:
+            return {
+                "likely_target_layout": detected,
+                "suggested_field_profile": detected,
+                "next_step": (
+                    f"Live caps for '{index_pattern}' look like {detected}. Re-run "
+                    f"with --field-profile {detected}, or use --field-profile auto "
+                    "--es-url so the tool can select that layout."
+                ),
+            }
+
+        if summary.get("profile_mismatch") and detected in self._NAMED_PROMETHEUS_PLANS:
+            return {
+                "likely_target_layout": detected,
+                "suggested_field_profile": detected,
+                "next_step": (
+                    f"The planned profile {planned} does not match the live fields in "
+                    f"'{index_pattern}'. Re-run with --field-profile {detected} if "
+                    "this is the target you intend to query."
+                ),
+            }
+
+        if field_profile == "auto" and summary.get("auto_fallback") == "otel":
+            return {
+                "likely_target_layout": "otel_or_mixed",
+                "next_step": (
+                    "Live caps did not prove a named Prometheus layout. If this "
+                    "target came from Elasticsearch native Prometheus write, Fleet "
+                    "Prometheus remote_write, or Metricbeat Prometheus, choose that "
+                    "explicit --field-profile. Otherwise keep otel and verify "
+                    "whether metric names still match the source."
+                ),
+            }
+
+        if field_profile in {"otel", "auto"} and status in {"offline", "empty", "error"}:
+            return {
+                "likely_target_layout": "unverified",
+                "next_step": (
+                    f"Schema discovery is unverified for '{index_pattern}'. Re-run "
+                    "with --es-url and point --esql-index at the concrete metrics "
+                    "data stream. If your target stores ECS / Elastic Agent system "
+                    "metrics instead of Prometheus-shaped names, plan on explicit "
+                    "metric_map or rule-pack overrides."
+                ),
+            }
+
+        return None
 
     def _build_discovered_mappings(self):
         # Native endpoint indices have no OTel fields at all — skip the scan.
@@ -591,13 +704,21 @@ class SchemaResolver:
         # present at all in this layout.
         profile = planned or self._namespacing_schema_profile()
         if profile in {"prometheus_remote_write", "prometheus_metrics"}:
-            return f"prometheus.labels.{label}"
+            candidates = self._profile_namespaced_label_candidates(label, profile)
+            for field_name in candidates:
+                if not self._field_cache or field_name in self._field_cache:
+                    return field_name
+            return candidates[0]
         # Native /_prometheus endpoint: labels are always stored as `labels.<name>`.
         # Return the namespaced form unconditionally — OTel candidates do not exist
         # in this layout, so falling through to them would emit wrong field names.
         # Missing labels surface through preflight rather than silently reverting.
         if profile == "prometheus_native":
-            return f"labels.{label}"
+            candidates = self._profile_namespaced_label_candidates(label, profile)
+            for field_name in candidates:
+                if not self._field_cache or field_name in self._field_cache:
+                    return field_name
+            return candidates[0]
         # Otherwise, fall back to OTEL/Prometheus normalization candidates.
         if label in self._discovered_mappings:
             return self._discovered_mappings[label]
@@ -805,6 +926,54 @@ class SchemaResolver:
         except Exception:
             return None
 
+    # Suffix conventions exporters adopted wholesale at a version boundary, so a
+    # dashboard written before the change names a metric that no longer exists:
+    # ``_total`` is the OpenMetrics counter suffix, and node_exporter 0.16 added
+    # ``_bytes`` to every byte-valued metric (node_memory_Buffers ->
+    # node_memory_Buffers_bytes). Both directions are tried, and only ever
+    # against live caps.
+    _EXPORTER_SUFFIX_DRIFT = ("_total", "_bytes")
+
+    def _counter_suffix_alias(self, field, metric_name):
+        """Reconcile known exporter suffix drift against live caps.
+
+        Exporters moved counters to the OpenMetrics ``_total`` convention at
+        different times, so a dashboard written against one version names a
+        metric the current exporter no longer exposes. Real case:
+        postgres-overview "Buffers" queries ``pg_stat_bgwriter_buffers_alloc``
+        while postgres_exporter v0.15 emits
+        ``pg_stat_bgwriter_buffers_alloc_total`` -- five panels dead on a
+        perfectly healthy target.
+
+        Only ever applied when live discovery PROVES it: the requested field is
+        absent from the caps and the other spelling is present. With no caps
+        (offline) nothing is inferred, so this can never invent a field. The
+        substitution is recorded like an applied metric_map entry so the run
+        reports it instead of quietly renaming the operator's metric.
+        """
+        cache = self._field_cache or {}
+        if not cache or field in cache:
+            return field
+        candidates = []
+        for suffix in self._EXPORTER_SUFFIX_DRIFT:
+            if field.endswith(suffix):
+                candidates.append(field[: -len(suffix)])
+            else:
+                candidates.append(f"{field}{suffix}")
+        alternative = next((c for c in candidates if c in cache), None)
+        if alternative is None:
+            return field
+        self._metric_map_applied[metric_name] = alternative
+        warning = (
+            f"Resolved {field!r} to {alternative!r}: the target does not have the "
+            "metric under the name the dashboard uses, but does have it under a "
+            "known exporter suffix rename ('_total' for OpenMetrics counters, "
+            "'_bytes' since node_exporter 0.16)"
+        )
+        if warning not in self._metric_map_warnings:
+            self._metric_map_warnings.append(warning)
+        return alternative
+
     def resolve_metric_field(self, metric_name, *, prefer=None, source_labels=None):
         """Resolve a PromQL metric name to its actual stored field.
 
@@ -855,14 +1024,24 @@ class SchemaResolver:
         self._discover_fields()
         profile = self._namespacing_schema_profile()
         if profile == "prometheus_native":
-            # Native endpoint stores metrics as `metrics.<name>` directly — no
-            # suffix variants.  Return the prefixed form unconditionally so the
-            # contract layer can surface missing fields via preflight.
-            return f"metrics.{metric_name}"
+            # Native endpoint normally stores metrics as `metrics.<name>`, but
+            # some local/dev streams still expose a flat fallback field for a
+            # subset of metrics. Prefer the spelling live caps actually
+            # advertise so emitted ES|QL does not hard-code a missing nested
+            # field when the flat alias is the only runtime-valid shape.
+            cache = self._field_cache or {}
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if candidate in cache:
+                    return self._counter_suffix_alias(candidate, metric_name)
+            return self._counter_suffix_alias(f"metrics.{metric_name}", metric_name)
         if profile == "prometheus_metrics":
             # Classic Metricbeat remote_write (use_types=false): nested under
             # prometheus.metrics.<name> with labels under prometheus.labels.*.
-            return f"prometheus.metrics.{metric_name}"
+            cache = self._field_cache or {}
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if candidate in cache:
+                    return self._counter_suffix_alias(candidate, metric_name)
+            return self._counter_suffix_alias(f"prometheus.metrics.{metric_name}", metric_name)
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to
@@ -1009,8 +1188,9 @@ class SchemaResolver:
         # Native endpoint layout: metric is stored as `metrics.<name>` with
         # time_series_metric: counter|gauge set by ES's name-suffix heuristic.
         if profile == "prometheus_native":
-            if is_counter_metric_field(self.field_capability(f"metrics.{metric_name}")):
-                return True
+            for candidate in self._profile_metric_candidates(metric_name, profile):
+                if is_counter_metric_field(self.field_capability(candidate)):
+                    return True
         return False
 
     def declared_gauge(self, metric_name):

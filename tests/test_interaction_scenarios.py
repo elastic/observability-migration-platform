@@ -1373,23 +1373,20 @@ def test_redis_scenario_manifest_is_registered_and_strict() -> None:
         "pod_name",
         "instance",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
     instance = next(control for control in scenario.controls if control.key == "instance")
     assert instance.assertions.affected_panels == "all_query_panels"
     namespace = next(control for control in scenario.controls if control.key == "namespace")
     pod_name = next(control for control in scenario.controls if control.key == "pod_name")
-    assert namespace.assertions.unaffected_panels == "all_query_panels"
+    assert namespace.capability is CapabilityCategory.MIGRATION_GAP
+    assert namespace.assertions.unaffected_panels == ()
     assert namespace.assertions.affected_panels == ()
     assert namespace.assertions.query_contains == ()
     assert namespace.assertions.allow_incompatible_selections is False
-    assert pod_name.assertions.unaffected_panels == "all_query_panels"
+    assert pod_name.capability is CapabilityCategory.MIGRATION_GAP
+    assert pod_name.assertions.unaffected_panels == ()
     assert pod_name.assertions.allow_incompatible_selections is False
-    assert {combination.id for combination in scenario.combinations} == {
-        "namespace-and-pod_name",
-        "namespace-and-instance",
-        "all-three",
-    }
+    assert {combination.id for combination in scenario.combinations} == set()
 
 
 K8S_MANIFEST = (
@@ -1412,7 +1409,6 @@ def test_k8s_scenario_manifest_is_registered_and_strict() -> None:
         "job",
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     cluster = next(control for control in scenario.controls if control.key == "cluster")
     job = next(control for control in scenario.controls if control.key == "job")

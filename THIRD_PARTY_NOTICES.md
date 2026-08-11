@@ -85,24 +85,31 @@ under the MIT License:
   `Copyright (c) 2025 kb-yaml-to-lens contributors`
 - Bundled license text: `licenses/MIT-strawgate-kb-yaml-to-lens.txt`
 
-Generated files tracked in this repository:
+Generated / pinned files tracked in this repository:
 
 - `docs/dashboards/schema.json` — regenerated from `kb-dashboard-core` by
-  `scripts/generate_dashboard_schema.sh`.
-- `docs/dashboards/schema.toon` — regenerated from the same source when
-  `npx` is available.
+  `scripts/generate_dashboard_schema.sh`. Documents the internal
+  `DashboardIR.to_yaml_dict()` dict shape.
+- `docs/dashboards/kibana_dashboards_api.openapi.yaml` — pinned Kibana
+  Dashboards API OpenAPI bundle for `/api/dashboards`. Refresh with
+  `make refresh-native-schema` (from Elastic's hosted Dashboards API spec)
+  and commit intentional bumps. Validated offline by `make check-native-schema`.
 
-The local dashboard workflow may also invoke `kb-dashboard-cli` and
-`kb-dashboard-lint`, but those tools are not themselves tracked artifacts in
-this repository.
+`kb-dashboard-core` remains the upstream source of the tracked JSON **dict-shape
+schema**. The dashboard workflow no longer invokes `kb-dashboard-cli` or
+`kb-dashboard-lint` at runtime: the dashboard-YAML compile/lint path was
+removed, and dashboards are deployed through Kibana's own typed Dashboards API.
+Those tools are not tracked artifacts in this repository either way.
 
 ### `elastic-observability-migration[kibana]` Extra
 
 The optional `[kibana]` dependency group (installed via
 `pip install ".[kibana]"`, resolved only on **Python 3.12+** per the
-`pyproject.toml` environment markers) declares the following packages so the
-Kibana compile/lint tooling can be installed in-environment instead of fetched
-at runtime via `uvx`:
+`pyproject.toml` environment markers) still declares the following packages, and
+they are documented here for license attribution. **No command in this
+repository invokes them any more** — the dashboard-YAML compile/lint path that
+used to shell out to them (installed-first, with a pinned `uvx` fallback) has
+been removed:
 
 - `kb-dashboard-cli`, `kb-dashboard-lint`, and their transitive
   `kb-dashboard-core`, `kb-dashboard-tools`, and `kb-dashboard-docs` — all

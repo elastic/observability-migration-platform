@@ -570,3 +570,356 @@ def test_audit_dashboard_elements_includes_control_warnings():
     v = audit_dashboard_elements(snap, expected_kind_by_title={"p1": "xy"}, breakdown_titles={"p1"})
     assert v.status == "warn"
     assert any("incompatible selections" in r for r in v.reasons)
+
+
+# --- verification_exception: evidence-based field-gap classification ---------
+#
+# Elasticsearch wraps BOTH genuine translator defects (syntax/type errors) and
+# pure field absence in one ``verification_exception``. The classifier must read
+# the exception's problem list rather than the marker: a problem list that is
+# exclusively unknown-column complaints whose columns field caps confirm absent
+# is a data-readiness ``field_gap``; anything else (mixed content, unparsed
+# problems, unconfirmable absence) stays a hard ``render_error``.
+
+# The real Kibana DOM for a MySQL panel whose Datadog-shaped metric names are
+# absent from a prometheus-shaped target index. Kibana renders the error in a
+# EUI code block, one <span> per line, and emits the block TWICE per panel.
+_UNKNOWN_COLUMN_BLOCK = (
+    '<code class="euiCodeBlock__code" data-code-language="text" data-test-subj="errMessage">'
+    '<span class="euiCodeBlock__line">Unexpected error from Elasticsearch: '
+    "verification_exception - Found 2 problems\n</span>"
+    '<span class="euiCodeBlock__line">line 3:22: Unknown column [mysql_net_connections]\n</span>'
+    '<span class="euiCodeBlock__line">line 3:61: Unknown column [mysql_net_max_connections]'
+    "</span></code>"
+    '<div class="euiCodeBlock__controls"><button aria-label="Copy">Copy</button></div>'
+)
+_UNKNOWN_COLUMN_DOM = _UNKNOWN_COLUMN_BLOCK * 2
+
+# The same error as plain a11y/console text.
+_UNKNOWN_COLUMN_TEXT = (
+    "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+    "line 3:22: Unknown column [mysql_net_connections]\n"
+    "line 3:61: Unknown column [mysql_net_max_connections]"
+)
+
+# prometheus-shaped target: no mysql_* Datadog metric columns exist.
+_PROM_FIELDS = ["@timestamp", "labels", "mysql_user", "node_cpu_seconds_total"]
+
+
+def test_verification_exception_of_only_unknown_columns_is_field_gap():
+    r = classify_panel(
+        "MySQL connections", _UNKNOWN_COLUMN_TEXT, available_fields=_PROM_FIELDS,
+    )
+    assert r.status == "error"
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_verification_exception_in_real_kibana_dom_is_field_gap():
+    # Regression for the live symptom: the audit reported render_error with an
+    # EMPTY missing_fields even though the DOM named both absent columns.
+    r = classify_panel(
+        "MySQL connections", _UNKNOWN_COLUMN_DOM, available_fields=_PROM_FIELDS,
+    )
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_unknown_column_with_did_you_mean_hint_is_still_field_gap():
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_net_connections], did you mean [mysql_user]?"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "field_gap"
+    assert r.missing_fields == ["mysql_net_connections"]
+
+
+def test_unknown_column_without_field_caps_stays_render_error():
+    # Absence cannot be confirmed without field caps -> do NOT guess lenient.
+    r = classify_panel("MySQL connections", _UNKNOWN_COLUMN_TEXT)
+    assert r.status == "error"
+    assert r.error_class == "render_error"
+    assert "unconfirmed" in r.detail
+    assert "mysql_net_connections" in r.detail
+
+
+def test_verification_exception_mixing_syntax_error_stays_render_error():
+    # One real defect is not excused by an accompanying field gap.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]\n"
+        "line 5:9: mismatched input 'BY' expecting {'(', UNQUOTED_IDENTIFIER}"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_verification_exception_mixing_type_error_stays_render_error():
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 2:9: first argument of [avg(message)] must be [numeric], found value "
+        "[message] type [keyword]\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_verification_exception_with_unreadable_problem_stays_render_error():
+    # "Found 2 problems" but only one is readable -> unparsed content remains.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_bare_verification_exception_stays_render_error_hunt4_guard():
+    # hunt #4 regression guard: a verification_exception with NO column detail
+    # carries no field-absence evidence and must stay a hard render_error even
+    # when a breakdown field happens to be absent from the target.
+    r = classify_panel(
+        "ts", "embPanel__error Unexpected error from Elasticsearch: verification_exception",
+        breakdown_fields=["method"], available_fields=_PROM_FIELDS,
+    )
+    assert r.error_class == "render_error"
+
+
+def test_unbound_parameter_stays_render_error_even_with_unknown_column():
+    # An unbound param is a construction bug; an accompanying field gap must not
+    # excuse it.
+    text = (
+        "Couldn't parse Elasticsearch ES|QL query. Check your query and try again.\n"
+        "Error: line 1:134: Parameter [?instance] value not found\n"
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_net_connections]"
+    )
+    r = classify_panel("P", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_named_column_that_exists_stays_render_error():
+    # The column IS in the target, so the query failing on it is a genuine bug.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [mysql_user]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_partially_present_columns_stay_render_error():
+    # Every named column must be confirmed absent; one that exists means a bug.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 2 problems\n"
+        "line 3:22: Unknown column [mysql_net_connections]\n"
+        "line 3:61: Unknown column [mysql_user]"
+    )
+    r = classify_panel("MySQL connections", text, available_fields=_PROM_FIELDS)
+    assert r.error_class == "render_error"
+
+
+def test_element_audit_classifies_unknown_columns_as_field_gap():
+    # The --elements section ran its own marker-only classification and stamped
+    # every error panel render_error with an EMPTY missing_fields, even with
+    # field caps available. It must use the same evidence-based classifier.
+    snapshot = f'StaticText "MySQL connections" {_UNKNOWN_COLUMN_DOM}'
+    verdict = audit_dashboard_elements(
+        snapshot,
+        expected_kind_by_title={"MySQL connections": "xy"},
+        available_fields=_PROM_FIELDS,
+    )
+    panel = verdict.panels[0]
+    assert panel.status == "error"
+    assert panel.error_class == "field_gap"
+    assert panel.missing_fields == ["mysql_net_connections", "mysql_net_max_connections"]
+
+
+def test_element_audit_without_field_caps_stays_render_error():
+    snapshot = f'StaticText "MySQL connections" {_UNKNOWN_COLUMN_DOM}'
+    verdict = audit_dashboard_elements(
+        snapshot, expected_kind_by_title={"MySQL connections": "xy"},
+    )
+    assert verdict.panels[0].error_class == "render_error"
+
+
+# --- Per-panel metric attribution and per-panel source index ----------------
+#
+# Two reported-not-fixed gaps from the field-gap evidence work: the CLI never
+# supplied ``metrics_by_title`` (so ``data_gap`` was unreachable and every
+# metric-absent empty panel read as ``unexpected_empty``), and it resolved every
+# panel's fields against ONE index pattern (``--es-index metrics-*``), which is
+# the wrong index for a ``FROM logs-*`` panel and therefore an unfounded answer.
+
+_LOGS_TABLE_QUERY = (
+    "FROM logs-*\n"
+    "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == \"apache\"\n"
+    "| SORT @timestamp DESC\n"
+    "| KEEP @timestamp, message, log.level, service.name, host.name\n"
+    "| LIMIT 100"
+)
+_HIT_RATE_QUERY = (
+    "FROM metrics-*\n"
+    "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n"
+    "| STATS query1 = AVG(redis_stats_keyspace_hits), "
+    "query2 = AVG(redis_stats_keyspace_misses) "
+    "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)\n"
+    "| EVAL value = ((query1 / (query1 + query2)) * 100)\n"
+    "| STATS value = AVG(value)\n"
+    "| KEEP value"
+)
+_LOG_COUNT_QUERY = (
+    "FROM logs-*\n"
+    "| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == \"kafka\"\n"
+    "| STATS count = COUNT(*) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)\n"
+    "| SORT time_bucket"
+)
+
+
+def _report(*panels):
+    return {"dashboards": [{"panels": list(panels)}]}
+
+
+def _query_panel(title, query, **extra):
+    panel = {"title": title, "kibana_type": "line",
+             "yaml_panel": {"esql": {"type": "line", "query": query}}}
+    panel.update(extra)
+    return panel
+
+
+def test_source_index_comes_from_the_panels_own_from_clause():
+    from observability_migration.targets.kibana.render_audit import source_indices_by_panel
+
+    report = _report(
+        _query_panel("Hit rate", _HIT_RATE_QUERY),
+        _query_panel("Log Events", _LOGS_TABLE_QUERY),
+    )
+    assert source_indices_by_panel(report) == {
+        "Hit rate": ["metrics-*"],
+        "Log Events": ["logs-*"],
+    }
+
+
+def test_source_index_is_read_from_every_xy_layer_not_just_the_config_root():
+    from observability_migration.targets.kibana.render_audit import source_indices_by_panel
+
+    # An xy panel carries no root data_source: one query per layer. Reading only
+    # the root found nothing, so such a panel silently fell back to --es-index.
+    report = _report({
+        "title": "Mixed layers", "kibana_type": "line",
+        "yaml_panel": {"layers": [
+            {"data_source": {"query": "FROM metrics-* | STATS v = AVG(redis_keys)"}},
+            {"data_source": {"query": "FROM logs-* | STATS c = COUNT(*)"}},
+        ]},
+    })
+    assert source_indices_by_panel(report) == {"Mixed layers": ["metrics-*", "logs-*"]}
+
+
+def test_source_index_splits_a_comma_separated_from_list():
+    from observability_migration.targets.kibana.render_audit import source_indices_by_panel
+
+    report = _report(_query_panel("Both", "FROM metrics-*,logs-* | LIMIT 1"))
+    assert source_indices_by_panel(report) == {"Both": ["metrics-*", "logs-*"]}
+
+
+def test_metric_fields_are_the_aggregated_source_columns_not_output_aliases():
+    from observability_migration.targets.kibana.render_audit import metric_fields_by_panel
+
+    report = _report(_query_panel("Hit rate", _HIT_RATE_QUERY))
+    # query1/query2/value/time_bucket are ES|QL aliases, not index fields.
+    assert metric_fields_by_panel(report) == {
+        "Hit rate": ["redis_stats_keyspace_hits", "redis_stats_keyspace_misses"],
+    }
+
+
+def test_metric_fields_of_a_projection_only_panel_are_its_kept_columns():
+    from observability_migration.targets.kibana.render_audit import metric_fields_by_panel
+
+    report = _report(_query_panel("Log Events", _LOGS_TABLE_QUERY))
+    assert metric_fields_by_panel(report) == {
+        "Log Events": ["@timestamp", "message", "log.level", "service.name", "host.name"],
+    }
+
+
+def test_a_count_star_panel_attributes_no_metric_at_all():
+    from observability_migration.targets.kibana.render_audit import metric_fields_by_panel
+
+    # COUNT(*) reads no column, so there is no metric to prove absent. Inventing
+    # one would manufacture a data_gap out of nothing.
+    report = _report(_query_panel("Count per Log Status", _LOG_COUNT_QUERY))
+    assert metric_fields_by_panel(report) == {}
+
+
+def test_empty_panel_without_field_caps_cannot_claim_a_data_gap():
+    r = classify_panel(
+        "ts", "No results found", expects_data=True,
+        referenced_metrics=["apache_workers"], available_metrics=None,
+    )
+    assert r.error_class == "unexpected_empty"
+    assert "field caps" in r.detail
+
+
+def test_empty_panel_with_no_attributable_metric_cannot_claim_a_data_gap():
+    r = classify_panel(
+        "ts", "No results found", expects_data=True,
+        referenced_metrics=[], available_metrics={"redis_keys"},
+    )
+    assert r.error_class == "unexpected_empty"
+    assert "no source metric" in r.detail
+
+
+def test_empty_panel_whose_metric_exists_says_so_in_detail():
+    r = classify_panel(
+        "ts", "No results found", expects_data=True,
+        referenced_metrics=["redis_keys"], available_metrics={"redis_keys"},
+    )
+    assert r.error_class == "unexpected_empty"
+    assert "redis_keys" in r.detail and "exist" in r.detail
+
+
+def test_per_panel_field_caps_override_the_dashboard_wide_set():
+    verdict = classify_render_per_panel(
+        [("Log Events", "No results found"), ("Hit rate", "No results found")],
+        expects_data_titles={"Log Events", "Hit rate"},
+        metrics_by_title={"Log Events": ["message"], "Hit rate": ["redis_keys"]},
+        available_fields={"redis_keys"},
+        available_metrics={"redis_keys"},
+        target_fields_by_title={"Log Events": {"message"}, "Hit rate": {"redis_keys"}},
+    )
+    by_title = {p.title: p for p in verdict.panels}
+    # "message" is absent from metrics-* but present in the logs index this panel
+    # queries, so it must NOT be reported as a metric gap.
+    assert by_title["Log Events"].error_class == "unexpected_empty"
+    assert by_title["Hit rate"].error_class == "unexpected_empty"
+
+
+def test_per_panel_field_caps_keep_a_present_column_a_render_error():
+    # The panel queries logs-*, where "message" exists -- so an error naming it
+    # is a real bug, even though "message" is absent from metrics-*.
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [message]"
+    )
+    verdict = classify_render_per_panel(
+        [("Log Events", text)],
+        available_fields={"redis_keys"},
+        target_fields_by_title={"Log Events": {"message", "@timestamp"}},
+    )
+    assert verdict.panels[0].error_class == "render_error"
+    assert verdict.status == "fail"
+
+
+def test_element_audit_honours_per_panel_field_caps():
+    text = (
+        "Unexpected error from Elasticsearch: verification_exception - Found 1 problem\n"
+        "line 3:22: Unknown column [message]"
+    )
+    verdict = audit_dashboard_elements(
+        f'StaticText "Log Events" {text}',
+        expected_kind_by_title={"Log Events": "datatable"},
+        available_fields={"redis_keys"},
+        target_fields_by_title={"Log Events": {"message", "@timestamp"}},
+    )
+    assert verdict.panels[0].error_class == "render_error"

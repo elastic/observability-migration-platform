@@ -1,0 +1,225 @@
+[
+  {
+    "title": "Sockstat TCP",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 4,
+      "legends": [
+        "TCP_alloc - Allocated sockets",
+        "TCP_inuse - Tcp sockets currently in use",
+        "TCP_orphan - Orphan sockets",
+        "TCP_tw - Sockets waiting close"
+      ],
+      "exprs": [
+        "node_sockstat_TCP_alloc{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_TCP_inuse{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_TCP_orphan{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_TCP_tw{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 4,
+      "metrics": [
+        {
+          "field": "TCP_alloc_Allocated_sockets",
+          "label": "TCP_alloc - Allocated sockets"
+        },
+        {
+          "field": "TCP_inuse_Tcp_sockets_currently_in_use",
+          "label": "TCP_inuse - Tcp sockets currently in use"
+        },
+        {
+          "field": "TCP_orphan_Orphan_sockets",
+          "label": "TCP_orphan - Orphan sockets"
+        },
+        {
+          "field": "TCP_tw_Sockets_waiting_close",
+          "label": "TCP_tw - Sockets waiting close"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_sockstat_TCP_alloc IS NOT NULL OR metrics.node_sockstat_TCP_inuse IS NOT NULL OR metrics.node_sockstat_TCP_orphan IS NOT NULL OR metrics.node_sockstat_TCP_tw IS NOT NULL\n| STATS TCP_alloc_Allocated_sockets = AVG(LAST_OVER_TIME(metrics.node_sockstat_TCP_alloc)), TCP_inuse_Tcp_sockets_currently_in_use = AVG(LAST_OVER_TIME(metrics.node_sockstat_TCP_inuse)), TCP_orphan_Orphan_sockets = AVG(LAST_OVER_TIME(metrics.node_sockstat_TCP_orphan)), TCP_tw_Sockets_waiting_close = AVG(LAST_OVER_TIME(metrics.node_sockstat_TCP_tw)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, TCP_alloc_Allocated_sockets, TCP_inuse_Tcp_sockets_currently_in_use, TCP_orphan_Orphan_sockets, TCP_tw_Sockets_waiting_close\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Sockstat UDP",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 3,
+      "legends": [
+        "UDPLITE_inuse - Udplite sockets currently in use",
+        "UDP_inuse - Udp sockets currently in use",
+        "UDP_mem - Used memory for udp"
+      ],
+      "exprs": [
+        "node_sockstat_UDPLITE_inuse{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_UDP_inuse{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_UDP_mem{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 3,
+      "metrics": [
+        {
+          "field": "UDPLITE_inuse_Udplite_sockets_currently_in_use",
+          "label": "UDPLITE_inuse - Udplite sockets currently in use"
+        },
+        {
+          "field": "UDP_inuse_Udp_sockets_currently_in_use",
+          "label": "UDP_inuse - Udp sockets currently in use"
+        },
+        {
+          "field": "UDP_mem_Used_memory_for_udp",
+          "label": "UDP_mem - Used memory for udp"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_sockstat_UDPLITE_inuse IS NOT NULL OR metrics.node_sockstat_UDP_inuse IS NOT NULL OR metrics.node_sockstat_UDP_mem IS NOT NULL\n| STATS UDPLITE_inuse_Udplite_sockets_currently_in_use = AVG(LAST_OVER_TIME(metrics.node_sockstat_UDPLITE_inuse)), UDP_inuse_Udp_sockets_currently_in_use = AVG(LAST_OVER_TIME(metrics.node_sockstat_UDP_inuse)), UDP_mem_Used_memory_for_udp = AVG(LAST_OVER_TIME(metrics.node_sockstat_UDP_mem)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, UDPLITE_inuse_Udplite_sockets_currently_in_use, UDP_inuse_Udp_sockets_currently_in_use, UDP_mem_Used_memory_for_udp\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Sockstat FRAG / RAW",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 2,
+      "legends": [
+        "FRAG_inuse - Frag sockets currently in use",
+        "RAW_inuse - Raw sockets currently in use"
+      ],
+      "exprs": [
+        "node_sockstat_FRAG_inuse{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_RAW_inuse{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "FRAG_inuse_Frag_sockets_currently_in_use",
+          "label": "FRAG_inuse - Frag sockets currently in use"
+        },
+        {
+          "field": "RAW_inuse_Raw_sockets_currently_in_use",
+          "label": "RAW_inuse - Raw sockets currently in use"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_sockstat_FRAG_inuse IS NOT NULL OR metrics.node_sockstat_RAW_inuse IS NOT NULL\n| STATS FRAG_inuse_Frag_sockets_currently_in_use = AVG(LAST_OVER_TIME(metrics.node_sockstat_FRAG_inuse)), RAW_inuse_Raw_sockets_currently_in_use = AVG(LAST_OVER_TIME(metrics.node_sockstat_RAW_inuse)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, FRAG_inuse_Frag_sockets_currently_in_use, RAW_inuse_Raw_sockets_currently_in_use\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Sockstat Memory Size",
+    "grafana": {
+      "unit": "bytes",
+      "stack": "none",
+      "n": 3,
+      "legends": [
+        "mem_bytes - TCP sockets in that state",
+        "mem_bytes - UDP sockets in that state",
+        "FRAG_memory - Used memory for frag"
+      ],
+      "exprs": [
+        "node_sockstat_TCP_mem_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_UDP_mem_bytes{instance=\"$node\",job=\"$job\"}",
+        "node_sockstat_FRAG_memory{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 3,
+      "metrics": [
+        {
+          "field": "mem_bytes_TCP_sockets_in_that_state",
+          "label": "mem_bytes - TCP sockets in that state"
+        },
+        {
+          "field": "mem_bytes_UDP_sockets_in_that_state",
+          "label": "mem_bytes - UDP sockets in that state"
+        },
+        {
+          "field": "FRAG_memory_Used_memory_for_frag",
+          "label": "FRAG_memory - Used memory for frag"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_sockstat_TCP_mem_bytes IS NOT NULL OR metrics.node_sockstat_UDP_mem_bytes IS NOT NULL OR metrics.node_sockstat_FRAG_memory IS NOT NULL\n| STATS mem_bytes_TCP_sockets_in_that_state = AVG(LAST_OVER_TIME(metrics.node_sockstat_TCP_mem_bytes)), mem_bytes_UDP_sockets_in_that_state = AVG(LAST_OVER_TIME(metrics.node_sockstat_UDP_mem_bytes)), FRAG_memory_Used_memory_for_frag = AVG(LAST_OVER_TIME(metrics.node_sockstat_FRAG_memory)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, mem_bytes_TCP_sockets_in_that_state, mem_bytes_UDP_sockets_in_that_state, FRAG_memory_Used_memory_for_frag\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  },
+  {
+    "title": "Sockstat Used",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "n": 1,
+      "legends": [
+        "Sockets_used - Sockets currently in use"
+      ],
+      "exprs": [
+        "node_sockstat_sockets_used{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_sockstat_sockets_used",
+          "label": "Sockets_used - Sockets currently in use"
+        }
+      ],
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "bits": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_sockstat_sockets_used IS NOT NULL\n| STATS node_sockstat_sockets_used = AVG(LAST_OVER_TIME(metrics.node_sockstat_sockets_used)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "live_n": 9689,
+    "live_err": "",
+    "verdict": "Good"
+  }
+]

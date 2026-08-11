@@ -1,0 +1,94 @@
+[
+  {
+    "title": "Systemd Sockets",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{ name }} Connections"
+      ],
+      "exprs": [
+        "irate(node_systemd_socket_accepted_connections_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_systemd_socket_accepted_connections_total",
+          "label": "Node Systemd Socket Accepted Connections Total"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_systemd_socket_accepted_connections_total IS NOT NULL\n| STATS node_systemd_socket_accepted_connections_total = AVG(IRATE(metrics.node_systemd_socket_accepted_connections_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.name\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Systemd Units State",
+    "grafana": {
+      "unit": "short",
+      "stack": "normal",
+      "draw": "line",
+      "n": 5,
+      "legends": [
+        "Activating",
+        "Active",
+        "Deactivating",
+        "Failed",
+        "Inactive"
+      ],
+      "exprs": [
+        "node_systemd_units{instance=\"$node\",job=\"$job\",state=\"activating\"}",
+        "node_systemd_units{instance=\"$node\",job=\"$job\",state=\"active\"}",
+        "node_systemd_units{instance=\"$node\",job=\"$job\",state=\"deactivating\"}",
+        "node_systemd_units{instance=\"$node\",job=\"$job\",state=\"failed\"}",
+        "node_systemd_units{instance=\"$node\",job=\"$job\",state=\"inactive\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area_stacked",
+      "n": 5,
+      "metrics": [
+        {
+          "field": "Activating",
+          "label": "Activating"
+        },
+        {
+          "field": "Active",
+          "label": "Active"
+        },
+        {
+          "field": "Deactivating",
+          "label": "Deactivating"
+        },
+        {
+          "field": "Failed",
+          "label": "Failed"
+        },
+        {
+          "field": "Inactive",
+          "label": "Inactive"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_systemd_units IS NOT NULL\n| STATS Activating = AVG(LAST_OVER_TIME(CASE((labels.state == \"activating\"), metrics.node_systemd_units, NULL), 5m)), Active = AVG(LAST_OVER_TIME(CASE((labels.state == \"active\"), metrics.node_systemd_units, NULL), 5m)), Deactivating = AVG(LAST_OVER_TIME(CASE((labels.state == \"deactivating\"), metrics.node_systemd_units, NULL), 5m)), Failed = AVG(LAST_OVER_TIME(CASE((labels.state == \"failed\"), metrics.node_systemd_units, NULL), 5m)), Inactive = AVG(LAST_OVER_TIME(CASE((labels.state == \"inactive\"), metrics.node_systemd_units, NULL), 5m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Activating, Active, Deactivating, Failed, Inactive\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  }
+]

@@ -3825,6 +3825,21 @@
           "default": null,
           "description": "Optional display label for the dimension.",
           "title": "Label"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "maximum": 12,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum number of columns when displaying broken-down metric values. Used by metric panels (maps to Kibana ``breakdown_by.columns``).",
+          "title": "Columns"
         }
       },
       "required": [
@@ -5038,6 +5053,18 @@
           "default": null,
           "description": "An optional secondary metric to display alongside the primary metric."
         },
+        "styling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ESQLMetricPanelStyling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Layout styling for metric tiles (e.g. compact density for multi-tile breakdown panels)."
+        },
         "time_field": {
           "default": "@timestamp",
           "description": "The time field to use for the dashboard time picker. Defaults to '@timestamp'.",
@@ -5069,6 +5096,31 @@
         "primary"
       ],
       "title": "ESQLMetricPanelConfig",
+      "type": "object"
+    },
+    "ESQLMetricPanelStyling": {
+      "additionalProperties": false,
+      "description": "Styling options for ES|QL metric panels that map to Kibana metric visualization styling.",
+      "properties": {
+        "density": {
+          "anyOf": [
+            {
+              "enum": [
+                "compact",
+                "default"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tile density for multi-value metric panels.",
+          "title": "Density"
+        }
+      },
+      "title": "ESQLMetricPanelStyling",
       "type": "object"
     },
     "ESQLMetricTypes": {
@@ -6301,6 +6353,19 @@
           "default": null,
           "description": "Optional display label for the metric.",
           "title": "Label"
+        },
+        "stack": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-metric stacking override. When false on a stacked/percentage XY panel, this series is rendered as an unstacked overlay (Grafana seriesOverrides.stack=false / field override custom.stacking).",
+          "title": "Stack"
         }
       },
       "required": [

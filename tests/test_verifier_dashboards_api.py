@@ -288,7 +288,7 @@ class TestSafeDisplayMetadata:
             "type": "primary",
             "column": "latency",
             "label": "Latency",
-            "format": {"type": "duration", "from": "milliseconds", "to": "humanize"},
+            "format": {"type": "duration", "from": "ms", "to": "auto"},
         }]
 
     def test_xy_preserves_y2_legend_axis_horizontal_bar_and_breakdowns_list(self) -> None:
@@ -420,6 +420,7 @@ class TestSafeDisplayMetadata:
         assert cfg["breakdown_by"] == {
             "column": "service.name",
             "label": "Service",
+            "columns": 4,
             "collapse_by": "max",
         }
 
@@ -499,12 +500,13 @@ class TestSafeDisplayMetadata:
             }
         )
 
+        # No ``color``: Kibana stores none for a data_table metric whatever
+        # shape is sent, so neither mapper emits one.
         assert cfg["metrics"] == [
             {
                 "column": "requests",
                 "label": "Requests",
                 "format": {"type": "number", "decimals": 0},
-                "color": {"type": "auto"},
                 "alignment": "right",
                 "apply_color_to": "background",
                 "summary": {"type": "sum", "label": "Total"},

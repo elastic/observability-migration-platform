@@ -1,7 +1,0 @@
-title: WAL fsync duration seconds
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['tsdb_wal_fsync_duration_seconds']
-breakdown: legend

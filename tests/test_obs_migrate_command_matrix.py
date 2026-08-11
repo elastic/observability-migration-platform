@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import sys
 import tempfile
 import unittest
@@ -30,12 +29,12 @@ from unittest.mock import patch
 
 from observability_migration.adapters.source.grafana import cli as grafana_cli
 from observability_migration.app import cli as app_cli
+from observability_migration.core.assets.dashboard import DashboardIR
 
 # Keep in lockstep with ``obs-migrate --help`` positional choices.
 OBS_MIGRATE_SUBCOMMANDS = (
     "migrate",
     "doctor",
-    "compile",
     "upload",
     "cluster",
     "verify-panels",
@@ -135,18 +134,12 @@ class ObsMigrateParseMatrixTests(unittest.TestCase):
         self.assertEqual(args.esql_index, CONCRETE_INDEX)
         self.assertEqual(args.translation_mode, "native")
 
-    def test_compile_parses(self):
-        args = self.parser.parse_args(
-            ["compile", "--yaml-dir", "/tmp/yaml", "--output-dir", "/tmp/ndjson"]
-        )
-        self.assertEqual(args.command, "compile")
-
-    def test_upload_parses_yaml_dir(self):
+    def test_upload_parses_artifact_dir(self):
         args = self.parser.parse_args(
             [
                 "upload",
-                "--yaml-dir",
-                "/tmp/yaml",
+                "--artifact-dir",
+                "/tmp/out/dashboards",
                 "--kibana-url",
                 "https://kb.example",
                 "--kibana-api-key",
@@ -154,6 +147,21 @@ class ObsMigrateParseMatrixTests(unittest.TestCase):
             ]
         )
         self.assertEqual(args.command, "upload")
+        self.assertEqual(args.artifact_dir, "/tmp/out/dashboards")
+
+    def test_removed_compile_subcommand_is_rejected(self):
+        """``obs-migrate compile`` is gone; argparse must not accept it."""
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(
+                ["compile", "--yaml-dir", "/tmp/yaml", "--output-dir", "/tmp/ndjson"]
+            )
+
+    def test_removed_upload_yaml_flags_are_rejected(self):
+        for flag in ("--yaml-dir", "--compiled-dir", "--artifact-format"):
+            with self.subTest(flag=flag), self.assertRaises(SystemExit):
+                self.parser.parse_args(
+                    ["upload", flag, "yaml", "--kibana-url", "https://kb.example"]
+                )
 
     def test_cluster_actions_parse(self):
         for action in CLUSTER_ACTIONS:
@@ -302,8 +310,7 @@ class ObsMigrateParseMatrixTests(unittest.TestCase):
 _DISPATCH_CASES: list[tuple[list[str], str, bool]] = [
     (["migrate", "--source", "grafana", "--input-mode", "files", "--input-dir", "/tmp/in", "--output-dir", "/tmp/out"], "_run_migrate", False),
     (["doctor"], "_run_doctor", True),
-    (["compile", "--yaml-dir", "/tmp/yaml", "--output-dir", "/tmp/ndjson"], "_run_compile", False),
-    (["upload", "--yaml-dir", "/tmp/yaml", "--kibana-url", "https://kb.example", "--kibana-api-key", "k"], "_run_upload", False),
+    (["upload", "--artifact-dir", "/tmp/out/dashboards", "--kibana-url", "https://kb.example", "--kibana-api-key", "k"], "_run_upload", False),
     (["cluster", "list-dashboards", "--kibana-url", "https://kb.example"], "_run_cluster", False),
     (["verify-panels", "--migration-out", "/tmp/out", "--output", "/tmp/r.json"], "_run_verify_panels", False),
     (
@@ -455,7 +462,6 @@ class MigrateIndexForwardingTests(unittest.TestCase):
             grafana_pass="",
             validate=False,
             upload=False,
-            legacy_import=False,
             preflight=False,
             es_url="",
             es_api_key="",
@@ -508,7 +514,7 @@ class MigrateIndexForwardingTests(unittest.TestCase):
 class MigrateEmissionConsistencyTests(unittest.TestCase):
     """Real Grafana CLI migrate (offline) with divergent index flags."""
 
-    def test_grafana_cli_migrate_emits_esql_index_for_native_and_fallback(self):
+    def test_grafana_cli_migrate_emits_esql_index_for_native_grouped_and_simple(self):
         dashboard = {
             "uid": "idx-consistency",
             "title": "Index Consistency Fixture",
@@ -530,7 +536,7 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
                 {
                     "id": 2,
                     "type": "timeseries",
-                    "title": "HTTP rate grouped esql",
+                    "title": "HTTP rate grouped",
                     "targets": [
                         {
                             "refId": "A",
@@ -580,9 +586,14 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
             finally:
                 sys.argv = original
 
-            yaml_files = list((out_dir / "dashboards" / "yaml").glob("*.yaml"))
-            self.assertTrue(yaml_files, "expected migrated YAML")
-            text = yaml_files[0].read_text(encoding="utf-8")
+            ir_files = list((out_dir / "dashboards" / "ir").glob("*.ir.json"))
+            self.assertTrue(ir_files, "expected migrated IR artifacts")
+            artifact = json.loads(ir_files[0].read_text(encoding="utf-8"))
+            # The internal dict shape is the readable projection of the IR;
+            # nothing writes it to disk, so render it here for the assertions.
+            text = json.dumps(
+                DashboardIR.from_dict(artifact["dashboard_ir"]).to_yaml_dict()
+            )
             # Concrete stream must appear for query targets.
             self.assertIn(CONCRETE_INDEX, text)
             # Native PROMQL must not keep the broad data-view as PROMQL index.
@@ -592,11 +603,15 @@ class MigrateEmissionConsistencyTests(unittest.TestCase):
                 text,
                 f"native panel must PROMQL against concrete index:\n{text}",
             )
-            # Grouped panel falls back to ES|QL; YAML may fold the query string.
-            self.assertRegex(
+            # Grouped native PROMQL must also use the concrete query index.
+            self.assertIn(
+                '"title": "HTTP rate grouped"',
                 text,
-                rf"(TS|FROM) {re.escape(CONCRETE_INDEX)}\b",
-                msg=f"grouped panel must ES|QL against concrete index:\n{text}",
+            )
+            self.assertIn(
+                f"PROMQL index={CONCRETE_INDEX} start=?_tstart end=?_tend buckets=50 value=(sum by (instance) (rate(http_requests_total[5m])))",
+                text,
+                f"grouped panel must query against concrete index:\n{text}",
             )
 
 

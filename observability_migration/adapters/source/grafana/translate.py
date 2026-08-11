@@ -52,6 +52,7 @@ from .promql import (
     _counter_unsafe_cast_needed,
     _counter_unsafe_cast_warning,
     _drop_legend_labels_if_redundant,
+    _esql_identifier,
     _expand_late_bound_group_by_terms,
     _finalize_fused_stats_assignments,
     _format_scalar_value,
@@ -77,11 +78,14 @@ from .promql import (
     _parse_fragment,
     _parse_logql_search,
     _plan_metric_map_rate_transform,
+    _range_call,
     _resolve_frag_metric_field,
     _resolve_metric_field,
     _same_metric_range_fallback_warning,
     _summary_mode_from_metadata,
     classify_promql_complexity,
+    colocated_binary_agg_plan,
+    colocated_metric_fields,
     gauge_default_agg_warning,
     preprocess_grafana_macros,
     resolve_counter_range_translation,
@@ -112,8 +116,11 @@ _MATH_FN_ESQL = {
     "log2": "LOG(2, {m})",
     "log10": "LOG10({m})",
     "acos": "ACOS({m})",
+    "acosh": "ACOSH({m})",
     "asin": "ASIN({m})",
+    "asinh": "ASINH({m})",
     "atan": "ATAN({m})",
+    "atanh": "ATANH({m})",
     "cos": "COS({m})",
     "sin": "SIN({m})",
     "tan": "TAN({m})",
@@ -341,6 +348,37 @@ def _join_is_faithful(frag, resolver, output_group_fields):
         resolver.resolve_labels(raw_enrich) if resolver else list(raw_enrich)
     )
     return bool(resolved_enrich) and all(label in out for label in resolved_enrich)
+
+
+def _fully_aggregated_scalar_op(frag):
+    """Whether a binary op has two fully-aggregated scalar operands with no by() clause.
+
+    ``sum(A) - sum(B)`` (no ``by(...)`` on either side) produces a single unlabelled
+    time-series on each side. In PromQL the binary op is applied per instant; in
+    ES|QL ``SUM(A) - SUM(B)`` per TBUCKET is numerically identical when both metrics
+    come from the same TS source at the same scrape interval, because each TBUCKET
+    receives the same set of time-series rows for both metrics. No explicit ``on(...)``
+    key is needed — both sides are already scalars. This is the ``sum(A) op sum(B)``
+    and ``avg(A) op avg(B)`` family; bare ``A op B`` (no outer agg) is NOT covered
+    because per-document values still need per-instance alignment.
+
+    Terminal aggregates only: if an operand wraps an inner binary expression (e.g.
+    ``sum(A * on(k) group_left(l) B)``), the enrichment join changes the semantics
+    and the conservative warning should be kept.
+    """
+    for key in ("left_frag", "right_frag"):
+        operand = frag.extra.get(key)
+        if not isinstance(operand, PromQLFragment):
+            return False
+        if not operand.outer_agg:
+            return False
+        if operand.group_labels:
+            return False
+        # Operand wraps an inner binary expression — enrichment may have been dropped
+        if isinstance(operand.extra.get("inner_frag"), PromQLFragment):
+            return False
+    matching = frag.extra.get("vector_matching") or {}
+    return not matching
 
 
 # Shared building blocks for every template-variable regex below, so the braced
@@ -1085,6 +1123,25 @@ def _binary_left_fallback_is_feasible(frag):
     return _or_left_is_feasible(frag) or _mixed_os_zero_fill_left_is_feasible(frag)
 
 
+@QUERY_CLASSIFIERS.register("colocated_binary_agg_unblock", priority=0)
+def colocated_binary_agg_unblock(context):
+    """Clear the ``agg(A op B)`` refusal when the arithmetic renders exactly.
+
+    Runs before ``fragment_guardrails`` (priority 1), which would otherwise turn
+    the parser's reason into a dead panel. Only clears when
+    ``colocated_binary_agg_plan`` -- a closed allowlist -- can render the whole
+    tree, so genuinely unaligned joins keep their refusal.
+    """
+    frag = context.fragment
+    extra = getattr(frag, "extra", None) if frag else None
+    if not isinstance(extra, dict) or not extra.get("not_feasible_reasons"):
+        return None
+    if colocated_binary_agg_plan(frag, context.resolver, context.rule_pack) is None:
+        return None
+    extra.pop("not_feasible_reasons", None)
+    return "cleared not_feasible for co-located per-element arithmetic"
+
+
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)
 def fragment_guardrails_rule(context):
     frag = context.fragment
@@ -1119,6 +1176,7 @@ def family_classifier_rule(context):
         "binary_expr",
         "topk",
         "label_replace",
+        "label_join",
     }
     if frag.family in families_that_bypass_patterns:
         nf_reasons = frag.extra.get("not_feasible_reasons") or []
@@ -1172,6 +1230,18 @@ def join_label_enrichment_check_rule(context):
             )
             _append_unique(context.warnings, reason)
             return reason
+        # The RHS is a confirmed info metric.  Any labels that the outer by()
+        # borrows from the group_left(...) enrichment list (stashed as
+        # ``pending_join_enrichment_labels`` at parse time because rule_pack was
+        # unavailable) are now promoted to ``pending_join_verify_labels`` so the
+        # schema-check pass below can warn about missing dimensions while keeping
+        # the panel feasible.
+        enrichment_overlap = pending_frag.extra.get("pending_join_enrichment_labels") or []
+        if enrichment_overlap:
+            existing = list(pending_frag.extra.get("pending_join_verify_labels") or [])
+            pending_frag.extra["pending_join_verify_labels"] = existing + [
+                lbl for lbl in enrichment_overlap if lbl not in existing
+            ]
 
     # A by()/without() label that is neither an on(...) match key nor a
     # group_left(...) enrichment label is assumed to survive on the primary
@@ -1270,6 +1340,89 @@ def warning_pattern_rule(context):
     return None
 
 
+@QUERY_TRANSLATORS.register("colocated_binary_agg_family", priority=0)
+def colocated_binary_agg_family_rule(context):
+    """``agg(A op B)`` over operands that share a label set.
+
+    Evaluates the arithmetic per document and aggregates the result, which is
+    exactly what the source asked for. Two curated packs (grafana-763 memory
+    ratio, grafana-14091 hit ratio) each hand-wrote this query; this retires
+    both.
+
+    Priority 0 matters: the generic ``fragment_extract``/``stats_expression``
+    stages (20/90) build ``agg(<frag.metric>)`` from fragment fields and know
+    nothing about binary expressions, so letting them win drops an operand
+    silently.
+    """
+    frag = context.fragment
+    plan = colocated_binary_agg_plan(frag, context.resolver, context.rule_pack)
+    if plan is None:
+        return None
+    value_expr, leaf = plan
+    rp = context.rule_pack
+
+    filters, had_vars = _frag_filters(leaf, context.resolver)
+    if had_vars:
+        _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
+
+    # TS: the operands are per-series functions (RATE/IRATE) or raw gauges, and
+    # FROM over a TSDS would inflate them by the per-bucket sample count.
+    group_fields = _frag_group_labels(
+        frag,
+        context.resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
+    group_by_parts, output_group = _grouping_parts(rp.ts_bucket, group_fields, frag)
+
+    alias = "computed_value"
+    parts = [
+        f"TS {context.index}",
+        f"| WHERE {rp.ts_time_filter}",
+        *_build_where_lines(filters),
+    ]
+    # Require every operand on the row. Co-location is the precondition for
+    # evaluating the arithmetic per document, so a row missing either metric is
+    # not a valid sample of the expression -- without this the aggregate silently
+    # loses whole series (measured: 1.23 instead of 42.41, one of two instances).
+    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
+    for metric_field in colocated_metric_fields(inner, context.resolver):
+        parts.append(f"| WHERE {_esql_identifier(metric_field)} IS NOT NULL")
+    stats_line = f"| STATS {alias} = {OUTER_AGG_MAP[(frag.outer_agg or '').lower()]}({value_expr})"
+    if group_by_parts:
+        stats_line += f" BY {', '.join(group_by_parts)}"
+    parts.append(stats_line)
+
+    context.parser_backend = "fragment"
+    context.source_type = "TS"
+    context.metric_name = alias
+    context.output_metric_field = alias
+    context.output_group_fields = output_group
+
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+            reduce_calc=context.metadata.get("reduce_calc", ""),
+        )
+    if collapsed is None:
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.output_group_fields = output_group
+    context.translation_complete = True
+    _append_unique(
+        context.warnings,
+        "Per-element arithmetic between co-located metrics evaluated per document "
+        "before aggregation (exact for Prometheus layouts that store one document "
+        "per label-set; PromQL's all-label matching guarantees the operands align)",
+    )
+    return "translated co-located per-element arithmetic"
+
+
 @QUERY_TRANSLATORS.register("scalar_family", priority=1)
 def scalar_family_rule(context):
     frag = context.fragment
@@ -1358,21 +1511,25 @@ def logql_count_family_rule(context):
     elif search_expr:
         _append_unique(context.warnings, "Dropped variable-driven LogQL text filter during migration")
 
+    _logql_summary = _summary_mode_from_metadata(context.metadata)
     context.parser_backend = "fragment"
     context.source_type = "FROM"
     context.index = rp.logs_index
     context.metric_name = "log_count"
     context.output_metric_field = "log_count"
-    context.output_group_fields = ["time_bucket"]
-    context.esql_query = "\n".join(
-        [
-            f"FROM {rp.logs_index}",
-            f"| WHERE {rp.from_time_filter}",
-            *_build_where_lines(filters),
-            f"| STATS log_count = COUNT(*) BY {rp.from_bucket}",
-            "| SORT time_bucket ASC",
-        ]
-    )
+    context.output_group_fields = [] if _logql_summary else ["time_bucket"]
+    _logql_lines = [
+        f"FROM {rp.logs_index}",
+        f"| WHERE {rp.from_time_filter}",
+        *_build_where_lines(filters),
+        f"| STATS log_count = COUNT(*) BY {rp.from_bucket}",
+    ]
+    if _logql_summary:
+        _logql_lines.append("| STATS log_count = MAX(log_count)")
+        _logql_lines.append("| KEEP log_count")
+    else:
+        _logql_lines.append("| SORT time_bucket ASC")
+    context.esql_query = "\n".join(_logql_lines)
     context.translation_complete = True
     _append_unique(context.warnings, "Translated LogQL count_over_time using log document counts")
     return "translated LogQL count_over_time"
@@ -1479,7 +1636,12 @@ def join_family_rule(context):
             right_only = [f for f in right_filters if f not in common_filter_exprs]
 
             result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{left_frag.metric}_ratio")
-            output_group = ["time_bucket"] + join_labels
+            _ratio_summary = _summary_mode_from_metadata(context.metadata)
+            # The STATS BY clause always includes the bucket to correctly scope
+            # aggregation to the selected time range via TBUCKET parameter binding.
+            # For summary-mode panels (stat/gauge), time_bucket is dropped from the
+            # output so metric_panel_rule doesn't promote the panel to a datatable.
+            output_group = (list(join_labels) if _ratio_summary else ["time_bucket"] + join_labels)
             group_by_parts = [rp.ts_bucket] + join_labels
             left_is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
             right_is_counter = resolver.is_counter(right_frag.metric) if resolver else _is_counter_fallback(right_frag.metric, rp)
@@ -1562,17 +1724,18 @@ def join_family_rule(context):
             context.metric_name = left_frag.metric
             context.output_metric_field = result_alias
             context.output_group_fields = output_group
-            context.esql_query = "\n".join(
-                [
-                    f"TS {context.index}",
-                    f"| WHERE {rp.ts_time_filter}",
-                    *common_filters,
-                    f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call} BY {', '.join(group_by_parts)}",
-                    f"| EVAL {result_alias} = numerator / denominator",
-                    f"| KEEP {_keep(output_group, result_alias)}",
-                    "| SORT time_bucket ASC",
-                ]
-            )
+            _ratio_by = f" BY {', '.join(group_by_parts)}" if group_by_parts else ""
+            _ratio_lines = [
+                f"TS {context.index}",
+                f"| WHERE {rp.ts_time_filter}",
+                *common_filters,
+                f"| STATS numerator = {left_stats_call}, denominator = {right_stats_call}{_ratio_by}",
+                f"| EVAL {result_alias} = numerator / denominator",
+                f"| KEEP {_keep(output_group, result_alias)}",
+            ]
+            if not _ratio_summary:
+                _ratio_lines.append("| SORT time_bucket ASC")
+            context.esql_query = "\n".join(_ratio_lines)
             context.translation_complete = True
             # A label-aligned per-key ratio of aggregates (``sum(rate(A)) /
             # on(k) group_left sum(rate(B))``) is exact only when every source
@@ -1610,9 +1773,19 @@ def join_family_rule(context):
                     parts, output_group_fields, _ = shared
                     result_alias = "computed_value"
                     parts.append(f"| EVAL {result_alias} = {plan.expr}")
-                    parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
-                    if "time_bucket" in output_group_fields:
-                        parts.append("| SORT time_bucket ASC")
+                    _lhs_collapsed = None
+                    if _summary_mode_from_metadata(context.metadata):
+                        _lhs_collapsed = _collapse_summary_ts_query(
+                            parts, output_group_fields, [result_alias],
+                            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
+                    if _lhs_collapsed is None:
+                        parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
+                        if "time_bucket" in output_group_fields:
+                            parts.append("| SORT time_bucket ASC")
+                    else:
+                        output_group_fields = _lhs_collapsed
                     for warning in plan.warnings:
                         _append_unique(context.warnings, warning)
                     for spec in plan.specs:
@@ -1669,7 +1842,8 @@ def join_family_rule(context):
             group_fields = candidate_group_fields
         else:
             group_fields = base_group_fields
-        output_group = ["time_bucket"] + group_fields if group_fields else ["time_bucket"]
+        _join_summary = _summary_mode_from_metadata(context.metadata)
+        output_group = list(group_fields) if _join_summary else (["time_bucket"] + group_fields if group_fields else ["time_bucket"])
         default_agg = rp.default_gauge_agg.upper()
         is_counter = resolver.is_counter(metric_name) if resolver else _is_counter_fallback(metric_name, rp)
         source = "TS" if is_counter else "FROM"
@@ -1689,16 +1863,16 @@ def join_family_rule(context):
         context.output_metric_field = metric_alias
         context.output_group_fields = output_group
         by_clause = bucket + (f", {', '.join(group_fields)}" if group_fields else "")
-        context.esql_query = "\n".join(
-            [
-                f"{source} {context.index}",
-                f"| WHERE {time_filter}",
-                *_build_where_lines(filters),
-                f"| WHERE {physical_metric} IS NOT NULL",
-                f"| STATS {metric_alias} = {default_agg}({join_agg_arg}) BY {by_clause}",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        _join_lines = [
+            f"{source} {context.index}",
+            f"| WHERE {time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {physical_metric} IS NOT NULL",
+            f"| STATS {metric_alias} = {default_agg}({join_agg_arg}) BY {by_clause}",
+        ]
+        if not _join_summary:
+            _join_lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(_join_lines)
         context.translation_complete = True
         if not carry_enrichment:
             # Nothing carried (bare/ambiguous group modifier, group_right, or a
@@ -1728,7 +1902,8 @@ def join_family_rule(context):
         if had_vars:
             _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
         metric_alias = re.sub(r"[^a-zA-Z0-9_]", "_", left_frag.metric)
-        output_group = ["time_bucket"] + join_labels if join_labels else ["time_bucket"]
+        _join_left_summary = _summary_mode_from_metadata(context.metadata)
+        output_group = list(join_labels) if _join_left_summary else (["time_bucket"] + join_labels if join_labels else ["time_bucket"])
         is_counter = resolver.is_counter(left_frag.metric) if resolver else _is_counter_fallback(left_frag.metric, rp)
         source = "TS" if (is_counter or left_frag.range_func in AGG_FUNCTION_MAP) else "FROM"
         time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
@@ -1759,7 +1934,7 @@ def join_family_rule(context):
                 _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
             inner_expr = f"{esql_inner}({_counter_safe_metric_arg(esql_inner, physical_metric, is_counter, left_frag.range_func, counter_refuted=_counter_refuted(resolver, left_frag.metric), force_cast=join_cast_needed)}, {w})"
         elif is_counter:
-            inner_expr = f"RATE({physical_metric}, {rp.default_rate_window})"
+            inner_expr = _range_call("RATE", physical_metric, rp.default_rate_window)
         else:
             inner_expr = physical_metric
 
@@ -1772,15 +1947,15 @@ def join_family_rule(context):
         context.metric_name = left_frag.metric
         context.output_metric_field = metric_alias
         context.output_group_fields = output_group
-        context.esql_query = "\n".join(
-            [
-                f"{source} {context.index}",
-                f"| WHERE {time_filter}",
-                *_build_where_lines(filters),
-                f"| STATS {metric_alias} = {stats_expr} BY {by_clause}",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        _join_left_lines = [
+            f"{source} {context.index}",
+            f"| WHERE {time_filter}",
+            *_build_where_lines(filters),
+            f"| STATS {metric_alias} = {stats_expr} BY {by_clause}",
+        ]
+        if not _join_left_summary:
+            _join_left_lines.append("| SORT time_bucket ASC")
+        context.esql_query = "\n".join(_join_left_lines)
         context.translation_complete = True
         _append_unique(context.warnings, "Approximated join expression using left side only")
         return "translated join (left-side fallback)"
@@ -1921,7 +2096,11 @@ def binary_expr_family_rule(context):
             context.source_type = plan.specs[0].source_type
             collapsed = None
             if _summary_mode_from_metadata(context.metadata):
-                collapsed = _collapse_summary_ts_query(parts, output_group_fields, [result_alias])
+                collapsed = _collapse_summary_ts_query(
+                    parts, output_group_fields, [result_alias],
+                    keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
             if collapsed is None:
                 parts.append(f"| KEEP {_keep(output_group_fields, result_alias)}")
                 if "time_bucket" in output_group_fields:
@@ -1938,10 +2117,14 @@ def binary_expr_family_rule(context):
         # set-union note (issue #167) and is not arithmetic, so skip it.
         # Same-metric ``or`` rewritten as a WHERE OR clause (issue #252) is an
         # exact rewrite too, so skip the arithmetic caveat for it as well.
+        # ``sum(A) op sum(B)`` with no ``by()`` on either side also needs no
+        # caveat: both operands are scalar time-series (one value per instant),
+        # so the same-bucket ES|QL math is numerically identical.
         if (
             not plan.set_or_fill
             and not plan.set_or_where
             and not _join_is_faithful(frag, resolver, output_group_fields)
+            and not _fully_aggregated_scalar_op(frag)
         ):
             _append_unique(
                 context.warnings,
@@ -1961,7 +2144,10 @@ def binary_expr_family_rule(context):
         for warning in spec.warnings:
             _append_unique(context.warnings, warning)
     non_time_groups = [field for field in context.output_group_fields if field != "time_bucket"]
-    if plan.specs and not non_time_groups:
+    # For ``sum(A) op sum(B)`` (both scalars, no by()), having no label groups is
+    # intentional — the source PromQL also produces a single unlabelled time-series
+    # per instant. Don't warn about missing labels that were never there.
+    if plan.specs and not non_time_groups and not _fully_aggregated_scalar_op(frag):
         _append_unique(
             context.warnings,
             "PromQL series labels were not retained; output is bucket-level and may collapse multiple source series",
@@ -2025,6 +2211,12 @@ def topk_family_rule(context):
         )
         for warning in map_rate_warnings:
             _append_unique(context.warnings, warning)
+        # If drop_rate cleared esql_inner, downgrade to FROM so a non-TSDS gauge
+        # is not queried under TS (which would inflate AVG across all samples).
+        if not esql_inner and not is_counter:
+            source = "FROM"
+            time_filter = rp.from_time_filter
+            bucket = rp.from_bucket
         # Prefer gauge field after drop_rate / mapped-gauge strip.
         if not is_counter and prefer == "counter":
             physical_metric = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
@@ -2037,7 +2229,7 @@ def topk_family_rule(context):
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
         inner_arg = _counter_safe_metric_arg(esql_inner, physical_metric, is_counter, inner_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=topk_cast_needed)
         if esql_inner:
-            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window or rp.default_rate_window})"
+            inner_expr = _range_call(esql_inner, inner_arg, frag.range_window or rp.default_rate_window)
         else:
             # drop_rate / mapped gauge: outer agg operates on the bare field.
             inner_expr = inner_arg
@@ -2059,6 +2251,9 @@ def topk_family_rule(context):
             resolver,
         )
     limit = int(frag.extra.get("topk_limit") or 10)
+    sort_asc = frag.extra.get("topk_sort_asc", False)
+    sort_dir = "ASC" if sort_asc else "DESC"
+    topk_label = "bottomk" if sort_asc else "topk"
 
     context.parser_backend = "fragment"
     context.source_type = source
@@ -2077,17 +2272,48 @@ def topk_family_rule(context):
                 f"| STATS _bucket_value = {stats_expr} BY {bucket}",
                 "| SORT time_bucket ASC",
                 "| STATS value = LAST(_bucket_value, time_bucket)",
-                "| SORT value DESC",
+                f"| SORT value {sort_dir}",
                 f"| LIMIT {limit}",
+            ]
+        )
+        context.translation_complete = True
+        n_label = "bottom N" if sort_asc else "top N"
+        _append_unique(
+            context.warnings,
+            f"{topk_label}() without group labels: collapsed to single-series {n_label}; "
+            "add preferred_group_labels hint for per-series breakdown",
+        )
+        return f"translated ungrouped {topk_label} as single-bucket {n_label}"
+
+    n_label = "bottom N" if sort_asc else "top N"
+
+    # For time-series XY panels (graph / timeseries), preserve the time dimension
+    # so the chart renders a proper line/area per group label rather than a static
+    # bar chart snapshot.  ES|QL has no subquery support, so the top-N filtering
+    # cannot be applied over the full time range — all series are shown and the
+    # user can apply legend filtering in Kibana.  For all other panel types (stat,
+    # barchart, table …) keep the latest-bucket collapse which gives a ranked
+    # snapshot that fits those display modes.
+    _xy_panel_types = {"graph", "timeseries", "trend"}
+    if context.panel_type in _xy_panel_types:
+        context.output_group_fields = ["time_bucket"] + group_fields
+        context.esql_query = "\n".join(
+            [
+                f"{source} {context.index}",
+                f"| WHERE {time_filter}",
+                *_build_where_lines(filters),
+                f"| WHERE {physical_metric} IS NOT NULL",
+                f"| STATS value = {stats_expr} BY {bucket}, {', '.join(_expand_late_bound_group_by_terms(group_fields, frag))}",
+                "| SORT time_bucket ASC",
             ]
         )
         context.translation_complete = True
         _append_unique(
             context.warnings,
-            "topk() without group labels: collapsed to single-series top N; "
-            "add preferred_group_labels hint for per-series breakdown",
+            f"Translated {topk_label}() as time-series breakdown by {', '.join(group_fields)}; "
+            f"ES|QL has no subquery support so all series are shown (top-{limit} filtering approximated)",
         )
-        return "translated ungrouped topk as single-bucket top N"
+        return f"translated grouped {topk_label} as time-series breakdown for XY panel"
 
     context.output_group_fields = group_fields
     context.esql_query = "\n".join(
@@ -2100,13 +2326,13 @@ def topk_family_rule(context):
             "| SORT time_bucket ASC",
             f"| STATS value = LAST(_bucket_value, time_bucket) BY {', '.join(group_fields)}",
             f"| KEEP {', '.join(group_fields + ['value'])}",
-            "| SORT value DESC",
+            f"| SORT value {sort_dir}",
             f"| LIMIT {limit}",
         ]
     )
     context.translation_complete = True
-    _append_unique(context.warnings, "Translated grouped topk() as latest-bucket ES|QL top N")
-    return "translated grouped topk expression"
+    _append_unique(context.warnings, f"Translated grouped {topk_label}() as latest-bucket ES|QL {n_label}")
+    return f"translated grouped {topk_label} expression"
 
 
 # Characters that carry special meaning in a regex. If a label_replace regex's
@@ -2154,10 +2380,19 @@ def _build_label_replace_grok(dst, src, regex):
 
 
 def _build_label_replace_eval(dst, replacement, src, regex):
-    """Return an ES|QL clause for label_replace(), or None if untranslatable."""
+    """ES|QL clause for label_replace(): None if untranslatable, "" if a no-op.
+
+    "" and None are deliberately different. None means the pattern could not be
+    expressed and the operator needs to know the rename was dropped; "" means the
+    rename is the identity and there is simply nothing to emit.
+    """
     # Case 1: full copy — replacement captures everything unchanged
     if replacement in ("$1", "$0") and regex in ("(.*)", ".*", "(.+)", ".+"):
-        return f"| EVAL {dst} = {src}"
+        # label_replace(x, "namespace", "$1", "namespace", "(.*)") copies a label
+        # onto itself. Emitting `EVAL namespace = namespace` is a no-op that a
+        # later KEEP discards, so it only adds noise to the query.
+        same = str(dst).strip().strip("`") == str(src).strip().strip("`")
+        return "" if same else f"| EVAL {dst} = {src}"
     # Case 2: constant string — no $N capture group references
     if not re.search(r"\$\d+", replacement):
         safe = replacement.replace('"', '\\"')
@@ -2230,7 +2465,7 @@ def label_replace_family_rule(context):
         else:
             warning = f"label_replace({dst!r}) approximated with ES|QL EVAL"
         _append_unique(context.warnings, warning)
-    else:
+    elif eval_clause is None:
         _append_unique(
             context.warnings,
             f"label_replace(): complex replacement pattern not translatable; "
@@ -2243,11 +2478,88 @@ def label_replace_family_rule(context):
     context.esql_query = "\n".join(lines)
     context.metric_name = sub.metric_name
     context.output_metric_field = sub.output_metric_field
-    context.output_group_fields = sub.output_group_fields
+    # Include the computed label as a group decoration field so downstream KEEP
+    # clauses retain the column (mirrors label_join_family_rule).
+    _lr_existing = list(sub.output_group_fields or [])
+    context.output_group_fields = _lr_existing + ([dst] if dst and dst not in _lr_existing else [])
     context.source_type = sub.source_type
     context.parser_backend = "fragment"
     context.translation_complete = True
     return f"translated label_replace({dst!r})"
+
+
+@QUERY_TRANSLATORS.register("label_join_family", priority=6)
+def label_join_family_rule(context):
+    """Translate label_join(v, dst, sep, src1, ...) via post-STATS ES|QL EVAL CONCAT."""
+    frag = context.fragment
+    if not frag or frag.family != "label_join":
+        return None
+
+    inner_frag = frag.extra.get("lj_inner_frag")
+    if not inner_frag:
+        return None
+
+    dst = frag.extra.get("lj_dst", "")
+    sep = frag.extra.get("lj_sep", "")
+    src_labels = frag.extra.get("lj_src") or []
+
+    sub = TranslationContext(
+        promql_expr=inner_frag.raw_expr or context.promql_expr,
+        data_view=context.data_view,
+        index=context.index,
+        rule_pack=context.rule_pack,
+        resolver=context.resolver,
+        metadata=dict(context.metadata),
+    )
+    sub.fragment = inner_frag
+    sub.metadata["fragment_family"] = inner_frag.family
+    QUERY_TRANSLATORS.apply(sub, stop_when=lambda ctx, _: ctx.translation_complete)
+    QUERY_POSTPROCESSORS.apply(sub)
+
+    if not sub.esql_query or sub.feasibility == "not_feasible":
+        return None
+
+    # Build CONCAT interleaving the separator literal between source labels.
+    sep_literal = f'"{sep}"'
+    concat_parts = []
+    for i, src in enumerate(src_labels):
+        if i > 0:
+            concat_parts.append(sep_literal)
+        concat_parts.append(_esql_identifier(src))
+    eval_clause = f"| EVAL {_esql_identifier(dst)} = CONCAT({', '.join(concat_parts)})"
+
+    lines = sub.esql_query.splitlines()
+    # Insert EVAL before the first | KEEP or | SORT so that src labels are
+    # still available (an inner KEEP from scaled_agg would drop them first).
+    insert_idx = next(
+        (i for i, ln in enumerate(lines)
+         if ln.strip().startswith("| SORT") or ln.strip().startswith("| KEEP")),
+        len(lines),
+    )
+    lines.insert(insert_idx, eval_clause)
+    # If we inserted before a | KEEP, also extend that KEEP to include dst so
+    # the new column is not immediately dropped.
+    keep_idx = insert_idx + 1
+    if keep_idx < len(lines) and lines[keep_idx].strip().startswith("| KEEP"):
+        dst_id = _esql_identifier(dst)
+        if dst_id not in lines[keep_idx]:
+            lines[keep_idx] = lines[keep_idx].rstrip() + f", {dst_id}"
+
+    _append_unique(context.warnings, f"label_join({dst!r}) approximated as ES|QL EVAL CONCAT")
+    for w in sub.warnings:
+        _append_unique(context.warnings, w)
+
+    context.esql_query = "\n".join(lines)
+    context.metric_name = sub.metric_name
+    context.output_metric_field = sub.output_metric_field
+    # Include the new derived label as an output group field so downstream KEEP
+    # clauses and multi-target fusion retain the computed column.
+    existing = list(sub.output_group_fields or [])
+    context.output_group_fields = existing + ([dst] if dst and dst not in existing else [])
+    context.source_type = sub.source_type
+    context.parser_backend = "fragment"
+    context.translation_complete = True
+    return f"translated label_join({dst!r})"
 
 
 @QUERY_TRANSLATORS.register("scaled_agg_family", priority=6)
@@ -2289,6 +2601,15 @@ def scaled_agg_family_rule(context):
     )
     for warning in map_rate_warnings:
         _append_unique(context.warnings, warning)
+    # If drop_rate cleared esql_inner, downgrade to FROM so a non-TSDS gauge
+    # is not queried under TS.  Recompute bucket and group_by_parts with the
+    # FROM bucket expression so the STATS BY clause is valid.
+    if not esql_inner and not is_counter:
+        bucket = rp.from_bucket
+        group_by_parts, output_group = _grouping_parts(bucket, group_fields, frag)
+        _scaled_source = "FROM"
+    else:
+        _scaled_source = "TS"
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
     physical_metric = _resolve_frag_metric_field(frag, resolver, prefer=prefer)
     cast_needed = _counter_unsafe_cast_needed(physical_metric, resolver)
@@ -2307,19 +2628,20 @@ def scaled_agg_family_rule(context):
         force_cast=cast_needed,
     )
     if esql_inner:
-        inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+        inner_windowed = _range_call(esql_inner, inner_arg, frag.range_window)
     else:
         # drop_rate → gauge: outer agg operates on the bare field.
         inner_windowed = inner_arg
 
     context.parser_backend = "fragment"
-    context.source_type = "TS"
+    context.source_type = _scaled_source
     context.metric_name = frag.metric
     context.output_metric_field = final_alias
     context.output_group_fields = output_group
+    _scaled_time_filter = rp.ts_time_filter if _scaled_source == "TS" else rp.from_time_filter
     parts = [
-        f"TS {context.index}",
-        f"| WHERE {rp.ts_time_filter}",
+        f"{_scaled_source} {context.index}",
+        f"| WHERE {_scaled_time_filter}",
         *_build_where_lines(filters),
         f"| WHERE {physical_metric} IS NOT NULL",
     ]
@@ -2331,7 +2653,11 @@ def scaled_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, context.output_group_fields, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, context.output_group_fields, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(context.output_group_fields, final_alias)}")
@@ -2470,24 +2796,47 @@ def nested_agg_family_rule(context):
             and nested_cast_needed
         ):
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
-        first_stats_expr = f"{inner_alias} = {esql_inner_agg}({esql_inner_name}({_counter_safe_metric_arg(esql_inner_name, physical_metric, is_counter, frag.range_func, counter_refuted=_counter_refuted(resolver, frag.metric), force_cast=nested_cast_needed)}, {frag.range_window}))"
+        _inner_arg = _counter_safe_metric_arg(
+            esql_inner_name, physical_metric, is_counter, frag.range_func,
+            counter_refuted=_counter_refuted(resolver, frag.metric),
+            force_cast=nested_cast_needed,
+        )
+        first_stats_expr = (
+            f"{inner_alias} = {esql_inner_agg}"
+            f"({_range_call(esql_inner_name, _inner_arg, frag.range_window)})"
+        )
         first_stats_by = (
             f"{rp.ts_bucket}, {', '.join(inner_group)}"
             if inner_group
             else rp.ts_bucket
         )
-        context.output_group_fields = ["time_bucket"]
-        context.esql_query = "\n".join(
-            [
-                f"TS {context.index}",
-                f"| WHERE {rp.ts_time_filter}",
-                *_build_where_lines(filters),
-                f"| WHERE {physical_metric} IS NOT NULL",
-                f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)} BY time_bucket",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        outer_stats_expr = f"{result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)}"
+        if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
+            context.output_group_fields = []
+            context.esql_query = "\n".join(
+                [
+                    f"TS {context.index}",
+                    f"| WHERE {rp.ts_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {physical_metric} IS NOT NULL",
+                    f"| STATS {first_stats_expr} BY {first_stats_by}",
+                    f"| STATS {outer_stats_expr}",
+                    f"| KEEP {result_alias}",
+                ]
+            )
+        else:
+            context.output_group_fields = ["time_bucket"]
+            context.esql_query = "\n".join(
+                [
+                    f"TS {context.index}",
+                    f"| WHERE {rp.ts_time_filter}",
+                    *_build_where_lines(filters),
+                    f"| WHERE {physical_metric} IS NOT NULL",
+                    f"| STATS {first_stats_expr} BY {first_stats_by}",
+                    f"| STATS {outer_stats_expr} BY time_bucket",
+                    "| SORT time_bucket ASC",
+                ]
+            )
         context.parser_backend = "fragment"
         context.source_type = "TS"
         context.metric_name = result_alias
@@ -2706,8 +3055,18 @@ def histogram_quantile_family_rule(context):
     if group_by_parts:
         stats_line += f" BY {', '.join(group_by_parts)}"
     parts.append(stats_line)
-    if "time_bucket" in output_group:
-        parts.append("| SORT time_bucket ASC")
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
+    if collapsed is None:
+        if "time_bucket" in output_group:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group = collapsed
 
     context.esql_query = "\n".join(parts)
     context.parser_backend = "fragment"
@@ -2804,8 +3163,12 @@ def range_agg_family_rule(context):
         resolver, frag.metric, source_labels=_frag_source_labels(frag)
     ):
         _append_unique(context.warnings, note)
-    needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
-    source = "TS" if needs_ts else "FROM"
+    # When _plan_metric_map_rate_transform clears esql_inner_name (drop_rate),
+    # no counter/rate function is emitted; use FROM so non-TSDS gauges are
+    # queried correctly.  frag.range_func in AGG_FUNCTION_MAP is always True
+    # here (the guard above returned None when the key was absent), so using
+    # it would force TS even in the drop_rate case.
+    source = "TS" if (bool(esql_inner_name) or is_counter) else "FROM"
     time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
     bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
     prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
@@ -2827,7 +3190,7 @@ def range_agg_family_rule(context):
         force_cast=cast_needed,
     )
     if esql_inner_name:
-        inner_expr = f"{esql_inner_name}({inner_arg}, {frag.range_window})"
+        inner_expr = _range_call(esql_inner_name, inner_arg, frag.range_window)
     else:
         # drop_rate → gauge: outer agg operates on the bare field.
         inner_expr = inner_arg
@@ -2872,7 +3235,11 @@ def range_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")
@@ -2941,6 +3308,9 @@ def simple_agg_family_rule(context):
         context.metadata.get("preferred_group_labels"),
         preferred_origin=context.metadata.get("preferred_group_labels_origin"),
     )
+    # Same issue-#99 drop as range_agg / simple_metric: outer agg without by()
+    # means legendFormat {{…}} is a series alias, not a BY dimension.
+    group_fields = _drop_redundant_legend_grouping(context, frag, group_fields)
     is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
     pre_agg_filter = frag.extra.get("post_filter") if frag.extra.get("inner_frag") else None
     physical_metric = _resolve_frag_metric_field(
@@ -3233,7 +3603,11 @@ def simple_agg_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")
@@ -3286,7 +3660,6 @@ def simple_metric_family_rule(context):
     can_use_ts_aggregated_gauge = (
         (not is_counter)
         and (not can_use_direct_ts_gauge)
-        and (not (frag.extra.get("wrapped_scalar") if frag else False))
         and _gauge_can_use_ts(frag.metric, resolver, rp)
     )
 
@@ -3318,10 +3691,17 @@ def simple_metric_family_rule(context):
         if _counter_unsafe_cast_needed(physical_metric, resolver):
             agg_arg = f"TO_DOUBLE({physical_metric})"
             _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
-        stats_expr = f"{default_agg}({agg_arg})"
-        # No explicit PromQL aggregator was given; default to the gauge aggregator. With
-        # grouping labels this is a faithful per-series downsample; without them it collapses
-        # series and the warning says so (and is recorded as a semantic loss).
+        # No explicit PromQL aggregator was given. Collapse ACROSS TIME with
+        # LAST_OVER_TIME first, then aggregate ACROSS SERIES with the gauge
+        # default. Aggregating the raw field does BOTH at once, which is not a
+        # downsample of an instant vector: a bare selector's value at each step is
+        # the most recent sample at or before it, never the step mean.
+        #
+        # "Node Exporter Scrape Time" had 46 of its 48 per-collector series
+        # disagree with Prometheus for exactly this reason (collector=nfs by
+        # 5276%: 0.0123 against 0.000228) -- a scrape-duration gauge spikes, so a
+        # 14-minute bucket mean sits far above the latest sample.
+        stats_expr = f"{default_agg}(LAST_OVER_TIME({agg_arg}))"
         warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
         if warning:
             _append_unique(context.warnings, warning)
@@ -3371,7 +3751,11 @@ def simple_metric_family_rule(context):
         parts.append(eval_line)
     collapsed = None
     if _summary_mode_from_metadata(context.metadata):
-        collapsed = _collapse_summary_ts_query(parts, output_group, [final_alias])
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group, [final_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+                            reduce_calc=context.metadata.get("reduce_calc", ""),
+                        )
     if collapsed is None:
         if eval_line:
             parts.append(f"| KEEP {_keep(output_group, final_alias)}")
@@ -3577,14 +3961,30 @@ def stats_expression_rule(context):
     if _counter_unsafe_cast_needed(physical_metric, context.resolver):
         default_agg_arg = f"TO_DOUBLE({physical_metric})"
         _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, context.resolver))
-    context.stats_expr = f"{default_agg}({default_agg_arg})"
+    # Collapse ACROSS TIME with LAST_OVER_TIME before aggregating ACROSS SERIES.
+    # A bare instant-vector selector has a value at each step -- the most recent
+    # sample at or before it -- so averaging a gauge over the step interval is a
+    # different number, not a smoothed one. "Node Exporter Scrape Time" had 46 of
+    # its 48 per-collector series disagree with Prometheus for this reason
+    # (collector=nfs by 5276%: 0.0123 against 0.000228), because a scrape-duration
+    # gauge spikes and a 14-minute bucket mean sits far above the latest sample.
+    # LAST_OVER_TIME is a TS-command function, so the FROM path keeps the plain
+    # aggregate (it has no equivalent; see open-problems 0f).
+    if context.source_type == "TS" and not context.inner_func:
+        context.stats_expr = f"{default_agg}(LAST_OVER_TIME({default_agg_arg}))"
+    else:
+        context.stats_expr = f"{default_agg}({default_agg_arg})"
     if context.inner_func:
         _append_unique(
             context.warnings,
             f"Unmapped function {context.inner_func}; approximating with {default_agg}",
         )
     else:
-        _append_unique(context.warnings, f"No explicit aggregation; using {default_agg} (correct for gauge metrics)")
+        _append_unique(
+            context.warnings,
+            f"No explicit aggregation; using {default_agg} over each series' latest "
+            f"sample (instant-vector semantics)",
+        )
     return f"built stats expression {context.stats_expr}"
 
 
@@ -3627,6 +4027,50 @@ def _projected_metric_field_from_esql(esql_query):
         if match:
             return match.group(1)
     return ""
+
+
+_COUNTER_RANGE_WINDOW_RE = re.compile(
+    r"\b(RATE|IRATE|INCREASE)\((?P<arg>[^(),]+),\s*[0-9]+(?:ms|s|m|h|d)\)", re.IGNORECASE
+)
+
+
+@QUERY_POSTPROCESSORS.register("counter_range_window", priority=93)
+def counter_range_window_rule(context):
+    """Drop the explicit window from RATE/IRATE/INCREASE so it follows the bucket.
+
+    Elasticsearch computes these over the TIME BUCKET, not over the window:
+    ``RateDoubleGroupingAggregatorFunction.computeRate`` derives the value at
+    ``tbucketStart``/``tbucketEnd`` (extrapolating to the boundaries) and divides
+    by that span. The window argument defaults to ``NO_WINDOW`` --
+    ``Duration.ZERO`` -- which means "use the bucket".
+
+    Passing a fixed window alongside an ADAPTIVE ``TBUCKET(100, ?_tstart,
+    ?_tend)`` therefore desynchronises the two as soon as the dashboard's range
+    grows. Measured on the rig with node_cpu_seconds_total, whose correct idle
+    rate is ~0.98:
+
+        50 min range, 2.5 min buckets   RATE(x, 5m) 0.982   RATE(x) 0.982
+        12 h   range, 7.2 min buckets   RATE(x, 5m) 1.937   RATE(x) 0.984
+
+    A 12-hour view is ordinary, and every rate panel on it read about double; at
+    24 hours the windowed form reads 5.70 against a true 0.984. Omitting the window
+    is correct at every range because the bucket then defines the span on both
+    sides. Note the adaptive bucket is essential to reproduce -- a fixed-width
+    TBUCKET at the same range and window looks fine.
+
+    Only the counter functions are touched. The ``*_OVER_TIME`` family takes its
+    window as a genuine lookback and keeps it.
+    """
+    query = context.esql_query
+    if not query or "(" not in query:
+        return None
+    rewritten = _COUNTER_RANGE_WINDOW_RE.sub(
+        lambda m: f"{m.group(1)}({m.group('arg')})", query
+    )
+    if rewritten == query:
+        return None
+    context.esql_query = rewritten
+    return "counter range windows follow the time bucket"
 
 
 @QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)

@@ -1,5 +1,0 @@
-source: sum(rabbitmq_queue_messages_ready * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info) by(rabbitmq_node)
-feasibility: not_feasible
-warning: Aggregating by 'rabbitmq_node' over a PromQL vector-matching join requires manual redesign: 'rabbitmq_node' only exists via `group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info`, not on the primary metric 'rabbitmq_queue_messages_ready'; rebuild this panel with a manual ES|QL lookup/enrich, or drop that grouping dimension
----
-

@@ -5,7 +5,7 @@ warning: topk() without group labels: collapsed to single-series top N; add pref
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE http_requests_total IS NOT NULL
-| STATS _bucket_value = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)
+| STATS _bucket_value = AVG(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute)
 | SORT time_bucket ASC
 | STATS value = LAST(_bucket_value, time_bucket)
 | SORT value DESC

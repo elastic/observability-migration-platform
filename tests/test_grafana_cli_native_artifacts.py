@@ -4,12 +4,11 @@
 """End-to-end coverage of the native/IR review artifacts the Grafana CLI
 pipeline writes under ``<output-dir>/dashboards/{native,ir}/``.
 
-``translate_dashboard`` already proves the in-memory ``native_dashboard``
-matches the YAML bridge payload (see
-``tests/test_grafana_native_dashboard_emission.py``); this file proves the
-CLI pipeline persists that exact same payload to disk before any upload, so
-``obs-migrate upload --artifact-dir ... --artifact-format native`` deploys
-byte-for-byte what a reviewer inspected.
+``obs-migrate upload --artifact-dir ...`` deploys ``native/*.native.json``
+byte-for-byte, so this file proves the pipeline persists exactly the payload a
+reviewer inspects, and that the payload still structurally describes the
+``DashboardIR`` it was built from (see ``tests/native_payload_guard.py`` for the
+two cross-checks and why each exists).
 """
 
 from __future__ import annotations
@@ -17,6 +16,11 @@ from __future__ import annotations
 import json
 
 from observability_migration.adapters.source.grafana import cli as grafana_cli
+from observability_migration.core.assets.dashboard import DashboardIR
+from tests.native_payload_guard import (
+    assert_payload_matches_dict_shape_bridge,
+    assert_payload_matches_ir,
+)
 
 
 def _write_dashboard(tmp_path):
@@ -53,6 +57,15 @@ def _run(tmp_path, out_dir):
     )
 
 
+def _ir_by_stem(dashboards_dir):
+    """``{artifact stem: DashboardIR}`` rebuilt from the persisted ir/ artifacts."""
+    out = {}
+    for ir_file in sorted((dashboards_dir / "ir").glob("*.ir.json")):
+        stem = ir_file.name[: -len(".ir.json")]
+        out[stem] = DashboardIR.from_dict(json.loads(ir_file.read_text())["dashboard_ir"])
+    return out
+
+
 class TestGrafanaCliNativeArtifacts:
     def test_migrate_without_upload_writes_native_and_ir_artifacts(self, tmp_path):
         _write_dashboard(tmp_path)
@@ -65,24 +78,45 @@ class TestGrafanaCliNativeArtifacts:
         assert len(native_files) == 1
         assert len(ir_files) == 1
 
-    def test_native_artifact_payload_matches_yaml_bridge_payload(self, tmp_path):
-        import yaml as yaml_lib
+    def test_native_artifact_payload_describes_the_persisted_ir(self, tmp_path):
+        """The shipped payload must still describe the IR it was built from.
 
-        from observability_migration.targets.kibana import dashboards_api
-
+        This is the load-bearing structural cross-check on the artifact we
+        upload: it compares the payload against the ``DashboardIR`` rather than
+        re-running the mapper, so a panel or ES|QL query lost during mapping
+        shows up here instead of being reproduced identically on both sides.
+        """
         _write_dashboard(tmp_path)
         out_dir = tmp_path / "out"
         _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
+        native_files = sorted((dashboards_dir / "native").glob("*.native.json"))
+        assert native_files
+        for native_file in native_files:
+            stem = native_file.name[: -len(".native.json")]
+            artifact = json.loads(native_file.read_text())
+            assert_payload_matches_ir(artifact["payload"], irs[stem], label=stem)
+
+    def test_native_artifact_payload_matches_dict_shape_bridge(self, tmp_path):
+        """Both mapper entry points must build the same payload from one IR.
+
+        Pins the dashboard-level derivations (stable id, title, filters) that
+        the per-panel IR guard above does not look at. In-memory dict shape --
+        no YAML file is written or read.
+        """
+        _write_dashboard(tmp_path)
+        out_dir = tmp_path / "out"
+        _run(tmp_path, out_dir)
+
+        dashboards_dir = out_dir / "dashboards"
+        irs = _ir_by_stem(dashboards_dir)
         native_file = next((dashboards_dir / "native").glob("*.native.json"))
-        yaml_file = next((dashboards_dir / "yaml").glob("*.yaml"))
+        stem = native_file.name[: -len(".native.json")]
 
         artifact = json.loads(native_file.read_text())
-        doc = yaml_lib.safe_load(yaml_file.read_text())
-        bridged_payload, _stats = dashboards_api.build_payload_from_yaml(doc)
-
-        assert artifact["payload"] == bridged_payload
+        assert_payload_matches_dict_shape_bridge(artifact["payload"], irs[stem], label=stem)
 
     def test_native_artifact_envelope_shape(self, tmp_path):
         _write_dashboard(tmp_path)
@@ -113,6 +147,76 @@ class TestGrafanaCliNativeArtifacts:
         assert len(panels) == 1
         # Enum status must already be a plain string, not an Enum repr.
         assert isinstance(panels[0]["status"], str)
+
+    def test_ir_artifact_round_trips_through_the_internal_dict_shape(self, tmp_path):
+        """``ir/*.ir.json`` must survive a ``to_yaml_dict``/``from_yaml_dict`` round trip.
+
+        Every in-repo reader reads ``ir/*.ir.json`` and rebuilds the internal
+        dict shape with ``DashboardIR.from_dict(...).to_yaml_dict()``. This is
+        the invariant that makes those readers lossless: if the round-trip ever
+        drops a field, the telemetry contract, the verifier's T2 tier and
+        visual-regression panel discovery all silently lose it at once.
+        """
+        _write_dashboard(tmp_path)
+        (tmp_path / "sectioned.json").write_text(
+            json.dumps(
+                {
+                    "title": "Sectioned Dashboard",
+                    "uid": "native-artifact-3",
+                    "schemaVersion": 30,
+                    "templating": {
+                        "list": [
+                            {
+                                "name": "instance",
+                                "type": "query",
+                                "datasource": {"type": "prometheus"},
+                                "query": "label_values(up, instance)",
+                                "multi": True,
+                                "current": {"text": "All", "value": "$__all"},
+                            }
+                        ]
+                    },
+                    "panels": [
+                        {
+                            "title": "Row One",
+                            "type": "row",
+                            "gridPos": {"w": 24, "h": 1, "x": 0, "y": 0},
+                            "panels": [
+                                {
+                                    "title": "Requests",
+                                    "type": "timeseries",
+                                    "gridPos": {"w": 12, "h": 8, "x": 0, "y": 1},
+                                    "targets": [
+                                        {
+                                            "refId": "A",
+                                            "expr": 'sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (method)',
+                                        }
+                                    ],
+                                },
+                                {
+                                    "title": "Notes",
+                                    "type": "text",
+                                    "gridPos": {"w": 12, "h": 8, "x": 12, "y": 1},
+                                    "options": {"content": "hello"},
+                                },
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+        out_dir = tmp_path / "out"
+        _run(tmp_path, out_dir)
+
+        dashboards_dir = out_dir / "dashboards"
+        ir_files = sorted((dashboards_dir / "ir").glob("*.ir.json"))
+        assert len(ir_files) == 2
+        for ir_file in ir_files:
+            artifact = json.loads(ir_file.read_text())
+            dashboard_ir = DashboardIR.from_dict(artifact["dashboard_ir"])
+            exported = dashboard_ir.to_yaml_dict()
+            reloaded = DashboardIR.from_yaml_dict(exported, source_adapter="grafana")
+            assert reloaded.to_yaml_dict() == exported, ir_file.name
 
     def test_native_index_lists_every_migrated_dashboard(self, tmp_path):
         _write_dashboard(tmp_path)
@@ -158,15 +262,15 @@ class TestGrafanaCliNativeArtifacts:
         _run(tmp_path, out_dir)
 
         dashboards_dir = out_dir / "dashboards"
-        yaml_files = sorted((dashboards_dir / "yaml").glob("*.yaml"))
         native_files = sorted((dashboards_dir / "native").glob("*.native.json"))
         ir_files = sorted((dashboards_dir / "ir").glob("*.ir.json"))
         index = json.loads((dashboards_dir / "native" / "index.json").read_text())
 
-        assert len(yaml_files) == 2
+        assert not (dashboards_dir / "yaml").exists()
         assert len(native_files) == 2
         assert len(ir_files) == 2
-        assert len({path.stem for path in yaml_files}) == 2
+        assert len({path.name for path in native_files}) == 2
+        assert len({path.name for path in ir_files}) == 2
         index_stems = [entry["stem"] for entry in index["dashboards"]]
         assert len(index_stems) == 2
         assert len(set(index_stems)) == 2

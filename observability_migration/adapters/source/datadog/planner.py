@@ -233,6 +233,28 @@ def unparsed_query_rule(context: PlanContext) -> str | None:
     if not has_unparsed:
         return None
     context.plan.backend = "markdown"
+    unsupported = next(
+        (
+            getattr(q, "unsupported_function", "")
+            for q in context.widget.queries
+            if getattr(q, "unsupported_function", "")
+        ),
+        "",
+    )
+    if unsupported:
+        # The query parses fine; the blocker is a Datadog function with no ES|QL
+        # equivalent (timeshift compares against a past window, top/derivative
+        # likewise have no direct form). Saying "could not be parsed" sends the
+        # operator looking for a syntax problem that does not exist.
+        context.plan.reasons.append(
+            f"query uses Datadog {unsupported}(), which has no ES|QL equivalent"
+        )
+        context.plan.warnings.append(
+            f"{unsupported}() is not translatable; rebuild this widget in Kibana "
+            "or drop the function"
+        )
+        context.plan.confidence = 0.2
+        return f"selected markdown because the query uses unsupported {unsupported}()"
     context.plan.reasons.append("metric query could not be parsed")
     context.plan.warnings.append("query syntax not recognized; manual review needed")
     context.plan.confidence = 0.2
@@ -412,6 +434,23 @@ def metric_heatmap_distribution_rule(context: PlanContext) -> str | None:
     if context.widget.widget_type not in ("heatmap", "distribution"):
         return None
     context.plan.backend = "esql"
+    # A heatmap needs a Y dimension to bucket into. An ungrouped Datadog heatmap
+    # (`avg:node_load1{*}` with no `by {...}`) is a single series, so the heatmap
+    # emitter has nothing to put on Y and the widget was dropped as not_feasible
+    # -- losing data that translates perfectly well. The same series drawn as an
+    # XY chart carries exactly the same values, so degrade instead of dropping,
+    # and say so. Mirrors metric_change_rule, which picks table-vs-metric the
+    # same way.
+    grouped = any(
+        q.metric_query and q.metric_query.group_by for q in context.metric_queries
+    )
+    if context.widget.widget_type == "heatmap" and not grouped:
+        context.plan.kibana_type = "xy"
+        context.plan.reasons.append(
+            "ungrouped heatmap → ES|QL XY chart (no group-by means a single "
+            "series, which has no heatmap Y dimension; the values are unchanged)"
+        )
+        return "selected ES|QL XY for ungrouped heatmap"
     context.plan.kibana_type = context.widget.kibana_type
     context.plan.reasons.append(f"{context.widget.widget_type} → ES|QL")
     return f"selected ES|QL for {context.widget.widget_type}"

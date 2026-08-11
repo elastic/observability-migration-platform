@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -51,14 +52,21 @@ from observability_migration.targets.kibana.render_audit import (
     expected_kind_by_panel,
     expects_data_by_panel,
     interaction_regression,
+    metric_fields_by_panel,
+    panel_titles_in_order,
+    scope_report_to_dashboard,
     segment_panels,
+    source_indices_by_panel,
 )
 
 # A DOM fetcher takes a URL and returns the rendered DOM HTML.
 DomFetcher = Callable[[str], str]
-# A field fetcher returns the set of field names present in the target index
-# (or None when unavailable), used to attribute render markers to field gaps.
-FieldFetcher = Callable[[], "set[str] | None"]
+# A field fetcher maps ONE index pattern to the set of field names present in it
+# (or None when unavailable), used to attribute render markers to field gaps and
+# empty panels to metric gaps. It takes the index pattern because a dashboard
+# mixes them: a ``FROM logs-*`` panel's columns are not in ``metrics-*``, so a
+# single dashboard-wide lookup answers a question about the wrong index.
+FieldFetcher = Callable[[str], "set[str] | None"]
 
 
 # --------------------------------------------------------------------------- #
@@ -297,6 +305,87 @@ def fetch_available_fields(
         return None
 
 
+def fetch_panel_field_caps(
+    report: dict,
+    *,
+    fetch: FieldFetcher,
+    cache: dict[str, set[str] | None] | None = None,
+) -> dict[str, set[str] | None]:
+    """Target field caps per panel, resolved against the index that panel reads.
+
+    ``--es-index`` names ONE pattern, but a dashboard mixes them. Nine panels in
+    the Datadog corpus are ``FROM logs-*``; looking their columns up in
+    ``metrics-*`` answers a question about an index that cannot contain them, and
+    every verdict drawn from that answer is unfounded — "absent" invents a gap
+    that is not there, "present" would excuse a real bug.
+
+    ``cache`` is keyed by index pattern, so a dashboard of forty ``metrics-*``
+    panels and two ``logs-*`` panels costs two ``_field_caps`` calls, not
+    forty-two. Pass one in (pre-seeded with the default index) to reuse it.
+
+    A panel maps to ``None`` — schema unknown, which keeps it in the stricter
+    class — as soon as ANY index it reads could not be read. A partial union
+    would let a column absent from the unreadable half look confirmed.
+    """
+    caps = cache if cache is not None else {}
+    out: dict[str, set[str] | None] = {}
+    for title, indices in source_indices_by_panel(report).items():
+        resolved: set[str] | None = set()
+        for index in indices:
+            if index not in caps:
+                caps[index] = fetch(index)
+            available = caps[index]
+            if available is None:
+                resolved = None
+                break
+            resolved = (resolved or set()) | available
+        out[title] = resolved
+    return out
+
+
+def native_dashboard_id_aliases(migration_out: Path) -> dict[str, str]:
+    """``{kibana_dashboard_id: dashboard_title}`` for a run's ``native/`` artifacts.
+
+    ``native/index.json`` is written once per migration run and already records the
+    deterministic id (``obs-migrate-<title-slug>``, plus a disambiguator when two
+    dashboards of the run share a title) each dashboard was or would be uploaded
+    under. Reading it lets ``--dashboard-id`` be joined to a report dashboard
+    exactly, instead of re-deriving a slug that cannot reproduce the
+    disambiguator. Mirrors the verifier's ``load_native_dashboard_index``.
+
+    Returns ``{}`` when the artifacts are absent or unreadable — the caller then
+    falls back to the identity keys the report itself carries.
+    """
+    native_dir = Path(migration_out) / "native"
+    if not native_dir.exists():
+        return {}
+    out: dict[str, str] = {}
+
+    def record(blob: object) -> None:
+        if not isinstance(blob, dict):
+            return
+        dashboard_id = str(blob.get("dashboard_id") or "")
+        if dashboard_id:
+            out.setdefault(dashboard_id, str(blob.get("title") or ""))
+
+    index_path = native_dir / "index.json"
+    if index_path.exists():
+        try:
+            blob = json.loads(index_path.read_text())
+        except (OSError, ValueError):
+            blob = {}
+        for item in (blob or {}).get("dashboards") or []:
+            record(item)
+        if out:
+            return out
+    for artifact in sorted(native_dir.glob("*.native.json")):
+        try:
+            record(json.loads(artifact.read_text()))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
 def build_render_audit_command(
     chrome_binary: str,
     url: str,
@@ -417,13 +506,26 @@ def run_audit_cli(
 
     When ``--migration-out`` is supplied, the render is classified **per panel**
     against the emitted migration metadata (panel segments, breakdown fields,
-    query-bearing panels) via ``classify_render_per_panel`` — so a data-readiness
-    finding (``field_gap``/``data_gap``/``unexpected_empty``) is a ``warn`` and
-    only a genuine ``render_error`` (or console/5xx error) is a hard ``fail``.
-    Field-gap attribution additionally needs the target field set, fetched from
-    ``--es-url`` (``_field_caps``) when available; without it a render marker
-    stays a ``render_error``. Without ``--migration-out`` it falls back to the
-    whole-dashboard ``classify_render``.
+    metric columns, query-bearing panels) via ``classify_render_per_panel`` — so a
+    data-readiness finding (``field_gap``/``data_gap``/``unexpected_empty``) is a
+    ``warn`` and only a genuine ``render_error`` (or console/5xx error) is a hard
+    ``fail``. Field- and metric-gap attribution additionally needs the target
+    field set, fetched from ``--es-url`` (``_field_caps``) when available;
+    without it a render marker stays a ``render_error`` and an empty panel stays
+    ``unexpected_empty``. Field caps are fetched **per index**: each panel is
+    judged against the index its own ES|QL ``FROM`` names, because a
+    ``FROM logs-*`` panel's columns cannot be in ``metrics-*`` and any conclusion
+    from looking there is unfounded. Without ``--migration-out`` it falls back to
+    the whole-dashboard ``classify_render``.
+
+    The report is first narrowed to the dashboard ``--dashboard-id`` names
+    (:func:`scope_report_to_dashboard`), because ``--migration-out`` points at a
+    whole run: segmenting one dashboard's DOM by every title in the run lets a
+    stray text match attribute a chunk to another dashboard's breakdown field,
+    metric and index. A dashboard the report cannot identify reports that fact —
+    on stderr and in ``render.reasons`` — and gets no per-panel attribution;
+    borrowing the run's full title set is exactly the misattribution being
+    prevented, and it would fail silently.
 
     With ``--elements`` it also runs the per-panel element audit (chart kind /
     legend / data vs the emitted YAML). Prints a JSON verdict; exits non-zero on
@@ -457,6 +559,19 @@ def run_audit_cli(
     snapshot = fetch(url)
 
     report: dict | None = None
+    # Non-empty when --migration-out was supplied but the audited dashboard could
+    # not be found in it. Per-panel attribution is then unavailable and says so;
+    # it never falls back to the whole report's titles, which would attribute this
+    # dashboard's DOM to another dashboard's panel metadata.
+    scope_note = ""
+    # Target field caps, needed by BOTH the per-panel render classification and
+    # the --elements audit to confirm a field absence. None == unknown schema, in
+    # which case every render marker stays a hard render_error. ``available_fields``
+    # covers panels whose query names no index; ``fields_by_title`` carries the
+    # per-panel caps for every panel that does name one.
+    available_fields: set[str] | None = None
+    fields_by_title: dict[str, set[str] | None] = {}
+    metrics_by_title: dict[str, list[str]] = {}
     migration_out = getattr(args, "migration_out", "")
     if migration_out:
         report_path = Path(migration_out) / "migration_report.json"
@@ -465,29 +580,70 @@ def run_audit_cli(
                 report = json.loads(report_path.read_text())
             except (ValueError, OSError) as exc:
                 # A malformed/unreadable report must not crash the audit; degrade
-                # to the whole-dashboard render classification (hunt #4).
+                # to the whole-dashboard render classification (hunt #4). stderr,
+                # for the reason given below.
                 print(f"warning: could not read migration_report.json ({exc}); "
-                      "falling back to whole-dashboard render classification")
+                      "falling back to whole-dashboard render classification",
+                      file=sys.stderr)
                 report = None
+        else:
+            # stderr, not stdout: stdout carries the JSON report and a stray
+            # line there makes it unparseable for every downstream consumer.
+            print(f"warning: no migration_report.json under {migration_out!r}; "
+                  "falling back to whole-dashboard render classification "
+                  "(no per-panel attribution)", file=sys.stderr)
+    else:
+        # Say so. Without the report the audit still detects that the dashboard
+        # renders errors, but reports "panels": [] -- it cannot say WHICH panel,
+        # which is the whole reason to run it. Degrading silently sent a real
+        # investigation down the path of re-executing every panel query by hand.
+        print("note: --migration-out not supplied; reporting whole-dashboard "
+              "render status only. Pass --migration-out <dir>/dashboards for "
+              "per-panel attribution.", file=sys.stderr)
 
     if report is not None:
-        kinds = expected_kind_by_panel(report)
-        segments, unmatched = segment_panels(snapshot, kinds.keys())
+        # ONE dashboard is being audited; the report describes the whole run. Scope
+        # it before anything reads a panel list, so the segmentation matcher, the
+        # breakdown fields, the metrics and the per-panel index all come from the
+        # dashboard actually on screen.
+        report, scope_note = scope_report_to_dashboard(
+            report,
+            args.dashboard_id,
+            id_aliases=native_dashboard_id_aliases(Path(migration_out)),
+        )
+        if scope_note:
+            print(f"warning: {scope_note}", file=sys.stderr)
+
+    if report is not None:
+        titles = panel_titles_in_order(report)
+        segments, unmatched = segment_panels(snapshot, titles)
         fetch_fields = field_fetcher or (
-            lambda: fetch_available_fields(
+            lambda index: fetch_available_fields(
                 getattr(args, "es_url", "") or "",
                 getattr(args, "es_api_key", "") or "",
-                getattr(args, "es_index", "") or "metrics-*",
+                index,
                 verify=not getattr(args, "insecure", False),
             )
         )
-        available_fields = fetch_fields()
+        # --es-index is the fallback for panels whose query names no index (a
+        # markdown panel, or an unrecognized source command); every panel that
+        # names one is resolved against THAT index instead. One shared cache, so
+        # each distinct index pattern is fetched once per dashboard.
+        default_index = getattr(args, "es_index", "") or "metrics-*"
+        caps_by_index: dict[str, set[str] | None] = {default_index: fetch_fields(default_index)}
+        available_fields = caps_by_index[default_index]
+        fields_by_title = fetch_panel_field_caps(
+            report, fetch=fetch_fields, cache=caps_by_index
+        )
+        metrics_by_title = metric_fields_by_panel(report)
         verdict = classify_render_per_panel(
             segments,
             breakdown_by_title=breakdown_fields_by_panel(report),
             expects_data_titles=expects_data_by_panel(report),
+            metrics_by_title=metrics_by_title,
             available_fields=available_fields,
             available_metrics=available_fields,
+            target_fields_by_title=fields_by_title,
         )
         whole_verdict = classify_render(snapshot)
         segmented_text = "\n".join(chunk for _title, chunk in segments)
@@ -527,19 +683,39 @@ def run_audit_cli(
             verdict.reasons.extend(
                 reason for reason in whole_verdict.reasons if reason not in verdict.reasons
             )
-        elif unmatched and verdict.status == "pass":
-            verdict.status = "warn"
+        # A title with no DOM region of its own is reported WHATEVER the verdict
+        # is. It used to be reported only while the verdict was still "pass", so
+        # any data-readiness warn elsewhere on the dashboard swallowed "this panel
+        # never drew" — and a panel with no chunk is exactly how the prefix
+        # misattribution hid (a zero-length chunk reads as a clean render).
+        if unmatched:
             verdict.reasons.append(f"panel title(s) did not render: {unmatched}")
+            if verdict.status == "pass":
+                verdict.status = "warn"
     else:
         verdict = classify_render(snapshot)
+        if scope_note:
+            # Machine-visible, not just a stderr line: a consumer reading only the
+            # JSON must be able to see that "panels": [] means "we could not
+            # identify this dashboard", not "every panel rendered".
+            verdict.reasons.append(scope_note)
+            if verdict.status == "pass":
+                verdict.status = "warn"
 
     output: dict[str, object] = {"render": verdict.to_dict()}
 
     if getattr(args, "elements", False) and report is not None:
+        breakdowns = breakdown_fields_by_panel(report)
         elements = audit_dashboard_elements(
             snapshot,
             expected_kind_by_title=expected_kind_by_panel(report),
-            breakdown_titles=set(breakdown_fields_by_panel(report)),
+            breakdown_titles=set(breakdowns),
+            breakdown_by_title=breakdowns,
+            available_fields=available_fields,
+            expects_data_titles=expects_data_by_panel(report),
+            metrics_by_title=metrics_by_title,
+            target_fields_by_title=fields_by_title,
+            panel_titles=panel_titles_in_order(report),
         )
         output["elements"] = elements.to_dict()
 
@@ -576,12 +752,16 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--es-url", default="",
         help="Elasticsearch URL for target field caps (attributes render markers to "
-             "field gaps so missing-breakdown panels warn instead of failing).",
+             "field gaps so missing-breakdown panels warn instead of failing, and "
+             "empty panels to metric gaps).",
     )
     parser.add_argument("--es-api-key", default="", help="API key for --es-url.")
     parser.add_argument(
         "--es-index", default="metrics-*",
-        help="Index pattern for --es-url field-caps discovery (default: metrics-*).",
+        help="FALLBACK index pattern for --es-url field-caps discovery, used only for "
+             "panels whose query names no index (default: metrics-*). Every panel that "
+             "does is resolved against the index its own ES|QL FROM names, so a "
+             "FROM logs-* panel is never judged against metrics-*.",
     )
     parser.add_argument(
         "--insecure", action="store_true",

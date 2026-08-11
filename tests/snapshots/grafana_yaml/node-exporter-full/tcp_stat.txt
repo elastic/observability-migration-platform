@@ -1,9 +1,0 @@
-title: TCP Stat
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['established_TCP_sockets_in_established_state', 'fin_wait2_TCP_sockets_in_fin_wait2_state', 'listen_TCP_sockets_in_listen_state', 'time_wait_TCP_sockets_in_time_wait_state']
-breakdown: series_group
-axis_title: connections
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

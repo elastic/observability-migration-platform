@@ -1,6 +1,6 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
-"""Prove the wheel is standalone: clean venv, neutral cwd, offline migrate+compile."""
+"""Prove the wheel is standalone: clean venv, neutral cwd, offline migrate."""
 
 from __future__ import annotations
 
@@ -101,6 +101,26 @@ class HermeticWheelInstallTests(unittest.TestCase):
             # Drop any accidental editable/src path pollution from the parent env.
             env.pop("PYTHONPATH", None)
 
+            pack_probe = subprocess.run(
+                [
+                    str(python),
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "import observability_migration.adapters.source.grafana.curated_packs as p; "
+                        "pack = Path(p.__file__).resolve().parent / "
+                        "'grafana_763_redis_exporter' / 'pack.yaml'; "
+                        "print(pack.exists())"
+                    ),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=neutral,
+                env=env,
+            )
+            self.assertEqual(pack_probe.stdout.strip(), "True")
+
             doctor = subprocess.run(
                 [str(obs_migrate), "doctor"],
                 check=True,
@@ -109,7 +129,12 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 cwd=neutral,
                 env=env,
             )
-            self.assertIn("kb-dashboard-cli:", doctor.stdout)
+            # The dashboard-YAML compile path is gone, so doctor no longer
+            # probes the external kb-dashboard-* tools; it must still report a
+            # ready install from the wheel alone.
+            self.assertIn("required dependencies:", doctor.stdout)
+            self.assertIn("Ready.", doctor.stdout)
+            self.assertNotIn("kb-dashboard-cli", doctor.stdout)
 
             samples = subprocess.run(
                 [str(obs_migrate), "list-samples"],
@@ -134,7 +159,6 @@ class HermeticWheelInstallTests(unittest.TestCase):
                     str(gout),
                     "--assets",
                     "dashboards",
-                    "--compile",
                 ],
                 check=True,
                 capture_output=True,
@@ -143,7 +167,6 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 env=env,
             )
             self.assertTrue(any(gout.rglob("*.native.json")))
-            self.assertTrue(any(gout.rglob("compiled_dashboards.ndjson")))
 
             dout = out / "datadog"
             dd = subprocess.run(
@@ -153,7 +176,6 @@ class HermeticWheelInstallTests(unittest.TestCase):
                     str(fixtures / "datadog"),
                     "--output-dir",
                     str(dout),
-                    "--compile",
                 ],
                 check=True,
                 capture_output=True,
@@ -162,7 +184,7 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 env=env,
             )
             self.assertIn(f"Migration Tool v{version_line}", dd.stdout)
-            self.assertTrue(any(dout.rglob("compiled_dashboards.ndjson")))
+            self.assertTrue(any(dout.rglob("*.native.json")))
 
     def test_clean_sdist_install_runs_from_neutral_cwd(self):
         grafana_fixture = ROOT / "infra" / "grafana" / "dashboards" / "home.json"
@@ -244,7 +266,6 @@ class HermeticWheelInstallTests(unittest.TestCase):
                     str(gout),
                     "--assets",
                     "dashboards",
-                    "--compile",
                 ],
                 check=True,
                 capture_output=True,
@@ -252,7 +273,7 @@ class HermeticWheelInstallTests(unittest.TestCase):
                 cwd=neutral,
                 env=env,
             )
-            self.assertTrue(any(gout.rglob("compiled_dashboards.ndjson")))
+            self.assertTrue(any(gout.rglob("*.native.json")))
 
 
 if __name__ == "__main__":

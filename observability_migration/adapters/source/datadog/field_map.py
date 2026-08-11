@@ -14,6 +14,7 @@ This module provides pluggable mapping profiles.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -118,7 +119,7 @@ class FieldMapProfile:
                 self._metric_map_applied[dd_metric] = mapped.target
                 return mapped.target
             # Unapplied mapping: fall through with source name.
-        es_name = dd_metric.replace(".", "_")
+        es_name = dd_metric if self.name == "passthrough" else dd_metric.replace(".", "_")
         if self.metric_prefix:
             es_name = f"{self.metric_prefix}{es_name}"
         if self.metric_suffix:
@@ -232,6 +233,10 @@ class FieldMapProfile:
 # ---------------------------------------------------------------------------
 
 _LOG_ONLY_FIELDS = {"log.level"}
+_PROMETHEUS_METRICBEAT_METRIC_RE = re.compile(r"^prometheus\.metrics\.[A-Za-z_:][A-Za-z0-9_:]*$")
+_PROMETHEUS_METRICBEAT_LABEL_RE = re.compile(r"^prometheus\.labels\.[A-Za-z_][A-Za-z0-9_]*$")
+_PROMETHEUS_NATIVE_METRIC_RE = re.compile(r"^metrics\.[A-Za-z_:][A-Za-z0-9_:]*$")
+_PROMETHEUS_NATIVE_LABEL_RE = re.compile(r"^labels\.[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def derive_dataset_from_index(index_pattern: str) -> str:
@@ -248,6 +253,31 @@ def derive_dataset_from_index(index_pattern: str) -> str:
     if "*" in dataset or "?" in dataset:
         return ""
     return dataset
+
+
+def detect_metric_layout(field_caps: dict[str, Any] | None) -> str | None:
+    """Infer a supported Datadog metric layout from live field names."""
+    if not isinstance(field_caps, dict) or not field_caps:
+        return None
+    has_prom_metric = False
+    has_prom_label = False
+    has_native_metric = False
+    has_native_label = False
+    for field_name in field_caps:
+        field_name = str(field_name)
+        if not has_prom_metric and _PROMETHEUS_METRICBEAT_METRIC_RE.match(field_name):
+            has_prom_metric = True
+        if not has_prom_label and _PROMETHEUS_METRICBEAT_LABEL_RE.match(field_name):
+            has_prom_label = True
+        if not has_native_metric and _PROMETHEUS_NATIVE_METRIC_RE.match(field_name):
+            has_native_metric = True
+        if not has_native_label and _PROMETHEUS_NATIVE_LABEL_RE.match(field_name):
+            has_native_label = True
+        if has_prom_metric and has_prom_label:
+            return "prometheus"
+    if has_native_metric and has_native_label:
+        return "prometheus_native"
+    return None
 
 
 def _default_tag_map() -> dict[str, str]:
@@ -428,6 +458,12 @@ BUILTIN_PROFILES: dict[str, FieldMapProfile] = {
     "default": OTEL_PROFILE,
     "otel": OTEL_PROFILE,
     "prometheus": PROMETHEUS_PROFILE,
+    # Cross-source alias: Grafana names this same Metricbeat layout
+    # (``prometheus.metrics.*`` + ``prometheus.labels.*``) ``prometheus_metrics``.
+    # Accepting both names here means an operator who migrates Grafana and
+    # Datadog against one target does not have to remember two names for one
+    # ingestion layout. ``prometheus`` stays the canonical Datadog name.
+    "prometheus_metrics": PROMETHEUS_PROFILE,
     "prometheus_native": PROMETHEUS_NATIVE_PROFILE,
     "elastic_agent": ELASTIC_AGENT_PROFILE,
     "passthrough": PASSTHROUGH_PROFILE,

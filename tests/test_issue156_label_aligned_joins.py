@@ -96,12 +96,29 @@ class TestLabelAlignedJoinsCleanStatus(unittest.TestCase):
         self.assertEqual(result.feasibility, "feasible")
         self.assertIn(_APPROX_ARITH, result.warnings)
 
-    def test_per_element_ratio_still_not_feasible(self):
-        """avg(A/B) ≠ ratio-of-aggregates: must not be silently substituted."""
+    def test_per_element_ratio_is_not_substituted_by_ratio_of_aggregates(self):
+        """avg(A/B) must never become avg(A)/avg(B).
+
+        Issue #156's concern was the silent substitution, and it still holds --
+        but refusing outright is no longer the only way to honour it.
+        ``colocated_binary_agg_family`` divides per document and aggregates the
+        result, which IS avg(A/B): the operands carry no on()/ignoring(), so
+        PromQL matches on all labels and they share a document per label-set.
+
+        Asserted on the emitted query rather than on refusal, so a future
+        regression to ratio-of-aggregates fails here.
+        """
         result = self._translate(
             "avg(node_filesystem_avail_bytes / node_filesystem_size_bytes)"
         )
-        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertEqual(result.feasibility, "feasible")
+        query = result.esql_query or ""
+        # The division must sit INSIDE the aggregate, not between two of them.
+        self.assertRegex(
+            query.replace("\n", " "),
+            r"AVG\(\s*\(?node_filesystem_avail_bytes\s*/\s*node_filesystem_size_bytes",
+        )
+        self.assertNotRegex(query, r"AVG\([^)]*\)\s*/\s*AVG\(")
 
 
 class TestGroupLeftEnrichmentCarried(unittest.TestCase):

@@ -1,5 +1,0 @@
-title: Running Pods
-grafana_type: stat
-status: migrated
-chart_type: metric
-primary: kube_pod_status_phase

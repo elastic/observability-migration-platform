@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from observability_migration.adapters.source.datadog.field_map import load_profile
 from observability_migration.adapters.source.grafana.alerts import (
     build_alert_migration_tasks,
@@ -84,3 +86,105 @@ def test_corrupting_enabled_flag_makes_grafana_gate_fail():
     victim["enabled"] = True
     bugs = gate_bugs(check_alert_batch(batch, source_name="grafana"))
     assert any(b.rule_id.value == "ENABLED_TRUE" for b in bugs)
+
+
+# ---------------------------------------------------------------------------
+# --create-alert-rules requested but not performed must fail the run.
+#
+# End-to-end over the same example fixtures, through each source CLI's own
+# main(), because the exit code is the part an operator and CI actually see.
+# ---------------------------------------------------------------------------
+
+
+def _grafana_alerts_argv(output_dir: Path, *extra: str) -> list[str]:
+    return [
+        "--source", "files",
+        "--assets", "alerts",
+        "--input-dir", str(GRAFANA_EXAMPLES),
+        "--output-dir", str(output_dir),
+        *extra,
+    ]
+
+
+def _datadog_alerts_argv(output_dir: Path, *extra: str) -> list[str]:
+    return [
+        "--source", "files",
+        "--assets", "alerts",
+        # load_raw_monitors() reads <input-dir>/monitors, so point one level up.
+        "--input-dir", str(DATADOG_MONITORS.parent.parent),
+        "--field-profile", str(DATADOG_PROFILE),
+        "--output-dir", str(output_dir),
+        *extra,
+    ]
+
+
+def test_grafana_create_alert_rules_without_api_key_fails_the_run(tmp_path, capsys):
+    from observability_migration.adapters.source.grafana.cli import main
+
+    out = tmp_path / "grafana_out"
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            _grafana_alerts_argv(
+                out, "--create-alert-rules", "--kibana-url", "http://localhost:5602"
+            )
+        )
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "--kibana-api-key" in captured.err
+    assert "no rules were created" in captured.err
+    # The translated alerts are still on disk -- the run failed, it did not
+    # throw away the work the operator can still use.
+    summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["alerts"]["total"] == 27
+    assert summary["alerts"]["rule_creation"]["reason"] == "missing_kibana_api_key"
+
+
+def test_grafana_alerts_run_without_create_alert_rules_stays_green(tmp_path, capsys):
+    # The regression that would get the check disabled: no --create-alert-rules,
+    # no failure, no new noise.
+    from observability_migration.adapters.source.grafana.cli import main
+
+    out = tmp_path / "grafana_out"
+    main(_grafana_alerts_argv(out, "--kibana-url", "http://localhost:5602"))
+
+    captured = capsys.readouterr()
+    assert "create-alert-rules" not in captured.out
+    assert "create-alert-rules" not in captured.err
+    summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["alerts"]["total"] == 27
+    assert "rule_creation" not in summary["alerts"]
+
+
+def test_datadog_create_alert_rules_without_api_key_fails_the_run(tmp_path, capsys):
+    from observability_migration.adapters.source.datadog.cli import main
+
+    out = tmp_path / "datadog_out"
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            _datadog_alerts_argv(
+                out, "--create-alert-rules", "--kibana-url", "http://localhost:5602"
+            )
+        )
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "--kibana-api-key" in captured.err
+    assert "no rules were created" in captured.err
+    summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["alerts"]["total"] == 35
+    assert summary["alerts"]["rule_creation"]["reason"] == "missing_kibana_api_key"
+
+
+def test_datadog_alerts_run_without_create_alert_rules_stays_green(tmp_path, capsys):
+    from observability_migration.adapters.source.datadog.cli import main
+
+    out = tmp_path / "datadog_out"
+    main(_datadog_alerts_argv(out, "--kibana-url", "http://localhost:5602"))
+
+    captured = capsys.readouterr()
+    assert "create-alert-rules" not in captured.out
+    assert "create-alert-rules" not in captured.err
+    summary = json.loads((out / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["alerts"]["total"] == 35
+    assert "rule_creation" not in summary["alerts"]

@@ -105,8 +105,6 @@ class SummaryTotals:
     green: int
     yellow: int
     red: int
-    compiled_ok: int
-    compiled_total: int
     uploaded_ok: int
     upload_attempted: int
     # Translation-provenance breakdown across all dashboards. Native-PROMQL
@@ -125,8 +123,6 @@ class DashboardRow:
     warnings: int
     manual: int
     not_feasible: int
-    compiled: bool | None
-    compile_error: str
     risk_score: float | None
     rollout_state: str
     # Per-dashboard translation-provenance breakdown (see PanelProvenance).
@@ -209,8 +205,6 @@ def _truncate(text: str, limit: int = _QUERY_TRUNCATE) -> str:
 
 
 def _verdict(totals: SummaryTotals) -> str:
-    if totals.compiled_ok < totals.compiled_total:
-        return "❌"
     if totals.not_feasible or totals.manual or totals.red:
         return "⚠️"
     return "✅"
@@ -218,6 +212,37 @@ def _verdict(totals: SummaryTotals) -> str:
 
 def _plural(noun: str, n: int) -> str:
     return noun if n == 1 else noun + "s"
+
+
+def _verdict_line(totals: SummaryTotals, noun: str) -> str:
+    """Build the one-line verdict. Never claim panels were translated when they were not."""
+    verdict = _verdict(totals)
+    translated = totals.migrated + totals.warnings
+    warn_bit = (
+        f", with {totals.warnings} warning{'' if totals.warnings == 1 else 's'}"
+        if totals.warnings
+        else ""
+    )
+    if verdict == "⚠️":
+        return (
+            f"> {verdict} **Review recommended** — {totals.not_feasible} not-feasible, "
+            f"{totals.red} Red, {totals.warnings} with warnings."
+        )
+    if totals.skipped:
+        return (
+            f"> {verdict} **Mostly migrated** — {translated} of {totals.elements_total} "
+            f"{_plural(noun, totals.elements_total)} translated "
+            f"({totals.skipped} skipped){warn_bit}."
+        )
+    if totals.warnings:
+        return (
+            f"> {verdict} **Mostly migrated** — all {translated} "
+            f"{_plural(noun, translated)} translated{warn_bit}."
+        )
+    return (
+        f"> {verdict} **Clean** — all {totals.elements_total} "
+        f"{_plural(noun, totals.elements_total)} migrated."
+    )
 
 
 def render_markdown(view: SummaryView) -> str:
@@ -231,19 +256,10 @@ def render_markdown(view: SummaryView) -> str:
     run_bit = f"`{view.run_id}` · " if view.run_id else ""
     lines.append(
         f"**Run** {run_bit}{when} · {t.dashboards} "
-        f"{_plural('dashboard', t.dashboards)} · {t.compiled_ok}/{t.compiled_total} compiled"
+        f"{_plural('dashboard', t.dashboards)}"
     )
     lines.append("")
-    verdict = _verdict(t)
-    if verdict == "❌":
-        lines.append(f"> {verdict} **Blocking errors** — {t.compiled_total - t.compiled_ok} failed to compile.")
-    elif verdict == "⚠️":
-        lines.append(
-            f"> {verdict} **Review recommended** — {t.not_feasible} not-feasible, "
-            f"{t.red} Red, {t.warnings} with warnings."
-        )
-    else:
-        lines.append(f"> {verdict} **Clean** — all {t.elements_total} {_plural(noun, t.elements_total)} migrated.")
+    lines.append(_verdict_line(t, noun))
     lines.append("")
 
     # 2. Scorecard
@@ -298,18 +314,17 @@ def _render_dashboard_table(view: SummaryView) -> list[str]:
     else:
         rows.sort(key=lambda d: -(d.not_feasible + d.manual))
     out = ["## Dashboards", ""]
-    header = "| Dashboard | " + view.element_noun.title() + "s | ✓ | ⚠ | ? | ✗ | Compiled |"
-    sep = "|---|--:|--:|--:|--:|--:|:--:|"
+    header = "| Dashboard | " + view.element_noun.title() + "s | ✓ | ⚠ | ? | ✗ |"
+    sep = "|---|--:|--:|--:|--:|--:|"
     if show_risk:
         header += " Risk |"
         sep += "--:|"
     out.append(header)
     out.append(sep)
     for d in rows:
-        compiled = "✅" if d.compiled else ("❌" if d.compile_error else "—")
         row = (
             f"| {_cell(d.title)} | {d.elements} | {d.migrated} | {d.warnings} | "
-            f"{d.manual} | {d.not_feasible} | {compiled} |"
+            f"{d.manual} | {d.not_feasible} |"
         )
         if show_risk:
             row += f" {int(d.risk_score or 0)} |"
@@ -347,8 +362,8 @@ def _render_provenance(view: SummaryView) -> list[str]:
         "Structural-only unless separately validated |"
     )
     out.append(
-        f"| Placeholder (not feasible / manual) | {placeholder} | {_pct(placeholder, classified)} | "
-        "Not migrated (manual rebuild) or a non-query visual (text/markdown) |"
+        f"| Placeholder / non-query visual | {placeholder} | {_pct(placeholder, classified)} | "
+        "Not migrated (manual rebuild), skipped, or a non-query visual (text/markdown) |"
     )
     out.append("")
 

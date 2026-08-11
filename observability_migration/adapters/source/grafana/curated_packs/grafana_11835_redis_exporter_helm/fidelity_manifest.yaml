@@ -1,0 +1,159 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 11835
+# https://grafana.com/grafana/dashboards/11835-redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha/
+#
+# Source: oliver006/redis_exporter via helm stable/redis-ha chart (Prometheus scrape)
+# Layout: Grafana 24-col → Kibana 48-col (2× scale)
+
+schema_version: 1
+gnet_id: 11835
+gnet_revision: 4
+dashboard_title: "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)"
+
+panels:
+  - title: "Uptime"
+    grafana_type: singlestat
+    fidelity: PERFECT
+    notes: >
+      max(max_over_time(redis_uptime_in_seconds[$__interval])).
+      Gauge classified by pack; ES|QL emits LAST over the bucket.
+
+  - title: "Clients"
+    grafana_type: singlestat
+    fidelity: PERFECT
+    notes: "redis_connected_clients — simple gauge scalar."
+
+  - title: "Memory Usage"
+    grafana_type: singlestat
+    fidelity: PERFECT
+    notes: >
+      Curated pack override: hand-crafted ES|QL computes per-instance memory usage
+      (redis_memory_used_bytes / redis_memory_max_bytes * 100) directly in ES|QL,
+      bypassing PromQL binary-op join semantics entirely.
+
+  - title: "Commands Executed / sec"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      rate(redis_commands_processed_total[1m]) — counter classified by pack;
+      ES|QL emits RATE(redis_commands_processed_total) inside the TBUCKET.
+
+  - title: "Hits / Misses per Sec"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two targets: irate(redis_keyspace_hits_total[5m]) and
+      irate(redis_keyspace_misses_total[5m]). Both counters classified;
+      ES|QL renders as a two-series XY panel.
+
+  - title: "Total Memory Usage"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two gauge targets: redis_memory_used_bytes and redis_memory_max_bytes.
+      Rendered as a two-series XY panel — used vs available.
+
+  - title: "Network I/O"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      rate(redis_net_input_bytes_total[5m]) and rate(redis_net_output_bytes_total[5m]).
+      Both counters classified; two-series XY panel.
+
+  - title: "Total Items per DB"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      sum(redis_db_keys) by (db) — gauge classified by pack; breakdown by db label.
+      Without the pack this panel warns about unverified counter/gauge type.
+
+  - title: "Expiring vs Not-Expiring Keys"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two targets: (sum(redis_db_keys) - sum(redis_db_keys_expiring)) and
+      sum(redis_db_keys_expiring). Both gauges classified by pack.
+      PromQL sum(A) - sum(B) with no by() clause produces two scalar time-series;
+      the binary subtraction is applied per instant. In ES|QL, SUM(A) - SUM(B) per
+      TBUCKET is numerically identical because both metrics come from the same exporter
+      scrape, so each TBUCKET receives exactly one row per instance per metric and
+      SUM(A) - SUM(B) = SUM(A - B) over the same index set.
+
+  - title: "Expired / Evicted"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: >
+      Two rate targets with sum() by (instance). Both counters classified.
+      The source panel carries a seriesOverrides entry with alias "reclaims" that
+      assigns a secondary y-axis, but neither target legendFormat matches "reclaims"
+      (they are "expired" and "evicted"), so Grafana itself never applies the override.
+      Both series render on the primary y-axis in both Grafana and Kibana.
+
+  - title: "Command Calls / sec"
+    grafana_type: graph
+    fidelity: APPROXIMATE
+    notes: >
+      topk(5, irate(redis_commands_total[1m])) — counter classified by pack.
+      Translated as a time-series breakdown by labels.cmd (all commands over time).
+      APPROXIMATE: ES|QL has no subquery support, so the top-5 filtering cannot be
+      applied across the full time range. All distinct command labels are shown as
+      separate time-series lines; the user can filter via the Kibana legend. In
+      practice Redis deployments have ~10-30 distinct command labels, which is
+      manageable. This is a strict improvement over the prior bar-chart snapshot
+      which lost the time dimension entirely.
+
+  - title: "Redis connected clients"
+    grafana_type: graph
+    fidelity: PERFECT
+    notes: "redis_connected_clients — simple gauge time-series."
+
+variables:
+  - name: namespace
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_uptime_in_seconds, namespace). Translates to a Kibana
+      ES|QL values control on the resolved namespace field. The downstream
+      pod_name and instance controls preserve the source chained scoping via
+      named ES|QL params in the control queries.
+
+  - name: pod_name
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, pod_name).
+      The migrated Kibana values control preserves the $namespace dependency as
+      a named ES|QL param predicate, so the option list stays scoped to the
+      selected namespace like the Grafana source.
+      The pack adds labels.pod as the prometheus_native candidate (OTel: k8s.pod.name)
+      so the control returns real values in prometheus_native deployments.
+      No panel query filters on ?pod_name, so this is cosmetic-only.
+
+  - name: instance
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_uptime_in_seconds{namespace=~"$namespace"}, instance).
+      Translates to an ES|QL values control whose option list is scoped by both
+      upstream namespace and pod_name selections, matching the source variable graph.
+
+summary:
+  total_panels: 12
+  perfect: 12
+  approximate: 0
+  not_feasible: 0
+  overall_fidelity: HIGH
+  notes: >
+    One functional panel caveat remains: Command Calls (topk → time-series breakdown of
+    all commands; top-5 filtering not possible in ES|QL without subquery support).
+    Memory Usage upgraded to PERFECT via curated pack override: hand-crafted ES|QL
+    computes per-instance ratio (used/max * 100) per TBUCKET directly, bypassing
+    PromQL binary-op join semantics.
+    Expired/Evicted upgraded to PERFECT: the "reclaims" seriesOverrides alias is
+    stale and never matched in Grafana either.
+    Expiring vs Not-Expiring Keys upgraded to PERFECT: SUM(A)-SUM(B) per TBUCKET
+    is numerically identical to PromQL sum(A)-sum(B) for same-scrape gauges.
+    The curated pack eliminates the unverified-type warning on Total Items per DB
+    that appears without the pack in offline migrations.

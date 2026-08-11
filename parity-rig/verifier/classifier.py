@@ -139,17 +139,18 @@ _FEASIBILITY_NOTE_TOKENS = (
 def classify(
     record: PanelRecord,
     *,
-    yaml_mtime: datetime | None = None,
+    artifact_mtime: datetime | None = None,
 ) -> Classification:
     """Classify a single panel record.
 
-    ``yaml_mtime`` is the mtime of the source YAML for the panel's
-    dashboard, used by the ``kibana_cache_stale`` rule to decide whether
-    the cluster's saved object is older than the on-disk YAML. When not
-    provided we still report the rule but with reduced confidence
-    because we can't ground-truth the timestamp comparison.
+    ``artifact_mtime`` is when the migration last wrote this dashboard's
+    artifacts (``native/*.native.json`` / ``ir/*.ir.json``), used by the
+    ``kibana_cache_stale`` rule to decide whether the cluster's saved
+    object predates the local emit. When not provided we still report the
+    rule but with reduced confidence because we can't ground-truth the
+    timestamp comparison.
     """
-    rule = _classify_rules(record, yaml_mtime=yaml_mtime)
+    rule = _classify_rules(record, artifact_mtime=artifact_mtime)
 
     if LLM_HOOK is None:
         return rule
@@ -185,7 +186,7 @@ def classify(
 def _classify_rules(
     record: PanelRecord,
     *,
-    yaml_mtime: datetime | None,
+    artifact_mtime: datetime | None,
 ) -> Classification:
     error = record.t5_response_error or ""
 
@@ -309,16 +310,20 @@ def _classify_rules(
     # and a stale upload is by far the most common cause.
     if "T3=T4" in record.drift_axes:
         cluster_ts = _parse_iso(record.t4_saved_object_updated_at)
-        if yaml_mtime is not None and cluster_ts is not None and cluster_ts < yaml_mtime:
+        if (
+            artifact_mtime is not None
+            and cluster_ts is not None
+            and cluster_ts < artifact_mtime
+        ):
             return Classification(
                 category=CATEGORY_KIBANA_CACHE_STALE,
                 confidence=0.9,
                 rationale=(
                     "T3=T4 drift detected and the cluster saved object "
                     f"({cluster_ts.isoformat()}) is older than the local "
-                    f"YAML ({yaml_mtime.isoformat()}). The most likely cause "
-                    "is that the dashboard wasn't re-uploaded after the YAML "
-                    "was regenerated."
+                    f"migration artifacts ({artifact_mtime.isoformat()}). The "
+                    "most likely cause is that the dashboard wasn't "
+                    "re-uploaded after the artifacts were regenerated."
                 ),
                 suggested_action=(
                     "re-run `obs-migrate --upload` (or `parity-rig/upload-all.sh`) "
@@ -327,17 +332,18 @@ def _classify_rules(
                 evidence=[
                     "drift_axes contains T3=T4",
                     f"cluster_updated_at={record.t4_saved_object_updated_at}",
-                    f"yaml_mtime={yaml_mtime.isoformat()}",
+                    f"artifact_mtime={artifact_mtime.isoformat()}",
                 ],
             )
-        # Without yaml_mtime we still tag it but with lower confidence.
+        # Without artifact_mtime we still tag it but with lower confidence.
         return Classification(
             category=CATEGORY_KIBANA_CACHE_STALE,
             confidence=0.6,
             rationale=(
                 "T3=T4 drift detected: the on-disk NDJSON disagrees with "
                 "the cluster saved object. The most likely cause is a stale "
-                "upload, but we do not have a YAML mtime to confirm."
+                "upload, but we do not have a migration-artifact mtime to "
+                "confirm."
             ),
             suggested_action=(
                 "re-run `obs-migrate --upload` to refresh the saved object "
@@ -475,12 +481,12 @@ def _build_argparser() -> argparse.ArgumentParser:
              "doc is written alongside (`<output>.md`).",
     )
     p.add_argument(
-        "--yaml-dir",
+        "--artifact-dir",
         type=Path,
         default=None,
-        help="Directory containing the source YAML for the dashboard. "
-             "When provided, used to derive the YAML mtime for the "
-             "kibana_cache_stale rule.",
+        help="Per-dashboard obs-migrate output directory (the one holding "
+             "native/ and ir/). When provided, the newest artifact mtime "
+             "under it grounds the kibana_cache_stale rule.",
     )
     p.add_argument(
         "--verbose",
@@ -498,12 +504,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     payload = json.loads(args.verifier_report.read_text())
-    yaml_mtime = _yaml_mtime_for(args.yaml_dir) if args.yaml_dir else None
+    artifact_mtime = (
+        _artifact_mtime_for(args.artifact_dir) if args.artifact_dir else None
+    )
 
     classified_panels: list[dict] = []
     for panel_blob in payload.get("panels", []):
         record = PanelRecord.from_jsonable(panel_blob)
-        classification = classify(record, yaml_mtime=yaml_mtime)
+        classification = classify(record, artifact_mtime=artifact_mtime)
         merged = dict(panel_blob)
         merged["classification"] = classification.to_jsonable()
         classified_panels.append(merged)
@@ -522,15 +530,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _yaml_mtime_for(yaml_dir: Path) -> datetime | None:
-    if not yaml_dir.is_dir():
+def _artifact_mtime_for(artifact_dir: Path) -> datetime | None:
+    """Newest mtime across the migration artifacts that survive.
+
+    Globs ``*.native.json`` (the typed Dashboards API payload actually
+    uploaded) and ``*.ir.json`` (the semantic export it derives from)
+    recursively, so ``--artifact-dir`` accepts either the dashboards root
+    or ``native/``/``ir/`` directly. Both are written in the same emit, so
+    the max is "when did this run last produce this dashboard" — the
+    comparison the ``kibana_cache_stale`` rule needs and the successor to
+    the previous YAML mtime.
+    """
+    if not artifact_dir.is_dir():
         return None
     mtimes: list[float] = []
-    for entry in yaml_dir.rglob("*.yaml"):
-        try:
-            mtimes.append(entry.stat().st_mtime)
-        except OSError:
-            continue
+    for pattern in ("*.native.json", "*.ir.json"):
+        for entry in artifact_dir.rglob(pattern):
+            try:
+                mtimes.append(entry.stat().st_mtime)
+            except OSError:
+                continue
     if not mtimes:
         return None
     return datetime.fromtimestamp(max(mtimes), tz=UTC)

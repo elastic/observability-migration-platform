@@ -38,7 +38,7 @@ def _make_record(**overrides: Any) -> PanelRecord:
         dashboard_uid="dash-1",
         dashboard_title="My Dashboard",
         t0_source_promql="rate(http_requests_total[5m])",
-        t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(http_requests_total, 5m))",
+        t1_translator_esql="TS metrics-* | STATS x = AVG(RATE(http_requests_total))",
     )
     defaults.update(overrides)
     return PanelRecord(**defaults)
@@ -180,23 +180,23 @@ class TestFeasibilityGapRule:
 class TestKibanaCacheStaleRule:
     def test_t3_t4_drift_with_old_cluster_object_classifies_as_stale(self):
         cluster_ts = "2026-05-10T08:00:00Z"
-        yaml_mtime = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
+        artifact_mtime = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
         record = _make_record(
             drift_axes=["T3=T4"],
             t4_saved_object_updated_at=cluster_ts,
         )
-        cl = classifier.classify(record, yaml_mtime=yaml_mtime)
+        cl = classifier.classify(record, artifact_mtime=artifact_mtime)
         assert cl.category == classifier.CATEGORY_KIBANA_CACHE_STALE
         assert cl.confidence >= 0.85
         assert "obs-migrate" in cl.suggested_action
         assert any("T3=T4" in e for e in cl.evidence)
 
-    def test_t3_t4_drift_without_yaml_mtime_still_classifies_with_lower_confidence(self):
+    def test_t3_t4_drift_without_artifact_mtime_classifies_with_lower_confidence(self):
         record = _make_record(
             drift_axes=["T3=T4"],
             t4_saved_object_updated_at="2026-05-10T08:00:00Z",
         )
-        cl = classifier.classify(record)  # no yaml_mtime
+        cl = classifier.classify(record)  # no artifact_mtime
         assert cl.category == classifier.CATEGORY_KIBANA_CACHE_STALE
         assert cl.confidence < 0.85
 
@@ -408,7 +408,14 @@ class TestClassifierCLI:
         assert "translator_bug" in md
         assert "bad-schema" in md
 
-    def test_cli_uses_yaml_dir_to_promote_kibana_cache_stale_confidence(self, tmp_path):
+    def test_cli_uses_artifact_dir_to_promote_kibana_cache_stale_confidence(self, tmp_path):
+        """The mtime now comes from the artifacts that survive, not the YAML.
+
+        ``native/*.native.json`` is the payload actually uploaded and
+        ``ir/*.ir.json`` the export it derives from; both are written in the
+        same emit, so the newest of the two answers "when did this run last
+        produce this dashboard".
+        """
         cluster_ts = "2026-05-01T00:00:00Z"
         record = _make_record(
             title="stale-panel",
@@ -418,21 +425,21 @@ class TestClassifierCLI:
         report_path = tmp_path / "verifier.json"
         report_path.write_text(json.dumps(_verifier_payload([record])))
 
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        yaml_file = yaml_dir / "dash.yaml"
-        yaml_file.write_text("dashboards: []")
-        # Force the YAML mtime to be much newer than the cluster ts.
+        artifact_dir = tmp_path / "dashboards"
+        (artifact_dir / "native").mkdir(parents=True)
+        native_file = artifact_dir / "native" / "dash.native.json"
+        native_file.write_text(json.dumps({"payload": {}, "mapping": {}}))
+        # Force the artifact mtime to be much newer than the cluster ts.
         new_mtime = (datetime(2026, 5, 11, 12, 0, tzinfo=UTC)).timestamp()
         import os
-        os.utime(yaml_file, (new_mtime, new_mtime))
+        os.utime(native_file, (new_mtime, new_mtime))
 
         out_path = tmp_path / "classified.json"
         rc = classifier.main(
             [
                 "--verifier-report", str(report_path),
                 "--output", str(out_path),
-                "--yaml-dir", str(yaml_dir),
+                "--artifact-dir", str(artifact_dir),
             ]
         )
         assert rc == 0
@@ -440,3 +447,19 @@ class TestClassifierCLI:
         cl = data["panels"][0]["classification"]
         assert cl["category"] == classifier.CATEGORY_KIBANA_CACHE_STALE
         assert cl["confidence"] >= 0.85  # high-confidence path because we have the mtime
+
+    def test_artifact_mtime_also_reads_the_ir_export(self, tmp_path):
+        """``ir/*.ir.json`` alone is enough to ground the timestamp."""
+        artifact_dir = tmp_path / "dashboards"
+        (artifact_dir / "ir").mkdir(parents=True)
+        ir_file = artifact_dir / "ir" / "dash.ir.json"
+        ir_file.write_text(json.dumps({"kind": "dashboard_ir", "dashboard_ir": {}}))
+        stamp = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
+        import os
+        os.utime(ir_file, (stamp.timestamp(), stamp.timestamp()))
+
+        assert classifier._artifact_mtime_for(artifact_dir) == stamp
+
+    def test_artifact_mtime_is_none_when_no_artifacts_exist(self, tmp_path):
+        (tmp_path / "dashboards").mkdir()
+        assert classifier._artifact_mtime_for(tmp_path / "dashboards") is None

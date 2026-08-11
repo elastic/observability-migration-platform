@@ -1,0 +1,116 @@
+[
+  {
+    "title": "Hardware temperature monitor",
+    "grafana": {
+      "unit": "celsius",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "{{ chip_name }} {{ sensor }} temp",
+        "{{ chip_name }} {{ sensor }} Critical"
+      ],
+      "exprs": [
+        "node_hwmon_temp_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}",
+        "node_hwmon_temp_crit_celsius{instance=\"$node\",job=\"$job\"} * on(chip) group_left(chip_name) node_hwmon_chip_names{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "temp",
+          "label": "temp"
+        },
+        {
+          "field": "Critical",
+          "label": "Critical"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_hwmon_temp_celsius IS NOT NULL OR metrics.node_hwmon_temp_crit_celsius IS NOT NULL\n| STATS temp = AVG(LAST_OVER_TIME(metrics.node_hwmon_temp_celsius)), Critical = AVG(LAST_OVER_TIME(metrics.node_hwmon_temp_crit_celsius)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.chip_name, labels.sensor\n| EVAL legend = CONCAT(COALESCE(TO_STRING(`labels.chip_name`), \"\"), \" \", COALESCE(TO_STRING(`labels.sensor`), \"\"), \" temp\")\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Throttle cooling device",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Current {{ name }} in {{ type }}",
+        "Max {{ name }} in {{ type }}"
+      ],
+      "exprs": [
+        "node_cooling_device_cur_state{instance=\"$node\",job=\"$job\"}",
+        "node_cooling_device_max_state{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Current_in",
+          "label": "Current  in"
+        },
+        {
+          "field": "Max_in",
+          "label": "Max  in"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_cooling_device_cur_state IS NOT NULL OR metrics.node_cooling_device_max_state IS NOT NULL\n| STATS Current_in = AVG(LAST_OVER_TIME(metrics.node_cooling_device_cur_state)), Max_in = AVG(LAST_OVER_TIME(metrics.node_cooling_device_max_state)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.name, labels.type\n| EVAL legend = CONCAT(\"Current \", COALESCE(TO_STRING(`labels.name`), \"\"), \" in \", COALESCE(TO_STRING(`labels.type`), \"\"))\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Power supply",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{ power_supply }} online"
+      ],
+      "exprs": [
+        "node_power_supply_online{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_power_supply_online",
+          "label": "Node Power Supply Online"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_power_supply_online IS NOT NULL\n| STATS node_power_supply_online = AVG(LAST_OVER_TIME(metrics.node_power_supply_online)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.power_supply\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  }
+]

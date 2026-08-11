@@ -57,12 +57,12 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 - Do not duplicate long command walkthroughs outside `docs/command-contract.md`.
 - When a change affects operator-visible behavior, update the matching docs in
   the same PR. Use this checklist:
-  - CLI flags, command shapes, env vars, upload/compile/smoke behavior:
+  - CLI flags, command shapes, env vars, upload/smoke behavior:
     `docs/command-contract.md`.
   - Shared asset/IR/result contracts: `docs/architecture/asset-model.md`.
   - Package maps or cross-source pipeline structure: `docs/architecture.md` and
     `docs/pipeline-trace.tpl.md` (then regenerate `docs/pipeline-trace.md`).
-  - Kibana target behavior, native API/YAML/compile/upload artifacts:
+  - Kibana target behavior, native API mapping, review artifacts, upload:
     `docs/targets/kibana.md`.
   - Grafana- or Datadog-specific extraction, translation, validation, or upload
     behavior: `docs/sources/grafana.md` or `docs/sources/datadog.md`.
@@ -76,14 +76,16 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
     `python scripts/audit_pipeline.py --update-docs`.
 - Do not commit secrets or generated local artifacts.
 - Preserve the existing "degrade gracefully" behavior for unsupported translations instead of hiding semantic gaps.
-- For dashboard migration fixes, prove the generated YAML matches `docs/dashboards/schema.json`
-  and the compiled/uploaded Kibana saved object. Do not infer schema support
-  from Kibana UI affordances alone. In particular, Lens XY YAML (`line`, `area`,
-  `bar`) has a single `breakdown`; use a synthetic composite field when multiple
-  source labels must define one series identity. Multi-breakdown arrays are for
-  datatable/pie/treemap-style schemas unless the schema/compiler prove otherwise.
+- For dashboard migration fixes, prove the emitted dict shape matches
+  `docs/dashboards/schema.json` and the uploaded Kibana saved object. Do not
+  infer schema support from Kibana UI affordances alone. In particular, a Lens XY
+  panel (`line`, `area`, `bar`) has a single `breakdown`; use a synthetic
+  composite field when multiple source labels must define one series identity.
+  Multi-breakdown arrays are for datatable/pie/treemap-style schemas unless the
+  schema and the mapper prove otherwise.
 - For user-facing dashboard correctness claims, validate against real migrated
-  artifacts and uploaded dashboards: inspect YAML, compiled NDJSON/saved objects,
+  artifacts and uploaded dashboards: inspect `native/*.native.json` and
+  `ir/*.ir.json`, the uploaded saved object,
   run scoped smoke/direct `_query` checks, and browser-check a clean view-mode
   Kibana session. Clear stale dashboard edit state before trusting browser output.
 - For dashboard-regression fixes, run the layered verifier gates documented in
@@ -106,7 +108,11 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
 - The render audit is the only gate that proves panels actually *render* (Lens
   accessor / "invalid column" / empty-state failures that ES|QL execution and the
   schema gate miss). It classifies per-panel: `render_error` (a real bug, fail)
-  vs `field_gap`/`data_gap`/`unexpected_empty` (data-readiness, warn). Serverless
+  vs `field_gap`/`data_gap`/`unexpected_empty` (data-readiness, warn). Both gap
+  classes are evidence-based against `--es-url` field caps, taken from the index
+  each panel's own ES|QL `FROM` names (`--es-index` is only the fallback for
+  panels that name none); missing evidence keeps the stricter class and records
+  why in `detail` rather than guessing the lenient one. Serverless
   needs a one-time SSO login into a persistent Chrome profile; CI uses the
   local no-SSO stack (`parity-rig/docker-compose.render-audit.yml` +
   `scripts/run_render_audit_local.sh`). A missing target field that breaks a

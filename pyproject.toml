@@ -91,6 +91,12 @@ include = ["observability_migration*"]
 
 [tool.setuptools.package-data]
 "observability_migration.sample_dashboards" = ["**/*.json"]
+"observability_migration.adapters.source.grafana.curated_packs" = ["registry.yaml", "**/*.yaml", "**/*.py"]
+# Datadog layout packs are discovered by scanning this package's subdirectories
+# for pack.yaml at runtime, so the YAML has to be inside the wheel: without this
+# entry `load_curated_pack` returns None for every pip install and the curated
+# layout silently applies only from a repo checkout.
+"observability_migration.adapters.source.datadog.curated_packs" = ["**/*.yaml"]
 
 # ---------- Linting (ruff) ----------
 [tool.ruff]

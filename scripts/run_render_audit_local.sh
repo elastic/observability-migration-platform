@@ -100,7 +100,11 @@ PY
     --time-from now-3h --time-to now --fail-on-error \
     --chrome-no-sandbox \
     --elements --migration-out "$report_dir" \
-    --es-url "$ES_URL" --es-index "metrics-*,logs-*" || rc=1
+    --es-url "$ES_URL" --es-index "metrics-*" || rc=1
+  # --es-index used to hand-union "metrics-*,logs-*" so a FROM logs-* panel's
+  # columns would be found somewhere. The audit now resolves each panel against
+  # the index its own ES|QL FROM names, so the union is unnecessary -- and worse
+  # than unnecessary: a union cannot tell which index a column belongs to.
 done <<< "$dashboard_rows"
 
 [ "$rc" -eq 0 ] && echo "== render audit PASSED for all dashboards ==" || { echo "== render audit FAILED =="; exit 1; }

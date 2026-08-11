@@ -193,16 +193,21 @@ def _api_format(obj: Any) -> dict[str, Any] | None:
         # defaults (seconds -> humanize; see dashboards_api.py's ``_api_format``
         # for the source citations), so an unspecified format still renders
         # like Kibana's own default "Duration" value-format selection.
-        from_unit = obj.get("from")
-        to_unit = obj.get("to")
-        out = {
+        # Units use the transform's abbreviated vocabulary and the branch is
+        # closed to {type, from, to}: long names ("seconds") and extra keys
+        # ("suffix"/"decimals") are rejected by the API, so mirror what the
+        # emitter now produces rather than the looser shape the deprecated
+        # compiler used to tolerate.
+        from observability_migration.targets.kibana.dashboards_api import (
+            _duration_output,
+            _duration_unit,
+        )
+
+        return {
             "type": "duration",
-            "from": from_unit if isinstance(from_unit, str) else "seconds",
-            "to": to_unit if isinstance(to_unit, str) else "humanize",
+            "from": _duration_unit(obj.get("from"), default="s"),
+            "to": _duration_output(obj.get("to")),
         }
-        if isinstance(obj.get("suffix"), str):
-            out["suffix"] = obj["suffix"]
-        return out
     if typ == "custom" and isinstance(obj.get("pattern"), str) and obj["pattern"]:
         return {"type": "custom", "pattern": obj["pattern"]}
     return None
@@ -879,7 +884,12 @@ def _build_datatable(title: str, config: dict[str, Any], query: str) -> dict[str
         "table": True,
         "apply_color_to": {"value", "background", "badge"},
     }
-    metrics = _api_columns(config.get("metrics"), summary=True, **table_kwargs)
+    # data_table *metrics* take no colour: every shape the API accepts there is
+    # stored as ``color: null`` (or 400s), so the production mapper stops
+    # emitting one and records the loss instead. Mirrored here to keep the two
+    # mappers byte-identical -- see tests/test_dashboards_api_mapper_parity.py.
+    metric_kwargs = {**table_kwargs, "color": ""}
+    metrics = _api_columns(config.get("metrics"), summary=True, **metric_kwargs)
     rows = _api_columns(config.get("breakdowns"), collapse=True, **table_kwargs) or _api_columns(
         config.get("dimensions"),
         collapse=True,

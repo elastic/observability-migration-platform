@@ -11,6 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+_OPAQUE_AXIS_TITLE_ALIASES = {
+    "aqu-sz",
+}
+
 GRAFANA_UNIT_TO_YAML: dict[str, dict[str, Any]] = {
     "percent": {"type": "number", "suffix": "%"},
     "percentunit": {"type": "percent"},
@@ -157,6 +161,7 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
     appearance: dict[str, Any] = {}
     defaults = _field_defaults(panel)
     custom = defaults.get("custom") or {}
+    unit = str(defaults.get("unit") or "").strip()
 
     axis_label = str(custom.get("axisLabel", "") or "").strip()
     if not axis_label:
@@ -167,8 +172,9 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
                     axis_label = label
                     break
 
-    if axis_label:
-        appearance.setdefault("y_left_axis", {})["title"] = axis_label
+    axis_title = sanitize_axis_title_text(axis_label, unit=unit)
+    if axis_title:
+        appearance.setdefault("y_left_axis", {})["title"] = axis_title
 
     has_log = False
     scale_dist = custom.get("scaleDistribution") or {}
@@ -193,13 +199,81 @@ def extract_axis_config(panel: dict) -> dict[str, Any] | None:
         right = yaxes[1]
         right_label = str(right.get("label") or "").strip()
         right_show = right.get("show", True)
-        if right_show and right_label:
-            appearance.setdefault("y_right_axis", {})["title"] = right_label
+        right_title = sanitize_axis_title_text(right_label)
+        if right_show and right_title:
+            appearance.setdefault("y_right_axis", {})["title"] = right_title
         right_log = (right.get("logBase") or 0) > 1
         if right_show and right_log:
             appearance.setdefault("y_right_axis", {})["scale"] = "log"
 
     return appearance if appearance else None
+
+
+def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
+    """Return a user-facing axis title, or ``""`` when the source text is opaque.
+
+    Some community dashboards copy terse source-side aliases such as ``aqu-sz``
+    into ``axisLabel``. They are not human-friendly axis titles and look worse
+    than leaving the axis unnamed, so suppress only known opaque aliases rather
+    than broad kebab/snake labels that may be intentional operator text.
+
+    ``unit`` is accepted for call-site compatibility with axis extractors; opaque
+    shorthand suppression is label-shape based today.
+    """
+    _ = unit
+    text = str(label or "").strip()
+    if not text:
+        return ""
+    if text in _OPAQUE_AXIS_TITLE_ALIASES:
+        return ""
+    return text
+
+
+def extract_xy_appearance(
+    panel: dict, *, chart_type: str | None = None
+) -> dict[str, Any] | None:
+    """Derive Kibana XY appearance options from Grafana panel display config.
+
+    ``line_style`` / ``fill_opacity`` are only valid on line/area panel configs
+    (``BarChartAppearance`` rejects them), so bar charts keep axis options only.
+    """
+    appearance = extract_axis_config(panel) or {}
+    defaults = _field_defaults(panel)
+    custom = defaults.get("custom") or {}
+    allow_line_area_style = chart_type != "bar"
+
+    if allow_line_area_style:
+        line_interpolation = str(custom.get("lineInterpolation") or "").strip().lower()
+        if line_interpolation == "smooth":
+            appearance["line_style"] = "monotone-x"
+        elif line_interpolation == "stepafter":
+            appearance["line_style"] = "step-after"
+        elif line_interpolation:
+            appearance["line_style"] = "linear"
+
+        fill_opacity = _coerce_number(custom.get("fillOpacity"))
+        if fill_opacity is not None and fill_opacity > 0:
+            appearance["fill_opacity"] = max(0.0, min(fill_opacity / 100.0, 1.0))
+
+    overrides = ((panel.get("fieldConfig") or {}).get("overrides") or [])
+    for override in overrides:
+        if not isinstance(override, dict):
+            continue
+        matcher = override.get("matcher") or {}
+        if str(matcher.get("id") or "").strip() != "byType":
+            continue
+        if str(matcher.get("options") or "").strip() != "time":
+            continue
+        properties = override.get("properties") or []
+        for prop in properties:
+            if not isinstance(prop, dict):
+                continue
+            if str(prop.get("id") or "").strip() != "custom.axisPlacement":
+                continue
+            if str(prop.get("value") or "").strip() == "hidden":
+                appearance.setdefault("x_axis", {})["title"] = False
+
+    return appearance or None
 
 
 def _first_axis_bound(panel: dict, key: str, defaults: dict) -> float | None:
@@ -267,6 +341,50 @@ def humanize_metric_label(field_name: str, legend_format: str | None = None) -> 
     return label if label != field_name else None
 
 
+def _scale_metric_field_to_percent_points(query: str, field: str) -> str:
+    """Multiply a 0-1 measure into 0-100 percent points for ``number`` + ``%`` display."""
+    field_name = str(field or "").strip()
+    if not query or not field_name:
+        return query
+    if re.search(r"\*\s*100\b", query):
+        return query
+    scale_line = f"| EVAL {field_name} = {field_name} * 100"
+    lines = str(query).splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("| KEEP ") and field_name in stripped:
+            lines.insert(index, scale_line)
+            return "\n".join(lines)
+    lines.append(scale_line)
+    return "\n".join(lines)
+
+
+def _scale_metric_color_to_percent_points(color: dict[str, Any]) -> dict[str, Any]:
+    """Scale 0-1 threshold/range color config into percent points."""
+    out = dict(color)
+    range_max = out.get("range_max")
+    if not isinstance(range_max, (int, float)) or isinstance(range_max, bool) or range_max > 1:
+        return out
+    for key in ("range_min", "range_max"):
+        value = out.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = value * 100.0
+    thresholds = out.get("thresholds")
+    if isinstance(thresholds, list):
+        scaled_steps: list[Any] = []
+        for step in thresholds:
+            if not isinstance(step, dict):
+                scaled_steps.append(step)
+                continue
+            scaled = dict(step)
+            up_to = scaled.get("up_to")
+            if isinstance(up_to, (int, float)) and not isinstance(up_to, bool) and up_to <= 1:
+                scaled["up_to"] = up_to * 100.0
+            scaled_steps.append(scaled)
+        out["thresholds"] = scaled_steps
+    return out
+
+
 def enrich_yaml_panel_display(
     yaml_panel: dict,
     grafana_panel: dict,
@@ -283,6 +401,16 @@ def enrich_yaml_panel_display(
     unit = extract_grafana_unit(grafana_panel)
     fmt = grafana_unit_to_yaml_format(unit)
 
+    # Carry fieldConfig.defaults.decimals into the format so the Kibana panel
+    # respects the same precision the operator set in Grafana.
+    panel_decimals = _field_defaults(grafana_panel).get("decimals")
+    if isinstance(panel_decimals, (int, float)) and panel_decimals >= 0:
+        decimals_int = int(panel_decimals)
+        if fmt is not None:
+            fmt = {**fmt, "decimals": decimals_int}
+        else:
+            fmt = {"type": "number", "decimals": decimals_int}
+
     _apply_metric_format_and_label(esql, "metrics", fmt, metric_labels)
     _apply_metric_format_and_label(esql, "breakdowns", None, None)
 
@@ -290,14 +418,60 @@ def enrich_yaml_panel_display(
         if fmt:
             esql["primary"].setdefault("format", dict(fmt))
         cleaned_title = str(yaml_panel.get("title") or "").strip()
-        if chart_type == "metric" and cleaned_title:
+        has_breakdown = bool(
+            (isinstance(esql.get("breakdown"), dict) and esql["breakdown"].get("field"))
+            or (isinstance(esql.get("breakdown_by"), dict) and esql["breakdown_by"].get("field"))
+            or (isinstance(esql.get("breakdowns"), list) and esql["breakdowns"])
+        )
+        if chart_type == "metric" and cleaned_title and not has_breakdown:
+            # Single-tile metrics can reuse the panel title as the primary
+            # label (and hide the chrome title). Breakdown tiles already show
+            # per-series labels (CPU / I/O / Mem); stamping the panel title on
+            # every tile doubles the text and overflows narrow first-row
+            # panels like Node Exporter "Pressure".
             esql["primary"].setdefault("label", cleaned_title)
             if esql["primary"].get("label") == cleaned_title:
                 yaml_panel["hide_title"] = True
+        elif chart_type == "metric" and has_breakdown:
+            # Keep the panel chrome title; blank the primary label so Lens
+            # does not render the measure field name under every tile.
+            esql["primary"]["label"] = ""
+            yaml_panel.pop("hide_title", None)
+            breakdown = esql.get("breakdown")
+            if isinstance(breakdown, dict):
+                breakdown.setdefault("columns", 1)
+            # Lens percent formatting on multi-tile breakdown metrics has been
+            # observed to render N/A even when the ES|QL rows are numeric; use
+            # a plain number format for these summary tiles.
+            primary_fmt = esql["primary"].get("format")
+            if isinstance(primary_fmt, dict) and primary_fmt.get("type") == "percent":
+                esql["primary"]["format"] = {
+                    "type": "number",
+                    "decimals": int(primary_fmt.get("decimals") or 1),
+                    "suffix": "%",
+                }
+                # Grafana ``percentunit`` stores 0-1 ratios. Number+% display
+                # expects percent points (0-100); scale once when the query has
+                # not already done so (curated Pressure already uses ``* 100``).
+                if unit == "percentunit":
+                    field = str(esql["primary"].get("field") or "").strip() or "gauge_value"
+                    query = str(esql.get("query") or "")
+                    if query and not re.search(r"\*\s*100\b", query):
+                        esql["query"] = _scale_metric_field_to_percent_points(query, field)
+                        color = esql["primary"].get("color")
+                        if isinstance(color, dict):
+                            esql["primary"]["color"] = _scale_metric_color_to_percent_points(color)
         else:
             label = _label_for_field(esql["primary"].get("field", ""), metric_labels)
             if label:
                 esql["primary"].setdefault("label", label)
+
+        # Multi-tile metrics in curated summary slots are usually narrow
+        # (w≈6). Compact density keeps labels/values readable.
+        if chart_type == "metric" and has_breakdown:
+            styling = esql.setdefault("styling", {})
+            if isinstance(styling, dict):
+                styling.setdefault("density", "compact")
 
     if "metric" in esql and isinstance(esql["metric"], dict):
         if fmt:
@@ -327,9 +501,9 @@ def enrich_yaml_panel_display(
             }
             esql["legend"] = legend_block
 
-        axis = extract_axis_config(grafana_panel)
-        if axis and "appearance" not in esql:
-            esql["appearance"] = axis
+        appearance = extract_xy_appearance(grafana_panel, chart_type=chart_type)
+        if appearance and "appearance" not in esql:
+            esql["appearance"] = appearance
 
     if chart_type == "pie":
         legend = extract_legend_config(grafana_panel)

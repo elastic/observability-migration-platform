@@ -38,9 +38,10 @@ python3 -m venv .venv
 ```
 
 `.venv/bin/pip install -e ".[datadog]"` installs just the Datadog client extra
-when you do not want the full `[all]` set;
-`.venv/bin/pip install -e ".[kibana]"` installs `kb-dashboard-cli` in-venv for
-the legacy compile/import path (requires Python 3.12+).
+when you do not want the full `[all]` set. The `[kibana]` extra still pins the
+`kb-dashboard-*` tools (Python 3.12+), but **no command invokes them any more**:
+the dashboard-YAML compile/lint path was removed, and `obs-migrate doctor` no
+longer treats a missing `kb-dashboard-*` tool as a blocking gap.
 
 ## Verification And Benchmark Gates
 
@@ -56,11 +57,21 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `verifier.corpus_gate` | `obs-migrate compare` report(s) | Frozen semantic corpus does not regress | configured budgets |
 | `verifier.benchmark_gate` | PM `benchmark_history.json` | Migration success metrics do not drop vs compatible baseline | configured budgets |
 | `verifier.scorecard` | `migration_report.json` + committed baseline | Layer-9 invariant ERROR counts do not regress vs baseline (fidelity ratchet) | no error-count increase |
-| `render_audit_driver` | uploaded dashboard + headless browser | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable) | no `render_error` |
+| `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Per-panel metadata comes from the audited dashboard only, never the whole run. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
+
+Every gate that measures a *percentage* of discovered panels is fail-closed on
+an empty corpus: zero discovered panels exits non-zero instead of reporting a
+vacuous 0%/`captured=0` pass. This applies to `verifier.visual_regression`
+(exits `2`; also raised via `obs-migrate verify-visual`),
+`scripts/validate_panel_queries.py`, and
+`scripts/validate_panels_from_artifacts.py`
+(both exit `1` and name the directory/globs they searched). Treat a
+"nothing to measure" exit as a broken input — an un-run migration or a wrong
+`--migration-out` / `E2E_ROOT` — not as a gate failure to be suppressed.
 
 Offline coverage gates (no cluster, every PR) live in the unit suite, not
 `verifier/`: `tests/core/coverage/test_supported_types.py` cross-checks the
@@ -75,7 +86,7 @@ baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
 Examples:
 
 ```bash
-# Runtime ES|QL oracle: catches invalid emitted ES|QL that compile/lint miss.
+# Runtime ES|QL oracle: catches invalid emitted ES|QL that static checks miss.
 PYTHONPATH=parity-rig .venv/bin/python -m verifier.live_validate \
   --migration-out migration_output/dashboards \
   --es-url "$ELASTICSEARCH_ENDPOINT" \
@@ -147,6 +158,44 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.scorecard \
 .venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
   --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
   --user-data-dir /path/to/logged-in-chrome-profile --fail-on-error
+
+# ALWAYS pass --es-url (+ --es-api-key) on a partially-seeded cluster. Field caps
+# are the only evidence that lets the audit downgrade a panel whose error names
+# absent columns to `field_gap` (warn), or an empty panel whose metric column is
+# absent to `data_gap` (warn); without them absence is unconfirmable, so such an
+# error stays `render_error` (fail) and such an empty stays `unexpected_empty` --
+# by design, so a missing-evidence run cannot silently pass. This applies to the
+# --elements section too, which shares the same classifier.
+#
+# --es-index is only the FALLBACK for panels whose query names no index: every
+# panel that does is resolved against the index its own ES|QL `FROM` names (one
+# cached `_field_caps` call per distinct index). You do NOT need to hand-union
+# patterns; a dashboard mixing `metrics-*` and `FROM logs-*` panels resolves each
+# against its own.
+#
+# --migration-out may point at a WHOLE run: the audit narrows the report to the
+# dashboard --dashboard-id names before reading any panel list, so one
+# dashboard's DOM is never segmented by another dashboard's panel titles (that
+# join attributed a Docker error chunk to a Celery table and judged it against
+# logs-*). The dashboard is matched on its recorded id (native/index.json), its
+# uid/title, or an id that merely extends one of those; a single-dashboard
+# --migration-out always matches. A dashboard the report cannot identify is
+# reported as "per-panel attribution unavailable" on stderr AND in
+# render.reasons, with "panels": [] -- it never falls back to the run's full
+# title set, and whole-dashboard error markers still hard-fail.
+#
+# Within the dashboard, titles are matched longest-first and a hit inside another
+# panel's title text is rejected, so a title that is a strict prefix of a sibling
+# ("Running containers by image" vs "... (widget 27)", which the Datadog
+# duplicate-title disambiguator produces by construction) cannot take the
+# sibling's offset and a zero-length chunk. Read "panel title(s) did not render"
+# in render.reasons as a real signal: that panel drew no title of its own, and it
+# gets NO panel record rather than a phantom "rendered" one.
+.venv/bin/python -m observability_migration.targets.kibana.render_audit_driver \
+  --kibana-url "$KIBANA_ENDPOINT" --dashboard-id "<id>" \
+  --migration-out migration_output/dashboards \
+  --es-url "$ELASTICSEARCH_ENDPOINT" --es-index "metrics-*" \
+  --time-from now-24h --time-to now --elements
 
 # Focusing the right tab in a live agent-browser session (--agent-browser):
 # bootstrap.sh logs in once and keeps a persistent profile
@@ -225,10 +274,57 @@ Regression-gate guidance:
   a fair comparison. By default this exits non-zero in CI; establish a new
   baseline before relying on trend decisions.
 
+`verifier.cli` exits non-zero when T1 (translator ES|QL) is populated for **zero**
+panels while the report describes some. An empty T1 short-circuits every
+comparison to `SKIP`, so that run reports 0 drift on all five axes whatever the
+translator emitted — indistinguishable from a perfect run, and exactly the state
+`07e5829` fixed one cause of. Pass `--allow-empty-t1` only for a source that
+genuinely translated nothing.
+
 The repo-oriented `obs-migrate verify-panels` and `obs-migrate verify-visual`
-wrappers also delegate to `parity-rig/verifier`; their flags are documented with
-the other `obs-migrate` subcommands in
-[`../command-contract.md`](../command-contract.md).
+wrappers also delegate to `parity-rig/verifier`. Operator docs only point here;
+use the invocations below from a synced checkout.
+
+### `obs-migrate verify-panels` (5-tier panel verifier)
+
+Requires a repo checkout (verifier code under `parity-rig/`). Not a substitute
+for `obs-migrate verify` on an installed wheel.
+
+```bash
+obs-migrate verify-panels \
+  --migration-out <output-dir>/dashboards \
+  --output panel_verify_report.json \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --es-url "$ELASTICSEARCH_ENDPOINT" \
+  --api-key "$KEY" \
+  --dashboard-id "<uploaded-dashboard-id>"
+```
+
+`--migration-out` and `--output` are required. T3 needs `--kibana-url`; T4/T5
+also need `--es-url`, `--api-key`, and `--dashboard-id`. This wrapper does
+**not** expose `--ca-cert` / `--insecure`. With `--kibana-url`, T3 is read from
+`GET /api/dashboards/{id}` for every dashboard that has a `native/` artifact.
+A vacuous T1 (zero panels with translator output) exits `1`. See
+`verifier.cli` above for `--allow-empty-t1` (checkout-only).
+
+### `obs-migrate verify-visual` (pixel-diff Grafana vs Kibana)
+
+Requires the local Grafana stack from a checkout (and optionally a bootstrapped
+agent-browser state file for Kibana SAML).
+
+```bash
+obs-migrate verify-visual \
+  --migration-out <output-dir>/dashboards \
+  --grafana-uid "<uid>" \
+  --grafana-slug "<slug>" \
+  --kibana-url "$KIBANA_ENDPOINT" \
+  --kibana-dash-id "<uploaded-dashboard-id>" \
+  --output-dir visual_diff_out \
+  --report visual_diff_report.json
+```
+
+Exits `2` when either side discovers zero panels. Does **not** expose
+`--ca-cert` / `--insecure`.
 
 ## Validation / Verification CLIs
 
@@ -267,7 +363,6 @@ you want the destructive round-trip `verify_alert_rule_uploads.py` path:
 set -a && source serverless_creds.env && set +a
 .venv/bin/obs-migrate upload \
   --artifact-dir examples/alerting/generated/grafana/dashboards \
-  --artifact-format yaml \
   --kibana-url "$KIBANA_ENDPOINT" \
   --kibana-api-key "$KEY"
 
@@ -282,6 +377,16 @@ set -a && source serverless_creds.env && set +a
 ```
 
 This sequence regenerates the curated Grafana and Datadog alert comparison artifacts, uploads the generated `Legacy Alert Examples` dashboard, round-trips the emitted rules through Kibana, and then audits the migrated rules present in Kibana. `scripts/verify_alert_rule_uploads.py` deletes its verification rules unless `--keep-rules` is passed.
+
+Two caveats on the `upload` step above. The `--artifact-format yaml` flag it used
+to pass was **removed** — `obs-migrate upload` now takes only `--artifact-dir`,
+pointed at a dashboard artifact directory holding `native/`. And
+`generate_alert_support_report.py` runs both source CLIs with `--assets alerts`,
+which skips dashboard migration, so it writes no
+`examples/alerting/generated/grafana/dashboards/native/` for `upload` to read.
+Migrate `examples/alerting/grafana/legacy_dashboard_alert.json` with
+`--assets all` first if you need that dashboard in Kibana; otherwise `upload`
+exits `1` with `no_native_artifacts_found`.
 
 `scripts/audit_migrated_rules.py` and `scripts/verify_alert_rule_uploads.py` are
 the repo-checkout equivalents of the packaged `obs-migrate audit-rules` and
@@ -334,29 +439,42 @@ bash scripts/run_migration.sh --skip-upload
 
 ```bash
 bash scripts/generate_dashboard_schema.sh
-.venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema --url <kibana-full-openapi.yaml>
-KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make check-native-schema
+make check-native-schema
+# Intentionally bump the committed OpenAPI pin:
+make refresh-native-schema
+# Optional upstream override when refreshing from a different bundle:
+KIBANA_DASHBOARDS_API_SCHEMA_URL=<kibana-full-openapi.yaml> make refresh-native-schema
 ```
 
-`generate_dashboard_schema.sh` refreshes the legacy/debug `kb-dashboard-core`
-YAML schema. `fetch_dashboards_api_schema.py` refreshes/checks the typed Kibana
-Dashboards API OpenAPI bundle for `/api/dashboards`; use the full external
-Dashboards API bundle while the API remains technical preview, because the
-standard Kibana bundle may contain redirect-only shells.
+`generate_dashboard_schema.sh` refreshes the `kb-dashboard-core` dashboard JSON
+schema (`docs/dashboards/schema.json`), which is still the reference for the
+internal `DashboardIR.to_yaml_dict()` dict shape even though no YAML file is
+ever written. The native upload schema authority is the committed OpenAPI pin
+`docs/dashboards/kibana_dashboards_api.openapi.yaml`. `make check-native-schema`
+validates that pin offline (`--require-full-schema`); `make refresh-native-schema`
+re-fetches Elastic's hosted Dashboards API bundle and rewrites the pin for an
+intentional bump (the standard Kibana OpenAPI bundle may still contain
+redirect-only shells).
 
-Dashboard YAML lint and compiled-layout validation run automatically inside
-`obs-migrate compile`/`migrate`. To run them ad hoc, call the in-process modules:
+**The dashboard-YAML lint and compiled-layout stages were removed**, together
+with `obs-migrate compile` and `migrate --compile` / `--legacy-import`. The
+previous recipe here (render YAML with `compile.write_dashboard_yaml`, then run
+`lint.lint_dashboard_yaml` / `layout.validate_compiled_layout`) no longer works:
+`write_dashboard_yaml` is gone, and no migration writes a `yaml/` or `compiled/`
+directory to point the other two at. `lint.py` and `layout.py` themselves are
+kept as library code, but nothing user-facing calls
+`lint_dashboard_yaml` / `validate_compiled_layout`.
+
+The check that survived is the `?param`/`??param` binding gate (issues #131 /
+#282). It reads the IR export instead of YAML and is what the interaction audit
+runs:
 
 ```python
-from observability_migration.targets.kibana.lint import lint_dashboard_yaml
-ok, output = lint_dashboard_yaml("migration_output/dashboards/yaml")
-
-from observability_migration.targets.kibana.layout import validate_compiled_layout
-ok, output = validate_compiled_layout("migration_output/dashboards/compiled")
+from observability_migration.targets.kibana.interaction_audit_local import (
+    lint_migration_artifacts,
+)
+lint_migration_artifacts(Path("migration_output/dashboards"))
 ```
-
-The lint gate calls `kb-dashboard-lint`, resolved installed-first via the
-`elastic-observability-migration[kibana]` extra (Python 3.12+) with a pinned `uvx` fallback on 3.11.
 
 ### Data Setup
 
@@ -388,8 +506,8 @@ Keep the per-source stream layout the operator doc recommends under
 Datadog, `logs-generic-default` shared. Mixing Prometheus-style labels and
 Datadog/ECS field objects in one stream produces mapping conflicts.
 
-The common setup script discovers YAML and verification packets from each
-artifact root. Useful flags:
+The common setup script discovers dashboard IR artifacts (`ir/*.ir.json`) and
+verification packets from each artifact root. Useful flags:
 
 | Flag | Meaning |
 |---|---|

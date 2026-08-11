@@ -87,8 +87,10 @@ class LocalValidationScriptTests(unittest.TestCase):
     def test_full_local_demo_reports_dashboard_scoped_artifacts(self):
         script_text = FULL_LOCAL_DEMO_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("$OUTPUT_DIR/dashboards/yaml", script_text)
+        self.assertIn('DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"', script_text)
         self.assertIn("$OUTPUT_DIR/run_summary.json", script_text)
+        # A migration writes native/ + ir/, never a yaml/ directory.
+        self.assertNotIn("dashboards/yaml", script_text)
 
     def test_validate_local_sample_script_removed(self):
         self.assertFalse(REMOVED_SAMPLE_SCRIPT.exists())

@@ -1,9 +1,0 @@
-title: Memory Kernel / CPU
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['KernelStack_Kernel_memory_stack_This_is_not_reclaimable', 'PerCPU_Per_CPU_memory_allocated_dynamically_by_loadable_modules']
-breakdown: series_group
-axis_title: bytes
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -359,7 +359,7 @@ class TransformOracleDifferentialTests(unittest.TestCase):
 
         query = (
             "TS metrics-*\n"
-            "| STATS node_cpu_seconds_total = SUM(RATE(node_cpu_seconds_total, 5m)) "
+            "| STATS node_cpu_seconds_total = SUM(RATE(node_cpu_seconds_total)) "
             "BY time_bucket = TBUCKET(5 minute)\n"
             "| SORT time_bucket ASC\n"
             "| STATS time_bucket = MAX(time_bucket), "
@@ -416,7 +416,7 @@ class TransformOracleDifferentialTests(unittest.TestCase):
 
         query = (
             "TS metrics-*\n"
-            "| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) "
+            "| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) "
             "BY time_bucket = TBUCKET(5 minute), service.instance.id, cpu\n"
             "| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket\n"
             "| SORT time_bucket ASC"

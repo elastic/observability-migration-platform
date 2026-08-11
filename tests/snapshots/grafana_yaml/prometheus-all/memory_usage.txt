@@ -1,6 +1,0 @@
-title: Memory usage
-grafana_type: graph
-status: requires_manual
-chart_type: none
-chart_type: markdown
-warning: No PromQL expression found in panel targets

@@ -1,11 +1,11 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""YAML generation tests for the Datadog -> Kibana migration pipeline.
+"""Contract and snapshot tests for the Datadog -> Kibana migration pipeline.
 
-These tests mirror the Grafana YAML harness, but run against the Datadog
-dashboard corpus because Datadog has more independent YAML emission logic.
-Snapshots intentionally capture compact panel shapes rather than full YAML.
+These tests cover the Datadog dashboard corpus because Datadog has its own
+translator and snapshot surface. Snapshots intentionally capture compact panel
+shapes rather than full emitted payloads.
 """
 
 from __future__ import annotations

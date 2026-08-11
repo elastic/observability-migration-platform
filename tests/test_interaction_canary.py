@@ -75,7 +75,13 @@ def test_interaction_canary_maps_every_control_to_native_api():
         for control in native.controls
         if control.type == "esql_control"
     }
-    assert esql_types == {"values", "fields", "functions", "time_literal"}
+    # ``services`` is multi-select, and Kibana types such a control
+    # MULTI_VALUES rather than VALUES -- its own helper picks
+    # ``canBeMultiValue ? MULTI_VALUES : VALUES``, and MV_CONTAINS (how a
+    # multi-select control binds) is exactly such a parameter. The API accepts
+    # "values" with single_select=false and the panel still renders, so this is
+    # invisible to black-box probing; the declared type is still wrong.
+    assert esql_types == {"values", "multi_values", "fields", "functions", "time_literal"}
     assert {control.type for control in native.controls} >= {
         "esql_control",
         "options_list_control",
@@ -127,7 +133,8 @@ def test_interaction_canary_native_services_preserves_multi_selection():
     native, _ = api.native_dashboard_from_ir(build_interaction_canary())
     services = _esql_control(native, "services")
     assert services.config["control_type"] == "VALUES_FROM_QUERY"
-    assert services.config["variable_type"] == "values"
+    # Multi-select -> MULTI_VALUES (Kibana: canBeMultiValue ? MULTI_VALUES : VALUES).
+    assert services.config["variable_type"] == "multi_values"
     assert services.config["selected_options"] == ["api", "worker"]
     assert services.config["single_select"] is False
 

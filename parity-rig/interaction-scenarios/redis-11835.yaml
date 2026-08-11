@@ -16,24 +16,26 @@ controls:
   - label: Namespace
     key: namespace
     adapter: esql_value
-    capability: migrated_live
+    capability: migration_gap
+    expected_gap: Namespace control renders, but no migrated Kibana panel query binds ?namespace directly
     options:
       strategy: every
     assertions:
       selection: [namespace]
       affected_panels: []
-      unaffected_panels: all_query_panels
+      unaffected_panels: []
       expect_data_change: false
   - label: Pod Name
     key: pod_name
     adapter: esql_value
-    capability: migrated_live
+    capability: migration_gap
+    expected_gap: Pod Name control renders, but no migrated Kibana panel query binds ?pod_name directly
     options:
       strategy: every
     assertions:
       selection: [pod_name]
       affected_panels: []
-      unaffected_panels: all_query_panels
+      unaffected_panels: []
       expect_data_change: false
   - label: instance
     key: instance
@@ -58,32 +60,7 @@ controls:
     assertions:
       affected_panels: []
       expect_data_change: false
-  - label: gap chained controls
-    key: gap_chained_controls
-    adapter: esql_value
-    capability: migration_gap
-    expected_gap: Chained Grafana variable scoping for pod_name and instance depends on namespace selection
-    options:
-      strategy: declared
-      include: [catalog-only]
-    assertions:
-      affected_panels: []
-      allow_incompatible_selections: true
-      expect_data_change: false
-combinations:
-  - id: namespace-and-pod_name
-    selections:
-      namespace: default
-      pod_name: pod_1
-  - id: namespace-and-instance
-    selections:
-      namespace: monitoring
-      instance: checkout
-  - id: all-three
-    selections:
-      namespace: production
-      pod_name: pod_2
-      instance: frontend
+combinations: []
 noise_allowances:
   - endpoint: /internal/security/user_profile
     method: GET

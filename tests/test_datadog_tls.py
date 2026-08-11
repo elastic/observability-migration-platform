@@ -18,6 +18,7 @@ from observability_migration.adapters.source.datadog.execution import (
     build_source_execution_summary,
 )
 from observability_migration.adapters.source.datadog.models import DashboardResult, TranslationResult
+from observability_migration.core.assets.native_dashboard import NativeDashboard
 
 
 class TestDatadogTlsParser(unittest.TestCase):
@@ -205,16 +206,15 @@ class TestDatadogTlsCliThreading(unittest.TestCase):
             "kibana_url": "https://kibana.example",
         }
         result = DashboardResult(
-            yaml_path="dash.yaml",
+            artifact_stem="dash",
+            native_dashboard=NativeDashboard(title="Dash"),
             dashboard_title="Dash",
             dashboard_id="dash-1",
-            compiled=True,
-            compile_error="",
             layout_error="",
         )
 
-        with TemporaryDirectory() as tmpdir:
-            datadog_cli._upload_all_dashboards([result], Path(tmpdir), self._args(), target_adapter)
+        # Uploads the in-memory native payload; no artifact directory is read.
+        datadog_cli._upload_all_dashboards([result], self._args(), target_adapter)
 
         self.assertEqual(target_adapter.upload_dashboard.call_args.kwargs.get("verify"), "/tmp/ca.pem")
 

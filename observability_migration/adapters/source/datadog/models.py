@@ -301,6 +301,10 @@ class WidgetQuery:
     log_query: LogQuery | None = None
     aggregator: str = ""
     query_type: str = ""
+    # Name of an unsupported legacy Datadog function (timeshift/top/derivative)
+    # that blocked translation. Distinguishes "we cannot express this" from
+    # "we could not parse this", which are very different operator problems.
+    unsupported_function: str = ""
 
 
 @dataclass
@@ -460,23 +464,28 @@ class DashboardResult:
     preflight_passed: bool = True
     preflight_issues: list[dict[str, str]] = field(default_factory=list)
     validation_summary: dict[str, int] = field(default_factory=dict)
-    yaml_path: str = ""
-    compiled_path: str = ""
+    # Filename stem shared by this dashboard's artifacts
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``).
+    artifact_stem: str = ""
+    # Name of the bundled curated layout pack applied to this dashboard, if any.
+    curated_pack_name: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of
     # `native_dashboard`/`dashboard_ir`, written before upload so the exact
     # typed API payload can be reviewed and later deployed with
-    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    # `obs-migrate upload --artifact-dir ...`.
     native_artifact_path: str = ""
     ir_artifact_path: str = ""
-    compiled: bool = False
-    compile_error: str = ""
+    # Set by the post-upload smoke layout check (not by any compile step).
     layout_checked: bool = False
     layout_error: str = ""
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
     upload_warnings: list[str] = field(default_factory=list)
+    # Leaf panels Kibana silently dropped while accepting the upload with an
+    # HTTP 200 (``{"title", "reason", "section", "grid"}`` each).
+    upload_dropped_panels: list[dict[str, Any]] = field(default_factory=list)
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
     kibana_saved_object_id: str = ""
@@ -533,12 +542,17 @@ class DashboardResult:
                 "status": "pass" if not self.layout_error else "fail",
                 "error": self.layout_error or "",
             }
-        upload_status = {"status": "not_run", "error": "", "warnings": []}
+        upload_status: dict[str, Any] = {
+            "status": "not_run", "error": "", "warnings": [], "dropped_panels": [],
+        }
         if self.upload_attempted or self.upload_error:
             upload_status = {
                 "status": "pass" if self.uploaded and not self.upload_error else "fail",
                 "error": self.upload_error or "",
                 "warnings": list(self.upload_warnings or []),
+                # Panels Kibana dropped behind an HTTP 200 upload, so the
+                # manifest/CI can see which panels a "successful" upload lost.
+                "dropped_panels": list(self.upload_dropped_panels or []),
             }
         smoke_status = {"status": "not_run", "error": ""}
         if self.smoke_attempted or self.smoke_error:
@@ -553,11 +567,6 @@ class DashboardResult:
                 "error": self.browser_audit_error or "",
             }
         return {
-            "yaml_lint": {"status": "not_run", "error": ""},
-            "compile": {
-                "status": "pass" if self.compiled else "fail" if self.compile_error else "not_run",
-                "error": self.compile_error or "",
-            },
             "layout": layout_status,
             "upload": upload_status,
             "smoke": smoke_status,

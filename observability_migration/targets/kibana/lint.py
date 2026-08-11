@@ -85,6 +85,15 @@ def _is_native_promql_entry(entry: dict, promql_keys: set[tuple[str, str]]) -> b
 
 
 def _unbound_param_findings(yaml_file) -> list[dict]:
+    """``unbound_param_findings`` for one dashboard YAML file on disk."""
+    try:
+        payload = yaml.safe_load(Path(yaml_file).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    return unbound_param_findings(payload)
+
+
+def unbound_param_findings(payload) -> list[dict]:
     """Flag panel queries that reference an ES|QL ``?param`` with no control.
 
     Regression gate for issue #131: every ``?var`` a panel emits (native PROMQL
@@ -92,11 +101,13 @@ def _unbound_param_findings(yaml_file) -> list[dict]:
     ``esqlControl`` (a control of type ``esql`` whose ``variable_name`` matches),
     otherwise the panel fails to load with "Parameter [?var] value not found".
     Applies to both native PROMQL and ES|QL panels.
+
+    ``payload`` is a kb-dashboard-core ``{"dashboards": [...]}`` document. It
+    reaches this gate either from a dashboard YAML file (the deprecated
+    compile path) or rebuilt from the migration's ``ir/*.ir.json`` export via
+    :meth:`DashboardIR.to_yaml_dict` -- the same shape either way, so the
+    gate survives the removal of the YAML artifacts.
     """
-    try:
-        payload = yaml.safe_load(Path(yaml_file).read_text(encoding="utf-8")) or {}
-    except Exception:
-        return []
     if not isinstance(payload, dict):
         return []
     findings: list[dict] = []
@@ -252,4 +263,8 @@ def lint_dashboard_yaml(yaml_dir, allowlist: frozenset[str] = DEFAULT_WARNING_AL
     return True, "\n".join(lines)
 
 
-__all__ = ["DEFAULT_WARNING_ALLOWLIST", "lint_dashboard_yaml"]
+__all__ = [
+    "DEFAULT_WARNING_ALLOWLIST",
+    "lint_dashboard_yaml",
+    "unbound_param_findings",
+]

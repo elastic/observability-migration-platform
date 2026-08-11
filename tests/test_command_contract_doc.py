@@ -542,12 +542,17 @@ class CommandContractDocTests(unittest.TestCase):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("They accept the same `--input-mode {files,api}`", text)
         self.assertIn("`--source files|api`", text)
+        # `--compile` / `--no-compile` were removed with the dashboard-YAML
+        # path; the contract must still name them so an operator upgrading a
+        # script that passed them finds the replacement.
         self.assertIn("--no-compile", text)
-        # Phrase may wrap across a Markdown line break.
+        # No longer "by default" — the typed Dashboards API is the only upload
+        # path. Phrase may wrap across a Markdown line break.
         self.assertRegex(
             text,
-            r"Upload deploys through Kibana's\s+typed Dashboards API by default",
+            r"Upload deploys through Kibana's\s+typed Dashboards API",
         )
+        self.assertNotIn("typed Dashboards API by default", text)
         self.assertIn("obs-migrate migrate --source <source> --input-mode files", text)
 
     def test_command_contract_documents_every_obs_migrate_subcommand(self):
@@ -573,12 +578,16 @@ class CommandContractDocTests(unittest.TestCase):
 
     def test_command_contract_documents_verify_panels_and_verify_visual(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")
-        self.assertIn("### Verify Panels (5-tier panel verifier)", text)
-        self.assertIn("### Verify Visual (pixel-diff Grafana vs Kibana)", text)
+        dev_text = DEV_COMMANDS.read_text(encoding="utf-8")
+        self.assertIn("### Verify Panels / Verify Visual (repo checkout)", text)
         self.assertIn("obs-migrate verify-panels", text)
         self.assertIn("obs-migrate verify-visual", text)
-        self.assertIn("--grafana-slug", text)
-        self.assertIn("--kibana-dash-id", text)
+        self.assertIn("contributing/dev-commands.md", text)
+        self.assertIn("### `obs-migrate verify-panels` (5-tier panel verifier)", dev_text)
+        self.assertIn("### `obs-migrate verify-visual` (pixel-diff Grafana vs Kibana)", dev_text)
+        self.assertIn("--grafana-slug", dev_text)
+        self.assertIn("--dashboard-id", dev_text)
+        self.assertIn("--kibana-dash-id", dev_text)
 
     def test_command_contract_documents_cli_parity_matrix(self):
         text = COMMAND_CONTRACT.read_text(encoding="utf-8")

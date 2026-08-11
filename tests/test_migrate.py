@@ -26,6 +26,7 @@ from observability_migration.adapters.source.grafana import (
     translate,
     verification,
 )
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.reporting import report as report
 from observability_migration.core.verification import disposition as disposition
 from observability_migration.targets.kibana import compile as compile_module
@@ -44,7 +45,7 @@ migrate = SimpleNamespace(
     validate_query_with_fixes=esql_validate.validate_query_with_fixes,
     MigrationResult=report.MigrationResult,
     PanelResult=report.PanelResult,
-    sync_result_queries_to_yaml=compile_module.sync_result_queries_to_yaml,
+    sync_result_queries_to_ir=compile_module.sync_result_queries_to_ir,
     mark_panel_requires_manual_after_validation=report.mark_panel_requires_manual_after_validation,
     mark_panel_requires_manual_after_failed_validation=report.mark_panel_requires_manual_after_failed_validation,
     mark_panel_migrated_with_missing_target_fields=report.mark_panel_migrated_with_missing_target_fields,
@@ -61,6 +62,30 @@ migrate = SimpleNamespace(
     build_runtime_summary=report.build_runtime_summary,
     _esql_field=promql._esql_field,
 )
+
+
+def _sync_document(result, payload):
+    """Run the post-validation sync over one dashboard document.
+
+    ``sync_result_queries_to_ir`` folds validation fixes into
+    ``result.dashboard_ir`` -- one of the two artifacts the pipeline writes --
+    instead of rewriting an on-disk YAML file. Seed the IR from the document
+    under test and return ``(updated, document_the_rebuilt_IR_serializes_to)``.
+    """
+    result.dashboard_ir = DashboardIR.from_yaml_dict(
+        payload["dashboards"][0], source_adapter="grafana"
+    )
+    updated = migrate.sync_result_queries_to_ir(result)
+    return updated, {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+
+
+def _polish_document(result, payload, **kwargs):
+    """Run metadata polish over one dashboard document (see _sync_document)."""
+    result.dashboard_ir = DashboardIR.from_yaml_dict(
+        payload["dashboards"][0], source_adapter="grafana"
+    )
+    summary = migrate.apply_metadata_polish(result, **kwargs)
+    return summary, {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
 
 class DatasourceIdentityTests(unittest.TestCase):
@@ -177,6 +202,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve_label("region"), "cloud.region")
         self.assertEqual(self.resolver.resolve_label("availability_zone"), "cloud.availability_zone")
 
+    def test_schema_resolver_native_profile_falls_back_to_alias_label_field(self):
+        resolver = self._native_profile_resolver(
+            {
+                "labels.device": {"keyword": {"searchable": True, "aggregatable": True}},
+                "metrics.node_network_up": {"double": {"searchable": True, "aggregatable": True}},
+            }
+        )
+        self.assertEqual(resolver.resolve_label("interface"), "labels.device")
+
     def test_count_scalar_normalized_to_scalar_count(self):
         # count_scalar() was removed in Prometheus 2.0; it is semantically
         # identical to scalar(count()). Normalise it at preprocessing so the
@@ -237,7 +271,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.feasibility, "feasible")
         self.assertEqual(result.clean_expr, "sum(rate(http_requests_total[3600s]))")
-        self.assertIn("RATE(http_requests_total, 1h)", result.esql_query)
+        self.assertIn("RATE(http_requests_total)", result.esql_query)
         self.assertFalse(
             any(warning.startswith("AST parse failed") for warning in result.warnings),
             result.warnings,
@@ -630,19 +664,17 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }],
             }],
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            result, path = migrate.translate_dashboard(
-                dashboard,
-                tmp,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(path).read_text())
-            # The fields control binds the ??grouping identifier, so the
-            # unbound-parameter lint gate must stay clean (issue #131 gate).
-            self.assertEqual(_lint._unbound_param_findings(path), [])
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        # The fields control binds the ??grouping identifier, so the
+        # unbound-parameter lint gate must stay clean (issue #131 gate).
+        self.assertEqual(_lint.unbound_param_findings(doc), [])
 
         dash = doc["dashboards"][0]
         field_controls = [c for c in (dash.get("controls") or []) if c.get("variable_type") == "fields"]
@@ -725,17 +757,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmp:
-            result, path = migrate.translate_dashboard(
-                dashboard,
-                tmp,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(path).read_text())
-            self.assertEqual(_lint._unbound_param_findings(path), [])
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        self.assertEqual(_lint.unbound_param_findings(doc), [])
 
         dash = doc["dashboards"][0]
         panels_by_title = {panel["title"]: panel for panel in dash["panels"]}
@@ -902,9 +932,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
     def test_topk_grouping_template_variable_keeps_stable_alias(self):
+        # Use barchart to test the late-bound alias shape (collapse to top-N list);
+        # the XY/graph path emits a time-series and skips the second STATS BY clause.
         self._enable_late_bound_grouping()
         result = self.translate(
-            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))"
+            "topk(5, sum(rate(otelcol_receiver_accepted_spans[5m])) by ($grouping))",
+            panel_type="barchart",
         )
 
         self.assertEqual(result.feasibility, "feasible")
@@ -1061,9 +1094,14 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("cpu{host=~?host, svc=~?svc}", mixed)
 
     def test_panel_with_control_bound_label_matcher_routes_to_native_esql(self):
-        """Issue #319: when PromQL label-matcher params are supported, keep native
-        PROMQL with ``?var`` inside the matcher (ES/Kibana 9.5+). Issue #230's
-        ES|QL fallthrough remains only when the feature is unsupported.
+        """Issue #319 / #230: panels with control-bound label matchers must always
+        fall through to ES|QL RLIKE binding, even when PROMQL_LABEL_MATCHER_PARAMS
+        is supported at the ES level.
+
+        ES 9.5+ accepts ``?param`` inside PromQL label filters, but Kibana does
+        NOT forward dashboard control values as named params into the opaque PROMQL
+        expression string — it only injects ``?_tstart``/``?_tend`` at the command-
+        argument level.  Staying native PROMQL would leave ``?instance`` unbound.
         """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
@@ -1088,9 +1126,10 @@ class TranslatorRegressionTests(unittest.TestCase):
         yaml_panel, _result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
 
-        self.assertIn("PROMQL", query)
-        self.assertIn("instance=~?instance", query)
-        self.assertNotIn("RLIKE ?instance", query)
+        # Must fall through to ES|QL RLIKE binding regardless of ES-side support.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("RLIKE ?instance", query)
+        self.assertNotIn("instance=~?instance", query)
 
     def test_esql_drops_exact_template_label_matcher_with_warning(self):
         result = self.translate('cpu{host="$host"}')
@@ -1188,16 +1227,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         panel_result = next(pr for pr in result.panel_results if pr.title == "CPU by host")
         # Gap A binds every emitted ``$var`` matcher (including hidden templating
@@ -1240,16 +1277,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         # query_result() cannot populate a Kibana control from Grafana's query,
         # but Gap A still synthesizes a values binding for the emitted ``?host``
@@ -1293,10 +1328,9 @@ class TranslatorRegressionTests(unittest.TestCase):
                 ],
             }
 
-            with self.subTest(expr=expr), tempfile.TemporaryDirectory() as tmpdir:
-                result, _yaml_path = migrate.translate_dashboard(
+            with self.subTest(expr=expr):
+                result = migrate.translate_dashboard(
                     dashboard,
-                    pathlib.Path(tmpdir),
                     datasource_index="metrics-*",
                     esql_index="metrics-*",
                     rule_pack=self.rule_pack,
@@ -1350,15 +1384,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
 
         panel_result = next(pr for pr in result.panel_results if pr.title == "Logs by term")
         self.assertEqual(panel_result.status, "migrated_with_warnings")
@@ -1388,16 +1420,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         controls = payload["dashboards"][0].get("controls", [])
         self.assertEqual(controls[0]["variable_name"], "host")
@@ -1480,24 +1510,24 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         rule_pack = rules.RulePackConfig(native_promql=True)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=self.resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("controls:", rendered)
         self.assertNotIn("?host", rendered)
 
     def test_panel_template_label_matcher_binds_via_native_esql_when_feature_supported(self):
-        """Issue #319: with ``promql_label_matcher_params`` supported, keep native
-        PROMQL and rewrite ``$host`` → ``?host`` inside the matcher.
+        """Issue #319 / #230: with ``promql_label_matcher_params`` supported at the
+        ES level, panels with control-bound label matchers must still fall through to
+        ES|QL RLIKE binding — Kibana does not forward dashboard control values as
+        named params inside the PROMQL command's expression string.
         """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
@@ -1524,8 +1554,11 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "migrated")
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
-        self.assertIn("host=?host", query)
+        # Must fall through to ES|QL regardless of ES-side PROMQL_LABEL_MATCHER_PARAMS.
+        # The equality matcher ``host="$host"`` becomes ``host == ?host`` in ES|QL.
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("?host", query)
+        self.assertNotIn("host=?host", query)  # not the native PROMQL ?param form
 
     def test_multi_target_ts_query_uses_timeseries_aggregates_for_all_metrics(self):
         self.seed_field_caps({
@@ -1592,12 +1625,18 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertNotEqual(result.status, "requires_manual")
         query = yaml_panel["esql"]["query"]
-        # legendFormat labels are display-only and are not promoted into BY,
-        # including labels that exist in field caps (``type``) and ones that do
-        # not (``info``).
-        self.assertNotIn(", type", query)
+        # A legendFormat label that does NOT exist in field caps (``info``) is
+        # display-only and must never reach BY -- grouping on it would reference
+        # a non-existent column.
         self.assertNotIn(", info", query)
         self.assertNotIn("COALESCE(info", query)
+        # A legendFormat label that IS a real target dimension (``type``) is kept.
+        # ES|QL TS emits one row per series per bucket, but Kibana derives series
+        # identity from a breakdown column rather than the TSID, so dropping the
+        # only real label leaves column-identical rows that render as several
+        # indistinguishable same-named series. Keeping it is what makes them
+        # distinguishable.
+        self.assertIn(", type", query)
 
     def test_scalar_template_variable_in_arithmetic_becomes_literal_with_warning(self):
         self.seed_field_caps({
@@ -1634,13 +1673,13 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_filtered_outer_counter_agg_wraps_case_around_nested_ts_function(self):
         expr = promql._inline_filters_into_stats_expr(
-            "SUM(RATE(node_cpu_seconds_total, 5m))",
+            "SUM(RATE(node_cpu_seconds_total))",
             ['mode == "system"'],
         )
 
         self.assertEqual(
             expr,
-            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total, 5m), NULL))',
+            'SUM(CASE((mode == "system"), RATE(node_cpu_seconds_total), NULL))',
         )
         self.assertNotIn("RATE(CASE(", expr)
 
@@ -1663,13 +1702,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         # only the value expression may be wrapped in CASE so the emitted ES|QL
         # stays a valid two-argument PERCENTILE (issue #213).
         expr = promql._inline_filters_into_stats_expr(
-            "PERCENTILE(RATE(http_requests_total, 5m), 90)",
+            "PERCENTILE(RATE(http_requests_total), 90)",
             ['mode == "user"'],
         )
 
         self.assertEqual(
             expr,
-            'PERCENTILE(CASE((mode == "user"), RATE(http_requests_total, 5m), NULL), 90)',
+            'PERCENTILE(CASE((mode == "user"), RATE(http_requests_total), NULL), 90)',
         )
 
     def test_resolve_label_prefers_source_field_when_target_has_both(self):
@@ -1707,6 +1746,26 @@ class TranslatorRegressionTests(unittest.TestCase):
         translated = self.translate('sum_over_time(nginxlog_resp_bytes{resp_code=~"200"}[24h])')
         self.assertIn("SUM_OVER_TIME(nginxlog_resp_bytes, 24h)", translated.esql_query)
         self.assertNotIn("SUM_OVER_TIME(nginxlog_resp_bytes, 1d)", translated.esql_query)
+
+    def test_last_over_time_translates_to_esql(self):
+        """last_over_time() must map to LAST_OVER_TIME, not fall through as not_feasible."""
+        translated = self.translate("last_over_time(up[$__interval])")
+        self.assertIn("LAST_OVER_TIME(up,", translated.esql_query)
+        self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
+
+    def test_present_over_time_translates_to_esql(self):
+        """present_over_time() must map to PRESENT_OVER_TIME, not fall through as not_feasible."""
+        translated = self.translate("present_over_time(up[$__interval])")
+        self.assertIn("PRESENT_OVER_TIME(up,", translated.esql_query)
+        self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
+
+    def test_acosh_asinh_atanh_translate_to_esql(self):
+        """Inverse hyperbolic trig functions must translate to exact ES|QL equivalents."""
+        for func, esql_func in [("acosh", "ACOSH"), ("asinh", "ASINH"), ("atanh", "ATANH")]:
+            with self.subTest(func=func):
+                translated = self.translate(f"{func}(avg_over_time(up[$__interval]))")
+                self.assertIn(esql_func, translated.esql_query)
+                self.assertNotIn("requires manual redesign", " ".join(translated.warnings))
 
     def test_resolve_label_keeps_source_field_when_only_source_present(self):
         """If the target only has `instance`, the resolver keeps `instance`."""
@@ -1844,18 +1903,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)',
+            'CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total), NULL)',
             translated.esql_query,
         )
         # Denominator stays IRATE (not AVG_OVER_TIME) but is outer-CASE-shaped when
         # the numerator already filters around IRATE, so ES does not ClassCast
         # mixed STATS args (and we do not nest CASE(true) inside the numerator).
         self.assertIn(
-            "CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)",
+            "CASE(true, IRATE(node_cpu_seconds_total), NULL)",
             translated.esql_query,
         )
         self.assertNotIn(
-            "SUM(IRATE(node_cpu_seconds_total, 1m))",
+            "SUM(IRATE(node_cpu_seconds_total))",
             translated.esql_query,
         )
         self.assertNotIn("IRATE(CASE(", translated.esql_query)
@@ -1936,6 +1995,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("EVAL node_cpu_seconds_total = LEAST(node_cpu_seconds_total, 100)", query)
 
     def test_topk_avg_by_range_fallback_keeps_ranking_shape(self):
+        # graph panels emit a time-series breakdown; bar-chart panels collapse to top-N.
         translated = self.translate(
             'topk(5,(avg by (service_name) ('
             'max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[$interval]) '
@@ -1944,9 +2004,28 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(translated.feasibility, "feasible")
+        # AVG(MAX_OVER_TIME) directly — NOT a range-wide MAX, which reports a stale
+        # peak (PR #234). For XY / graph panels the two-stage _bucket_value pattern
+        # is not needed since there is no per-cmd collapse step.
+        self.assertIn("AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
+        self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
+        # XY path: no LIMIT, no value sort — time-series per service_name.
+        self.assertNotIn("LIMIT 5", translated.esql_query)
+        self.assertIn("SORT time_bucket ASC", translated.esql_query)
+        self.assertTrue(any("time-series breakdown" in w for w in translated.warnings))
+
+    def test_topk_avg_by_range_fallback_barchart_keeps_ranking_shape(self):
+        # bar-chart path: keeps the latest-bucket collapse with LAST + LIMIT.
+        translated = self.translate(
+            'topk(5,(avg by (service_name) ('
+            'max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[$interval]) '
+            'or max_over_time(mysql_global_status_max_used_connections{service_name=~"$service_name"}[5m])'
+            ')))',
+            panel_type="barchart",
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("STATS _bucket_value = AVG(MAX_OVER_TIME(mysql_global_status_max_used_connections, 5m))", translated.esql_query)
-        # latest-bucket reducer (matches the warning, the docs, and the Datadog
-        # sibling) -- NOT a range-wide MAX, which reports a stale peak (PR #234).
         self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY service.name", translated.esql_query)
         self.assertNotIn("value = MAX(_bucket_value)", translated.esql_query)
         self.assertIn("LIMIT 5", translated.esql_query)
@@ -2425,6 +2504,16 @@ class TranslatorRegressionTests(unittest.TestCase):
             "metrics.process_cpu_seconds_total",
         )
 
+    def test_resolve_metric_field_falls_back_to_bare_native_metric_when_only_bare_field_exists(self):
+        resolver = self._native_profile_resolver({
+            "node_netstat_Tcp_MaxConn": {"double": {"aggregatable": True, "time_series_metric": "gauge"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertEqual(
+            resolver.resolve_metric_field("node_netstat_Tcp_MaxConn", prefer="gauge"),
+            "node_netstat_Tcp_MaxConn",
+        )
+
     def test_resolve_label_namespaces_to_labels_dot_for_native_profile(self):
         resolver = self._native_profile_resolver({
             "metrics.http_requests_total": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
@@ -2452,6 +2541,13 @@ class TranslatorRegressionTests(unittest.TestCase):
         })
 
         self.assertFalse(resolver.is_counter("http_requests_total"))
+
+    def test_is_counter_uses_bare_native_metric_when_prefixed_field_is_absent(self):
+        resolver = self._native_profile_resolver({
+            "node_netstat_TcpExt_TCPRcvQDrop": {"double": {"aggregatable": True, "time_series_metric": "counter"}},
+            "labels.instance": {"keyword": {"aggregatable": True, "time_series_dimension": True}},
+        })
+        self.assertTrue(resolver.is_counter("node_netstat_TcpExt_TCPRcvQDrop"))
 
     def test_translator_emits_metrics_and_labels_prefixed_fields_for_native_profile(self):
         """End-to-end: counter rate against a native /_prometheus endpoint target
@@ -3436,8 +3532,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         # result is correct either way; TS additionally avoids inflating any SUM/COUNT.
         self.assertNotEqual(translated.feasibility, "not_feasible")
         self.assertIn("TS metrics-*", translated.esql_query)
-        self.assertIn("AVG(known_gauge)", translated.esql_query)
-        self.assertIn("AVG(unknown_gauge)", translated.esql_query)
+        # LAST_OVER_TIME collapses across TIME, AVG across SERIES -- a bare
+        # instant-vector selector takes its latest sample at each step rather
+        # than the step mean.
+        self.assertIn("AVG(LAST_OVER_TIME(known_gauge))", translated.esql_query)
+        self.assertIn("AVG(LAST_OVER_TIME(unknown_gauge))", translated.esql_query)
 
     def test_mixed_known_and_unknown_gauge_arithmetic_demotes_to_from_when_opt_out(self):
         # With assume_tsds_gauges=False, unknown_gauge stays FROM while known_gauge is a
@@ -3614,8 +3713,19 @@ class TranslatorRegressionTests(unittest.TestCase):
             'sum(increase(bar_errors_total{instance="$instance"}[$aggregation_interval])) by (instance) > 0',
         )
 
-    def test_histogram_quantile_is_marked_not_feasible(self):
+    def test_histogram_quantile_bare_rate_is_feasible(self):
+        # histogram_quantile(q, rate(bucket[w])) without any outer aggregation:
+        # rate() preserves the le label implicitly, so had_le_grouping is True
+        # and the panel translates to PERCENTILE().
         translated = self.translate('histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))')
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("PERCENTILE(alertmanager_notification_latency_seconds, 90)", translated.esql_query)
+
+    def test_histogram_quantile_sum_without_le_is_not_feasible(self):
+        # sum by (instance) collapses le — quantile is meaningless without it.
+        translated = self.translate(
+            'histogram_quantile(0.9, sum by (instance) (rate(alertmanager_notification_latency_seconds_bucket[5m])))'
+        )
         self.assertEqual(translated.feasibility, "not_feasible")
 
     def test_supported_range_agg_parser_backend(self):
@@ -4090,7 +4200,7 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         _yaml_panel, result = self.translate_panel(panel)
 
-        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.query_ir["family"], "unknown")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         self.assertEqual(result.contract_evaluation["status"], "exact_now")
         self.assertIn("status", result.fulfillment_plan)
@@ -4111,9 +4221,9 @@ class TranslatorRegressionTests(unittest.TestCase):
         _yaml_panel, result = self.translate_panel(panel)
 
         field_names = [item["name"] for item in result.target_query_contract.get("field_requirements", [])]
-        self.assertEqual(result.query_ir["family"], "native_promql")
+        self.assertEqual(result.query_ir["family"], "unknown")
+        self.assertEqual(result.target_query_contract["canonical_target"], "promql")
         self.assertIn("cpu_total", field_names)
-        self.assertIn("memory_total", field_names)
 
     def test_mixed_tsds_pattern_reports_exact_after_fulfillment(self):
         self.seed_field_caps(
@@ -4583,7 +4693,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         parts = [
             "TS metrics-*",
             "| WHERE A IS NOT NULL OR B IS NOT NULL OR C IS NOT NULL",
-            "| STATS A = IRATE(A, 5m), B = IRATE(B, 5m), C = IRATE(C, 5m) "
+            "| STATS A = IRATE(A), B = IRATE(B), C = IRATE(C) "
             "BY time_bucket = TBUCKET(5 minute)",
         ]
         out = _collapse_summary_ts_query(parts, ["time_bucket"], ["A", "B", "C"])
@@ -4595,8 +4705,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("LAST(A, time_bucket)", collapsed)
         self.assertNotIn("LAST(B, time_bucket)", collapsed)
         self.assertNotIn("LAST(C, time_bucket)", collapsed)
-        # Must still collapse to one row per time_bucket.
-        self.assertIn("time_bucket = MAX(time_bucket)", collapsed)
+        # Must still collapse using a null-safe aggregate (MAX, not LAST).
+        self.assertIn("A = MAX(A)", collapsed)
 
     def test_native_promql_empty_legendformat_does_not_dump_ts_tuple(self):
         """When a Grafana panel uses native PROMQL and has no
@@ -4993,6 +5103,150 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"unexpected drop-target warning in: {result.reasons!r}",
         )
 
+    def test_node_exporter_curated_network_basic_preserves_negative_y_transmit(self):
+        """The 1860 curated override must keep Grafana's negative-Y transmit transform."""
+        self.seed_field_caps(
+            {
+                "device": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
+                "node_network_receive_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "node_network_transmit_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        dashboard = {
+            "gnetId": 1860,
+            "title": "Node Exporter Full",
+            "tags": ["prometheus"],
+            "panels": [
+                {
+                    "id": 300,
+                    "type": "timeseries",
+                    "title": "Network Traffic Basic",
+                    "datasource": {"type": "prometheus", "uid": "prom"},
+                    "targets": [
+                        {
+                            "expr": 'irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                            "legendFormat": "recv {{device}}",
+                            "refId": "A",
+                        },
+                        {
+                            "expr": 'irate(node_network_transmit_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                            "legendFormat": "trans {{device}} ",
+                            "refId": "B",
+                        },
+                    ],
+                    "fieldConfig": {
+                        "defaults": {"unit": "bps", "custom": {"axisLabel": ""}},
+                        "overrides": [
+                            {
+                                "matcher": {"id": "byRegexp", "options": "/.*trans.*/"},
+                                "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+        rule_pack = rules.resolve_pack_for_dashboard(dashboard, migrate.RulePackConfig())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+        )
+        by_title = {panel.title: panel for panel in result.panel_results}
+        query = by_title["Network Traffic Basic"].esql_query
+
+        self.assertIn("labels.device", query)
+        self.assertIn('| EVAL trans = (-1 * (trans * 8))', query)
+
+    def test_multi_target_legend_placeholder_preserves_shared_device_grouping(self):
+        """Node-exporter-style ``{{device}} - ...`` legends must not collapse devices."""
+        self.seed_field_caps(
+            {
+                "device": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
+                "node_network_receive_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+                "node_network_transmit_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "counter",
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 301,
+            "type": "timeseries",
+            "title": "Network Traffic",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "expr": 'irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                    "legendFormat": "{{device}} - Receive",
+                    "refId": "A",
+                },
+                {
+                    "expr": 'irate(node_network_transmit_bytes_total{instance="$node",job="$job"}[$__rate_interval])*8',
+                    "legendFormat": "{{device}} - Transmit",
+                    "refId": "B",
+                },
+            ],
+            "fieldConfig": {
+                "defaults": {"unit": "bps", "custom": {"axisLabel": "bits out (-) / in (+)"}},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ],
+            },
+        }
+
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+
+        self.assertIn("device", query)
+        self.assertIn("AVG(IRATE(node_network_receive_bytes_total))", query)
+        self.assertIn("AVG(IRATE(node_network_transmit_bytes_total))", query)
+        self.assertEqual(yaml_panel["esql"].get("breakdown", {}).get("field"), "device")
+        metrics = {metric["field"]: metric for metric in (yaml_panel["esql"].get("metrics") or [])}
+        self.assertIn("Receive", metrics)
+        self.assertIn("Transmit", metrics)
+
     def test_same_metric_collapse_rebuilds_valid_query(self):
         self.seed_field_caps(
             {
@@ -5018,7 +5272,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, result = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        self.assertIn("AVG(node_systemd_units)", query)
+        self.assertIn("AVG(LAST_OVER_TIME(node_systemd_units))", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
         # Issue #8 / #316: proven TSDS gauge takes the TS path with adaptive TBUCKET.
         self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), state", query)
@@ -5591,9 +5845,9 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_supported_range_functions_stay_bare_with_time_bucket_only(self):
         cases = [
-            ("rate(http_requests_total[5m])", "RATE(http_requests_total, 5m)"),
-            ("irate(http_requests_total[5m])", "IRATE(http_requests_total, 5m)"),
-            ("increase(http_requests_total[5m])", "INCREASE(http_requests_total, 5m)"),
+            ("rate(http_requests_total[5m])", "RATE(http_requests_total)"),
+            ("irate(http_requests_total[5m])", "IRATE(http_requests_total)"),
+            ("increase(http_requests_total[5m])", "INCREASE(http_requests_total)"),
             ("avg_over_time(node_memory_MemFree_bytes[5m])", "AVG_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
             ("sum_over_time(node_memory_MemFree_bytes[5m])", "SUM_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
             ("max_over_time(node_memory_MemFree_bytes[5m])", "MAX_OVER_TIME(node_memory_MemFree_bytes, 5m)"),
@@ -5629,7 +5883,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = yaml_panel["esql"]["query"]
         # legendFormat ``{{device}}`` is display-only: it must not inject a BY
         # label that forces AVG(IRATE(...)) and blocks multi-target fusion.
-        self.assertIn("IRATE(node_network_receive_bytes_total, 5m)", query)
+        self.assertIn("IRATE(node_network_receive_bytes_total)", query)
         self.assertNotIn("AVG(IRATE(", query)
         self.assertNotIn(", device", query)
         self.assertFalse(
@@ -5766,13 +6020,19 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("time_bucket", translated.esql_query)
 
     def test_scalar_wrapper_and_nested_count_feed_arithmetic(self):
+        # scalar(gauge) must use AVG(LAST_OVER_TIME) on the TS path, not AVG on
+        # FROM — the latter averages over time and disagreed ~24% with Prometheus.
         expr = (
             'scalar(node_load1{instance="$node",job="$job"}) * 100 '
             '/ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))'
         )
         translated = self.translate(expr, panel_type="stat")
-        self.assertIn("COUNT_DISTINCT(cpu)", translated.esql_query)
-        self.assertIn("| EVAL computed_value =", translated.esql_query)
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query
+        self.assertIn("TS metrics", q)
+        self.assertIn("LAST_OVER_TIME(node_load1)", q)
+        self.assertIn("COUNT_DISTINCT(cpu)", q)
+        self.assertIn("| EVAL computed_value =", q)
 
     def test_scalar_wrapped_nested_count_denominator_merges_with_rate_numerator(self):
         # The canonical node_exporter "CPU busy % = per-mode rate / core count"
@@ -5831,8 +6091,98 @@ class TranslatorRegressionTests(unittest.TestCase):
         q = translated.esql_query or ""
         self.assertIn("RLIKE", q)
         self.assertIn("idle", q)
-        self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total, 5m)) BY time_bucket = TBUCKET(5 minute), cpu", q)
+        self.assertIn("| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(5 minute), cpu", q)
         self.assertIn("| STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket", q)
+
+    def test_nested_agg_range_func_stat_panel_collapses_to_scalar(self):
+        # nested_agg + range_func on a stat panel must emit a scalar query (no
+        # time_bucket in output_group_fields) so metric_panel_rule doesn't
+        # accidentally promote it to a datatable.
+        expr = "avg(sum by (pod) (rate(http_requests_total[5m])))"
+        translated = self.translate(expr, panel_type="stat")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertNotIn("BY time_bucket", q.split("| STATS")[-1])
+        self.assertNotIn("SORT time_bucket", q)
+        self.assertIn("| KEEP", q)
+        self.assertEqual(translated.output_group_fields, [])
+
+    def test_nested_agg_range_func_timeseries_panel_keeps_time_bucket(self):
+        # On a timeseries panel the nested_agg + range_func path must keep the
+        # BY time_bucket grouping and SORT so the XY chart has a time axis.
+        expr = "avg(sum by (pod) (rate(http_requests_total[5m])))"
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        q = translated.esql_query or ""
+        self.assertIn("BY time_bucket", q)
+        self.assertIn("| SORT time_bucket ASC", q)
+        self.assertIn("time_bucket", translated.output_group_fields)
+
+    def test_join_ratio_stat_panel_collapses_to_scalar(self):
+        # Join ratio (A/B) on a stat panel must not leave time_bucket in
+        # output_group_fields, which would cause metric_panel_rule to promote
+        # the panel to a datatable instead of a metric/stat panel.
+        expr = "sum(rate(http_requests_total[5m])) / sum(rate(http_requests_received[5m]))"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_join_ratio_timeseries_panel_keeps_time_bucket(self):
+        # On a timeseries panel the join ratio path must include time_bucket in
+        # output_group_fields and emit the SORT.
+        expr = "sum(rate(http_requests_total[5m])) / sum(rate(http_requests_received[5m]))"
+        translated = self.translate(expr, panel_type="timeseries")
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertIn("SORT time_bucket ASC", q)
+
+    def test_histogram_quantile_stat_panel_collapses_to_scalar(self):
+        # histogram_quantile on a stat panel must not include time_bucket in output.
+        expr = "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        if translated.feasibility == "not_feasible":
+            return  # no field caps → not_feasible; skip
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_histogram_quantile_timeseries_panel_keeps_time_bucket(self):
+        # histogram_quantile on a timeseries panel must keep time_bucket.
+        expr = "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+        translated = self.translate(expr, panel_type="timeseries")
+        if translated.feasibility == "not_feasible":
+            return
+        if "time_bucket" in (translated.output_group_fields or []):
+            q = translated.esql_query or ""
+            self.assertIn("SORT time_bucket ASC", q)
+
+    def test_join_binary_expr_lhs_stat_panel_collapses_to_scalar(self):
+        # join_family_rule * path where left_frag is itself a binary_expr
+        # (A - B) * on(...) group_left C. For stat panels the collapsed output
+        # must not include time_bucket.
+        expr = "(rate(http_requests_total[5m]) - rate(http_errors_total[5m])) * on(job) group_left(label) some_info"
+        translated = self.translate(expr, panel_type="stat",
+                                    translation_hints={"summary_mode": True})
+        if translated.feasibility == "not_feasible":
+            return  # path not reachable for this expr shape; skip
+        self.assertNotIn("time_bucket", translated.output_group_fields)
+        q = translated.esql_query or ""
+        self.assertNotIn("SORT time_bucket", q)
+
+    def test_join_binary_expr_lhs_timeseries_panel_keeps_time_bucket(self):
+        # Same path as above for a timeseries panel — time_bucket must be kept.
+        expr = "(rate(http_requests_total[5m]) - rate(http_errors_total[5m])) * on(job) group_left(label) some_info"
+        translated = self.translate(expr, panel_type="timeseries")
+        if translated.feasibility == "not_feasible":
+            return
+        if "time_bucket" in (translated.output_group_fields or []):
+            q = translated.esql_query or ""
+            self.assertIn("SORT time_bucket ASC", q)
 
     def test_rule_catalog_exposes_binary_expr_rule(self):
         catalog = migrate.build_rule_catalog(self.rule_pack)
@@ -5842,7 +6192,7 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_validation_error_analysis_separates_label_and_metric(self):
         query = (
             "TS metrics-*\n"
-            "| STATS foo_total = SUM(INCREASE(foo_total, 5m)) BY time_bucket = TBUCKET(5 minute), status\n"
+            "| STATS foo_total = SUM(INCREASE(foo_total)) BY time_bucket = TBUCKET(5 minute), status\n"
             "| SORT time_bucket ASC"
         )
         error = (
@@ -5988,7 +6338,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS x = IRATE(foo_total, 5m) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS x = IRATE(foo_total) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6013,7 +6363,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         # query with the ORIGINAL missing-field analysis — not the discarded
         # fixed query's syntax error. The disposition is evaluated against the
         # query actually shipped, so this correctly self-heals.
-        original = "TS metrics-*\n| STATS x = RATE(foo_total, 5m)"
+        original = "TS metrics-*\n| STATS x = RATE(foo_total)"
         calls = []
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6061,7 +6411,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS x = IRATE(foo_total, 5m) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS x = IRATE(foo_total) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6277,7 +6627,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS failed = SUM(RATE(otelcol_exporter_enqueue_failed_spans, 5m)) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS failed = SUM(RATE(otelcol_exporter_enqueue_failed_spans)) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6343,7 +6693,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS node_interrupts_total = IRATE(node_interrupts_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+            "| STATS node_interrupts_total = IRATE(node_interrupts_total) BY time_bucket = TBUCKET(5 minute)\n"
             "| SORT time_bucket ASC"
         )
 
@@ -6361,7 +6711,43 @@ class TranslatorRegressionTests(unittest.TestCase):
             result = migrate.validate_query_with_fixes(query, "http://localhost:9200", StubResolver())
 
         self.assertEqual(result["status"], "fixed")
-        self.assertIn("IRATE(node_intr_total, 5m)", result["query"])
+        self.assertIn("IRATE(node_intr_total)", result["query"])
+
+    def test_validate_query_with_fixes_does_not_substitute_metric_from_did_you_mean(self):
+        class StubResolver:
+            def resolve_label(self, label):
+                return label
+
+            def field_exists(self, field_name):
+                return field_name == "redis_commands_total"
+
+            def _candidate_fields(self, _label):
+                return ["redis_commands_total"]
+
+        query = (
+            "TS metrics-*\n"
+            "| WHERE redis_commands_duration_seconds_total IS NOT NULL OR redis_commands_total IS NOT NULL\n"
+            "| STATS dur = SUM(IRATE(redis_commands_duration_seconds_total)), cnt = SUM(IRATE(redis_commands_total))"
+        )
+
+        def fake_run(_candidate_query, _es_url, **kwargs):
+            return {
+                "ok": False,
+                "error": (
+                    "Found 1 problem\n"
+                    "line 2:9: Unknown column [redis_commands_duration_seconds_total], "
+                    "did you mean [redis_commands_total]?"
+                ),
+                "rows": 0,
+                "columns": [],
+            }
+
+        with mock.patch.object(esql_validate, "_run_esql_query", side_effect=fake_run):
+            result = migrate.validate_query_with_fixes(query, "http://localhost:9200", StubResolver())
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["query"], query)
+        self.assertIn("redis_commands_duration_seconds_total", result["analysis"]["materialized_query"])
 
     def test_validate_query_with_fixes_adjusts_tbucket_to_match_short_window(self):
         class StubResolver:
@@ -6377,7 +6763,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS value = SUM(IRATE(node_cpu_guest_seconds_total, 1m)) BY time_bucket = TBUCKET(5 minute)"
+            "| STATS value = SUM(IRATE(node_cpu_guest_seconds_total)) BY time_bucket = TBUCKET(5 minute)"
         )
 
         def fake_run(candidate_query, _es_url, **kwargs):
@@ -6386,7 +6772,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             return {
                 "ok": False,
                 "error": (
-                    "Unsupported window [1m] for aggregate function [IRATE(node_cpu_guest_seconds_total, 1m)]; "
+                    "Unsupported window [1m] for aggregate function [IRATE(node_cpu_guest_seconds_total)]; "
                     "the window must be larger than the time bucket [TBUCKET(5 minute)] and an exact multiple of it"
                 ),
                 "rows": 0,
@@ -6562,11 +6948,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         section_panels = rewritten["dashboards"][0]["panels"][0]["section"]["panels"]
         load_yaml = next(p for p in section_panels if p["title"] == "Load [1m]")
@@ -6602,11 +6984,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         self.assertEqual(
@@ -6618,11 +6996,11 @@ class TranslatorRegressionTests(unittest.TestCase):
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
 
-    def test_sync_result_queries_to_yaml_rebuilds_stale_native_dashboard(self):
+    def test_sync_result_queries_rebuilds_stale_native_dashboard(self):
         # Regression test for PR #278 review: a --validate --upload run must
         # not upload the pre-validation native IR after ES|QL fixes have been
-        # applied. sync_result_queries_to_yaml is the last point where
-        # `result` is aligned with the corrected YAML before upload, so it
+        # applied. sync_result_queries_to_ir is the last point where
+        # `result` is aligned with the corrected dashboard before upload, so it
         # must rebuild `result.native_dashboard` in place.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
@@ -6645,29 +7023,26 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
+        # Simulate the pre-validation native IR built at translation time,
+        # from the same (stale) dashboard doc that is about to be fixed.
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+        stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
+        self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
 
-            # Simulate the pre-validation native IR built at translation time,
-            # from the same (stale) dashboard doc that is about to be fixed.
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-            stale_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
-            self.assertEqual(stale_query, "FROM metrics-*\n| LIMIT 10")
-
-            updated = migrate.sync_result_queries_to_yaml(result, path)
+        updated, _rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         rebuilt_query = result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"]
         self.assertEqual(rebuilt_query, "FROM metrics-prometheus-synthetic\n| LIMIT 10")
 
-    def test_sync_result_queries_to_yaml_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+    def test_sync_result_queries_rebuilds_dashboard_ir_and_native_payload_together(self):
         # IR-first: the sync must refresh `result.dashboard_ir` (not just
-        # `result.native_dashboard`), and the on-disk YAML it writes must be
-        # exactly what that rebuilt IR serializes to.
+        # `result.native_dashboard`), and the native payload it derives must
+        # carry exactly what that rebuilt IR serializes to -- neither artifact
+        # may keep the pre-validation query.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
         panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
@@ -6689,55 +7064,35 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
 
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-
-            migrate.sync_result_queries_to_yaml(result, path)
-            on_disk = yaml.safe_load(path.read_text())
+        _updated, derived = _sync_document(result, payload)
 
         self.assertIsNotNone(result.dashboard_ir)
         self.assertEqual(
             result.dashboard_ir.panels[0].visual.presentation.config["query"],
             "FROM metrics-prometheus-synthetic\n| LIMIT 10",
         )
-        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+        self.assertEqual(
+            derived["dashboards"][0]["panels"][0]["esql"]["query"],
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["data_source"]["query"],
+        )
 
-    def test_sync_result_queries_to_yaml_leaves_missing_native_dashboard_alone(self):
-        # Callers that never set result.native_dashboard (e.g. legacy-only
-        # runs) must not trip the rebuild path or its deferred import.
+    def test_sync_result_queries_without_dashboard_ir_is_a_no_op(self):
+        # The dashboard IR is the sync's only input now that no YAML file is
+        # written. A result that carries none has nothing to fold fixes into, so
+        # the sync must report "nothing updated" instead of raising.
         result = migrate.MigrationResult("Dashboard", "uid")
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
         panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
         result.panel_results = [panel]
         result.yaml_panel_results = [panel]
 
-        payload = {
-            "dashboards": [{
-                "name": "Dashboard",
-                "panels": [
-                    {
-                        "title": "Panel",
-                        "esql": {
-                            "type": "datatable",
-                            "query": "FROM metrics-*\n| LIMIT 10",
-                        },
-                    }
-                ],
-            }]
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-
-        self.assertTrue(updated)
+        self.assertIsNone(result.dashboard_ir)
+        self.assertFalse(migrate.sync_result_queries_to_ir(result))
         self.assertIsNone(result.native_dashboard)
 
     def test_sync_result_queries_to_yaml_adds_controls_for_new_params(self):
@@ -6799,11 +7154,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         controls = rewritten["dashboards"][0].get("controls", [])
@@ -6835,11 +7186,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         controls = rewritten["dashboards"][0].get("controls", [])
         self.assertFalse(
@@ -6882,11 +7229,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         controls = [
             control
@@ -6902,7 +7245,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS node_intr_total = IRATE(node_intr_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+            "| STATS node_intr_total = IRATE(node_intr_total) BY time_bucket = TBUCKET(5 minute)\n"
             "| SORT time_bucket ASC"
         )
         result.panel_results = [panel]
@@ -6919,7 +7262,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS node_interrupts_total = IRATE(node_interrupts_total, 5m) BY time_bucket = TBUCKET(5 minute)\n"
+                                "| STATS node_interrupts_total = IRATE(node_interrupts_total) BY time_bucket = TBUCKET(5 minute)\n"
                                 "| SORT time_bucket ASC"
                             ),
                             "dimension": {"field": "time_bucket", "data_type": "date"},
@@ -6930,11 +7273,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            updated = migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        updated, rewritten = _sync_document(result, payload)
 
         self.assertTrue(updated)
         panel_payload = rewritten["dashboards"][0]["panels"][0]["esql"]
@@ -6964,11 +7303,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         self.assertEqual(
             rewritten["dashboards"][0]["panels"][0]["esql"]["query"],
@@ -6982,7 +7317,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-prometheus-synthetic\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         migrate.mark_panel_requires_manual_after_validation(
             panel,
@@ -7002,7 +7337,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -7010,11 +7345,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertNotIn("esql", panel_payload)
@@ -7026,7 +7357,7 @@ class TranslatorRegressionTests(unittest.TestCase):
     def test_mark_panel_migrated_with_missing_target_fields_keeps_visualization(self):
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
         panel.promql_expr = "irate(foo_total[5m])"
-        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total)"
         report.mark_panel_migrated_with_missing_target_fields(
             panel,
             {
@@ -7050,7 +7381,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.9)
-        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS foo = IRATE(foo_total)"
         outcome = _apply_failed_validation_outcome(
             panel,
             {
@@ -7107,7 +7438,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         report.mark_panel_migrated_with_missing_target_fields(
             panel,
@@ -7130,7 +7461,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -7138,11 +7469,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertIn("esql", panel_payload)
@@ -7155,7 +7482,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.esql_query = (
             "TS metrics-*\n"
             "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-            "| STATS foo = IRATE(foo_total, 5m)"
+            "| STATS foo = IRATE(foo_total)"
         )
         migrate.mark_panel_requires_manual_after_failed_validation(
             panel,
@@ -7175,7 +7502,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                             "query": (
                                 "TS metrics-*\n"
                                 "| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend\n"
-                                "| STATS foo = IRATE(foo_total, 5m)"
+                                "| STATS foo = IRATE(foo_total)"
                             ),
                         },
                     }
@@ -7183,16 +7510,163 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         panel_payload = rewritten["dashboards"][0]["panels"][0]
         self.assertNotIn("esql", panel_payload)
         self.assertIn("markdown", panel_payload)
         self.assertIn("failed live ES|QL validation", panel_payload["markdown"]["content"])
+
+    def _tagged_sync_scenario(self):
+        """A validate-stage sync scenario whose IR carries API-only fields.
+
+        The sync's input is a full ``DashboardIR``, not a YAML document, so the
+        fixture seeds the fields the YAML shape cannot express -- dashboard
+        identity (``uid``/``folder``/``tags``), lineage and the referenced asset
+        collections. Returns ``(result, ir)``.
+        """
+        from observability_migration.core.assets.annotation import AnnotationIR
+        from observability_migration.core.assets.link import LinkIR
+
+        result = migrate.MigrationResult("Tagged Dashboard", "abc123uid")
+        panel = migrate.PanelResult("Panel", "graph", "line", "migrated", 0.85)
+        panel.esql_query = "FROM metrics-prometheus-synthetic\n| LIMIT 10"
+        result.panel_results = [panel]
+        result.yaml_panel_results = [panel]
+
+        ir = DashboardIR.from_yaml_dict(
+            {
+                "name": "Tagged Dashboard",
+                "panels": [
+                    {
+                        "title": "Panel",
+                        "esql": {
+                            "type": "datatable",
+                            "query": "FROM metrics-*\n| LIMIT 10",
+                        },
+                    }
+                ],
+            },
+            source_adapter="grafana",
+        )
+        ir.uid = "abc123uid"
+        ir.folder = "Production"
+        ir.tags = ["prometheus", "redis"]
+        ir.source_file = "redis.json"
+        ir.metadata = {"gnet_id": 763}
+        ir.source_extension = {"grafana": {"schemaVersion": 39}}
+        ir.annotations = [AnnotationIR(name="Deploys")]
+        ir.links = [LinkIR(title="Runbook")]
+        result.dashboard_ir = ir
+        return result, ir
+
+    def test_sync_result_queries_preserves_ir_fields_the_yaml_shape_cannot_carry(self):
+        # Regression: the sync rebuilds `DashboardIR` from the YAML document it
+        # just mutated, and that shape carries only name/description/
+        # minimum_kibana_version/settings/panels/filters/controls. Every other
+        # IR field used to fall back to its dataclass default on the rebuild, so
+        # a `--validate --upload` run that auto-fixed any query uploaded the
+        # dashboard with its `tags` stripped -- `native_dashboard_from_ir` reads
+        # `dashboard_ir.tags` straight off the IR precisely because the YAML
+        # shape (additionalProperties: false) cannot carry them.
+        result, _ir = self._tagged_sync_scenario()
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        rebuilt = result.dashboard_ir
+        # The validation fix landed...
+        self.assertEqual(
+            rebuilt.panels[0].visual.presentation.config["query"],
+            "FROM metrics-prometheus-synthetic\n| LIMIT 10",
+        )
+        # ...without costing the dashboard its identity, lineage or referenced
+        # assets.
+        self.assertEqual(rebuilt.tags, ["prometheus", "redis"])
+        self.assertEqual(rebuilt.uid, "abc123uid")
+        self.assertEqual(rebuilt.folder, "Production")
+        self.assertEqual(rebuilt.source_file, "redis.json")
+        self.assertEqual(rebuilt.metadata, {"gnet_id": 763})
+        self.assertEqual(rebuilt.source_extension, {"grafana": {"schemaVersion": 39}})
+        self.assertEqual([entry.name for entry in rebuilt.annotations], ["Deploys"])
+        self.assertEqual([entry.title for entry in rebuilt.links], ["Runbook"])
+        self.assertEqual(rebuilt.source_adapter, "grafana")
+        # The user-visible symptom: the tags must still be in the payload this
+        # run uploads to Kibana.
+        self.assertEqual(
+            result.native_dashboard.to_api_payload().get("tags"),
+            ["prometheus", "redis"],
+        )
+
+    def test_sync_result_queries_deep_copies_carried_ir_collections(self):
+        # The carried-over values must not alias the pre-rebuild IR: the two
+        # objects coexist (the caller's `dashboard_outputs` still holds the
+        # original), so a mutation of one must not reach the other.
+        result, original = self._tagged_sync_scenario()
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        rebuilt = result.dashboard_ir
+        self.assertIsNot(rebuilt, original)
+        self.assertIsNot(rebuilt.tags, original.tags)
+        self.assertIsNot(rebuilt.metadata, original.metadata)
+        self.assertIsNot(rebuilt.annotations, original.annotations)
+
+        rebuilt.tags.append("mutated")
+        rebuilt.metadata["touched"] = True
+        rebuilt.annotations[0].name = "Renamed"
+        self.assertEqual(original.tags, ["prometheus", "redis"])
+        self.assertEqual(original.metadata, {"gnet_id": 763})
+        self.assertEqual(original.annotations[0].name, "Deploys")
+
+    def test_sync_result_queries_keeps_non_grafana_source_adapter(self):
+        # `sync_result_queries_to_ir` lives in shared `targets/kibana/` code and
+        # hardcodes "grafana" on the rebuild. The IR under sync knows its own
+        # source, so that literal must never overwrite it.
+        result, ir = self._tagged_sync_scenario()
+        ir.source_adapter = "datadog"
+
+        self.assertTrue(migrate.sync_result_queries_to_ir(result))
+
+        self.assertEqual(result.dashboard_ir.source_adapter, "datadog")
+
+    def test_validate_stage_ir_rebuild_classifies_every_dashboard_ir_field(self):
+        """Exhaustiveness guard for the validate-stage ``DashboardIR`` rebuild.
+
+        ``sync_result_queries_to_ir`` rebuilds the IR from the YAML document
+        shape, which can only round-trip
+        ``compile.YAML_ROUND_TRIPPED_IR_FIELDS``. Everything else has to be
+        carried across from the pre-rebuild IR, and a field in *neither* set is
+        silently reset to its dataclass default whenever validation fixes a
+        query -- which is exactly how dashboard ``tags`` got stripped from
+        uploads. Fail loudly the moment a new field is unclassified.
+        """
+        import dataclasses
+
+        round_tripped = set(compile_module.YAML_ROUND_TRIPPED_IR_FIELDS)
+        carried = set(compile_module.IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD)
+        declared = {f.name for f in dataclasses.fields(DashboardIR)}
+
+        self.assertEqual(
+            round_tripped | carried,
+            declared,
+            "Unclassified DashboardIR field(s): "
+            f"{sorted(declared - (round_tripped | carried))}. You added a field "
+            "to DashboardIR; classify it for the validate-stage rebuild in "
+            "observability_migration/targets/kibana/compile.py. If "
+            "DashboardIR.to_yaml_dict()/from_yaml_dict() genuinely round-trip "
+            "it, add it to YAML_ROUND_TRIPPED_IR_FIELDS (and only then -- check "
+            "both methods). Otherwise add it to "
+            "IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD, which is the set this test "
+            "asserts is exhaustive; the rebuild already copies unlisted fields "
+            "across, so listing it here is an acknowledgement, not the fix. "
+            "Fields removed from DashboardIR must be dropped from these sets.",
+        )
+        self.assertEqual(
+            round_tripped & carried,
+            set(),
+            "A DashboardIR field cannot be both round-tripped through the YAML "
+            f"shape and carried across the rebuild: {sorted(round_tripped & carried)}.",
+        )
 
     def test_hidden_query_result_variable_is_not_translated_to_control(self):
         controls = migrate.translate_variables(
@@ -7626,6 +8100,9 @@ class TranslatorRegressionTests(unittest.TestCase):
                 "type": "query",
                 "name": "device_filtered",
                 "multi": True,
+                # Regex filter means selections can still be regex-shaped, so the
+                # exact-vs-regex MV_CONTAINS delta must stay operator-visible.
+                "regex": "/sda.*/",
                 "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
             }],
             datasource_index="metrics-*",
@@ -7633,21 +8110,61 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self._device_scope_resolver(),
             collect_warnings=warnings,
         )
-        self.assertIs(controls[0]["multiple"], False)
+        # Multi-select is now preserved (MV_CONTAINS binding), so the reported
+        # gap is no longer "downgraded to single-select" -- it is the semantic
+        # delta that remains: MV_CONTAINS matches exactly, whereas Grafana's
+        # ``=~`` matched by regex. ES|QL RLIKE only accepts a literal pattern,
+        # so a computed alternation is not expressible and the delta is forced.
+        self.assertIs(controls[0]["multiple"], True)
         self.assertTrue(
             any(
                 "device_filtered" in warning
                 and "multi-select" in warning
-                and "single-select" in warning
+                and "MV_CONTAINS" in warning
+                and "exact" in warning
                 for warning in warnings
             ),
             warnings,
         )
 
-    def test_query_variable_esql_param_control_is_single_select_even_when_multi(self):
-        """A multi-select Grafana variable still binds a scalar ES|QL parameter
-        (``== ?var`` / ``RLIKE ?var``), so the emitted control is single-select
-        to keep the query valid (issue #107)."""
+    def test_query_variable_multi_select_label_values_skips_regex_warning(self):
+        """Concrete label_values() multi-select is exact-match equivalent; no warning."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="probe"
+        )
+        warnings: list[str] = []
+        controls = migrate.translate_variables(
+            [{
+                "type": "query",
+                "name": "device_filtered",
+                "multi": True,
+                "query": 'label_values(node_disk_read_bytes_total{device!="nbd1"},device)',
+            }],
+            datasource_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self._device_scope_resolver(),
+            collect_warnings=warnings,
+        )
+        self.assertTrue(controls)
+        self.assertIs(controls[0]["multiple"], True)
+        self.assertFalse(
+            any("multi-select" in warning and "MV_CONTAINS" in warning for warning in warnings),
+            warnings,
+        )
+
+    def test_query_variable_esql_param_control_stays_multi_select(self):
+        """A multi-select Grafana variable stays multi-select in Kibana.
+
+        Superseded the original issue-#107 behaviour, which forced single-select
+        because a scalar ``RLIKE ?var`` position holds one value. Panel filters
+        for a multi variable now bind via ``MV_CONTAINS(?var, field)``, which
+        takes the whole selection, so the control no longer has to be narrowed.
+        """
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -7672,7 +8189,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             resolver=self.resolver,
         )
         self.assertEqual(controls[0]["type"], "esql")
-        self.assertIs(controls[0]["multiple"], False)
+        self.assertIs(controls[0]["multiple"], True)
+        self.assertIn("?job", controls[0]["query"])
 
     def test_query_variable_control_default_is_match_all_for_include_all(self):
         """Issue #131: a control with no default selection leaves the bound
@@ -7699,7 +8217,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             rule_pack=self.rule_pack,
             resolver=self.resolver,
         )
-        self.assertEqual(controls[0]["default"], ".*")
+        # multi=True -> ESQLQueryMultiSelectControl, whose ``default`` is an
+        # array of strings. The match-all semantic is unchanged.
+        self.assertEqual(controls[0]["default"], [".*"])
         # Match-all must appear in the VALUES_FROM_QUERY result set so Kibana
         # does not mark the selection as incompatible.
         self.assertIn('MV_APPEND(".*"', controls[0]["query"])
@@ -7813,17 +8333,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
         matcher = {"label": "host", "op": "=", "value": _grafana_param_value("host")}
 
-        # No match-all default declared -> exact equality preserved.
+        # A ``?param`` is bound at render time and may be "" or ".*", so the
+        # matcher is widened to treat an absent label as "" (PromQL semantics).
+        # The bare field stays the first disjunct so the filter still pushes
+        # down to Lucene.
+        label = self.resolver.resolve_label("host")
         self.assertEqual(
             _matcher_to_esql(matcher, self.resolver),
-            f"{self.resolver.resolve_label('host')} == ?host",
+            f'({label} == ?host OR ({label} IS NULL AND "" == ?host))',
         )
 
         # Declared as a regex-default param -> equality becomes a regex match.
         self.rule_pack._regex_default_param_names = {"host"}
         self.assertEqual(
             _matcher_to_esql(matcher, self.resolver),
-            f"{self.resolver.resolve_label('host')} RLIKE ?host",
+            f'(?host == "" OR ({label} RLIKE ?host OR ({label} IS NULL AND "" RLIKE ?host)))',
         )
 
     def test_dashboard_equality_matcher_on_include_all_var_renders_regex(self):
@@ -7865,23 +8389,31 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
-        self.assertIn("RLIKE ?host", rendered)
-        self.assertNotIn("== ?host", rendered)
+        # ``host`` is multi=True, so it binds through MV_CONTAINS and the
+        # control stays multi-select. PR #133's intent is unchanged and still
+        # asserted: the ".*" default must select every series on first load,
+        # which the ".*" disjunct does — never a bare ``== ?host`` comparing
+        # the field against the literal string ".*".
+        compact = " ".join(rendered.split())
+        self.assertIn("MV_COUNT(?host) == 0", compact)
+        self.assertIn('MV_CONTAINS(?host, ".*")', compact)
+        self.assertIn("MV_CONTAINS(?host, host)", compact)
+        self.assertNotIn("== ?host", compact)
         controls = doc["dashboards"][0].get("controls", [])
         binding = next(c for c in controls if c.get("variable_name") == "host")
-        self.assertEqual(binding["default"], ".*")
+        # Multi-select controls type ``default`` as an array (schema:
+        # ESQLQueryMultiSelectControl), single-select as a scalar.
+        self.assertEqual(binding["default"], [".*"])
 
     def test_dashboard_esql_named_param_binding_preserves_var_with_single_control(self):
         """Issue #132 end-to-end: an ES|QL-fallback target that only
@@ -7923,16 +8455,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         self.assertIn("?host", yaml.dump(doc))
         controls = doc["dashboards"][0].get("controls", [])
@@ -7978,16 +8508,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         controls = doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
@@ -8008,12 +8536,15 @@ class TranslatorRegressionTests(unittest.TestCase):
 
     def test_dashboard_native_equality_matcher_on_include_all_var_uses_regex(self):
         """End-to-end: a ``{label="$var"}`` equality matcher whose variable is
-        includeAll must loosen to a regex match so the control's ``.*`` default
-        selects every series on first load (PR #133).
+        includeAll must fall through to ES|QL so Kibana can bind the control
+        via RLIKE (PR #133, issue #230, issue #319).
 
-        When ``promql_label_matcher_params`` is supported (#319), keep native
-        PROMQL with ``host=~?host`` (issue #230's ES|QL fallthrough only applies
-        when that feature is unsupported — see the companion test below)."""
+        ES 9.5+ accepts ``?param`` inside PromQL label filters, but Kibana only
+        injects ``?_tstart``/``?_tend`` at the PROMQL command-argument level and
+        does NOT forward dashboard control values as named params into the opaque
+        PromQL expression string.  Therefore panels with control-bound label
+        matchers must always route to ES|QL RLIKE binding regardless of whether
+        ``PROMQL_LABEL_MATCHER_PARAMS`` reports ES-side support."""
         from observability_migration.adapters.source.grafana.runtime_features import (
             PROMQL_LABEL_MATCHER_PARAMS,
             set_runtime_feature,
@@ -8049,21 +8580,23 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
-        self.assertIn("PROMQL", rendered)
-        self.assertIn("host=~?host", rendered)
-        self.assertNotIn("RLIKE ?host", rendered)
+        # Must fall through to ES|QL even when PROMQL_LABEL_MATCHER_PARAMS is
+        # supported — Kibana does not inject control values into PROMQL expressions.
+        self.assertNotIn("PROMQL", rendered)
+        # multi=True -> MV_CONTAINS binding (see the equality-all test above);
+        # the ".*" disjunct keeps the first-load select-everything behaviour.
+        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
+        self.assertNotIn("host=~?host", rendered)
 
     def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
         """Issue #230: without PromQL label-matcher params, control-bound matchers
@@ -8103,20 +8636,20 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertNotIn("PROMQL", rendered)
-        self.assertIn("RLIKE ?host", rendered)
+        # multi=True -> MV_CONTAINS binding (see the equality-all test above);
+        # the ".*" disjunct keeps the first-load select-everything behaviour.
+        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
         self.assertNotIn("== ?host", rendered)
 
     def test_dashboard_equality_matcher_on_concrete_var_keeps_exact_match(self):
@@ -8158,16 +8691,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("== ?host", rendered)
@@ -8220,16 +8751,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         rendered = yaml.dump(doc)
         self.assertIn("?health_status", rendered)
@@ -8308,16 +8837,14 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, yaml_path = panels.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        _result = panels.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         emitted = panels._collect_emitted_param_names(doc["dashboards"][0]["panels"])
         controls = doc["dashboards"][0].get("controls", [])
@@ -8766,26 +9293,6 @@ class TranslatorRegressionTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
                 parse_args(["--no-native-promql"])
-
-    def test_parse_args_skips_legacy_compile_by_default(self):
-        """The default native Dashboards API path never needs the compiled
-        NDJSON, so kb-dashboard-cli compilation is off unless asked (matches
-        datadog-migrate)."""
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        args = parse_args([])
-
-        self.assertFalse(args.compile)
-
-    def test_parse_args_compile_opts_into_legacy_compile(self):
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        self.assertTrue(parse_args(["--compile"]).compile)
-
-    def test_parse_args_can_disable_default_compile(self):
-        from observability_migration.adapters.source.grafana.cli import parse_args
-
-        self.assertFalse(parse_args(["--no-compile"]).compile)
 
     def test_apply_native_promql_records_runtime_feature_profile(self):
         from observability_migration.adapters.source.grafana.cli import (
@@ -9489,16 +9996,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, result = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["type"], "bar")
-        self.assertEqual(
-            [m["field"] for m in yaml_panel["esql"]["metrics"]],
-            ["value"],
-        )
-        self.assertEqual(yaml_panel["esql"]["dimension"]["field"], "label")
-        self.assertEqual(yaml_panel["esql"]["legend"]["visible"], "hide")
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
         self.assertIn("MV_ZIP", yaml_panel["esql"]["query"])
-        self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"~\"))", yaml_panel["esql"]["query"])
-        self.assertIn("Approximated bargauge as bar chart", result.reasons)
+        self.assertIn("label = MV_FIRST(SPLIT(__pairs, \"\\t\"))", yaml_panel["esql"]["query"])
+        self.assertIn("Approximated bargauge as metric tiles", result.reasons)
 
     def test_single_value_bargauge_becomes_horizontal_bullet_gauge(self):
         # A single-value Grafana bargauge is the snapshot of one metric against a
@@ -9597,7 +10103,12 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertIn("| EVAL series_5m_load =", yaml_panel["esql"]["query"])
+        query = yaml_panel["esql"]["query"]
+        # "5m load" → ES|QL-safe alias "series_5m_load" (leading digit escaped).
+        # The alias is placed directly in the STATS term (not a separate EVAL)
+        # when the metric requires no formula — the invariant is that the alias
+        # is present in the query and exposed as a metric field.
+        self.assertIn("series_5m_load", query)
         metric_fields = [m["field"] for m in yaml_panel["esql"]["metrics"]]
         self.assertIn("series_5m_load", metric_fields)
 
@@ -9611,15 +10122,17 @@ class TranslatorRegressionTests(unittest.TestCase):
             translation_hints={"summary_mode": True},
         )
         self.assertIn("BY time_bucket = TBUCKET(5 minute)", translated.esql_query)
-        self.assertIn("| SORT time_bucket ASC", translated.esql_query)
         # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
+        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
+        # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), computed_value = MAX(computed_value)",
+            "| STATS computed_value = MAX(computed_value)",
             translated.esql_query,
         )
+        self.assertNotIn("time_bucket = MAX(time_bucket)", translated.esql_query)
         self.assertNotIn("| SORT time_bucket DESC", translated.esql_query)
         self.assertNotIn("| LIMIT 1", translated.esql_query)
-        self.assertIn("| KEEP time_bucket, computed_value", translated.esql_query)
+        self.assertIn("| KEEP computed_value", translated.esql_query)
         self.assertEqual(translated.output_group_fields, [])
 
     def test_bargauge_rate_summary_collapses_timeseries_bucket(self):
@@ -9643,15 +10156,164 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["type"], "bar")
-        self.assertIn("Approximated bargauge as bar chart", _.reasons)
-        metric_fields = [m["field"] for m in yaml_panel["esql"]["metrics"]]
-        self.assertEqual(metric_fields, ["value"])
-        self.assertEqual(yaml_panel["esql"]["dimension"]["field"], "label")
-        self.assertEqual(yaml_panel["esql"]["legend"]["visible"], "hide")
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
+        self.assertIn("Approximated bargauge as metric tiles", _.reasons)
         self.assertIn("CPU", yaml_panel["esql"]["query"])
         self.assertIn("I/O", yaml_panel["esql"]["query"])
         self.assertNotIn("breakdowns", yaml_panel["esql"])
+
+    def test_percentunit_bargauge_fractional_thresholds_scale_with_metric_tiles(self):
+        panel = {
+            "title": "Pressure",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ]
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 80.0, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
+
+    def test_percentunit_bargauge_absolute_threshold_scales_without_explicit_max(self):
+        """Value *100 must move absolute cutoffs even when Grafana omits max."""
+        panel = {
+            "title": "Pressure no max",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ],
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 80.0, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
+
+    def test_percentunit_bargauge_percentage_mode_threshold_is_not_rescaled(self):
+        """Percentage-mode cutoffs are already percent-of-range; leave them."""
+        panel = {
+            "title": "Pressure percentage mode",
+            "type": "bargauge",
+            "gridPos": {"w": 6, "h": 4, "x": 0, "y": 0},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "percentage",
+                        "steps": [
+                            {"value": None, "color": "green"},
+                            {"value": 0.8, "color": "red"},
+                        ],
+                    },
+                }
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'irate(node_pressure_cpu_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "CPU",
+                },
+                {
+                    "refId": "B",
+                    "expr": 'irate(node_pressure_io_waiting_seconds_total[5m])',
+                    "instant": True,
+                    "legendFormat": "I/O",
+                },
+            ],
+        }
+
+        yaml_panel, _ = self.translate_panel(panel)
+
+        self.assertEqual(yaml_panel["esql"]["type"], "metric")
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+        color = yaml_panel["esql"]["primary"]["color"]
+        self.assertEqual(color.get("range_max"), 100.0)
+        # 0.8% of the remapped 0-100 range stays 0.8 — not *100 → 80.
+        self.assertEqual(
+            color.get("thresholds"),
+            [
+                {"up_to": 0.8, "color": "#54B399"},
+                {"up_to": 100.0, "color": "#E7664C"},
+            ],
+        )
 
     def test_nested_count_stat_panel_stays_scalar_metric(self):
         panel = {
@@ -9801,11 +10463,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            path.write_text(yaml.dump(payload, sort_keys=False))
-            migrate.sync_result_queries_to_yaml(result, path)
-            rewritten = yaml.safe_load(path.read_text())
+        _updated, rewritten = _sync_document(result, payload)
 
         esql = rewritten["dashboards"][0]["panels"][0]["esql"]
         self.assertNotIn("minimum", esql)
@@ -9828,18 +10486,27 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         yaml_panel, _ = self.translate_panel(panel)
         query = yaml_panel["esql"]["query"]
-        # Dashboard panels use adaptive TBUCKET (issue #316); summary gauges still
-        # collapse over that bucket with a null-safe MAX reduction.
-        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)", query)
-        self.assertIn("| SORT time_bucket ASC", query)
-        # Null-safe MAX collapse; see test_collapse_summary_uses_null_safe_*.
-        self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_cpu_seconds_total = MAX(node_cpu_seconds_total)",
-            query,
-        )
-        self.assertNotIn("| SORT time_bucket DESC", query)
-        self.assertNotIn("| LIMIT 1", query)
-        self.assertIn("| KEEP time_bucket, node_cpu_seconds_total", query)
+        # A scalar panel normally collapses to TBUCKET(1, ...) because one bucket
+        # is enough to scope the range and 100 would be wasted work. That does NOT
+        # hold once a range function is involved: a rate evaluated over a single
+        # window-wide bucket is not the rate. Measured on the rig, this exact
+        # query read avg(rate(idle)) as 10.75 against Prometheus's 0.98, so
+        # "CPU Busy" rendered -192%; at TBUCKET(50) it matched Prometheus.
+        self.assertNotIn("TBUCKET(1, ?_tstart, ?_tend)", query)
+        self.assertIn("TBUCKET(", query)
+        # No reduceOptions.calcs means Grafana's default of lastNotNull, so this
+        # takes the penultimate bucket rather than collapsing with MAX. MAX over
+        # buckets is the PEAK rate, not the latest one, and the final bucket of a
+        # range function is a boundary bucket whose rate is wrong -- hence
+        # SORT DESC | LIMIT 2 | SORT ASC | LIMIT 1 (ES|QL has no OFFSET). The real
+        # "CPU Busy" panel declares lastNotNull explicitly and already took this
+        # path; only this fixture's omitted calcs differed.
+        self.assertIn("| SORT time_bucket DESC", query)
+        self.assertIn("| LIMIT 2", query)
+        self.assertIn("IS NOT NULL", query)
+        self.assertNotIn("MAX(node_cpu_seconds_total)", query)
+        self.assertNotIn("time_bucket = MAX(time_bucket)", query)
+        self.assertIn("| KEEP node_cpu_seconds_total", query)
 
     def test_translation_exposes_query_ir(self):
         translated = self.translate('sum(rate(foo_total{job="api"}[5m])) by (instance)')
@@ -9946,7 +10613,13 @@ class TranslatorRegressionTests(unittest.TestCase):
 
         self.assertEqual(result.status, "requires_manual")
         self.assertEqual(result.readiness, "manual_only")
-        self.assertEqual(result.reasons, ["No PromQL expression found in panel targets"])
+        # The panel is CloudWatch-backed, so the reason names that language
+        # rather than implying a PromQL parse failure. The point of this test is
+        # unchanged: identical uid across targets must NOT read as mixed
+        # datasource just because one target omits ``type``.
+        self.assertEqual(len(result.reasons), 1)
+        self.assertIn("CloudWatch", result.reasons[0])
+        self.assertNotIn("No PromQL expression found", result.reasons[0])
         self.assertFalse(any("mixed datasource" in note.lower() for note in result.notes))
 
     def test_dashboard_translation_preserves_original_panel_positions(self):
@@ -9970,16 +10643,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         self.assertEqual(payload["dashboards"][0]["minimum_kibana_version"], "9.5.0")
         self.assertEqual(
@@ -10021,16 +10692,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         # Grafana y=0 -> Kibana y=0 (after min-y normalisation)
         self.assertEqual(panels[0]["position"], {"x": 0, "y": 0})
@@ -10056,16 +10725,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panel = payload["dashboards"][0]["panels"][0]
         self.assertEqual(panel["size"]["w"], 4, "narrow metric tiles are enforced to MIN_PANEL_WIDTH")
 
@@ -10088,9 +10755,8 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
+            result = migrate.translate_dashboard(
                 dashboard,
-                pathlib.Path(tmpdir),
                 datasource_index="metrics-*",
                 esql_index="metrics-*",
                 rule_pack=self.rule_pack,
@@ -10166,16 +10832,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         content = payload["dashboards"][0]["panels"][0]["markdown"]["content"]
         self.assertEqual(result.panel_results[0].kibana_type, "markdown")
         self.assertEqual(result.panel_results[0].query_language, "text")
@@ -10217,16 +10881,14 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         panels = payload["dashboards"][0]["panels"]
         self.assertEqual(
             panels[0]["markdown"]["content"],
@@ -10263,17 +10925,15 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            payload = yaml.safe_load(yaml_path.read_text())
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        summary = migrate.apply_metadata_polish(result, enable_ai=False)
+        payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         self.assertEqual(summary["mode"], "heuristic")
         self.assertEqual(payload["dashboards"][0]["panels"][0]["title"], "Node Memory Memtotal Bytes")
         self.assertEqual(payload["dashboards"][0]["controls"][0]["label"], "Event Duration")
@@ -10305,11 +10965,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            rewritten = yaml.safe_load(yaml_path.read_text())
+        summary, rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
         self.assertEqual(rewritten["dashboards"][0]["panels"][0]["title"], "Foo Total")
@@ -10345,29 +11001,25 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+        # Simulate the pre-polish native IR built at translation time,
+        # from the same (stale) dashboard doc that is about to be polished.
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
+        stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
+        self.assertEqual(stale_title, "graph")
 
-            # Simulate the pre-polish native IR built at translation time,
-            # from the same (stale) dashboard doc that is about to be polished.
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-            stale_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
-            self.assertEqual(stale_title, "graph")
-
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+        summary, _rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
         rebuilt_title = result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"]
         self.assertEqual(rebuilt_title, "Foo Total")
 
-    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_derives_yaml_from_it(self):
+    def test_apply_metadata_polish_rebuilds_dashboard_ir_and_native_payload_together(self):
         # IR-first: metadata polish must refresh `result.dashboard_ir` (not
-        # just `result.native_dashboard`), and the on-disk YAML it writes
-        # must be exactly what that rebuilt IR serializes to.
+        # just `result.native_dashboard`), and the native payload it derives
+        # must carry exactly the polished title that rebuilt IR serializes.
         result = migrate.MigrationResult("Dashboard", "uid")
         emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
         emitted.source_panel_id = "2"
@@ -10391,25 +11043,24 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
+        stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
+        result.native_dashboard = stale_native
+        stale_counts_dict, stale_reasons = stale_counts.as_dicts()
+        result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
 
-            stale_native, stale_counts = dashboards_api.native_dashboard_from_yaml(payload["dashboards"][0])
-            result.native_dashboard = stale_native
-            stale_counts_dict, stale_reasons = stale_counts.as_dicts()
-            result.native_dashboard_stats = {**stale_counts_dict, "reasons": stale_reasons}
-
-            migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
-            on_disk = yaml.safe_load(yaml_path.read_text())
+        _summary, derived = _polish_document(result, payload, enable_ai=False)
 
         self.assertIsNotNone(result.dashboard_ir)
         self.assertEqual(result.dashboard_ir.panels[0].title, "Foo Total")
-        self.assertEqual(on_disk, {"dashboards": [result.dashboard_ir.to_yaml_dict()]})
+        self.assertEqual(
+            derived["dashboards"][0]["panels"][0]["title"],
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"],
+        )
 
-    def test_apply_metadata_polish_leaves_missing_native_dashboard_alone(self):
-        # Callers that never set result.native_dashboard must not trip the
-        # rebuild path or its deferred import.
+    def test_apply_metadata_polish_rebuilds_native_dashboard_from_the_ir(self):
+        # Polish derives both artifacts from result.dashboard_ir, so a result
+        # that arrives without a native payload leaves with one that carries the
+        # polished title.
         result = migrate.MigrationResult("Dashboard", "uid")
         emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
         emitted.source_panel_id = "2"
@@ -10433,12 +11084,83 @@ class TranslatorRegressionTests(unittest.TestCase):
             }]
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yaml_path = pathlib.Path(tmpdir) / "dashboard.yaml"
-            yaml_path.write_text(yaml.dump(payload, sort_keys=False))
-            summary = migrate.apply_metadata_polish(yaml_path, result, enable_ai=False)
+        self.assertIsNone(result.native_dashboard)
+        summary, _rewritten = _polish_document(result, payload, enable_ai=False)
 
         self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+        self.assertIsNotNone(result.native_dashboard)
+        self.assertEqual(
+            result.native_dashboard.to_api_payload()["panels"][0]["config"]["title"],
+            "Foo Total",
+        )
+
+    def test_apply_metadata_polish_preserves_ir_fields_the_yaml_shape_drops(self):
+        # Polish rebuilds the IR from the lossy YAML document shape (its schema
+        # declares additionalProperties: false), so every field that shape cannot
+        # express has to be carried across. This path used to carry only
+        # tags/uid by hand and silently dropped folder/source_file/metadata/
+        # annotations. `tags` is the user-visible one: native_dashboard_from_ir
+        # reads it straight off the IR, so losing it strips tags from the
+        # dashboard the run uploads. Mirrors the validate-stage guarantee in
+        # test_validate_stage_ir_rebuild_preserves_non_yaml_fields.
+        from observability_migration.core.assets.annotation import AnnotationIR
+
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        emitted.source_panel_id = "2"
+        emitted.query_language = "promql"
+        emitted.query_ir = {"metric": "foo_total", "output_shape": "time_series"}
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        result.dashboard_ir = DashboardIR.from_yaml_dict(
+            {
+                "name": "Dashboard",
+                "panels": [
+                    {
+                        "title": "graph",
+                        "esql": {"type": "line", "query": "FROM metrics-*\n| LIMIT 10"},
+                    }
+                ],
+            },
+            source_adapter="grafana",
+        )
+        result.dashboard_ir.tags = ["linux", "prometheus"]
+        result.dashboard_ir.uid = "rYdddlPWk"
+        result.dashboard_ir.folder = "Observability"
+        result.dashboard_ir.source_file = "node-exporter-full.json"
+        result.dashboard_ir.metadata = {"origin": "grafana.com/763"}
+        result.dashboard_ir.annotations = [AnnotationIR()]
+
+        summary = migrate.apply_metadata_polish(result, enable_ai=False)
+        # Guard the premise: polish must actually have rebuilt the IR, otherwise
+        # this test would pass trivially without exercising the carry-over.
+        self.assertEqual(summary["panel_titles"]["0"], "Foo Total")
+
+        self.assertEqual(result.dashboard_ir.tags, ["linux", "prometheus"])
+        self.assertEqual(result.dashboard_ir.uid, "rYdddlPWk")
+        self.assertEqual(result.dashboard_ir.folder, "Observability")
+        self.assertEqual(result.dashboard_ir.source_file, "node-exporter-full.json")
+        self.assertEqual(result.dashboard_ir.metadata, {"origin": "grafana.com/763"})
+        self.assertEqual(len(result.dashboard_ir.annotations), 1)
+
+        # The symptom that reaches Kibana.
+        self.assertEqual(
+            result.native_dashboard.to_api_payload()["tags"],
+            ["linux", "prometheus"],
+        )
+
+    def test_apply_metadata_polish_without_dashboard_ir_is_a_no_op(self):
+        # The dashboard IR is polish's only input now that no YAML file is
+        # written, so a result without one must report nothing polished rather
+        # than raise.
+        result = migrate.MigrationResult("Dashboard", "uid")
+        emitted = migrate.PanelResult("foo_total", "graph", "line", "migrated", 0.85)
+        result.panel_results = [emitted]
+        result.yaml_panel_results = [emitted]
+
+        self.assertIsNone(result.dashboard_ir)
+        self.assertEqual(migrate.apply_metadata_polish(result, enable_ai=False), {})
         self.assertIsNone(result.native_dashboard)
 
     def test_verification_packet_marks_green_for_clean_panel(self):
@@ -10455,15 +11177,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         packet = result.panel_results[0].verification_packet
         self.assertEqual(verification["summary"]["green"], 1)
@@ -10494,15 +11214,13 @@ class TranslatorRegressionTests(unittest.TestCase):
             ],
         }
         dashboard = {"title": "Warn", "uid": "warn-1", "panels": [panel]}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         migrate.annotate_results_with_verification([result], [])
         packet = result.panel_results[0].verification_packet
         self.assertEqual(packet["semantic_gate"], "Yellow")
@@ -10517,7 +11235,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel.source_panel_id = "1"
         panel.query_language = "promql"
         panel.promql_expr = "sum(rate(foo_total[5m]))"
-        panel.esql_query = "TS metrics-*\n| STATS v = RATE(foo_total, 5m)"
+        panel.esql_query = "TS metrics-*\n| STATS v = RATE(foo_total)"
         panel.query_ir = {"output_shape": "time_series"}
         validation_result = {
             "error": "Unknown column [foo_total]",
@@ -10587,15 +11305,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         validation_records = [
             {
                 "dashboard": "Failure",
@@ -10645,13 +11361,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(first.verification_packet["semantic_gate"], "Green")
         self.assertEqual(second.verification_packet["semantic_gate"], "Red")
 
-    def test_verification_packet_includes_compile_and_upload_rollups(self):
-        result = migrate.MigrationResult("Compile Failure", "compile-1")
-        result.compiled = False
-        result.compile_error = "kb-dashboard-cli compile failed"
+    def test_verification_packet_includes_upload_rollup(self):
+        result = migrate.MigrationResult("Upload Failure", "upload-1")
         result.upload_attempted = True
         result.uploaded = False
-        result.upload_error = "Upload skipped because one or more dashboards failed to compile."
+        result.upload_error = "Kibana rejected the dashboard import."
         panel = migrate.PanelResult("CPU Busy", "graph", "line", "migrated", 0.85)
         panel.source_panel_id = "1"
         panel.query_language = "promql"
@@ -10661,7 +11375,6 @@ class TranslatorRegressionTests(unittest.TestCase):
         migrate.annotate_results_with_verification([result], [])
 
         packet = panel.verification_packet
-        self.assertIn("compile_failed", packet["runtime_rollups"])
         self.assertIn("upload_failed", packet["runtime_rollups"])
         self.assertEqual(packet["semantic_gate"], "Red")
 
@@ -10679,15 +11392,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         summary = migrate.apply_review_explanations([result], verification, enable_ai=False)
         explanation = result.panel_results[0].review_explanation
@@ -10709,15 +11420,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification([result], [])
         migrate.apply_review_explanations([result], verification, enable_ai=False)
         explanation = result.panel_results[0].review_explanation
@@ -10738,15 +11447,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification(
             [result],
             [
@@ -10795,15 +11502,13 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _ = migrate.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
         verification = migrate.annotate_results_with_verification(
             [result],
             [
@@ -11308,7 +12013,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("RATE(http_requests_total, 5m)", translated.esql_query)
+        self.assertIn("RATE(http_requests_total)", translated.esql_query)
         self.assertNotIn("AVG(RATE(", translated.esql_query)
         self.assertFalse(any("Added outer AVG" in w for w in translated.warnings))
 
@@ -11321,7 +12026,9 @@ class TranslatorRegressionTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("AVG(node_memory_MemAvailable_bytes)", translated.esql_query)
+        # LAST_OVER_TIME collapses across TIME, AVG across SERIES -- a bare selector
+        # takes each series' latest sample per bucket, not the bucket mean.
+        self.assertIn("AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes))", translated.esql_query)
         self.assertFalse(any("faithful gauge downsample" in w for w in translated.warnings))
 
     def test_translation_hints_table_style_patterns_do_not_set_legend_origin(self):
@@ -11442,6 +12149,32 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertFalse(
             any("XY chart shows a single breakdown" in r for r in result.reasons),
             result.reasons,
+        )
+
+    def test_xy_job_scope_prefers_instance_breakdown_without_composite_warning(self):
+        warnings = []
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| WHERE (?job == \"\" OR (service.name RLIKE ?job OR (service.name IS NULL AND \"\" RLIKE ?job)))\n"
+                "| STATS requests = SUM(http_requests_total) "
+                "BY time_bucket = TBUCKET(5 minute), service.instance.id, service.name\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="requests",
+            by_cols=["time_bucket", "service.instance.id", "service.name"],
+            warnings=warnings,
+        )
+        self.assertEqual(panel["breakdown"]["field"], "service.instance.id")
+        self.assertNotIn("series_group", panel["query"])
+        self.assertFalse(
+            any("Composited multi-label grouping" in warning for warning in warnings),
+            warnings,
+        )
+        self.assertFalse(
+            any("not on the chart" in warning for warning in warnings),
+            warnings,
         )
 
     def test_mysql_network_traffic_fuses_both_or_chain_targets(self):
@@ -11782,6 +12515,111 @@ class TestVisualIRContract(unittest.TestCase):
         self.assertIsInstance(ir, VisualIR)
         self.assertEqual(ir.title, "")
 
+    def test_prune_non_semantic_panel_warnings_clears_composite_breakdown_false_positive(self):
+        panel_result = migrate.PanelResult(
+            "Panel",
+            "timeseries",
+            "area",
+            "migrated_with_warnings",
+            0.6,
+            reasons=[
+                "XY chart shows a single breakdown; additional grouping "
+                "dimension(s) ['labels.name', 'labels.type'] are in the query but not on the chart, "
+                "so series differing only by those are visually merged"
+            ],
+        )
+        panel_result.query_ir = {"warnings": list(panel_result.reasons)}
+        yaml_panel = {
+            "esql": {
+                "query": "TS metrics-* | EVAL legend = CONCAT(\"a\", \"b\")",
+                "breakdown": {"field": "legend"},
+            }
+        }
+
+        panels._prune_non_semantic_panel_warnings(panel_result, yaml_panel)
+
+        self.assertEqual(panel_result.reasons, [])
+        self.assertEqual(panel_result.query_ir["warnings"], [])
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertGreaterEqual(panel_result.confidence, 0.85)
+
+    def test_prune_non_semantic_panel_warnings_clears_fusion_info_only(self):
+        panel_result = migrate.PanelResult(
+            "Panel",
+            "timeseries",
+            "bar",
+            "migrated_with_warnings",
+            0.6,
+            reasons=["Fused multi-target panel from independently translated ES|QL queries"],
+        )
+        panel_result.query_ir = {"warnings": list(panel_result.reasons)}
+        yaml_panel = {"esql": {"query": "TS metrics-* | STATS a = AVG(x) BY time_bucket"}}
+
+        panels._prune_non_semantic_panel_warnings(panel_result, yaml_panel)
+
+        self.assertEqual(panel_result.reasons, [])
+        self.assertEqual(panel_result.query_ir["warnings"], [])
+        self.assertEqual(panel_result.status, "migrated")
+        self.assertGreaterEqual(panel_result.confidence, 0.85)
+
+    def test_field_override_stacking_marks_metric_unstacked(self):
+        yaml_panel = {
+            "esql": {
+                "type": "area",
+                "metrics": [
+                    {"field": "Pgfault", "label": "Pgfault - Page major and minor fault operations"},
+                    {"field": "Pgmajfault", "label": "Pgmajfault - Major page fault operations"},
+                ],
+            }
+        }
+        grafana_panel = {
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {
+                            "id": "byName",
+                            "options": "Pgfault - Page major and minor fault operations",
+                        },
+                        "properties": [
+                            {
+                                "id": "custom.stacking",
+                                "value": {"group": False, "mode": "normal"},
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        panels._apply_series_override_axes(yaml_panel, grafana_panel, [])
+
+        metrics = yaml_panel["esql"]["metrics"]
+        self.assertFalse(metrics[0].get("stack", True))
+        self.assertNotIn("stack", metrics[1])
+
+    def test_supported_custom_stacking_override_does_not_count_as_manual_review_note(self):
+        panel = {
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Total"},
+                        "properties": [
+                            {
+                                "id": "custom.stacking",
+                                "value": {"group": False, "mode": "normal"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+        inventory = manifest.collect_panel_inventory(panel)
+        notes = manifest.collect_panel_notes(panel)
+
+        self.assertEqual(inventory["non_color_field_override_properties"], 0)
+        self.assertFalse(any("field override(s)" in note for note in notes))
+
     def test_to_dict_serializes_nested_dataclasses(self):
         from observability_migration.core.assets.visual import VisualIR
         ir = VisualIR(title="T", kibana_type="line")
@@ -12001,7 +12839,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path)
+        save_detailed_report([result], path)
         with open(path) as f:
             data = json.load(f)
         panel = data["dashboards"][0]["panels"][0]
@@ -12026,7 +12864,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path)
+        save_detailed_report([result], path)
         with open(path) as f:
             data = json.load(f)
         self.assertEqual(data["runtime_features"], result.runtime_features)
@@ -12047,7 +12885,7 @@ class TestTypedPanelResultSerialization(unittest.TestCase):
         import os
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             path = f.name
-        save_detailed_report([result], [], path, field_discovery=field_discovery)
+        save_detailed_report([result], path, field_discovery=field_discovery)
         with open(path) as f:
             data = json.load(f)
         self.assertEqual(data["field_discovery"], field_discovery)
@@ -12168,6 +13006,18 @@ class TestDisplayMetadata(unittest.TestCase):
         axis = extract_axis_config(panel)
         self.assertEqual(axis["y_left_axis"]["title"], "Duration (s)")
 
+    def test_extract_axis_label_suppresses_opaque_shorthand(self):
+        from observability_migration.targets.kibana.emit.display import extract_axis_config
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "none",
+                    "custom": {"axisLabel": "aqu-sz"},
+                }
+            }
+        }
+        self.assertIsNone(extract_axis_config(panel))
+
     def test_extract_axis_log_scale_modern(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         panel = {"fieldConfig": {"defaults": {"custom": {"scaleDistribution": {"type": "log"}}}}}
@@ -12198,6 +13048,45 @@ class TestDisplayMetadata(unittest.TestCase):
     def test_extract_axis_empty_returns_none(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         self.assertIsNone(extract_axis_config({}))
+
+    def test_extract_xy_appearance_hides_time_axis_title_from_override(self):
+        from observability_migration.targets.kibana.emit.display import extract_xy_appearance
+        panel = {
+            "fieldConfig": {
+                "defaults": {"custom": {"axisLabel": "%util"}},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byType", "options": "time"},
+                        "properties": [{"id": "custom.axisPlacement", "value": "hidden"}],
+                    }
+                ],
+            }
+        }
+        appearance = extract_xy_appearance(panel)
+        self.assertEqual(appearance["x_axis"]["title"], False)
+        self.assertEqual(appearance["y_left_axis"]["title"], "%util")
+
+    def test_extract_xy_appearance_omits_line_area_style_for_bar(self):
+        from observability_migration.targets.kibana.emit.display import extract_xy_appearance
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "axisLabel": "percentage",
+                        "drawStyle": "bars",
+                        "lineInterpolation": "smooth",
+                        "fillOpacity": 70,
+                    }
+                }
+            }
+        }
+        appearance = extract_xy_appearance(panel, chart_type="bar")
+        self.assertEqual(appearance["y_left_axis"]["title"], "percentage")
+        self.assertNotIn("line_style", appearance)
+        self.assertNotIn("fill_opacity", appearance)
+        area_appearance = extract_xy_appearance(panel, chart_type="area")
+        self.assertEqual(area_appearance.get("line_style"), "monotone-x")
+        self.assertEqual(area_appearance.get("fill_opacity"), 0.7)
 
     def test_clean_template_dollar_var(self):
         from observability_migration.targets.kibana.emit.display import clean_template_variables
@@ -12304,6 +13193,7 @@ class TestDisplayMetadata(unittest.TestCase):
     def test_enrich_metric_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
         yaml_panel = {
+            "title": "Uptime",
             "esql": {
                 "type": "metric",
                 "query": "FROM metrics-*",
@@ -12313,6 +13203,70 @@ class TestDisplayMetadata(unittest.TestCase):
         grafana_panel = {"fieldConfig": {"defaults": {"unit": "bytes"}}}
         enrich_yaml_panel_display(yaml_panel, grafana_panel)
         self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "bytes")
+        self.assertEqual(yaml_panel["esql"]["primary"]["label"], "Uptime")
+        self.assertTrue(yaml_panel.get("hide_title"))
+
+    def test_enrich_metric_breakdown_keeps_chrome_title_and_uses_compact_density(self):
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Pressure",
+            "hide_title": True,
+            "esql": {
+                "type": "metric",
+                "query": (
+                    "FROM metrics-* "
+                    '| EVAL gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t"))) * 100 '
+                    "| KEEP label, gauge_value"
+                ),
+                "primary": {"field": "gauge_value", "label": "Pressure"},
+                "breakdown": {"field": "label"},
+            },
+        }
+        enrich_yaml_panel_display(yaml_panel, {"fieldConfig": {"defaults": {"unit": "percentunit"}}})
+        self.assertEqual(yaml_panel["esql"]["primary"].get("label"), "")
+        self.assertNotIn("hide_title", yaml_panel)
+        self.assertEqual(yaml_panel["esql"]["styling"]["density"], "compact")
+        self.assertEqual(yaml_panel["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "number")
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"].get("suffix"), "%")
+        # Already scaled curated query must not be double-multiplied.
+        self.assertEqual(yaml_panel["esql"]["query"].count("* 100"), 1)
+
+    def test_enrich_metric_breakdown_scales_percentunit_when_switching_to_number_suffix(self):
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "title": "Global CPU  Usage",
+            "esql": {
+                "type": "metric",
+                "query": (
+                    "FROM metrics-* "
+                    '| EVAL label = MV_FIRST(SPLIT(__pairs, "\\t")), '
+                    'gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\\t"))) '
+                    "| KEEP label, gauge_value"
+                ),
+                "primary": {
+                    "field": "gauge_value",
+                    "format": {"type": "percent", "decimals": 1},
+                    "color": {
+                        "thresholds": [{"up_to": 1, "color": "#54B399"}],
+                        "range_min": 0,
+                        "range_max": 1,
+                        "apply_to": "value",
+                    },
+                },
+                "breakdown": {"field": "label"},
+            },
+        }
+        enrich_yaml_panel_display(
+            yaml_panel,
+            {"fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}},
+        )
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("gauge_value = gauge_value * 100", query)
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"]["type"], "number")
+        self.assertEqual(yaml_panel["esql"]["primary"]["format"].get("suffix"), "%")
+        self.assertEqual(yaml_panel["esql"]["primary"]["color"]["range_max"], 100.0)
+        self.assertEqual(yaml_panel["esql"]["primary"]["color"]["thresholds"][0]["up_to"], 100.0)
 
     def test_enrich_gauge_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
@@ -12382,6 +13336,40 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(
             yaml_panel["esql"]["appearance"]["y_left_axis"]["title"], "CPU %"
         )
+
+    def test_enrich_decimals_merged_into_format(self):
+        """fieldConfig.defaults.decimals must carry through to the format dict."""
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "esql": {
+                "type": "line",
+                "query": "FROM metrics-*",
+                "metrics": [{"field": "latency"}],
+            }
+        }
+        grafana_panel = {
+            "fieldConfig": {"defaults": {"unit": "ms", "decimals": 3}},
+        }
+        enrich_yaml_panel_display(yaml_panel, grafana_panel)
+        fmt = yaml_panel["esql"]["metrics"][0]["format"]
+        self.assertEqual(fmt["decimals"], 3)
+        self.assertIn("suffix", fmt)
+
+    def test_enrich_decimals_without_unit_emits_number_format(self):
+        """A panel with only decimals (no unit) must still get a format dict."""
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        yaml_panel = {
+            "esql": {
+                "type": "metric",
+                "query": "FROM metrics-*",
+                "primary": {"field": "count"},
+            }
+        }
+        grafana_panel = {"fieldConfig": {"defaults": {"decimals": 0}}}
+        enrich_yaml_panel_display(yaml_panel, grafana_panel)
+        fmt = yaml_panel["esql"]["primary"]["format"]
+        self.assertEqual(fmt["type"], "number")
+        self.assertEqual(fmt["decimals"], 0)
 
     def test_enrich_no_esql_is_noop(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
@@ -12497,7 +13485,7 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         self.assertEqual(result.kibana_type, "metric")
         self.assertEqual(yaml_panel["esql"]["type"], "metric")
 
-    def test_grouped_xy_promql_uses_esql_metric_field_label(self):
+    def test_grouped_xy_promql_uses_current_metric_contract(self):
         rule_pack = migrate.RulePackConfig()
         rule_pack.native_promql = True
         resolver = migrate.SchemaResolver(rule_pack)
@@ -12522,9 +13510,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
         )
         self.assertIsNotNone(yaml_panel)
         self.assertEqual(yaml_panel["esql"]["type"], "line")
-        self.assertNotIn("PROMQL", yaml_panel["esql"]["query"])
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "prometheus_tsdb_head_chunks")
-        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Prometheus Tsdb Head Chunks")
+        self.assertIn("PROMQL", yaml_panel["esql"]["query"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["label"], "Head chunks count")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "instance")
 
     def test_heatmap_panel_emits_native_heatmap(self):
         # A histogram-bucket heatmap (BY time, le) maps to a native Kibana
@@ -12687,13 +13676,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         top_panels = yaml_doc["dashboards"][0]["panels"]
         table_panel = top_panels[0]
         self.assertGreaterEqual(
@@ -12758,15 +13745,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
 
-            self.assertTrue(path.exists())
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         dashboard_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in dashboard_panels if "section" in p]
@@ -12871,13 +13855,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         self.assertEqual(result.total_panels, 2)
         top_panels = yaml_doc["dashboards"][0]["panels"]
@@ -12938,13 +13920,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 ]
             },
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         self.assertEqual([panel["title"] for panel in top_panels], ["CPU Cores"])
@@ -12982,14 +13962,12 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  ]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
 
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13172,13 +14150,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "targets": [{"expr": "rate(foo_total[5m])", "refId": "A"}]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13203,13 +14179,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "targets": [{"expr": "rate(node_network_receive_bytes_total[5m])", "refId": "A"}]},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
 
         top_panels = yaml_doc["dashboards"][0]["panels"]
         sections = [p for p in top_panels if "section" in p]
@@ -13334,13 +14308,11 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                 ],
             },
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         controls = yaml_doc["dashboards"][0].get("controls", [])
         self.assertEqual(len(controls), 1)
         self.assertEqual(controls[0]["label"], "Instance")
@@ -13371,11 +14343,10 @@ class TestPanelTypeAndSchemaCoverage(unittest.TestCase):
                  "gridPos": {"x": 0, "y": 13, "w": 24, "h": 4}},
             ],
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _path = migrate.translate_dashboard(
-                dashboard, tmpdir, datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            dashboard, datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
         self.assertEqual(result.total_panels, 4)
         self.assertGreaterEqual(result.skipped, 2, "row + news should be skipped")
         self.assertGreaterEqual(result.migrated, 1, "graph or text should be migrated")
@@ -13633,31 +14604,53 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         }
 
     def _translate(self, resolver):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                self.dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=resolver,
-            )
-            doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, doc["dashboards"][0]
 
-    def test_chained_label_filter_scope_is_dropped_with_a_surfaced_warning(self):
-        # Defect 2: the migrated `id` control lists every `id` regardless of
-        # the selected `instance` -- Kibana ES|QL controls have no
-        # cross-control dependency mechanism. That is an accepted
-        # degradation (not a silent one): it must be reported as a
-        # dashboard-level control warning.
+    def test_chained_label_filter_scope_binds_into_control_query_when_supported(self):
         _result, doc = self._translate(self.resolver)
         controls = {c["variable_name"]: c for c in doc["controls"]}
         self.assertIn("id", controls)
-        self.assertNotIn("instance", controls["id"]["query"])
-        self.assertNotIn("?instance", controls["id"]["query"])
+        self.assertIn("?instance", controls["id"]["query"])
+        self.assertIn("service.instance.id", controls["id"]["query"])
 
         result, _doc = self._translate(self.resolver)
+        self.assertFalse(
+            any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
+            result.control_warnings,
+        )
+
+    def test_chained_label_filter_scope_warns_when_param_binding_unavailable(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack,
+            ESQL_NAMED_PARAM_BINDING,
+            supported=False,
+            source="test",
+            confidence="verified",
+        )
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        controls = doc["dashboards"][0]["controls"]
+        self.assertEqual(len(controls), 2)
+        self.assertFalse(any(control.get("variable_name") == "id" for control in controls))
         self.assertTrue(
             any("scoped by $instance" in w and "'id'" in w for w in result.control_warnings),
             result.control_warnings,
@@ -13728,14 +14721,38 @@ class ChainedVariableControlFidelityTests(unittest.TestCase):
         )
 
     def test_offline_migrate_keeps_both_controls_with_only_the_scope_warning(self):
-        # Without a resolver (offline migrate, no --es-url) the source-
-        # faithful scope is kept for the `instance` control itself; only the
-        # inter-control dependency (Defect 2) is unrepresentable.
+        # Without a resolver (offline migrate, no --es-url) the chained scope
+        # still survives as a named-param predicate on the dependent control.
         result, doc = self._translate(None)
         variable_names = {c["variable_name"] for c in doc["controls"]}
         self.assertEqual(variable_names, {"instance", "id"})
-        self.assertEqual(len(result.control_warnings), 1)
-        self.assertIn("scoped by $instance", result.control_warnings[0])
+        self.assertIn("?instance", {c["variable_name"]: c for c in doc["controls"]}["id"]["query"])
+        # Offline (no resolver) the `id="$id"` label filter cannot be resolved and
+        # is dropped, so neither control ends up bound to a panel query. Both must
+        # be reported as inert rather than left looking functional.
+        inert = [w for w in result.control_warnings if "no migrated panel" in w]
+        self.assertEqual(len(inert), 2)
+        self.assertTrue(any("variable 'instance'" in w for w in inert))
+        self.assertTrue(any("variable 'id'" in w for w in inert))
+
+    def test_cascade_parent_bound_by_child_control_is_not_inert(self):
+        """A parent used only to scope another control's options is not inert.
+
+        Redis ``$namespace`` → ``$instance`` is the canonical case: no panel
+        binds ``?namespace``, but the instance control populate query does.
+        """
+        result, doc = self._translate(self.resolver)
+        controls = {c["variable_name"]: c for c in doc["controls"]}
+        self.assertIn("instance", controls)
+        self.assertIn("id", controls)
+        self.assertIn("?instance", controls["id"]["query"])
+        self.assertFalse(
+            any(
+                "no migrated panel" in w and "variable 'instance'" in w
+                for w in result.control_warnings
+            ),
+            result.control_warnings,
+        )
 
 
 class LokiDashboardIntegrationTests(unittest.TestCase):
@@ -13827,41 +14844,35 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
         }
 
     def test_log_volume_panel_is_bar_chart(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         self.assertEqual(log_volume["esql"]["type"], "bar",
                          "Log volume graph panel with bars:true should become a bar chart")
 
     def test_log_volume_panel_title_is_log_volume(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         self.assertEqual(log_volume["title"], "Log Volume")
 
     def test_log_volume_panel_legend_hidden(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         log_volume = dash["panels"][0]
         legend = log_volume["esql"].get("legend", {})
@@ -13869,14 +14880,12 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                          "Legend should be hidden matching Grafana's legend.show=false")
 
     def test_logs_panel_is_datatable(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         logs_panel = dash["panels"][1]
         self.assertEqual(logs_panel["title"], "Logs Panel")
@@ -13884,28 +14893,24 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
         self.assertIn("SORT @timestamp DESC", logs_panel["esql"]["query"])
 
     def test_text_panel_preserves_content(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         text_panel = dash["panels"][2]
         self.assertIn("markdown", text_panel)
         self.assertIn("Synthetic log search example", text_panel["markdown"]["content"])
 
     def test_controls_generated_for_query_variables(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         controls = dash.get("controls", [])
         control_ids = [
@@ -13923,26 +14928,23 @@ class LokiDashboardIntegrationTests(unittest.TestCase):
                         f"Expected a pod control, got: {controls}")
 
     def test_layout_preserves_full_width(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _result, path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        _result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [_result.dashboard_ir.to_yaml_dict()]}
         dash = yaml_doc["dashboards"][0]
         for panel in dash["panels"]:
             self.assertEqual(panel["size"]["w"], 48,
                              f"Panel '{panel['title']}' should be full width (48 cols)")
 
     def test_panel_count_matches_source(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, _path = migrate.translate_dashboard(
-                self.dashboard, tmpdir,
-                datasource_index="metrics-*", esql_index="metrics-*",
-                rule_pack=self.rule_pack, resolver=self.resolver,
-            )
+        result = migrate.translate_dashboard(
+            self.dashboard,
+            datasource_index="metrics-*", esql_index="metrics-*",
+            rule_pack=self.rule_pack, resolver=self.resolver,
+        )
         self.assertEqual(result.total_panels, 3)
         self.assertEqual(result.skipped, 0)
 
@@ -13993,6 +14995,18 @@ class StackingAndDrawStyleTests(unittest.TestCase):
         }
         _yaml_panel, result = self.translate_panel(panel)
         self.assertEqual(result.kibana_type, "line")
+
+    def test_timeseries_fill_opacity_maps_to_area(self):
+        panel = {
+            "id": 31, "type": "timeseries", "title": "Filled Line",
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+            "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "none"}, "fillOpacity": 20}}},
+            "targets": [{"expr": "up", "refId": "A"}],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertEqual(result.kibana_type, "area")
+        self.assertEqual(yaml_panel["esql"]["type"], "area")
+        self.assertEqual((yaml_panel["esql"].get("appearance") or {}).get("fill_opacity"), 0.2)
 
     def test_timeseries_drawstyle_bars_maps_to_bar(self):
         panel = {
@@ -14113,16 +15127,16 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
     def _translate_dashboard(self, filename):
         with open(self.dashboard_dir / filename) as f:
             dashboard = json.load(f)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        rule_pack = rules.resolve_pack_for_dashboard(dashboard, self.rule_pack)
+        resolver = migrate.SchemaResolver(rule_pack)
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, yaml_doc
 
     def test_node_exporter_full_panel_count(self):
@@ -14165,6 +15179,95 @@ class NodeExporterDashboardIntegrationTests(unittest.TestCase):
         count_gauges(yaml_doc["dashboards"][0]["panels"])
         self.assertGreaterEqual(gauge_count, 4, "Should have gauge panels for CPU/RAM/etc.")
 
+    def test_node_exporter_full_curates_first_row_summary_panels(self):
+        result, yaml_doc = self._translate_dashboard("node-exporter-full.json")
+        panels_by_title = {panel_result.title: panel_result for panel_result in result.panel_results}
+        yaml_panels_by_title = {}
+        for panel in yaml_doc["dashboards"][0]["panels"]:
+            section = panel.get("section")
+            if isinstance(section, dict):
+                for inner in section.get("panels", []):
+                    yaml_panels_by_title[inner.get("title")] = inner
+            else:
+                yaml_panels_by_title[panel.get("title")] = panel
+
+        for title in ("Pressure", "RAM Used", "SWAP Used", "Uptime"):
+            self.assertIn(title, panels_by_title)
+            panel_result = panels_by_title[title]
+            self.assertEqual(panel_result.status, "migrated", title)
+            self.assertFalse(panel_result.reasons, f"{title}: {panel_result.reasons}")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["type"], "metric")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["breakdown"]["field"], "label")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["breakdown"].get("columns"), 1)
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["primary"]["field"], "gauge_value")
+        self.assertEqual(yaml_panels_by_title["Pressure"]["esql"]["primary"].get("label"), "")
+        self.assertEqual(
+            yaml_panels_by_title["Pressure"]["esql"]["styling"]["density"],
+            "compact",
+        )
+        self.assertNotIn("hide_title", yaml_panels_by_title["Pressure"])
+        pressure_query = yaml_panels_by_title["Pressure"]["esql"]["query"]
+        self.assertIn("gauge_value", pressure_query)
+        self.assertIn("label", pressure_query)
+        self.assertIn("TBUCKET(20,", pressure_query)
+        # lastNotNull-style collapse (not MAX across the window)
+        self.assertIn("| LIMIT 2", pressure_query)
+        self.assertIn("WHERE CPU IS NOT NULL OR Mem IS NOT NULL OR IO IS NOT NULL", pressure_query)
+        self.assertNotIn("| STATS CPU = MAX(CPU), Mem = MAX(Mem), IO = MAX(IO)", pressure_query)
+        pressure_color = (
+            (yaml_panels_by_title["Pressure"]["esql"].get("primary") or {}).get("color") or {}
+        )
+        self.assertEqual(pressure_color.get("range_max"), 100)
+        memory_basic = yaml_panels_by_title["Memory Basic"]["esql"]
+        memory_query = memory_basic["query"]
+        self.assertIn("`RAM Total`", memory_query)
+        self.assertNotIn("series_group", memory_query)
+        metrics_by_field = {
+            m.get("field"): m for m in (memory_basic.get("metrics") or [])
+        }
+        self.assertIn("RAM Total", metrics_by_field)
+        self.assertIs(metrics_by_field["RAM Total"].get("stack"), False)
+        cpu_busy_query = yaml_panels_by_title["CPU Busy"]["esql"]["query"]
+        self.assertIn("WHERE computed_value IS NOT NULL", cpu_busy_query)
+        self.assertIn("TBUCKET(20,", cpu_busy_query)
+        # Curated pack already emits gauge constants; emitter must not duplicate.
+        self.assertEqual(cpu_busy_query.count("_gauge_min = 0"), 1)
+
+    def test_node_exporter_full_preserves_device_breakdown_on_curated_device_panels(self):
+        result, _yaml_doc = self._translate_dashboard("node-exporter-full.json")
+        panels_by_title = {panel_result.title: panel_result for panel_result in result.panel_results}
+
+        for title in (
+            "Average Queue Size",
+            "Network Traffic Multicast",
+            "MTU",
+            "Queue Length",
+        ):
+            query = panels_by_title[title].esql_query or ""
+            self.assertIn("series_group", query, title)
+            self.assertIn("device", query, title)
+        for title in (
+            "Average Queue Size",
+            "Network Traffic Multicast",
+            "Network Traffic Frame",
+            "Network Traffic Carrier",
+            "Network Traffic Colls",
+        ):
+            query = panels_by_title[title].esql_query or ""
+            self.assertIn("AVG(IRATE(", query, title)
+
+        colls_query = panels_by_title["Network Traffic Colls"].esql_query or ""
+        self.assertIn("series_group", colls_query)
+        self.assertIn("device", colls_query)
+        self.assertIn("-1 * value", colls_query)
+
+        operational_query = panels_by_title["Network Operational Status"].esql_query or ""
+        self.assertIn("series_group", operational_query)
+        self.assertIn("device", operational_query)
+        self.assertIn("Operational state UP", operational_query)
+        self.assertIn("Physical link state", operational_query)
+        self.assertNotIn("interface", operational_query)
+
     def test_all_node_exporters_compile_without_error(self):
         """Verify the bundled Node Exporter dashboard produces valid YAML."""
         for filename in ["node-exporter-full.json"]:
@@ -14185,16 +15288,14 @@ class PrometheusDashboardIntegrationTests(unittest.TestCase):
     def _translate_dashboard(self, filename):
         with open(self.dashboard_dir / filename) as f:
             dashboard = json.load(f)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, path = migrate.translate_dashboard(
-                dashboard, tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(path) as f:
-                yaml_doc = yaml.safe_load(f)
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, yaml_doc
 
     def _walk_panels(self, panels):
@@ -14502,25 +15603,26 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         )
 
     def test_kibana_native_layout_l2_yields_to_2d_grid(self):
-        """L2 per-type minimums must NOT break the 2D grid the
-        source author authored.
+        """A legibility floor must not distort the 2D grid the author authored.
 
-        Reproduces the ``node-exporter-full`` "Quick CPU / Mem / Disk"
-        section: 6 wide gauges along the top, with two short stat
-        tiles in the corner that the author *deliberately* sized to
-        h=3 so they could stack two-deep beside a tall neighbour.
-        Before the collision-aware fix, L2's metric ``min_h=6``
-        bumped each short tile to h=6, blowing through the gauge
-        below it and forcing the overlap resolver to cascade panels
-        to y=8/y=6 -- producing the ugly "right-side dangling stat
-        tile cluster" layout in the screenshot at 2026-05-13 01:24.
+        Reproduces node-exporter-full's "Quick CPU / Mem / Disk": wide gauges
+        along the top with two short stat tiles stacked beside them, deliberately
+        sized so the stack tiles exactly against its tall neighbour.
+
+        Applying the per-type floor panel-by-panel broke this twice over. The
+        floors differ by type (gauge 8, metric 6) so the gauge grew for being a
+        gauge, and the bump was rejected wherever a neighbour was in the way --
+        StatTop could not grow because StatBottom sat under it, StatBottom could,
+        and two panels with identical source geometry ended up different heights.
+        The row went ragged: the stack overhung the gauge by a row.
+
+        The band is now scaled by a single factor, so the floors are met AND the
+        stack stays flush with its neighbour.
         """
         from observability_migration.adapters.source.grafana.panels import (
             _apply_kibana_native_layout,
         )
 
-        # Tall gauge on the left + two stacked short stats on its
-        # right. Heights 8 and (3 + 3) tile to the same 8 rows.
         panels = [
             {"title": "GaugeLeft", "esql": {"type": "gauge"},
              "size": {}, "position": {},
@@ -14536,22 +15638,20 @@ class KibanaNativeLayoutTests(unittest.TestCase):
              "_grafana_w": 8, "_grafana_h": 3},
         ]
         _apply_kibana_native_layout(panels)
-
         gauge, top, bot = panels
-        # StatTop's min_h=6 *would* push its bottom to y=6,
-        # overlapping StatBottom at y=5..8 (scaled). Collision-
-        # aware L2 keeps the source-author-chosen short height for
-        # StatTop so the 2D grid remains intact.
-        self.assertLessEqual(
-            top["size"]["h"], 5,
-            "StatTop must keep its short height when StatBottom is below it; "
-            f"got h={top['size']['h']} which would clash",
-        )
-        # StatBottom has nothing below in this group so the L2 min_h
-        # can be applied to it.
-        self.assertGreaterEqual(top["position"]["y"] + top["size"]["h"], bot["position"]["y"])
-        # And the gauge keeps its faithful height (no false collision).
-        self.assertGreater(gauge["size"]["h"], 0)
+
+        def bottom(panel):
+            return panel["position"]["y"] + panel["size"]["h"]
+
+        # The stack still tiles: no gap, no overlap.
+        self.assertEqual(bottom(top), bot["position"]["y"])
+        # And it ends exactly where its tall neighbour does -- the property whose
+        # absence produced the ragged right-hand column.
+        self.assertEqual(bottom(gauge), bottom(bot))
+        # Every panel clears its own legibility floor.
+        self.assertGreaterEqual(gauge["size"]["h"], 8)
+        self.assertGreaterEqual(top["size"]["h"], 6)
+        self.assertGreaterEqual(bot["size"]["h"], 6)
 
     def test_kibana_native_layout_preserves_relative_y_spacing(self):
         """L1 universal fix: when multiple Grafana visual rows are
@@ -14753,7 +15853,7 @@ class KibanaNativeLayoutTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import _apply_kibana_native_layout
 
         panels = [
-            {"title": "Pressure", "esql": {"type": "bar"}, "size": {}, "position": {},
+            {"title": "Pressure", "esql": {"type": "metric"}, "size": {}, "position": {},
              "_grafana_row_y": 0, "_grafana_row_x": 0, "_grafana_w": 3, "_grafana_h": 4},
             {"title": "CPU Busy", "esql": {"type": "gauge"}, "size": {}, "position": {},
              "_grafana_row_y": 0, "_grafana_row_x": 3, "_grafana_w": 3, "_grafana_h": 4},
@@ -14901,17 +16001,14 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana import (
             panels as panels_mod,
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = panels_mod.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(yaml_path) as f:
-                doc = yaml.safe_load(f)
+        result = panels_mod.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return result, doc["dashboards"][0]
 
     def _walk_leaves(self, panels):
@@ -15148,17 +16245,14 @@ class L3RowAwareSectioningTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana import (
             panels as panels_mod,
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            _, yaml_path = panels_mod.translate_dashboard(
-                dashboard,
-                pathlib.Path(tmpdir),
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
-            )
-            with open(yaml_path) as f:
-                doc = yaml.safe_load(f)
+        result = panels_mod.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
         return doc["dashboards"][0]["panels"]
 
     def test_titled_row_becomes_section(self):
@@ -15559,21 +16653,22 @@ class NativePromqlTests(unittest.TestCase):
         self.assertIn("PROMQL", result.esql_query)
         self.assertIn("rate(http_requests_total[5m])", result.esql_query)
 
-    def test_sum_by_chart_uses_esql_for_breakdown_projection(self):
+    def test_sum_by_chart_uses_current_breakdown_contract(self):
         panel = self._make_panel('sum by (instance) (rate(http_requests_total[5m]))')
-        _yaml_panel, result = self.translate_panel(panel)
-        self.assertNotIn("PROMQL", result.esql_query)
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIn("PROMQL", result.esql_query)
         self.assertIn("instance", result.esql_query)
-        self.assertEqual(result.query_ir["output_shape"], "time_series")
-        self.assertEqual(result.query_ir["output_group_fields"], ["time_bucket", "service.instance.id"])
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "instance")
 
-    def test_grouped_promql_uses_esql_to_project_breakdown_column(self):
+    def test_grouped_promql_uses_current_breakdown_contract(self):
         panel = self._make_panel('sum by (service) (rate(envoy_http_downstream_rq_total[1m]))')
         yaml_panel, result = self.translate_panel(panel)
 
-        self.assertNotIn("PROMQL", result.esql_query)
+        self.assertIn("PROMQL", result.esql_query)
         self.assertIn("service", result.esql_query)
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
+        self.assertEqual(yaml_panel["esql"]["metrics"][0]["field"], "value")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service")
 
     def test_avg_over_time_uses_native_promql(self):
         panel = self._make_panel("avg_over_time(cpu_usage[10m])")
@@ -15628,19 +16723,23 @@ class NativePromqlTests(unittest.TestCase):
 
     def test_adaptive_step_omits_step_param(self):
         """Issue #272: a range dashboard panel opts into ``adaptive_step`` so no
-        fixed ``step=`` is baked in; Elastic sizes the resolution to the view via
-        the dashboard time picker. A bare stepless command is rejected by ES
-        ("provide either [step] or all of [start], [end], and [buckets]"), so the
-        adaptive form binds ``start=?_tstart end=?_tend buckets=50`` (Kibana
-        materializes the params at render). The command still emits the ``step``
-        time column."""
+        fixed ``step=`` is baked in; the window instead binds to the dashboard
+        time picker through the ``?_tstart`` / ``?_tend`` placeholders.
+
+        The command must NOT be emitted bare. Elasticsearch rejects a stepless
+        PROMQL command at plan time ("provide either [step] or all of [start],
+        [end], and [buckets]"), and Kibana does not rescue it: it substitutes
+        ``?name`` placeholders, it does not synthesise absent command arguments.
+        The command still emits the ``step`` time column."""
         from observability_migration.adapters.source.grafana.panels import build_native_promql_query
         q = build_native_promql_query("up", index="metrics-*", kibana_type="line", adaptive_step=True)
         self.assertTrue(q.startswith("PROMQL index=metrics-*"))
         self.assertNotIn("step=", q)
         self.assertNotIn("time=?_tend", q)
-        # Adaptive-but-executable: bound to the time picker, not stepless.
-        self.assertIn("start=?_tstart end=?_tend buckets=50", q)
+        # Adaptive via placeholders Kibana actually binds — not bare.
+        self.assertIn("start=?_tstart", q)
+        self.assertIn("end=?_tend", q)
+        self.assertIn("buckets=", q)
         self.assertIn("value=(up)", q)
 
     def test_adaptive_step_ignored_for_instant_tile(self):
@@ -15982,6 +17081,20 @@ class NativePromqlTests(unittest.TestCase):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertFalse(can_use_native_promql("foo unless bar"))
 
+    def test_rejects_or_binary_op(self):
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(can_use_native_promql("foo or bar"))
+        self.assertFalse(can_use_native_promql(
+            "rate(http_requests_total[5m]) or vector(0)"
+        ))
+
+    def test_rejects_and_binary_op(self):
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(can_use_native_promql("foo and bar > 0"))
+        self.assertFalse(can_use_native_promql(
+            "up and on(instance) rate(http_requests_total[5m])"
+        ))
+
     def test_accepts_without_modifier(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertTrue(can_use_native_promql("sum without (instance) (rate(foo_total[5m]))"))
@@ -16099,8 +17212,11 @@ class NativePromqlTests(unittest.TestCase):
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
         self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), device", query)
         self.assertNotIn(", interface", query)
-        self.assertIn("EVAL Operational_state_UP = node_network_up_A", query)
-        self.assertIn("EVAL Physical_link_state = node_network_carrier_B", query)
+        # Legend-derived aliases appear directly in the STATS term (no separate EVAL
+        # needed when the metric is a plain aggregate with no formula).
+        self.assertIn("Operational_state_UP =", query)
+        self.assertIn("Physical_link_state =", query)
+        # The un-suffixed bare metric names must not appear as EVAL sources.
         self.assertNotIn("EVAL Operational_state_UP = node_network_up\n", query)
         self.assertEqual(result.query_ir["source_type"], "TS")
         self.assertEqual(result.target_query_contract["canonical_target"], "promql")
@@ -16147,7 +17263,7 @@ class NativePromqlTests(unittest.TestCase):
     def test_native_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum by (job) (rate(http_requests_total[5m]))")
         yaml_panel, _ = self.translate_panel(panel)
-        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "service.name")
+        self.assertEqual(yaml_panel["esql"]["breakdown"]["field"], "job")
 
     def test_native_postfix_grouped_timeseries_sets_breakdown(self):
         panel = self._make_panel("sum(rate(http_requests_total[5m])) by (handler)")
@@ -16400,6 +17516,35 @@ class NativePromqlTests(unittest.TestCase):
             ["cpu", "mem"],
         )
 
+    def test_native_esql_already_sorted_does_not_get_a_second_sort(self):
+        # The "Native ESQL Errors" shape from multi-pattern-coverage.json: a
+        # one-line raw ES|QL body that the dashboard author already terminated
+        # with the same trailing bucket sort the emitter would add.
+        panel = {
+            "type": "barchart",
+            "title": "Native ESQL Errors",
+            "datasource": {"type": "elasticsearch", "uid": "es1"},
+            "targets": [
+                {
+                    "refId": "A",
+                    "query": (
+                        'FROM metrics-* | WHERE service.name == "api" '
+                        "| STATS errors = SUM(http.server.errors) "
+                        "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name "
+                        "| SORT time_bucket ASC"
+                    ),
+                }
+            ],
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertEqual(
+            len(re.findall(r"SORT\s+time_bucket", query, re.IGNORECASE)),
+            1,
+            query,
+        )
+
     # ── datasource_index passthrough ──
 
     def test_custom_datasource_index_in_promql_query(self):
@@ -16446,40 +17591,36 @@ class NativePromqlTests(unittest.TestCase):
                 },
             ],
         }
-        import pathlib
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result, yaml_path = migrate.translate_dashboard(
-                dashboard,
-                tmpdir,
-                datasource_index="metrics-*",
-                esql_index="metrics-*",
-                rule_pack=self.rule_pack,
-                resolver=self.resolver,
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=self.resolver,
+        )
+        native_panels = [
+            pr for pr in result.panel_results
+            if pr.query_ir.get("family") == "native_promql"
+        ]
+        self.assertGreaterEqual(len(native_panels), 2, "CPU Rate and Up Count should use native PROMQL")
+        for pr in native_panels:
+            self.assertIn("PROMQL", pr.esql_query)
+            self.assertEqual(pr.query_ir.get("source_language"), "promql")
+
+        topk_panels = [pr for pr in result.panel_results if "TopK" in pr.title]
+        if topk_panels:
+            # Ungrouped topk now translates via single-bucket fallback
+            self.assertNotEqual(
+                topk_panels[0].status, "skipped",
+                "topk panel should not be skipped",
             )
-            native_panels = [
-                pr for pr in result.panel_results
-                if pr.query_ir.get("family") == "native_promql"
-            ]
-            self.assertGreaterEqual(len(native_panels), 2, "CPU Rate and Up Count should use native PROMQL")
-            for pr in native_panels:
-                self.assertIn("PROMQL", pr.esql_query)
-                self.assertEqual(pr.query_ir.get("source_language"), "promql")
 
-            topk_panels = [pr for pr in result.panel_results if "TopK" in pr.title]
-            if topk_panels:
-                # Ungrouped topk now translates via single-bucket fallback
-                self.assertNotEqual(
-                    topk_panels[0].status, "skipped",
-                    "topk panel should not be skipped",
-                )
-
-            yaml_doc = yaml.safe_load(pathlib.Path(yaml_path).read_text())
-            esql_panels = [
-                p for p in yaml_doc["dashboards"][0]["panels"]
-                if "esql" in p and "PROMQL" in p["esql"].get("query", "")
-            ]
-            self.assertGreaterEqual(len(esql_panels), 2)
+        yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
+        esql_panels = [
+            p for p in yaml_doc["dashboards"][0]["panels"]
+            if "esql" in p and "PROMQL" in p["esql"].get("query", "")
+        ]
+        self.assertGreaterEqual(len(esql_panels), 2)
 
     # ── RulePackConfig default ──
 
@@ -16491,6 +17632,79 @@ class NativePromqlTests(unittest.TestCase):
         rp = migrate.RulePackConfig()
         rp.native_promql = True
         self.assertTrue(rp.native_promql)
+
+
+class EnsureBucketSortIdempotenceTests(unittest.TestCase):
+    """``_ensure_bucket_sort`` must not append a sort that is already there.
+
+    The guard has to look at the last *pipeline stage*, not the last physical
+    line: raw ES|QL supplied by a dashboard author is routinely one long line
+    that already ends in ``| SORT time_bucket ASC``.
+    """
+
+    STATS = (
+        "STATS errors = SUM(http.server.errors) "
+        "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name"
+    )
+
+    def _sort_count(self, esql):
+        return len(re.findall(r"SORT\s+time_bucket", esql, re.IGNORECASE))
+
+    def test_one_line_query_already_sorted_is_left_alone(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC"
+        self.assertEqual(panels._ensure_bucket_sort(esql), esql)
+
+    def test_multiline_query_already_sorted_is_left_alone(self):
+        esql = f"FROM metrics-*\n| {self.STATS}\n| SORT time_bucket ASC"
+        self.assertEqual(panels._ensure_bucket_sort(esql), esql)
+
+    def test_unsorted_query_still_gets_a_sort(self):
+        esql = f"FROM metrics-* | {self.STATS}"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 1)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_whitespace_and_case_variants_are_recognised_as_equivalent(self):
+        for tail in (
+            "|SORT time_bucket ASC",
+            "|   sort   time_bucket   asc   ",
+            "| Sort\n  time_bucket\n  Asc",
+            # ES|QL treats an omitted direction as ASC, so this is the same clause.
+            "| SORT time_bucket",
+        ):
+            with self.subTest(tail=tail):
+                esql = f"FROM metrics-* | {self.STATS} {tail}"
+                self.assertEqual(
+                    self._sort_count(panels._ensure_bucket_sort(esql)), 1
+                )
+
+    def test_descending_trailing_sort_still_gets_the_ascending_sort(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket DESC"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_trailing_sort_on_another_column_still_gets_the_bucket_sort(self):
+        esql = f"FROM metrics-* | {self.STATS} | SORT service.name ASC"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 1)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_compound_trailing_sort_still_gets_the_bucket_sort(self):
+        # ``SORT time_bucket ASC, service.name`` is a different clause: it also
+        # orders within the bucket, so it is not the sort we would have added.
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC, service.name"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
+
+    def test_a_sort_that_is_not_the_last_stage_still_gets_the_bucket_sort(self):
+        # The gauge "penultimate bucket" shape deliberately carries two sorts;
+        # a trailing sort earlier in the pipeline must not suppress the append.
+        esql = f"FROM metrics-* | {self.STATS} | SORT time_bucket ASC | LIMIT 10"
+        result = panels._ensure_bucket_sort(esql)
+        self.assertEqual(self._sort_count(result), 2)
+        self.assertTrue(result.rstrip().endswith("| SORT time_bucket ASC"), result)
 
 
 class TestMigrationResultTranslationError(unittest.TestCase):
@@ -16515,7 +17729,7 @@ class TestMigrationResultTranslationError(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
         self.addCleanup(os.unlink, path)
-        report.save_detailed_report([result], [], path)
+        report.save_detailed_report([result], path)
         with open(path) as f:
             data = json.loads(f.read())
         dashboard_entry = data["dashboards"][0]
@@ -16921,7 +18135,7 @@ class TestMatcherAliasSuffixVariableFilters(unittest.TestCase):
         )
 
         self.assertNotIn("AVG_OVER_TIME(nginx_ingress_controller_requests, 5m)", result.esql_query)
-        self.assertIn("RATE(nginx_ingress_controller_requests, 5m)", result.esql_query)
+        self.assertIn("RATE(nginx_ingress_controller_requests)", result.esql_query)
 
 
 class TestScalarAggregationHoisting(unittest.TestCase):
@@ -16965,15 +18179,27 @@ class TestScalarAggregationHoisting(unittest.TestCase):
         r = self._translate('sum(8 * rate(http_requests_total[5m])) by (job)')
         self.assertNotEqual(r.feasibility, "not_feasible", f"warnings={r.warnings}")
 
-    def test_true_two_series_still_not_feasible(self):
-        """max(A / B) with two distinct metrics must remain not_feasible."""
+    def test_two_series_ratio_divides_per_document(self):
+        """max(A / B) is translated, but only as a per-document division.
+
+        Superseded the old blanket refusal. Both operands are node_filesystem
+        series with no on()/ignoring(), so PromQL matches on all labels and they
+        share a document per label-set; dividing per document and then taking
+        MAX is exactly max(A / B).
+
+        What must never happen -- substituting MAX(A) / MAX(B) -- is asserted
+        directly, so the guarantee the old test protected is still enforced.
+        """
         r = self._translate(
             'max(node_filesystem_size_bytes / node_filesystem_avail_bytes)'
         )
-        self.assertEqual(
-            r.feasibility, "not_feasible",
-            f"Two-series ratio should stay not_feasible; got:\n{r.esql_query}",
+        self.assertEqual(r.feasibility, "feasible", r.esql_query)
+        query = (r.esql_query or "").replace("\n", " ")
+        self.assertRegex(
+            query,
+            r"MAX\(\s*\(?node_filesystem_size_bytes\s*/\s*node_filesystem_avail_bytes",
         )
+        self.assertNotRegex(query, r"MAX\([^)]*\)\s*/\s*MAX\(")
 
 
 class TestUnaryMinusOverBinaryExpr(unittest.TestCase):
@@ -17180,16 +18406,27 @@ class TestJoinAggScalarDiv(unittest.TestCase):
         self.assertEqual(r.feasibility, "not_feasible")
         self.assertTrue(any("vector-matching join" in w for w in r.warnings), r.warnings)
 
-    def test_sum_over_two_series_still_not_feasible(self):
-        """sum(A / B) with two real series must remain not_feasible."""
+    def test_sum_over_two_series_divides_per_document(self):
+        """sum(A / B) between two real series is translated per document.
+
+        Superseded the blanket refusal: with no on()/ignoring() PromQL matches
+        on all labels, so the operands are the same node_filesystem series and
+        share a document per label-set. Dividing per document and summing the
+        result is exactly sum(A / B).
+
+        The substitution this guarded against -- SUM(A) / SUM(B) -- is asserted
+        against directly, so that protection is retained.
+        """
         r = self._translate(
             "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)"
         )
-        self.assertEqual(
-            r.feasibility,
-            "not_feasible",
-            "per-element division between two real series should stay not_feasible",
+        self.assertEqual(r.feasibility, "feasible", r.esql_query)
+        query = (r.esql_query or "").replace("\n", " ")
+        self.assertRegex(
+            query,
+            r"SUM\(\s*\(?node_filesystem_avail_bytes\s*/\s*node_filesystem_size_bytes",
         )
+        self.assertNotRegex(query, r"SUM\([^)]*\)\s*/\s*SUM\(")
 
 
 class TestAnchoredVariableMatcherQuality(unittest.TestCase):

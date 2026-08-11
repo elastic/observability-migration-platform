@@ -1,6 +1,0 @@
-title: Nodes
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: kube_node_info_count
-warning: Approximated nested count(count()) as COUNT_DISTINCT(k8s.node.name)

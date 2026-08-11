@@ -21,6 +21,7 @@ VERIFIER_PARENT = ROOT / "parity-rig"
 if str(VERIFIER_PARENT) not in sys.path:
     sys.path.insert(0, str(VERIFIER_PARENT))
 
+from conftest import write_dashboard_ir_artifact  # noqa: E402
 from verifier import visual_regression as vr  # noqa: E402
 
 # --------------------------------------------------------------------- #
@@ -308,54 +309,49 @@ class TestListGrafanaPanels:
 
 
 # --------------------------------------------------------------------- #
-#  Kibana panel discovery from migration YAML                           #
+#  Kibana panel discovery from the migration's IR export                #
 # --------------------------------------------------------------------- #
 
 
 class TestListKibanaPanelsFromMigration:
-    def test_reads_yaml_dashboards(self, tmp_path):
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "dash.yaml").write_text(
-            """
-dashboards:
-  - title: My Dashboard
-    panels:
-      - id: panel-a
-        title: First panel
-        type: lens
-      - id: panel-b
-        title: Second panel
-        type: lens
-      - id: panel-c
-        title: ""  # untitled is skipped
-        type: lens
-"""
+    def test_reads_ir_dashboards(self, tmp_path):
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "My Dashboard",
+                "panels": [
+                    {"title": "First panel", "esql": {"type": "line", "query": "TS a"}},
+                    {"title": "Second panel", "esql": {"type": "line", "query": "TS b"}},
+                    {"title": "", "esql": {"type": "line", "query": "TS c"}},
+                ],
+            },
         )
         panels = vr.list_kibana_panels_from_migration(tmp_path)
-        assert {p["id"] for p in panels} == {"panel-a", "panel-b"}
-        titles = {p["title"] for p in panels}
-        assert titles == {"First panel", "Second panel"}
+        titles = [p["title"] for p in panels]
+        # The untitled panel is skipped, as it was when this read the YAML.
+        assert titles == ["First panel", "Second panel"]
+        # The IR carries no Kibana panel UUID, so ``id`` stays empty until the
+        # compiled-NDJSON backfill supplies one. The IR's own ``panel_id`` is a
+        # migration id and must NOT leak into the Kibana solo-panel URL.
+        assert {p["id"] for p in panels} == {""}
+        assert {p["type"] for p in panels} == {"line"}
 
-    def test_returns_empty_list_when_no_yaml(self, tmp_path):
+    def test_returns_empty_list_when_no_ir_artifacts(self, tmp_path):
         assert vr.list_kibana_panels_from_migration(tmp_path) == []
 
     def test_backfills_ids_from_compiled_ndjson(self, tmp_path):
-        """The YAML doesn't carry Kibana panel UUIDs. We cross-reference
+        """The IR export doesn't carry Kibana panel UUIDs. We cross-reference
         with the compiled NDJSON's ``panelsJSON.panelIndex`` keyed by
         title so the Kibana solo-panel URL builder has a valid id."""
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "dash.yaml").write_text(
-            """
-dashboards:
-  - name: My dash
-    panels:
-      - title: Panel A
-        type: lens
-      - title: Panel B
-        type: markdown
-"""
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "My dash",
+                "panels": [
+                    {"title": "Panel A", "esql": {"type": "line", "query": "TS a"}},
+                    {"title": "Panel B", "markdown": {"content": "notes"}},
+                ],
+            },
         )
         compiled = tmp_path / "compiled" / "my_dash"
         compiled.mkdir(parents=True)
@@ -382,32 +378,44 @@ dashboards:
         assert by_title["Panel B"]["id"] == "uuid-b"
 
     def test_recurses_into_section_panels(self, tmp_path):
-        """Migration YAML nests panels inside ``section.panels`` when
-        the source dashboard had Grafana rows. Discovery must walk
-        these so we don't silently lose 90%+ of the panel set on
-        section-heavy dashboards like express-prometheus-middleware."""
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "dash.yaml").write_text(
-            """
-dashboards:
-  - name: With sections
-    panels:
-      - title: HTTP Requests
-        section:
-          panels:
-            - title: Count by class
-              type: markdown
-            - title: Request count
-              type: lens
-      - title: System Metrics
-        section:
-          panels:
-            - title: CPU usage
-              type: lens
-      - title: Top-level chart
-        type: lens
-"""
+        """The IR nests panels inside a section's ``children`` when the
+        source dashboard had Grafana rows. Discovery must walk these so
+        we don't silently lose 90%+ of the panel set on section-heavy
+        dashboards like express-prometheus-middleware."""
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "With sections",
+                "panels": [
+                    {
+                        "title": "HTTP Requests",
+                        "section": {
+                            "panels": [
+                                {"title": "Count by class", "markdown": {"content": "x"}},
+                                {
+                                    "title": "Request count",
+                                    "esql": {"type": "line", "query": "TS a"},
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "title": "System Metrics",
+                        "section": {
+                            "panels": [
+                                {
+                                    "title": "CPU usage",
+                                    "esql": {"type": "line", "query": "TS b"},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "title": "Top-level chart",
+                        "esql": {"type": "line", "query": "TS c"},
+                    },
+                ],
+            },
         )
         panels = vr.list_kibana_panels_from_migration(tmp_path)
         titles = {p["title"] for p in panels}
@@ -420,6 +428,38 @@ dashboards:
         # Section containers themselves are excluded
         assert "HTTP Requests" not in titles
         assert "System Metrics" not in titles
+
+    def test_walks_multiple_ir_artifacts_in_filename_order(self, tmp_path):
+        """Order is the pairing contract, so it must be deterministic.
+
+        ``pair_panels_by_position`` pairs position N on the Grafana side with
+        position N here, so a non-deterministic artifact walk would silently
+        mis-pair every panel.
+        """
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {"name": "B dash", "panels": [{"title": "b1", "esql": {"query": "TS b"}}]},
+            stem="b_dash",
+        )
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {"name": "A dash", "panels": [{"title": "a1", "esql": {"query": "TS a"}}]},
+            stem="a_dash",
+        )
+        panels = vr.list_kibana_panels_from_migration(tmp_path)
+        assert [p["title"] for p in panels] == ["a1", "b1"]
+
+    def test_skips_unparseable_ir_artifact_without_failing_the_run(self, tmp_path):
+        ir_dir = tmp_path / "ir"
+        ir_dir.mkdir()
+        (ir_dir / "broken.ir.json").write_text("{not json", encoding="utf-8")
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {"name": "Good", "panels": [{"title": "ok", "esql": {"query": "TS a"}}]},
+            stem="good",
+        )
+        panels = vr.list_kibana_panels_from_migration(tmp_path)
+        assert [p["title"] for p in panels] == ["ok"]
 
 
 # --------------------------------------------------------------------- #
@@ -845,6 +885,126 @@ class TestPositionPairing:
         ]
 
 
+class TestEmptyDiscoveryIsFatal:
+    """Zero discovered panels must fail loudly.
+
+    Before this guard, an empty ``ir/`` directory produced a green run
+    printing ``captured=0 skipped=0 median=0.0000`` and exiting 0 — a
+    missing migration output was indistinguishable from a flawless
+    visual match.
+    """
+
+    def test_pairing_rejects_both_sides_empty(self):
+        """``([], [], [])`` cannot express "nothing to pair" vs "paired
+        perfectly", so the ambiguity is raised instead of returned."""
+        with pytest.raises(vr.EmptyPanelDiscoveryError) as excinfo:
+            vr.pair_panels_by_position([], [])
+        assert "both sides discovered 0 panels" in str(excinfo.value)
+
+    def test_pairing_names_the_empty_side_when_kibana_is_empty(self):
+        graf = [{"id": 1, "title": "A", "type": "stat"}]
+        with pytest.raises(vr.EmptyPanelDiscoveryError) as excinfo:
+            vr.pair_panels_by_position(graf, [])
+        message = str(excinfo.value)
+        assert "Kibana side discovered 0 panels" in message
+        assert "migration artifacts" in message
+
+    def test_pairing_names_the_empty_side_when_grafana_is_empty(self):
+        kib = [{"id": "u-1", "title": "A", "type": None}]
+        with pytest.raises(vr.EmptyPanelDiscoveryError) as excinfo:
+            vr.pair_panels_by_position([], kib)
+        assert "Grafana side discovered 0 panels" in str(excinfo.value)
+
+    def test_run_dashboard_raises_when_migration_artifacts_missing(self, tmp_path):
+        """Grafana has panels; the migration output does not exist."""
+        fake_resp = mock.Mock()
+        fake_resp.raise_for_status = mock.Mock()
+        fake_resp.json = mock.Mock(
+            return_value={
+                "dashboard": {
+                    "panels": [{"id": 10, "title": "Alpha", "type": "timeseries"}]
+                }
+            }
+        )
+        session_mock = mock.Mock(get=mock.Mock(return_value=fake_resp))
+
+        with mock.patch.object(vr.requests, "Session", return_value=session_mock):
+            with pytest.raises(vr.EmptyPanelDiscoveryError) as excinfo:
+                vr.run_dashboard(
+                    grafana_url="http://localhost:23000",
+                    grafana_uid="g-uid",
+                    grafana_slug="g-slug",
+                    kibana_url="https://kb.example",
+                    kibana_dashboard_id="k-id",
+                    migration_out=tmp_path / "missing-migration",
+                    output_dir=tmp_path / "out",
+                )
+
+        message = str(excinfo.value)
+        # Names the directory searched and what was expected there.
+        assert str(tmp_path / "missing-migration" / "ir") in message
+        assert "0 Kibana panels" in message
+        assert "an error" in message
+
+    def test_run_dashboard_raises_when_grafana_dashboard_is_empty(self, tmp_path):
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "Migrated",
+                "panels": [{"title": "Alpha", "esql": {"type": "line", "query": "TS a"}}],
+            },
+        )
+        fake_resp = mock.Mock()
+        fake_resp.raise_for_status = mock.Mock()
+        fake_resp.json = mock.Mock(return_value={"dashboard": {"panels": []}})
+        session_mock = mock.Mock(get=mock.Mock(return_value=fake_resp))
+
+        with mock.patch.object(vr.requests, "Session", return_value=session_mock):
+            with pytest.raises(vr.EmptyPanelDiscoveryError) as excinfo:
+                vr.run_dashboard(
+                    grafana_url="http://localhost:23000",
+                    grafana_uid="g-uid",
+                    grafana_slug="g-slug",
+                    kibana_url="https://kb.example",
+                    kibana_dashboard_id="k-id",
+                    migration_out=tmp_path,
+                    output_dir=tmp_path / "out",
+                )
+
+        message = str(excinfo.value)
+        assert "0 Grafana panels" in message
+        assert "/api/dashboards/uid/g-uid" in message
+
+    def test_main_exits_nonzero_instead_of_reporting_median_zero(
+        self, tmp_path, capsys
+    ):
+        report_path = tmp_path / "out" / "report.json"
+        argv = [
+            "--migration-out", str(tmp_path / "missing-migration"),
+            "--grafana-uid", "g-uid",
+            "--grafana-slug", "g-slug",
+            "--kibana-url", "https://kb.example",
+            "--kibana-dash-id", "k-id",
+            "--output-dir", str(tmp_path / "out"),
+            "--report", str(report_path),
+        ]
+        with mock.patch.object(
+            vr, "list_grafana_panels",
+            return_value=[{"id": 10, "title": "Alpha", "type": "timeseries"}],
+        ):
+            rc = vr.main(argv)
+
+        assert rc == vr.EXIT_NOTHING_TO_MEASURE
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "ERROR:" in err
+        # The green summary line ("captured=... skipped=... median=...") is
+        # not emitted at all; only the error is.
+        assert "skipped=" not in err
+        # A vacuous report must not be written either.
+        assert not report_path.exists()
+
+
 class TestListGrafanaPanelsCanonicalOrder:
     """U2: ``list_grafana_panels`` must walk Grafana in the same
     canonical order the migration uses
@@ -929,27 +1089,45 @@ class TestRunDashboardEndToEnd:
     """The happy path: 2 paired panels, both capture cleanly, diff scores
     flow through to the aggregate."""
 
-    def _make_migration_yaml(self, tmp_path: Path) -> Path:
-        yaml_dir = tmp_path / "yaml"
-        yaml_dir.mkdir()
-        (yaml_dir / "dash.yaml").write_text(
-            """
-dashboards:
-  - title: Migrated
-    panels:
-      - id: kib-panel-1
-        title: Alpha
-        type: lens
-      - id: kib-panel-2
-        title: Beta
-        type: lens
-"""
+    def _make_migration_artifacts(self, tmp_path: Path) -> Path:
+        """Write the two artifacts panel discovery reads: IR + compiled NDJSON.
+
+        The IR supplies titles and order; the compiled NDJSON supplies the
+        Kibana panel UUIDs the solo-panel URL needs (the IR has no Kibana id).
+        """
+        write_dashboard_ir_artifact(
+            tmp_path,
+            {
+                "name": "Migrated",
+                "panels": [
+                    {"title": "Alpha", "esql": {"type": "line", "query": "TS a"}},
+                    {"title": "Beta", "esql": {"type": "metric", "query": "TS b"}},
+                ],
+            },
+        )
+        compiled = tmp_path / "compiled" / "migrated"
+        compiled.mkdir(parents=True)
+        panels_json = json.dumps([
+            {
+                "panelIndex": "kib-panel-1",
+                "embeddableConfig": {"attributes": {"title": "Alpha"}},
+            },
+            {
+                "panelIndex": "kib-panel-2",
+                "embeddableConfig": {"attributes": {"title": "Beta"}},
+            },
+        ])
+        (compiled / "compiled_dashboards.ndjson").write_text(
+            json.dumps({
+                "type": "dashboard",
+                "attributes": {"panelsJSON": panels_json},
+            }) + "\n"
         )
         return tmp_path
 
     def test_pairs_titles_captures_diffs_aggregates(self, tmp_path):
         out_dir = tmp_path / "out"
-        migration_out = self._make_migration_yaml(tmp_path)
+        migration_out = self._make_migration_artifacts(tmp_path)
 
         # Fake Grafana API
         fake_resp = mock.Mock()
@@ -1025,7 +1203,7 @@ dashboards:
         excluded from the score aggregate. The Grafana side still
         captures cleanly."""
         out_dir = tmp_path / "out"
-        migration_out = self._make_migration_yaml(tmp_path)
+        migration_out = self._make_migration_artifacts(tmp_path)
 
         fake_resp = mock.Mock()
         fake_resp.raise_for_status = mock.Mock()

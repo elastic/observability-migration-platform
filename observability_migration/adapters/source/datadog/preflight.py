@@ -26,7 +26,7 @@ from observability_migration.core.verification.field_capabilities import (
     assess_field_usage,
 )
 
-from .field_map import FieldMapProfile
+from .field_map import FieldMapProfile, detect_metric_layout
 from .models import LogAttributeFilter, LogBoolOp, LogNot, LogRange, LogWildcard, ScopeBoolOp, TagFilter
 
 ESQL_DEFAULT_ROW_LIMIT = 1000
@@ -449,6 +449,38 @@ def build_target_readiness_contract(
     from observability_migration.core.metric_mapping.reporting import attach_metric_map_to_contract
 
     attach_metric_map_to_contract(contract, field_map)
+    detected_layout = detect_metric_layout(getattr(field_map, "metric_field_caps", {}) or {})
+    planned_profile = {"prometheus_metrics": "prometheus"}.get(field_map.name, field_map.name)
+    contract["detected_schema_profile"] = detected_layout
+    contract["profile_mismatch"] = bool(detected_layout and planned_profile != detected_layout)
+    metric_map = getattr(field_map, "metric_map", {}) or {}
+    if field_map.name in {"otel", "default"} and not metric_map:
+        contract["operator_guidance"] = {
+            "next_step": (
+                "Built-in Datadog 'otel' maps tags/attributes, not Datadog metric "
+                "names to OTel semantic-convention metric names. If target metric "
+                "names changed, add --metric-map-file and rerun --preflight."
+            )
+        }
+    elif field_map.name == "elastic_agent":
+        contract["operator_guidance"] = {
+            "next_step": (
+                "Built-in Datadog 'elastic_agent' covers common system metrics only. "
+                "If this dashboard uses custom app metrics, make sure your "
+                "--metric-map-file covers them too."
+            )
+        }
+    if contract["profile_mismatch"] and detected_layout:
+        contract["operator_guidance"] = {
+            "likely_target_layout": detected_layout,
+            "suggested_field_profile": detected_layout,
+            "next_step": (
+                f"Live field caps for '{field_map.metric_index}' look like the "
+                f"Datadog '{detected_layout}' profile, not '{field_map.name}'. "
+                f"Re-run with --field-profile {detected_layout} or the translated "
+                "metric and label fields will not match the target."
+            ),
+        }
     return contract
 
 

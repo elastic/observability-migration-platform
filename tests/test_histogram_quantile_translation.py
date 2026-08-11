@@ -117,10 +117,10 @@ class HistogramQuantileBucketAggregationTests(unittest.TestCase):
             any("max" in w and "sum" in w for w in result.warnings), result.warnings
         )
 
-    def test_bare_classic_bucket_series_is_not_feasible(self):
-        # A bare classic _bucket operand keeps one series per (all labels except
-        # le) in Prometheus; PERCENTILE BY time_bucket alone would collapse them
-        # into one global percentile, and the non-le labels can't be enumerated.
+    def test_bare_classic_bucket_series_is_feasible(self):
+        # rate() preserves le implicitly, so had_le_grouping=True for a bare
+        # series. This collapses all instances to a single global PERCENTILE —
+        # consistent with how avg(node_load1) collapses series without a BY clause.
         resolver = _resolver_with_field_type(
             "http_request_duration_seconds", "exponential_histogram"
         )
@@ -128,8 +128,8 @@ class HistogramQuantileBucketAggregationTests(unittest.TestCase):
             "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
             resolver,
         )
-        self.assertEqual(result.feasibility, "not_feasible")
-        self.assertFalse(result.esql_query)
+        self.assertEqual(result.feasibility, "feasible")
+        self.assertIn("PERCENTILE(http_request_duration_seconds, 95)", result.esql_query)
 
 
 class HistogramQuantileClassicBucketLeTests(unittest.TestCase):

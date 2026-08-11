@@ -30,6 +30,7 @@ from observability_migration.targets.kibana.emit.layout import (
     apply_style_guide_layout,
 )
 
+from .curated_packs import load_curated_pack
 from .display import enrich_panel_display
 from .field_map import FieldMapProfile
 from .models import (
@@ -43,6 +44,7 @@ from .models import (
 GRID_COLUMNS = 48
 KIBANA_MIN_VERSION = "9.5.0"
 MIN_PANEL_WIDTH = 8
+_UNRESOLVABLE_TEMPLATE_VARS = {"scope"}
 
 CHART_TYPE_MAP: dict[str, str] = {
     "xy": "line",
@@ -74,8 +76,176 @@ _DATADOG_PRIVATE_PANEL_KEYS = (
     "_dd_type",
     "_dd_display_type",
     "_dd_widget_id",
+    "_curated_match_title",
     "_markdown_role",
 )
+_NOOP_SCOPE_METRIC_WARNING = (
+    "Datadog $scope template variable cannot be represented by a "
+    "single Kibana control and was omitted; recreate the scope "
+    "filters manually in Kibana"
+)
+_NOOP_SCOPE_LOG_WARNING = (
+    "Log filter with template variable '$scope' was omitted because "
+    "Datadog log template substitutions cannot be bound exactly in the "
+    "translated query; recreate the filter in Kibana"
+)
+
+
+PANEL_PRESENTATION_KINDS = ("markdown", "esql", "lens", "links", "image")
+
+
+def _quote_esql_identifier(name: str) -> str:
+    value = str(name or "").strip()
+    if not value:
+        return value
+    if value.startswith("`") and value.endswith("`"):
+        return value
+    if re.fullmatch(r"[A-Za-z_][\w.]*", value):
+        return value
+    return f"`{value}`"
+
+
+def _panel_presentation_kind(panel: dict[str, Any]) -> str:
+    """Return a leaf panel's presentation block key (``markdown``, ``esql``, ...).
+
+    Curated packs select notes by kind rather than title because emitted note
+    titles are generated (``Datadog note <widget id>`` / ``Datadog note <ordinal>``)
+    and are therefore not stable pack keys.
+    """
+    for kind in PANEL_PRESENTATION_KINDS:
+        if kind in panel:
+            return kind
+    return ""
+
+
+def _curated_spec_candidates(
+    sec_panels: list[dict[str, Any]],
+    layout_entry: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Leaf panels a curated pack spec selects, in section order (before ``nth``).
+
+    A spec constrains the leaf title when ``title`` is given and non-empty, and
+    the presentation kind when ``kind`` is given; an omitted selector matches
+    anything, so ``kind: markdown`` + ``nth: 1`` means "the second markdown panel
+    in this section" regardless of its generated title.
+
+    Curated packs may later polish a matched panel's visible title, so title
+    matching keys off the stable pre-polish emitted title when present.
+    """
+    want_title = str(layout_entry.get("title", "") or "")
+    display_title = str(layout_entry.get("display_title", "") or "")
+    want_kind = str(layout_entry.get("kind", "") or "")
+    candidates: list[dict[str, Any]] = []
+    for leaf in _iter_leaf_panels(sec_panels):
+        match_title = str(leaf.get("_curated_match_title") or leaf.get("title", "") or "")
+        visible_title = str(leaf.get("title", "") or "")
+        if want_title and match_title != want_title and visible_title != display_title:
+            continue
+        if want_kind and _panel_presentation_kind(leaf) != want_kind:
+            continue
+        candidates.append(leaf)
+    return candidates
+
+
+def _warn_uncovered_curated_panels(
+    dashboard_name: str,
+    section_title: str,
+    sec_panels: list[dict[str, Any]],
+    covered: set[int],
+    title_to_result: dict[str, TranslationResult],
+) -> list[str]:
+    """Report and self-heal a curated section that left panels unpositioned.
+
+    A curated pack only moves the panels its specs match. When a spec stops
+    matching (emitted titles changed, a widget was added upstream), the leftover
+    panels keep auto-generated coordinates and can collide with the curated ones,
+    so the miss is surfaced as an operator-visible warning on the affected panels
+    and the generic overlap resolver is re-applied to the section. With a complete
+    pack this is a no-op.
+    """
+    uncovered = [leaf for leaf in _iter_leaf_panels(sec_panels) if id(leaf) not in covered]
+    if not uncovered:
+        return []
+    titles = [str(leaf.get("title", "") or "(untitled)") for leaf in uncovered]
+    detail = (
+        f"Curated layout pack for dashboard '{dashboard_name}' does not cover "
+        f"{len(uncovered)} panel(s) in section '{section_title}': {', '.join(titles)}. "
+        "Those panels kept their auto-generated positions and the generic overlap "
+        "resolver was re-applied, so this section no longer matches the curated "
+        "design. Add a matching panel spec (title, or kind + nth) to the pack."
+    )
+    for title in titles:
+        result = title_to_result.get(title)
+        if result is None:
+            continue
+        if detail not in result.warnings:
+            result.warnings.append(detail)
+    _resolve_overlaps(sec_panels)
+    return titles
+
+
+def _apply_curated_layout(
+    doc: dict[str, Any],
+    pack: dict[str, Any],
+    results: list[TranslationResult] | None = None,
+) -> None:
+    """Apply size/position/title overrides from a curated Datadog pack.
+
+    Each ``sections[].panels[]`` spec selects one leaf panel by ``title`` and/or
+    ``kind`` plus ``nth`` (see :func:`_curated_spec_candidates`). Panels no spec
+    matched are reported and de-overlapped by
+    :func:`_warn_uncovered_curated_panels`, so a partially covered pack can never
+    emit overlapping panels.
+    """
+    title_to_result: dict[str, TranslationResult] = {}
+    for result in results or []:
+        title = str(result.title or "")
+        if title:
+            title_to_result.setdefault(title, result)
+
+    for dashboard in doc.get("dashboards", []):
+        dashboard_name = str(dashboard.get("name", "") or "")
+        panels = dashboard.get("panels", [])
+        for section_spec in pack.get("sections", []):
+            sec_title = section_spec.get("title", "")
+            section_panel = next(
+                (p for p in panels if p.get("title") == sec_title and "section" in p),
+                None,
+            )
+            if section_panel is None:
+                continue
+            if "collapsed" in section_spec:
+                section_panel["section"]["collapsed"] = section_spec["collapsed"]
+            sec_panels = section_panel["section"].get("panels", [])
+            covered: set[int] = set()
+            for layout_entry in section_spec.get("panels", []):
+                nth = int(layout_entry.get("nth", 0))
+                candidates = _curated_spec_candidates(sec_panels, layout_entry)
+                if nth < 0 or nth >= len(candidates):
+                    continue
+                leaf = candidates[nth]
+                current_title = str(leaf.get("title", "") or "")
+                result = title_to_result.get(current_title)
+                if "size" in layout_entry:
+                    leaf["size"] = dict(layout_entry["size"])
+                if "position" in layout_entry:
+                    leaf["position"] = dict(layout_entry["position"])
+                display_title = str(layout_entry.get("display_title", "") or "").strip()
+                if display_title:
+                    leaf["title"] = display_title
+                    if result is not None:
+                        result.title = display_title
+                        if title_to_result.get(current_title) is result:
+                            title_to_result.pop(current_title, None)
+                        title_to_result[display_title] = result
+                covered.add(id(leaf))
+            _warn_uncovered_curated_panels(
+                dashboard_name,
+                str(sec_title),
+                sec_panels,
+                covered,
+                title_to_result,
+            )
 
 
 def _build_dashboard_yaml_doc(
@@ -96,7 +266,8 @@ def _build_dashboard_yaml_doc(
     """
     panels = []
     result_map = {r.widget_id: r for r in results}
-    _warn_mixed_template_variable_usage(dashboard, result_map)
+    _suppress_noop_scope_warnings(dashboard, result_map)
+    _warn_mixed_template_variable_usage(dashboard, result_map, field_map)
 
     for widget in dashboard.widgets:
         result = result_map.get(widget.id)
@@ -124,7 +295,6 @@ def _build_dashboard_yaml_doc(
             p.pop("position", None)
 
     _resolve_overlaps(non_section)
-    _strip_datadog_private_keys(panels)
 
     doc: dict[str, Any] = {
         "dashboards": [
@@ -159,7 +329,33 @@ def _build_dashboard_yaml_doc(
         doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(doc)
+
+    curated_pack = load_curated_pack(dashboard.title)
+    if curated_pack:
+        _apply_curated_layout(doc, curated_pack, results)
+
+    _strip_datadog_private_keys(panels)
+
     return doc
+
+
+def dashboard_yaml_from_ir(dashboard_ir: DashboardIR) -> str:
+    """Serialise a :class:`DashboardIR` to its kb-dashboard YAML export.
+
+    The single place that knows the dump options for the derived document, so
+    every caller that wants to *read* the export (inspection helpers, the audit
+    trace generator, tests) gets byte-identical output.
+
+    This is deliberately *not* on the migration path: the run's artifacts are
+    ``native/`` + ``ir/`` (see ``docs/architecture/asset-model.md``), so the
+    string is built only where something actually consumes it.
+    """
+    return yaml.dump(
+        {"dashboards": [dashboard_ir.to_yaml_dict()]},
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+    )
 
 
 def generate_dashboard_yaml(
@@ -176,9 +372,12 @@ def generate_dashboard_yaml(
 
     IR-first Phase 2: the string is a *derived export* of the semantic
     :class:`DashboardIR` (see :func:`generate_dashboard_artifacts`), not an
-    independent rendering of the source widgets.
+    independent rendering of the source widgets. It is an inspection helper --
+    the migration run writes ``native/`` + ``ir/`` and never this string -- so
+    it derives the document on demand rather than making every migrated
+    dashboard pay for a serialisation nobody reads.
     """
-    _yaml_string, _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+    _native, _stats, dashboard_ir = generate_dashboard_artifacts(
         dashboard,
         results,
         data_view,
@@ -187,7 +386,7 @@ def generate_dashboard_yaml(
         logs_index=logs_index,
         field_map=field_map,
     )
-    return _yaml_string
+    return dashboard_yaml_from_ir(dashboard_ir)
 
 
 def generate_dashboard_artifacts(
@@ -199,22 +398,31 @@ def generate_dashboard_artifacts(
     logs_dataset_filter: str = "",
     logs_index: str = "logs-*",
     field_map: FieldMapProfile | None = None,
-) -> tuple[str, NativeDashboard, dict[str, Any], DashboardIR]:
-    """Generate YAML, NativeDashboard, and the semantic DashboardIR.
+    id_disambiguator: str = "",
+) -> tuple[NativeDashboard, dict[str, Any], DashboardIR]:
+    """Generate the NativeDashboard and the semantic DashboardIR.
 
     IR-first Phase 2 (mirrors Grafana's ``translate_dashboard``): the
     per-widget translators still assemble a kb-dashboard-core dict (the
     expensive, well-tested part of the pipeline), then that dict is
-    converted to a :class:`DashboardIR` *before* the native mapping and
-    the YAML dump. From that point on the dict is no longer the source of
-    truth -- both the typed Dashboards API payload
-    (``native_dashboard_from_ir``) and the on-disk YAML
+    converted to a :class:`DashboardIR` *before* the native mapping. From
+    that point on the dict is no longer the source of truth -- both the typed
+    Dashboards API payload (``native_dashboard_from_ir``) and the YAML export
     (``DashboardIR.to_yaml_dict``) are derived from the same IR, so they
     cannot drift from each other.
 
-    Returns ``(yaml_string, native_dashboard, native_stats, dashboard_ir)``
+    Returns ``(native_dashboard, native_stats, dashboard_ir)``
     where ``native_stats`` has ``mapped``/``unmapped``/``sections``/
     ``controls``/``reasons`` (see :class:`NativeMappingCounts`).
+
+    No YAML string is returned: dashboard YAML stopped being an artifact
+    format, so anything that still wants to read the derived document asks
+    for it explicitly via :func:`dashboard_yaml_from_ir`.
+
+    ``id_disambiguator`` comes from the run's artifact-stem allocation and is
+    non-empty only when another dashboard in the run has the same title; it
+    keeps the two dashboards off one Kibana dashboard id (see
+    ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``).
     """
     doc = _build_dashboard_yaml_doc(
         dashboard,
@@ -229,6 +437,17 @@ def generate_dashboard_artifacts(
     dashboard_ir = DashboardIR.from_yaml_dict(doc["dashboards"][0], source_adapter="datadog")
     dashboard_ir.uid = str(dashboard.id or "")
     dashboard_ir.title = dashboard.title or dashboard_ir.title
+    # Set before `native_dashboard_from_ir`: it is what keeps two same-titled
+    # dashboards off one Kibana dashboard id (the upsert key).
+    dashboard_ir.id_disambiguator = str(id_disambiguator or "")
+    # The YAML document shape carries neither tags nor source lineage, so both
+    # have to come off the normalized dashboard: otherwise they are absent from
+    # ir/<stem>.ir.json, and because native_dashboard_from_ir reads tags
+    # straight off the IR they are also stripped from the dashboard this run
+    # uploads. Datadog tags keep their source ``key:value`` form rather than
+    # being split, so no scoping information is invented or lost.
+    dashboard_ir.tags = [str(tag) for tag in (dashboard.tags or [])]
+    dashboard_ir.source_file = str(dashboard.source_file or "")
     template_vars_by_name = {
         variable.name: variable
         for variable in dashboard.template_variables
@@ -245,12 +464,10 @@ def generate_dashboard_artifacts(
             for value in template_var.available_values
             if str(value)
         ]
-    exported_doc = {"dashboards": [dashboard_ir.to_yaml_dict()]}
-    yaml_string = yaml.dump(exported_doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
     native_dashboard, counts = native_dashboard_from_ir(dashboard_ir)
     counts_dict, reasons = counts.as_dicts()
     stats: dict[str, Any] = {**counts_dict, "reasons": reasons}
-    return yaml_string, native_dashboard, stats, dashboard_ir
+    return native_dashboard, stats, dashboard_ir
 
 
 def _iter_leaf_panels(panels: list[dict[str, Any]]):
@@ -305,6 +522,7 @@ def _ensure_unique_leaf_panel_titles(
 
         used.add(title)
         panel["title"] = title
+        panel["_curated_match_title"] = title
         if result is not None:
             result.title = title
 
@@ -348,15 +566,9 @@ def _build_controls_from_template_vars(
     Maps each template variable's tag to an ES field via the field map and
     emits an ``options`` control that Kibana applies as a dashboard-level filter.
     """
-    _UNRESOLVABLE_VARS = {"scope"}
-
     controls: list[dict[str, Any]] = []
     for tv in template_vars:
-        tag = tv.tag or tv.prefix
-        if not tag:
-            if tv.name.lower() in _UNRESOLVABLE_VARS:
-                continue
-            tag = tv.name
+        tag = _resolved_template_variable_tag(tv)
         if not tag:
             continue
         # A template-variable prefix can use Datadog's "@tag" facet syntax
@@ -365,7 +577,6 @@ def _build_controls_from_template_vars(
         # to a literal "@host" field that doesn't exist, leaving an empty
         # dropdown that can't filter. (map_tag must NOT strip globally: "@attr"
         # is a real field name in the log-query path.)
-        tag = tag.lstrip("@")
         context = _template_variable_query_context(tv.name, widgets or [])
         control_data_view = logs_data_view if context == "log" else data_view
         es_field = field_map.map_tag(tag, context=context) if field_map else tag
@@ -399,6 +610,29 @@ def _tag_was_remapped(source_tag: str, control_field: str) -> bool:
     if not source or not field:
         return False
     return field not in {source, f"{source}.keyword"}
+
+
+def _resolved_template_variable_tag(variable: TemplateVariable) -> str | None:
+    tag = str(variable.tag or variable.prefix or "").strip()
+    if not tag:
+        if variable.name.lower() in _UNRESOLVABLE_TEMPLATE_VARS:
+            return None
+        tag = str(variable.name or "").strip()
+    tag = tag.lstrip("@")
+    return tag or None
+
+
+def _template_variable_control_field(
+    variable: TemplateVariable,
+    field_map: FieldMapProfile | None,
+    *,
+    context: str,
+) -> str | None:
+    tag = _resolved_template_variable_tag(variable)
+    if not tag:
+        return None
+    es_field = field_map.map_tag(tag, context=context) if field_map else tag
+    return _options_list_field_name(es_field)
 
 
 def _template_variable_query_context(
@@ -442,6 +676,7 @@ def _template_variable_usage(
 def _warn_mixed_template_variable_usage(
     dashboard: NormalizedDashboard,
     result_map: dict[str, TranslationResult],
+    field_map: FieldMapProfile | None = None,
 ) -> None:
     for variable in dashboard.template_variables:
         log_widget_ids, metric_widget_ids = _template_variable_usage(
@@ -450,11 +685,24 @@ def _warn_mixed_template_variable_usage(
         )
         if not log_widget_ids or not metric_widget_ids:
             continue
+        metric_field = _template_variable_control_field(
+            variable,
+            field_map,
+            context="metric",
+        )
+        log_field = _template_variable_control_field(
+            variable,
+            field_map,
+            context="log",
+        )
+        if metric_field == log_field:
+            continue
         detail = (
             f"Template variable '${variable.name}' is used by both metric and "
-            "log widgets; the migrated options-list control targets the metrics "
-            "data view because one Kibana control cannot target both data views. "
-            "Recreate a separate logs control or filter in Kibana"
+            f"log widgets and maps to different Kibana fields ({metric_field} "
+            f"for metrics, {log_field} for logs); the migrated options-list "
+            "control targets the metrics data view. Recreate a separate logs "
+            "control or filter in Kibana"
         )
         for widget_id in log_widget_ids | metric_widget_ids:
             result = result_map.get(widget_id)
@@ -466,6 +714,37 @@ def _warn_mixed_template_variable_usage(
                 result.semantic_losses.append(detail)
             if result.status == "ok":
                 result.status = "warning"
+
+
+def _template_variable_is_noop_scope(variable: TemplateVariable) -> bool:
+    if str(variable.name or "").lower() != "scope":
+        return False
+    if str(variable.default or "").strip() != "*":
+        return False
+    if any(str(value or "").strip() not in {"", "*"} for value in variable.defaults):
+        return False
+    return not any(str(value or "").strip() for value in variable.available_values)
+
+
+def _suppress_noop_scope_warnings(
+    dashboard: NormalizedDashboard,
+    result_map: dict[str, TranslationResult],
+) -> None:
+    if not any(_template_variable_is_noop_scope(variable) for variable in dashboard.template_variables):
+        return
+    for result in result_map.values():
+        result.warnings = [
+            warning
+            for warning in result.warnings
+            if warning not in {_NOOP_SCOPE_METRIC_WARNING, _NOOP_SCOPE_LOG_WARNING}
+        ]
+        result.semantic_losses = [
+            loss
+            for loss in result.semantic_losses
+            if loss not in {_NOOP_SCOPE_METRIC_WARNING, _NOOP_SCOPE_LOG_WARNING}
+        ]
+        if result.status == "warning" and not result.warnings:
+            result.status = "ok"
 
 
 def _template_var_preselected(tv: TemplateVariable) -> list[str]:
@@ -1603,7 +1882,7 @@ def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> t
     for index, dim in enumerate(dims):
         if index:
             concat_args.append('" / "')
-        concat_args.append(f'COALESCE(TO_STRING({dim}), "")')
+        concat_args.append(f'COALESCE(TO_STRING({_quote_esql_identifier(dim)}), "")')
     eval_stage = f"| EVAL {name} = CONCAT({', '.join(concat_args)})"
 
     stages = [line.strip() for line in query.splitlines() if line.strip()]

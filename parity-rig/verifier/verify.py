@@ -6,7 +6,7 @@ The 5 representations:
 
   T0: source PromQL    — what the Grafana panel declared
   T1: translator out   — what obs-migrate emitted (migration_report.json `esql`)
-  T2: YAML on disk     — what was written to <output-dir>/dashboards/yaml/*.yaml
+  T2: IR export        — what was written to <output-dir>/dashboards/ir/*.ir.json
   T3: compiled NDJSON  — what `kb-dashboard-cli compile` produced
   T4: cluster Lens     — what Kibana actually has saved (per /internal/dashboards/app/<id>)
   T5: live _query body — what Lens sends to Elasticsearch at render time
@@ -77,7 +77,7 @@ class PanelRecord:
     translator_status: str = ""  # "migrated" | "migrated_with_warnings" | "skipped" | "not_feasible"
     translator_warnings: list[str] = dataclasses.field(default_factory=list)
     # T2
-    yaml_esql: str = ""
+    ir_esql: str = ""
     # T3
     ndjson_esql: str = ""
     # T4
@@ -107,35 +107,51 @@ def load_migration_report(slug: str) -> dict[str, Any]:
     return json.loads(p.read_text())
 
 
-def load_yaml_panels(slug: str) -> dict[str, str]:
-    """Walk the YAML and return {panel_title: esql_query}."""
-    yaml_dir = Path(f"{PARITY_OUTPUT_PREFIX}{slug}/dashboards/yaml")
+def load_ir_panels(slug: str) -> dict[str, str]:
+    """Walk the IR export and return {panel_title: esql_query}.
+
+    Reads ``dashboards/ir/*.ir.json`` (the migration's semantic export)
+    rather than the YAML artifacts: the YAML was derived from this IR via
+    ``DashboardIR.to_yaml_dict``, so ``visual.presentation.config.query``
+    is the same string ``esql.query`` carried.
+    """
+    ir_dir = Path(f"{PARITY_OUTPUT_PREFIX}{slug}/dashboards/ir")
     out: dict[str, str] = {}
-    if not yaml_dir.exists():
+    if not ir_dir.exists():
         return out
-    try:
-        import yaml as _yaml
-    except ImportError:
-        print("WARN: PyYAML not available — skipping T2.", file=sys.stderr)
-        return out
-    for yp in yaml_dir.glob("*.yaml"):
-        doc = _yaml.safe_load(yp.read_text())
+    for path in sorted(ir_dir.glob("*.ir.json")):
+        try:
+            artifact = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        dashboard_ir = (artifact or {}).get("dashboard_ir")
+        if not isinstance(dashboard_ir, dict):
+            continue
 
-        def _walk(d: Any) -> None:
-            if isinstance(d, dict):
-                title = d.get("title")
-                esql = d.get("esql")
-                if isinstance(title, str) and isinstance(esql, dict):
-                    q = esql.get("query")
-                    if isinstance(q, str):
-                        out[title] = q
-                for v in d.values():
-                    _walk(v)
-            elif isinstance(d, list):
-                for v in d:
-                    _walk(v)
+        def _walk(panels: Any) -> None:
+            if not isinstance(panels, list):
+                return
+            for panel in panels:
+                if not isinstance(panel, dict):
+                    continue
+                children = panel.get("children")
+                if isinstance(children, list) and children:
+                    _walk(children)
+                    continue
+                visual = panel.get("visual")
+                if not isinstance(visual, dict):
+                    continue
+                presentation = visual.get("presentation")
+                if not isinstance(presentation, dict) or presentation.get("kind") != "esql":
+                    continue
+                config = presentation.get("config")
+                title = visual.get("title") or panel.get("title")
+                if isinstance(title, str) and isinstance(config, dict):
+                    query = config.get("query")
+                    if isinstance(query, str):
+                        out[title] = query
 
-        _walk(doc)
+        _walk(dashboard_ir.get("panels"))
     return out
 
 
@@ -326,7 +342,7 @@ def _short_hash(s: str) -> str:
 def compare(panel: PanelRecord) -> None:
     """Populate panel.verdict + panel.drift_axes based on T1..T4 agreement."""
     t1 = _normalize_esql(panel.translator_esql)
-    t2 = _normalize_esql(panel.yaml_esql)
+    t2 = _normalize_esql(panel.ir_esql)
     t3 = _normalize_esql(panel.ndjson_esql)
     t4 = _normalize_esql(panel.cluster_esql)
 
@@ -373,13 +389,14 @@ def compare(panel: PanelRecord) -> None:
             )
         elif "T2=T3" in drift:
             panel.notes.append(
-                "YAML differs from compiled NDJSON. `kb-dashboard-cli compile` may have "
-                "rewritten the query. Check the compiled output."
+                "The IR export differs from the compiled NDJSON. The compile step may "
+                "have rewritten the query. Check the compiled output."
             )
         elif "T1=T2" in drift:
             panel.notes.append(
-                "Translator output differs from the YAML on disk. The YAML emitter is "
-                "transforming the query — inspect translate.py or yaml emit."
+                "Translator output differs from the IR export on disk. Some emitter "
+                "step between migration_report.json:esql and the IR is rewriting the "
+                "query; diff the two strings in the report before assuming a cause."
             )
         return
 
@@ -408,7 +425,7 @@ def collect_panels(
     run_cluster: bool = True,
 ) -> list[PanelRecord]:
     report = load_migration_report(slug)
-    yaml_panels = load_yaml_panels(slug)
+    ir_panels = load_ir_panels(slug)
     ndjson_panels = load_ndjson_panels(slug)
 
     cluster_panels: dict[str, str] = {}
@@ -434,7 +451,7 @@ def collect_panels(
                 translator_esql=p.get("esql", "") or "",
                 translator_status=p.get("status", ""),
                 translator_warnings=list(p.get("notes") or []) + list(p.get("reasons") or []),
-                yaml_esql=yaml_panels.get(title, ""),
+                ir_esql=ir_panels.get(title, ""),
                 ndjson_esql=ndjson_panels.get(title, ""),
                 cluster_esql=cluster_panels.get(title, ""),
                 cluster_updated_at=cluster_updated_at,

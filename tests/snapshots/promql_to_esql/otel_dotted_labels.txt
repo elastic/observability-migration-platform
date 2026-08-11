@@ -6,5 +6,5 @@ TS metrics-*
 | WHERE http.response.status_code RLIKE "5.."
 | WHERE http.request.method == "POST"
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = SUM(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute), service.name
+| STATS http_requests_total = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute), service.name
 | SORT time_bucket ASC

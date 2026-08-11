@@ -247,7 +247,8 @@ jobs:
           if [ "${{ matrix.python-version }}" = "3.12" ]; then
             /tmp/cleanenv/bin/pip install "$(ls dist/*.whl)[all]"
           else
-            # 3.11: kb tools require 3.12, so install base + rely on uvx fallback
+            # 3.11: exercise the source extras without [kibana] (its kb-dashboard
+            # pins are 3.12+, and no command needs them any more).
             /tmp/cleanenv/bin/pip install "$(ls dist/*.whl)[grafana,datadog]"
           fi
           # Prove the venv resolves the installed wheel, not the checkout tree
@@ -260,19 +261,23 @@ jobs:
           "
           /tmp/cleanenv/bin/obs-migrate doctor
 
-      - name: Grafana end-to-end (offline) produces native artifact and NDJSON
+      - name: Grafana end-to-end (offline) produces native + IR artifacts
         working-directory: /tmp
         run: |
           mkdir -p /tmp/gin && cp "${{ github.workspace }}/infra/grafana/dashboards/home.json" /tmp/gin/
           /tmp/cleanenv/bin/grafana-migrate --source files --input-dir /tmp/gin \
-            --output-dir /tmp/gout --assets dashboards --compile
+            --output-dir /tmp/gout --assets dashboards
+          # A migration writes only native/ (the upload payload) + ir/ (review).
           test -f "$(find /tmp/gout -path '*/native/*.native.json' | head -1)"
-          test -f "$(find /tmp/gout -name compiled_dashboards.ndjson | head -1)"
+          test -f "$(find /tmp/gout -path '*/native/index.json' | head -1)"
+          test -f "$(find /tmp/gout -path '*/ir/*.ir.json' | head -1)"
 
-      - name: Datadog end-to-end (offline) produces NDJSON
+      - name: Datadog end-to-end (offline) produces native + IR artifacts
         working-directory: /tmp
         run: |
           mkdir -p /tmp/ddin && cp "${{ github.workspace }}/infra/datadog/dashboards/sample_dashboard.json" /tmp/ddin/
           /tmp/cleanenv/bin/datadog-migrate --input-dir /tmp/ddin \
-            --output-dir /tmp/ddout --compile
-          test -f "$(find /tmp/ddout -name compiled_dashboards.ndjson | head -1)"
+            --output-dir /tmp/ddout
+          test -f "$(find /tmp/ddout -path '*/native/*.native.json' | head -1)"
+          test -f "$(find /tmp/ddout -path '*/native/index.json' | head -1)"
+          test -f "$(find /tmp/ddout -path '*/ir/*.ir.json' | head -1)"

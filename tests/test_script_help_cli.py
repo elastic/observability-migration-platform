@@ -42,10 +42,20 @@ class ScriptHelpCliTests(unittest.TestCase):
 
         self.assertRegex(script_text, re.compile(r"--assets\s+dashboards"))
         self.assertIn('ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"', script_text)
-        self.assertIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"', script_text)
-        self.assertIn('COMPILED_DIR="$OUTPUT_DIR/dashboards/compiled"', script_text)
+        self.assertIn('DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"', script_text)
+        self.assertIn('NATIVE_DIR="$OUTPUT_DIR/dashboards/native"', script_text)
         self.assertIn('RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"', script_text)
-        self.assertNotIn('DASHBOARD_YAML_DIR="$OUTPUT_DIR/yaml"', script_text)
+        # A migration writes native/ + ir/ only: neither a yaml/ nor a
+        # compiled/ directory exists any more, so a script that reads either
+        # silently uploads nothing (which is exactly what this one used to do).
+        self.assertNotIn("dashboards/yaml", script_text)
+        self.assertNotIn("dashboards/compiled", script_text)
+        self.assertNotIn("compiled_dashboards.ndjson", script_text)
+        # Upload goes through the CLI's typed Dashboards API path, not a
+        # hand-rolled saved-objects _import over compiled NDJSON.
+        self.assertIn("observability_migration.app.cli upload", script_text)
+        self.assertIn('--artifact-dir "$DASHBOARD_ARTIFACT_DIR"', script_text)
+        self.assertNotIn("saved_objects/_import", script_text)
 
     def test_helper_scripts_default_to_dashboard_scoped_layouts(self):
         panel_help = subprocess.run(
@@ -55,7 +65,7 @@ class ScriptHelpCliTests(unittest.TestCase):
             text=True,
         )
 
-        self.assertIn("migration_output_native/dashboards/yaml", panel_help.stdout)
+        self.assertIn("migration_output_native/dashboards/ir", panel_help.stdout)
 
     def test_alert_support_scripts_use_canonical_alert_assets_and_paths(self):
         report_text = GENERATE_ALERT_SUPPORT_REPORT_SCRIPT.read_text(encoding="utf-8")
@@ -125,8 +135,22 @@ class ScriptHelpCliTests(unittest.TestCase):
         makefile = MAKEFILE.read_text(encoding="utf-8")
 
         self.assertIn("check-native-schema:", makefile)
+        self.assertIn("refresh-native-schema:", makefile)
         self.assertIn("fetch_dashboards_api_schema.py", makefile)
-        self.assertIn("KIBANA_DASHBOARDS_API_SCHEMA_URL", makefile)
+        self.assertIn("--require-full-schema", makefile)
+        self.assertIn("docs/dashboards/kibana_dashboards_api.openapi.yaml", makefile)
+
+    def test_datadog_entry_points_describe_native_artifacts_not_yaml(self):
+        datadog_cli_text = (
+            ROOT / "observability_migration" / "adapters" / "source" / "datadog" / "cli.py"
+        ).read_text(encoding="utf-8")
+        datadog_demo_text = (ROOT / "scripts" / "run_datadog_demo.sh").read_text(encoding="utf-8")
+
+        self.assertIn("Output directory for native dashboard artifacts and reports", datadog_cli_text)
+        self.assertNotIn("Output directory for generated YAML and reports", datadog_cli_text)
+        self.assertIn("Preparing Datadog native dashboard artifacts", datadog_demo_text)
+        self.assertNotIn("Preparing Datadog demo YAML", datadog_demo_text)
+        self.assertNotIn("generated YAML, reports, and compiled artifacts", datadog_demo_text)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,0 @@
-title: Prometheus errors
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['exceeded_sample_limit_on', 'duplicate_timestamp_on', 'out_of_bounds_on', 'out_of_order_on', 'rule_evaluation_failure_on', 'tsdb_compactions_failed_on', 'tsdb_reloads_failures_on', 'head_series_not_found_on', 'evaluator_iterations_missed_on', 'evaluator_iterations_skipped_on']
-breakdown: instance
-warning: Source PromQL used increase() but prometheus_tsdb_head_series_not_found is typed as gauge in the target index; rendered as MAX_OVER_TIME (cumulative ceiling) instead. Fix the ingest mapping to mark this field as a counter to recover the true increase over the window.

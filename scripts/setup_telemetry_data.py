@@ -5,7 +5,7 @@
 """Set up source-agnostic telemetry data from migrated artifact requirements.
 
 Thin shim over ``observability_migration.core.sample_data``: this script keeps the
-historical positional / ``DASHBOARD_YAML_DIR`` CLI surface, but the contract build,
+historical positional / ``DASHBOARD_ARTIFACT_DIR`` CLI surface, but the contract build,
 stream setup, document generation, ingest, and ES/TLS handling all live in the
 library (shared with ``obs-migrate seed-sample-data``). Prefer the subcommand for
 new use; this entry point remains for existing automation.
@@ -30,7 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "artifact_dir",
         nargs="*",
-        help="Migrated dashboard artifact directory containing yaml/ and optional verification_packets.json. Repeat to combine sources.",
+        help="Migrated dashboard artifact directory containing ir/ (and native/) plus an optional verification_packets.json. Repeat to combine sources.",
     )
     parser.add_argument(
         "--es-endpoint",
@@ -116,10 +116,13 @@ def main(argv: list[str] | None = None) -> int:
     api_key = args.api_key
 
     raw_dirs = list(args.artifact_dir or [])
-    if not raw_dirs and os.environ.get("DASHBOARD_YAML_DIR", ""):
-        raw_dirs = [os.environ["DASHBOARD_YAML_DIR"]]
+    # DASHBOARD_YAML_DIR is the pre-native name for the same input; accepted so
+    # existing automation keeps working.
+    env_dir = os.environ.get("DASHBOARD_ARTIFACT_DIR", "") or os.environ.get("DASHBOARD_YAML_DIR", "")
+    if not raw_dirs and env_dir:
+        raw_dirs = [env_dir]
     if not raw_dirs:
-        print("ERROR: artifact_dir or DASHBOARD_YAML_DIR must be provided")
+        print("ERROR: artifact_dir or DASHBOARD_ARTIFACT_DIR must be provided")
         return 1
 
     artifact_dirs: list[Path] = []

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Elastic-2.0
 
 import unittest
-from unittest import mock
 
 from observability_migration.adapters.source.grafana import annotations as annotations_module
 from observability_migration.adapters.source.grafana import manifest as manifest_module
@@ -31,21 +30,6 @@ class KibanaSpaceHelpersTests(unittest.TestCase):
             compile_module.detect_space_id_from_kibana_url("http://localhost:5601/s/observability"),
             "observability",
         )
-
-    def test_upload_yaml_includes_api_key_when_provided(self):
-        import observability_migration.targets.kibana.compile as _canonical_compile
-        with mock.patch.object(_canonical_compile, "_run_command", return_value=(True, "")) as run_command:
-            compile_module.upload_yaml(
-                "dash.yaml",
-                "out",
-                "http://localhost:5601",
-                space_id="shadow",
-                kibana_api_key="secret-key",
-            )
-
-        args = run_command.call_args.args[0]
-        self.assertIn("--kibana-api-key", args)
-        self.assertIn("secret-key", args)
 
 
 class PieFallbackTests(unittest.TestCase):

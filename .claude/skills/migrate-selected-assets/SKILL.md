@@ -172,14 +172,14 @@ obs-migrate migrate \
   --create-alert-rules
 ```
 
-- Default `obs-migrate upload --artifact-dir` uses typed Dashboards API payloads from `native/` (`--artifact-format auto`). `--yaml-dir` is a compatibility alias for YAML mapping, not the primary path.
+- `obs-migrate upload --artifact-dir` takes exactly one input: the migration's dashboard artifact directory (it holds `native/` and `ir/`), or directly its `native/` child. It sends every `native/*.native.json` byte-for-byte through the typed Dashboards API.
 - `--create-alert-rules` requires an alert-capable selection (`--assets alerts` or `all`) plus `--kibana-url` and `--kibana-api-key`. Rules land **disabled** — enable them in Kibana (or audit with `obs-migrate audit-rules`) after review.
 - Watch the run for `Selected N of M …` and exact degrade lines such as
   `WARN: folder selection requested but unavailable for datadog dashboard; kept without folder filtering`.
 - A `--select-*` set that matches **no dashboards** prints
   `ERROR: no Datadog dashboards matched the --select-* criteria.` and exits
   non-zero; for alerts it can yield an empty alert set.
-- **Custom-CA / self-signed clusters:** every CLI here accepts `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) for testing only. They cover source, Elasticsearch, Kibana, and the Node upload step.
+- **Custom-CA / self-signed clusters:** every CLI here accepts `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`) to verify against a private CA, or `--insecure` (env `OBS_MIGRATE_INSECURE`) for testing only. They cover source, Elasticsearch, and Kibana (including the dashboard upload).
 
 ## Step 3 — Confirm the selection landed
 

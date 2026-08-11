@@ -7,7 +7,7 @@
 #
 # For each dashboard this script:
 #   1. Copies the source JSON to a temp input directory
-#   2. Runs the Datadog CLI with --compile --validate --upload --ensure-data-views
+#   2. Runs the Datadog CLI with --validate --upload --ensure-data-views
 #   3. Accumulates pass/fail counts and exits non-zero on any failure
 #
 # Usage:
@@ -211,7 +211,6 @@ for entry in "${DASHBOARDS[@]}"; do
     --field-profile "$FIELD_PROFILE"
     --data-view "$DATA_VIEW"
     --logs-index "$LOGS_INDEX"
-    --compile
     --validate
     --upload
     --ensure-data-views

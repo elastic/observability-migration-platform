@@ -361,7 +361,7 @@ def _apply_metric_map_to_rate_on_simple(
     time_filter = rule_pack.ts_time_filter
     bucket_expr = rule_pack.ts_bucket
     outer = OUTER_AGG_MAP.get(getattr(frag, "outer_agg", None) or "", "") or "SUM"
-    stats_expr = f"{outer}(RATE({metric_field}, {window}))"
+    stats_expr = f"{outer}({_range_call('RATE', metric_field, window)})"
     return source, time_filter, bucket_expr, metric_field, stats_expr
 
 
@@ -441,6 +441,8 @@ AGG_FUNCTION_MAP = {
     "max_over_time": "MAX_OVER_TIME",
     "min_over_time": "MIN_OVER_TIME",
     "count_over_time": "COUNT_OVER_TIME",
+    "last_over_time": "LAST_OVER_TIME",
+    "present_over_time": "PRESENT_OVER_TIME",
     "delta": "DELTA",
     "deriv": "DERIV",
     "histogram_quantile": "PERCENTILE_OVER_TIME",
@@ -803,8 +805,10 @@ SUPPORTED_RANGE_FUNCTIONS = {
     "deriv",
     "increase",
     "irate",
+    "last_over_time",
     "max_over_time",
     "min_over_time",
+    "present_over_time",
     "rate",
     "sum_over_time",
 }
@@ -817,8 +821,10 @@ _OVER_TIME_RANGE_FUNCS = frozenset(
     {
         "avg_over_time",
         "count_over_time",
+        "last_over_time",
         "max_over_time",
         "min_over_time",
+        "present_over_time",
         "sum_over_time",
     }
 )
@@ -836,7 +842,6 @@ HARD_UNSUPPORTED_AST_REASONS = {
 HARD_UNSUPPORTED_CALL_REASONS = {
     "absent": "absent() checks metric existence and has no ES|QL equivalent",
     "absent_over_time": "absent_over_time() checks metric existence and has no ES|QL equivalent",
-    "bottomk": "bottomk requires manual redesign",
     "changes": "changes() counts value transitions and has no ES|QL equivalent",
     "count_values": "count_values requires manual redesign",
     "group": (
@@ -844,7 +849,8 @@ HARD_UNSUPPORTED_CALL_REASONS = {
         "ES|QL has no equivalent and aggregating the metric value instead would "
         "change the result, so it requires manual redesign"
     ),
-    "label_join": "label_join requires manual redesign",
+    # label_join handled below in _ast_call_fragment when all src labels are
+    # present in the inner expression's by() clause.
     "resets": "resets() counts counter resets and has no ES|QL equivalent",
     "stdvar": (
         "stdvar() is population variance; ES|QL has no variance aggregation and "
@@ -868,8 +874,11 @@ ELEMENTWISE_MATH_FUNCTIONS = frozenset(
         "log2",
         "log10",
         "acos",
+        "acosh",
         "asin",
+        "asinh",
         "atan",
+        "atanh",
         "cos",
         "sin",
         "tan",
@@ -1474,7 +1483,9 @@ def _quote_esql_string(value):
 def _split_top_level_csv(expr):
     parts = []
     current = []
-    depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    bracket_depth = 0
     in_quote = None
     escaped = False
     for char in expr:
@@ -1491,12 +1502,24 @@ def _split_top_level_csv(expr):
             in_quote = char
             current.append(char)
         elif char == "(":
-            depth += 1
+            paren_depth += 1
             current.append(char)
         elif char == ")":
-            depth = max(depth - 1, 0)
+            paren_depth = max(paren_depth - 1, 0)
             current.append(char)
-        elif char == "," and depth == 0:
+        elif char == "{":
+            brace_depth += 1
+            current.append(char)
+        elif char == "}":
+            brace_depth = max(brace_depth - 1, 0)
+            current.append(char)
+        elif char == "[":
+            bracket_depth += 1
+            current.append(char)
+        elif char == "]":
+            bracket_depth = max(bracket_depth - 1, 0)
+            current.append(char)
+        elif char == "," and paren_depth == 0 and brace_depth == 0 and bracket_depth == 0:
             parts.append("".join(current).strip())
             current = []
         else:
@@ -1700,6 +1723,64 @@ def _param_binds_regex_default(resolver, param_name):
     return bool(names) and param_name in names
 
 
+def _param_is_multi_select(resolver, param_name):
+    """Whether *param_name* comes from a Grafana ``multi: true`` variable."""
+    rule_pack = getattr(resolver, "_rule_pack", None)
+    names = getattr(rule_pack, "_multi_select_param_names", None)
+    return bool(names) and param_name in names
+
+
+def _mv_contains_filter(label, param_name, negate=False, allow_empty_match_all=False):
+    """Multi-value label filter for a Grafana multi-select variable.
+
+    ``RLIKE ?var`` is a scalar parameter position, so it can bind only one
+    value and forces the Kibana control to single-select. ``MV_CONTAINS`` is
+    Kibana's supported multi-value mechanism and pairs with
+    ``single_select: false``.
+
+    The ``".*"`` disjunct preserves Grafana's ``All``: the binding control's
+    option list already offers ``.*`` (injected by ``MV_APPEND`` in the control
+    query) and defaults to it, so selecting All yields ``[".*"]`` and matches
+    every series, while any explicit selection matches just those values.
+
+    Matching is exact rather than regex. That is forced by the platform, not a
+    preference: ES|QL ``RLIKE`` requires a literal pattern and rejects a
+    computed one, so ``RLIKE MV_CONCAT(?var, "|")`` -- which would have
+    rebuilt Grafana's own ``(a|b)`` alternation -- is not expressible.
+    """
+    clauses = []
+    if allow_empty_match_all:
+        # Kibana leaves an unselected multi-values control bound as an empty
+        # list. For Grafana includeAll variables that empty state must behave
+        # like the source default All selection ([".*"]), not like "match
+        # nothing" which blanks the dashboard on first load.
+        clauses.append(f"MV_COUNT(?{param_name}) == 0")
+    clauses.append(f'MV_CONTAINS(?{param_name}, ".*")')
+    clauses.append(f"MV_CONTAINS(?{param_name}, {label})")
+    expr = "(" + " OR ".join(clauses) + ")"
+    return f"NOT {expr}" if negate else expr
+
+
+def _absent_aware(label, predicate, empty_predicate):
+    """Make a matcher treat an absent label as "", without losing pushdown.
+
+    Prometheus has no NULL: a series that does not carry a label behaves as if
+    the label were "". ES|QL NULL propagates instead, so `release RLIKE ?p`
+    drops those series (measured: 0 matched where Prometheus matched 1565).
+
+    The obvious fix, ``COALESCE(field, "") RLIKE ?p``, is correct but wraps the
+    field in a function and Elasticsearch can no longer push the filter down to
+    Lucene -- measured on the rig, 176 documents scanned instead of 16 for the
+    same selective filter, on every label matcher of every panel.
+
+    This form keeps both: the first disjunct is a bare field comparison that
+    still pushes down, and the second only fires for documents where the field is
+    absent, deciding via the same predicate applied to "". Verified identical
+    results to the COALESCE form and identical document counts to the bare one.
+    """
+    return f"({predicate} OR ({label} IS NULL AND {empty_predicate}))"
+
+
 def _matcher_to_esql(matcher, resolver, metric_field=None):
     label = _resolve_label_for(resolver, matcher["label"], metric_field)
     op = matcher["op"]
@@ -1722,8 +1803,17 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
         # ES|QL named parameter bound by an esqlControl, instead of silently
         # dropping it (issues #64 / #131). The matching control is guaranteed
         # by ``_ensure_param_controls`` during dashboard assembly.
+        regex_default = _param_binds_regex_default(resolver, param_name)
+        if _param_is_multi_select(resolver, param_name) and op in {"=", "=~", "!=", "!~"}:
+            # Grafana multi-select: bind the whole selection, not one value.
+            return _mv_contains_filter(
+                label,
+                param_name,
+                negate=op in {"!=", "!~"},
+                allow_empty_match_all=regex_default,
+            )
         if op == "=":
-            if _param_binds_regex_default(resolver, param_name):
+            if regex_default:
                 # The binding control defaults this param to the regex
                 # match-all (".*") because the Grafana variable is All/multi
                 # with no single ``current`` value. ES|QL ``==`` would compare
@@ -1733,17 +1823,43 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 # Grafana auto-rewriting ``label="$var"`` to ``label=~"..."``
                 # for All/multi variables. (allValue-as-regex equality is a
                 # narrower residual not covered here.)
-                return f"{label} RLIKE ?{param_name}"
-            return f"{label} == ?{param_name}"
+                empty_regex_match = f'"" RLIKE ?{param_name}'
+                return (
+                    f'(?{param_name} == "" OR '
+                    f'{_absent_aware(label, f"{label} RLIKE ?{param_name}", empty_regex_match)})'
+                )
+            return _absent_aware(
+                label, f"{label} == ?{param_name}", f'"" == ?{param_name}'
+            )
         if op == "!=":
             # Left as ``!=``: with the match-all default the param resolves to
             # ".*" and ``field != ".*"`` still matches every series (a safe,
             # non-empty default), unlike the ``==`` case which would be empty.
-            return f"{label} != ?{param_name}"
+            if regex_default:
+                empty_neq_match = f'"" != ?{param_name}'
+                return (
+                    f'(?{param_name} == "" OR '
+                    f'{_absent_aware(label, f"{label} != ?{param_name}", empty_neq_match)})'
+                )
+            return _absent_aware(
+                label, f"{label} != ?{param_name}", f'"" != ?{param_name}'
+            )
         if op == "=~":
-            return f"{label} RLIKE ?{param_name}"
+            predicate = _absent_aware(
+                label, f"{label} RLIKE ?{param_name}", f'"" RLIKE ?{param_name}'
+            )
+            if regex_default:
+                return f'(?{param_name} == "" OR {predicate})'
+            return predicate
         if op == "!~":
-            return f"NOT ({label} RLIKE ?{param_name})"
+            predicate = _absent_aware(
+                label,
+                f"NOT ({label} RLIKE ?{param_name})",
+                f'NOT ("" RLIKE ?{param_name})',
+            )
+            if regex_default:
+                return f'(?{param_name} != "" AND {predicate})'
+            return predicate
         return None
     # Drop preprocessed Grafana variables (label_Var / ^label_Var*) and
     # unprocessed special variables ($__interval etc.).  Use \$\w to avoid
@@ -1760,7 +1876,12 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
                 )
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
-        return f"{label} != {_quote_esql_string(value)}"
+        # PromQL matches an absent label here (absent == ""), ES|QL NULL does not.
+        return _absent_aware(
+            label,
+            f"{label} != {_quote_esql_string(value)}",
+            f'"" != {_quote_esql_string(value)}',
+        )
     if op == "=~":
         if value in (".*", ".+", ""):
             return None
@@ -1768,7 +1889,11 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
     if op == "!~":
         if value in (".*", ".+", ""):
             return None
-        return f"NOT ({label} RLIKE {_quote_esql_string(value)})"
+        return _absent_aware(
+            label,
+            f"NOT ({label} RLIKE {_quote_esql_string(value)})",
+            f'NOT ("" RLIKE {_quote_esql_string(value)})',
+        )
     return None
 
 
@@ -2102,6 +2227,10 @@ def _ast_call_fragment(node, expr):
             for key in ("left_frag", "right_frag"):
                 if key in child.extra:
                     wrapped.extra[key] = child.extra[key]
+            for _k in ("math_fns", "has_round", "round_precision", "has_sgn",
+                       "clamp_min_value", "clamp_max_value"):
+                if child.extra.get(_k) is not None and _k not in wrapped.extra:
+                    wrapped.extra[_k] = child.extra[_k]
             wrapped.extra["wrapped_scalar"] = True
             return wrapped
 
@@ -2274,13 +2403,44 @@ def _ast_call_fragment(node, expr):
             # label. A classic ``_bucket`` series needs it (e.g. ``sum by (le)``)
             # for the percentile to be meaningful; the translator degrades when
             # it's missing.
-            frag.extra["had_le_grouping"] = "le" in value_frag.group_labels
+            # A bare series (no outer aggregation) preserves ``le`` implicitly
+            # because ``rate()``/``increase()`` never collapse labels — the
+            # ``had_le_grouping`` guard only needs to block cases where an outer
+            # aggregation *explicitly dropped* ``le`` (e.g. ``sum by (instance)``).
+            frag.extra["had_le_grouping"] = (not value_frag.outer_agg) or (
+                "le" in value_frag.group_labels
+            )
             frag.metric = _strip_le_bucket_suffix(value_frag.metric)
             frag.group_labels = [g for g in value_frag.group_labels if g != "le"]
             frag.range_func = ""
             frag.outer_agg = ""
             frag.extra["quantile_phi"] = float(phi_frag.scalar_value)
             return frag
+
+    # label_join(v, dst_label, separator, src_label1[, src_label2, ...])
+    # All src_labels must be present in the inner expression's by() group_labels.
+    # Translates to a post-STATS: | EVAL dst = CONCAT(src1, "sep", src2, ...)
+    if func_name == "label_join" and len(child_frags) >= 4:
+        value_frag = child_frags[0]
+        string_args = [f.extra.get("string_value") for f in child_frags[1:]]
+        if (
+            not value_frag.extra.get("not_feasible_reasons")
+            and all(s is not None for s in string_args)
+        ):
+            dst_label = string_args[0]
+            separator = string_args[1]
+            src_labels = string_args[2:]
+            inner_dims = set(value_frag.group_labels or [])
+            missing = [lbl for lbl in src_labels if lbl not in inner_dims]
+            if not missing:
+                result = _copy_fragment_summary(
+                    _new_fragment(expr, family="label_join"), value_frag
+                )
+                result.extra["lj_dst"] = dst_label
+                result.extra["lj_sep"] = separator
+                result.extra["lj_src"] = src_labels
+                result.extra["lj_inner_frag"] = value_frag
+                return result
 
     frag = _new_fragment(expr)
     for child in child_frags:
@@ -2290,6 +2450,12 @@ def _ast_call_fragment(node, expr):
 
     if func_name in HARD_UNSUPPORTED_CALL_REASONS:
         _append_not_feasible_reason(frag, HARD_UNSUPPORTED_CALL_REASONS[func_name])
+    elif func_name == "label_join":
+        _append_not_feasible_reason(
+            frag,
+            "label_join: source labels must all be present in the inner expression's by() "
+            "clause to translate to CONCAT — requires manual redesign",
+        )
     elif func_name:
         _append_not_feasible_reason(frag, f"{func_name}() requires manual redesign")
     if func_name == "time" and args:
@@ -2514,10 +2680,17 @@ def _join_rhs_not_plain_selector_reason(right_frag):
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
+    # _copy_fragment_summary uses a fixed allowlist that omits math/transform
+    # modifier keys. Promote them explicitly so value_wrapper_transforms_rule
+    # sees them when an aggregation wraps a math function: sum(abs(rate(...))).
+    for _k in ("math_fns", "has_round", "round_precision", "has_sgn",
+               "clamp_min_value", "clamp_max_value"):
+        if child.extra.get(_k) is not None and _k not in frag.extra:
+            frag.extra[_k] = child.extra[_k]
     frag.extra["inner_frag"] = child
     frag.outer_agg = str(getattr(node, "op", "") or "").lower()
 
-    if frag.outer_agg == "topk" and not child.extra.get("not_feasible_reasons"):
+    if frag.outer_agg in {"topk", "bottomk"} and not child.extra.get("not_feasible_reasons"):
         topk_source = child if child.metric else _find_summary_fragment(child)
         if not topk_source or not topk_source.metric:
             return frag
@@ -2533,6 +2706,7 @@ def _ast_aggregate_fragment(node, expr):
         except (TypeError, ValueError):
             topk_frag.extra["topk_limit"] = 10
         topk_frag.extra["topk_value_expr"] = child.raw_expr
+        topk_frag.extra["topk_sort_asc"] = frag.outer_agg == "bottomk"
         return topk_frag
 
     # quantile(phi, expr) by (..) == ES|QL PERCENTILE(expr, phi*100). Capture the
@@ -2622,15 +2796,28 @@ def _ast_aggregate_fragment(node, expr):
         on_keys = set(matching.get("labels") or []) if matching.get("type") == "Include" else set()
 
         # (a) A label carried only by the group_left(...) include list has nothing
-        # to group by once the RHS is dropped.
+        # to group by once the RHS is dropped — UNLESS the RHS is an ``_info``
+        # metric (the canonical label-enrichment convention).  For info metrics,
+        # the enrichment labels are also dimensions of the primary metric by
+        # exporter convention, so the outer ``by()`` can aggregate by them once
+        # the join is dropped.  We can't verify the metric suffix against
+        # ``info_metric_suffixes`` at parse time (rule_pack unavailable), so we
+        # use the default ``_info`` suffix heuristic here and defer the definitive
+        # confirmation to ``join_label_enrichment_check_rule`` at translate time.
         overlap = [label for label in frag.group_labels if label in enrichment_labels]
         if overlap:
             rhs_metric = right_frag.metric if right_frag else ""
-            _append_not_feasible_reason(
-                frag,
-                _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
-            )
-            return frag
+            if rhs_metric.endswith("_info"):
+                # Defer: stash the overlap labels alongside the standard
+                # pending_join_verify_labels so join_label_enrichment_check_rule
+                # can schema-check them alongside any assumed labels.
+                frag.extra["pending_join_enrichment_labels"] = list(overlap)
+            else:
+                _append_not_feasible_reason(
+                    frag,
+                    _join_by_clause_enrichment_reason(overlap, enrichment_labels, rhs_metric, left_frag.metric),
+                )
+                return frag
 
         # (b) When the include list couldn't be recovered (a bare ``group_left()``
         # or an ambiguous nested modifier leaves ``enrichment_labels`` empty), any
@@ -3196,7 +3383,7 @@ def _build_stats_call(
         force_cast=_counter_unsafe_cast_needed(metric_name, resolver),
     )
     if esql_inner:
-        inner_expr = f"{esql_inner}({metric_arg}, {range_window})"
+        inner_expr = _range_call(esql_inner, metric_arg, range_window)
     else:
         inner_expr = metric_arg
     return _apply_outer_agg(esql_outer, inner_expr, frag)
@@ -3489,7 +3676,27 @@ def _grouping_parts(bucket_expr, group_fields, frag=None):
     return by_parts, output_group_fields
 
 
-def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
+# Only the DERIVATIVE family. A boundary bucket holds part of a scrape interval,
+# and a value derived from differences across it (rate, delta) is wrong there, not
+# merely coarse -- which is why the collapse steps back one bucket.
+#
+# LAST_OVER_TIME and friends are NOT in this set. The last sample inside a partial
+# bucket is a perfectly good last sample, so stepping back costs a bucket for
+# nothing; when the window is short enough that the penultimate bucket is empty,
+# it costs the whole panel. "Root FS Used" went blank exactly this way once bare
+# gauges started being wrapped in LAST_OVER_TIME.
+_RANGE_FUNC_IN_ESQL = re.compile(
+    r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)\s*\(", re.IGNORECASE
+)
+
+
+def _parts_use_range_function(parts) -> bool:
+    """Whether the pipeline so far derives a value from differences over time."""
+    return any(_RANGE_FUNC_IN_ESQL.search(str(line) or "") for line in parts or [])
+
+
+def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_time_bucket=False,
+                               reduce_calc=""):
     if not output_group_fields or output_group_fields[0] != "time_bucket":
         return None
     group_fields = list(output_group_fields[1:])
@@ -3503,11 +3710,69 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
     # for monotonically-bucketed gauges and stats; this was surfaced by
     # reviewing the Node Exporter Full "Pressure" bar chart, which had
     # data in every bucket but rendered all-null bars.
-    reduced = ", ".join(
-        f"{_esql_identifier(field)} = MAX({_esql_identifier(field)})" for field in keep_fields
-    )
-    if group_fields:
+    # Honour the panel's own reducer when we can do so safely. Grafana states it
+    # in ``reduceOptions.calcs`` and it was never read: every scalar panel
+    # collapsed with MAX regardless. Node Exporter Full's "CPU Busy" asks for
+    # lastNotNull -- Grafana draws 1.87%, MAX over the buckets draws 79.1%. Both
+    # are real numbers from real data, which is why no gate flagged it.
+    #
+    # LAST is only used for a single kept field. The MAX default exists for
+    # null-safety: in a multi-target TS query each per-series row carries one
+    # non-null column and nulls for the others, and LAST can land on a null row
+    # (this is what made the "Pressure" bars render all-null). With one field
+    # there are no sibling columns to land on, so LAST is safe there.
+    calc = str(reduce_calc or "").lower()
+    reducer = "MAX"
+    if calc in ("mean", "avg"):
+        reducer = "AVG"
+    elif calc == "min":
+        reducer = "MIN"
+    wants_last = calc in ("last", "lastnotnull") and len(keep_fields) == 1
+    # A rate in the FINAL bucket of the window is wrong, not merely coarse: that
+    # bucket is bounded by the window edge, so it can hold too few samples.
+    # Measured over one 7-minute span, 100*(1-avg(rate(idle[5m]))) read 1.682,
+    # 1.711 and 1.696 in interior buckets -- tracking Prometheus -- and 22.549 in
+    # the boundary one. In Kibana the window ends at "now", so a scalar panel
+    # collapsing with LAST reads that boundary bucket every time.
+    #
+    # ES|QL has no OFFSET, so the penultimate bucket is reached by taking the
+    # last two and then the older of them. With a single bucket this degrades to
+    # that bucket, which is the best available answer.
+    # Only for a genuinely scalar panel. A grouped panel (a pie by handler, say)
+    # has one row per group, so LIMIT 1 would keep a single slice and discard the
+    # rest. Grouped panels hit the same boundary-bucket problem but need a
+    # per-group fix, which this is not.
+    if wants_last and not group_fields and _parts_use_range_function(parts):
+        # Skip null rate buckets first. On short windows (e.g. 15m with
+        # TBUCKET(100) → ~9s buckets) the newest buckets are often null because
+        # IRATE needs multiple samples per bucket; taking LIMIT 2 without this
+        # filter yields an empty scalar panel even though older buckets have
+        # data. After dropping nulls, keep the penultimate non-null bucket to
+        # avoid the incomplete window-edge rate spike documented above.
+        parts.append("| WHERE " + " AND ".join(
+            f"{_esql_identifier(field)} IS NOT NULL" for field in keep_fields
+        ))
+        parts.append("| SORT time_bucket DESC")
+        parts.append("| LIMIT 2")
         parts.append("| SORT time_bucket ASC")
+        parts.append("| LIMIT 1")
+        # Mirror the projection the LAST path produces, so panels whose spec
+        # references time_bucket (tables surface it as a date breakdown) keep it.
+        kept = ", ".join(_esql_identifier(f) for f in keep_fields)
+        parts.append(f"| KEEP time_bucket, {kept}" if keep_time_bucket else f"| KEEP {kept}")
+        return []
+    if wants_last:
+        reduced = ", ".join(
+            f"{_esql_identifier(field)} = LAST({_esql_identifier(field)}, time_bucket)"
+            for field in keep_fields
+        )
+    else:
+        reduced = ", ".join(
+            f"{_esql_identifier(field)} = {reducer}({_esql_identifier(field)})"
+            for field in keep_fields
+        )
+    if group_fields:
+        # MAX is order-independent; no pre-collapse sort needed.
         parts.append(
             f"| STATS {reduced} BY {', '.join(_esql_identifier(f) for f in group_fields)}"
         )
@@ -3518,11 +3783,23 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields):
         return group_fields
     if output_group_fields != ["time_bucket"]:
         return None
-    parts.append("| SORT time_bucket ASC")
-    parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
-    parts.append(
-        "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
-    )
+    # MAX is order-independent; the pre-collapse sort is a no-op in all cases.
+    if keep_time_bucket:
+        # Table panels surface time_bucket as a date breakdown for the operator;
+        # keep it in the output. The trailing sort added by _ensure_bucket_sort
+        # on the 1-row result is harmless.
+        parts.append(f"| STATS time_bucket = MAX(time_bucket), {reduced}")
+        parts.append(
+            "| KEEP time_bucket, " + ", ".join(_esql_identifier(f) for f in keep_fields)
+        )
+    else:
+        # Scalar panels (stat/gauge/bargauge/piechart) don't need time_bucket in
+        # the output. Omitting it prevents _ensure_bucket_sort from appending a
+        # redundant trailing sort on the already-collapsed single-row result.
+        parts.append(f"| STATS {reduced}")
+        parts.append(
+            "| KEEP " + ", ".join(_esql_identifier(f) for f in keep_fields)
+        )
     return []
 
 
@@ -3739,11 +4016,19 @@ def _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
     (~4x low on gauges). The label adds nothing Kibana's TSID-driven legend does
     not already show, so it is dropped.
 
+    Outer aggregations without ``by()`` are the other drop case: ``sum(rate(…))``
+    has already collapsed label dimensions, so a ``legendFormat`` token like
+    ``{{input}}`` is a series *alias*, not a BY field. Emitting ``BY input`` is
+    invalid ES|QL whether or not live field-caps ran (Redis 763 Network I/O).
+    When ``by()`` is present, explicit group labels win in
+    :func:`_merge_group_fields` / the ``_frag_group_labels`` keep-guard below.
+
     Only applies on the ``TS`` path — ``FROM`` has no TSID grouping, so dropping
     the label there would collapse multiple series into one line.
     """
     if frag.outer_agg:
-        return False
+        # No PromQL by()/without() → legend placeholders cannot be dimensions.
+        return not bool(frag.group_labels)
     if frag.family == "simple_metric":
         is_counter = resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rule_pack)
         # Counters already wrap LAST_OVER_TIME in MAX (no AVG distortion); leave
@@ -3808,7 +4093,40 @@ def _drop_legend_labels_if_redundant(
         return group_fields
     if not _legend_grouping_redundant_on_ts(frag, resolver, rule_pack):
         return group_fields
+    # Outer aggregation without by()/without() already collapsed every label
+    # dimension. legendFormat tokens are series aliases only — never restore
+    # them just because the placeholder happens to name a real field (live
+    # caps). The keep-guard below is for bare rate/gauge paths where TSID
+    # still splits series and Kibana needs an explicit breakdown column.
+    if frag.outer_agg and not frag.group_labels:
+        return []
+    if _legend_group_fields_are_real(group_fields, resolver):
+        # The TSID split is invisible to Kibana. ``TS`` does emit one row per
+        # series per bucket, but the chart binds series identity to a breakdown
+        # *column*, not to the TSID -- so dropping a legend label that names a
+        # real dimension leaves N rows per bucket that are column-identical, and
+        # Kibana draws N same-named, indistinguishable series (Redis 763
+        # Hits/Misses showed two "hits" and two "misses" in one tooltip once a
+        # second instance existed). Keep the label: the resulting outer
+        # aggregation is over a group that already holds one value per series
+        # per bucket, so it does not distort. Phantom placeholders such as
+        # ``{{input}}`` fail this check and still drop, which is what makes the
+        # AVG-wrapping / fusion-breaking case above safe.
+        return group_fields
     return []
+
+
+def _legend_group_fields_are_real(group_fields, resolver):
+    """True only when every legend-derived BY field is a proven target field.
+
+    Deliberately conservative: ``field_exists`` returns ``None`` when discovery
+    never ran (offline, no ``--es-url``), and that is treated as "not proven" so
+    offline runs keep their existing behaviour. Only a live-confirmed dimension
+    earns the label back.
+    """
+    if not resolver or not group_fields:
+        return False
+    return all(resolver.field_exists(field) is True for field in group_fields)
 
 
 def _can_use_direct_ts_gauge(metric_name, resolver, group_fields, frag, rule_pack=None):
@@ -3909,7 +4227,6 @@ def _build_measure_spec(
             allow_tsds_gauge_promotion
             and (not is_counter)
             and (not can_use_direct_ts_gauge)
-            and (not (frag.extra.get("wrapped_scalar") if frag else False))
             and _gauge_can_use_ts(frag.metric, resolver, rule_pack)
         )
         if is_counter:
@@ -3937,7 +4254,18 @@ def _build_measure_spec(
             if _counter_unsafe_cast_needed(metric_field, resolver):
                 agg_arg = f"TO_DOUBLE({metric_field})"
                 warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
-            stats_expr = f"{default_agg}({agg_arg})"
+            # Collapse ACROSS TIME with LAST_OVER_TIME before aggregating ACROSS
+            # SERIES. A bare instant-vector selector has a value at each step: the
+            # most recent sample at or before it -- Prometheus never averages a
+            # gauge over the step interval. Aggregating the raw field instead
+            # conflates the two axes, so a bucket's value became its MEAN.
+            #
+            # "Node Exporter Scrape Time" is the clearest case: 46 of its 48
+            # per-collector series disagreed with Prometheus, collector=nfs by
+            # 5276% (0.0123 against 0.000228), because a scrape-duration gauge
+            # spikes and the 14-minute bucket mean sits far above the latest
+            # sample. The counter branch above already does this correctly.
+            stats_expr = f"{default_agg}(LAST_OVER_TIME({agg_arg}))"
             warning = gauge_default_agg_warning(group_fields, frag.metric, default_agg)
             if warning:
                 warnings.append(warning)
@@ -4026,8 +4354,13 @@ def _build_measure_spec(
             frag, resolver, esql_inner, is_counter
         )
         warnings.extend(map_rate_warnings)
-        needs_ts = is_counter or frag.range_func in AGG_FUNCTION_MAP
-        source = "TS" if needs_ts else "FROM"
+        # When _plan_metric_map_rate_transform clears esql_inner (drop_rate to
+        # gauge), no counter/rate function is emitted and TS source is not
+        # required; fall back to FROM so non-TSDS gauges are queried correctly.
+        # frag.range_func in AGG_FUNCTION_MAP is always True here (the guard
+        # above already returned None when the key is absent), so using it
+        # instead of bool(esql_inner) would force TS even in the drop_rate case.
+        source = "TS" if (bool(esql_inner) or is_counter) else "FROM"
         time_filter = rule_pack.ts_time_filter if source == "TS" else rule_pack.from_time_filter
         bucket_expr = rule_pack.ts_bucket if source == "TS" else rule_pack.from_bucket
         prefer = "counter" if (frag.range_func in {"rate", "irate", "increase"} and is_counter) else "gauge"
@@ -4047,7 +4380,7 @@ def _build_measure_spec(
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         if esql_inner:
-            inner_expr = f"{esql_inner}({inner_arg}, {frag.range_window})"
+            inner_expr = _range_call(esql_inner, inner_arg, frag.range_window)
         else:
             # drop_rate → gauge: outer agg operates on the bare field.
             inner_expr = inner_arg
@@ -4091,7 +4424,7 @@ def _build_measure_spec(
         ):
             warnings.append(_counter_unsafe_cast_warning(metric_field, resolver))
         if esql_inner:
-            inner_windowed = f"{esql_inner}({inner_arg}, {frag.range_window})"
+            inner_windowed = _range_call(esql_inner, inner_arg, frag.range_window)
         else:
             inner_windowed = inner_arg
         stats_expr = _apply_outer_agg(esql_outer, inner_windowed, frag)
@@ -4359,7 +4692,10 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
             value_expr, percentile = args[0].strip(), args[1].strip()
             return f"{agg}(CASE({condition}, {value_expr}, NULL), {percentile})"
         return None
-    ts_match = re.fullmatch(r"(?P<field>.+),\s*(?P<window>[^,]+)", inner)
+    # The window is optional: the counter family is emitted windowless (see
+    # _range_call), and requiring the comma here would drop those calls out of
+    # the CASE-wrapping branch below and into shapes Elasticsearch rejects.
+    ts_match = re.fullmatch(r"(?P<field>.+?)(?:,\s*(?P<window>\d+(?:\.\d+)?\s*(?:ms|s|m|h|d|millis(?:econds?)?|seconds?|minutes?|hours?|days?)))?", inner)
     # A top-level windowed time-series function (the *_OVER_TIME family AND the
     # counter range functions RATE/IRATE/INCREASE/DELTA/DERIV) takes the window
     # as its own trailing argument. Only the value (field) may be wrapped in
@@ -4370,27 +4706,29 @@ def _inline_filters_into_stats_expr(stats_expr, filters, timeseries_window="5m")
         or agg in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}
     ) and ts_match:
         field = ts_match.group("field").strip()
-        window = ts_match.group("window").strip()
+        window = ((ts_match.group("window") or "").strip()
+                  or str(timeseries_window or "").strip() or None)
         # CASE must wrap the time-series call, not the metric field inside it.
         # ``IRATE(CASE(cond, field, NULL), window)`` ClassCasts
         # (ReferenceAttribute → Bucket) on current ES; ``CASE(cond, IRATE(field,
         # window), NULL)`` is legal.
-        return f"CASE({condition}, {agg}({field}, {window}), NULL)"
+        return f"CASE({condition}, {_range_call(agg, field, window)}, NULL)"
     nested_ts = re.fullmatch(
-        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+),\s*(?P<window>[^,]+)\)",
+        r"(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)\((?P<field>.+?)(?:,\s*(?P<window>\d+(?:\.\d+)?\s*(?:ms|s|m|h|d|millis(?:econds?)?|seconds?|minutes?|hours?|days?)))?\)",
         inner,
     )
     if nested_ts:
         func = nested_ts.group("func")
         field = nested_ts.group("field").strip()
-        window = nested_ts.group("window").strip()
+        window = ((nested_ts.group("window") or "").strip()
+                  or str(timeseries_window or "").strip() or None)
         if func in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
             # Filtering the counter argument itself makes Elasticsearch 9.5
             # crash for RATE/IRATE with a grouping Bucket cast. Apply the
             # per-series filter to the range-function result instead; the
             # enclosing aggregate still ignores non-matching rows via NULL.
-            return f"{agg}(CASE({condition}, {func}({field}, {window}), NULL))"
-        return f"{agg}({func}(CASE({condition}, {field}, NULL), {window}))"
+            return f"{agg}(CASE({condition}, {_range_call(func, field, window)}, NULL))"
+        return f"{agg}({_range_call(func, f'CASE({condition}, {field}, NULL)', window)})"
     # Window-less ``LAST_OVER_TIME(field)`` (and siblings) are common on the
     # counter-without-rate summary path. CASE-wrap the field the same way as the
     # windowed form so multi-target panels with divergent label filters (Express
@@ -4524,10 +4862,66 @@ _ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)
 
 
 _BARE_TS_VALUE_ARG = re.compile(
-    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    # The counter family carries no window -- it is emitted windowless so the rate
+    # follows the time bucket (see counter_range_window_rule). Requiring the comma
+    # for these would stop wrapping exactly the calls Elasticsearch rejects when
+    # they sit bare beside a CASE-wrapped sibling.
+    r"\b(?P<func>IRATE|RATE|INCREASE)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*(?:,\s*(?P<window>[^)]+))?\)"
+    # The lookback family keeps a real window, and its single-argument form
+    # (LAST_OVER_TIME(field)) is a legitimate emission, not a bare value arg.
+    r"|\b(?P<func2>DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
     r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
-    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+    rf"\((?P<field2>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window2>[^)]+)\)"
 )
+
+
+_COUNTER_RANGE_FUNCS = frozenset({"RATE", "IRATE", "INCREASE"})
+
+
+def _range_call(func: str, field: str, window: str | None) -> str:
+    """Render a TS range call, omitting the window for the counter family.
+
+    Elasticsearch computes RATE/IRATE/INCREASE over the TIME BUCKET, not over the
+    window: ``RateDoubleGroupingAggregatorFunction.computeRate`` derives the value
+    at ``tbucketStart``/``tbucketEnd`` and divides by that span, and the window
+    argument defaults to ``NO_WINDOW`` -- ``Duration.ZERO`` -- meaning "use the
+    bucket". Pinning a window beside an ADAPTIVE ``TBUCKET(100, ?_tstart, ?_tend)``
+    desynchronises the two as soon as the dashboard range grows.
+
+    Measured on the rig against node_cpu_seconds_total (true idle rate 0.984),
+    with the adaptive bucket the dashboards actually emit::
+
+        range   prom    RATE(x, 5m)      RATE(x)
+         1 h   0.985     0.944  (4%)   0.966 (2%)
+         6 h   0.984     0.970  (1%)   0.970 (1%)
+        12 h   0.984     1.945 (98%)   0.980 (0%)
+        24 h   0.984     5.702 (480%)  0.953 (3%)
+
+    Reproducing this REQUIRES the adaptive bucket. A fixed ``TBUCKET(432 seconds)``
+    at the same range and window reads 0.979 -- fine -- so a fixed-width probe
+    hides the defect completely; that is what made it look like a non-issue on the
+    first pass. Sweep several dashboard ranges with the adaptive form.
+
+    The ``*_OVER_TIME`` family takes its window as a genuine lookback and keeps it.
+    """
+    if func.upper() in _COUNTER_RANGE_FUNCS or not window:
+        return f"{func}({field})"
+    return f"{func}({field}, {window})"
+
+
+def _bare_ts_match_parts(match: re.Match[str]) -> tuple[str, str, str | None]:
+    """(func, field, window) from either alternation branch; window may be None."""
+    return (
+        match.group("func") or match.group("func2"),
+        match.group("field") or match.group("field2"),
+        match.group("window") or match.group("window2"),
+    )
+
+
+def _ts_call(func: str, field: str, window: str | None) -> str:
+    """Rebuild a TS call, preserving whether it carried a window."""
+    return f"{func}({field}, {window})" if window else f"{func}({field})"
 
 
 # CASE(cond, field, NULL) nested as the *value* arg of a TS range/window func.
@@ -4541,8 +4935,14 @@ _TS_INNER_CASE_VALUE_ARG = re.compile(
     re.IGNORECASE,
 )
 
+# The condition may itself contain commas -- ``COALESCE(label, "") RLIKE ?var``
+# is a normal label matcher (an absent label reads as "" in PromQL). Matching the
+# condition with ``[^,]+`` silently stopped recognising the outer shape as soon as
+# one appeared, and the caller then nested an identity CASE inside the outer
+# filter CASE. Anchor on the TS call and the trailing ``, NULL)`` instead, and let
+# the condition be anything up to it.
 _OUTER_CASE_TS_FUNC = re.compile(
-    r"CASE\([^,]+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
+    r"CASE\(.+,\s*(?:RATE|IRATE|INCREASE|DELTA|DERIV)\([^)]+\),\s*NULL\)"
 )
 
 
@@ -4597,22 +4997,35 @@ def _wrap_bare_ts_value_args_when_case_siblings(assignments: list[str]) -> list[
                 return assignment
 
             def _repl(match: re.Match[str]) -> str:
-                return (
-                    f"CASE(true, {match.group('func')}({match.group('field')}, "
-                    f"{match.group('window')}), NULL)"
-                )
+                return f"CASE(true, {_ts_call(*_bare_ts_match_parts(match))}, NULL)"
 
             return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
 
         return [_wrap_outer(assignment) for assignment in assignments]
 
     def _repl(match: re.Match[str]) -> str:
-        return (
-            f"{match.group('func')}(CASE(true, {match.group('field')}, NULL), "
-            f"{match.group('window')})"
-        )
+        func, field, window = _bare_ts_match_parts(match)
+        # The counter range functions reject CASE as their value argument, which
+        # is why _rewrite_ts_inner_case_to_outer_case exists. Emitting the inner
+        # shape for them here just recreates the form that pass removed, so keep
+        # them outer. OVER_TIME genuinely uses the inner shape.
+        if func.upper() in {"RATE", "IRATE", "INCREASE", "DELTA", "DERIV"}:
+            return f"CASE(true, {_ts_call(func, field, window)}, NULL)"
+        return f"{func}(CASE(true, {field}, NULL), {window})"
 
-    return [_BARE_TS_VALUE_ARG.sub(_repl, assignment) for assignment in assignments]
+    def _wrap_inner(assignment: str) -> str:
+        # Same guard as the outer branch: a measure that already carries a
+        # filter CASE must not gain an identity CASE nested inside it. Without
+        # this, an outer-shaped measure whose condition the detector above
+        # failed to recognise becomes
+        # ``SUM(CASE(cond, RATE(CASE(true, field, w), NULL)))`` -- which
+        # Elasticsearch rejects, since a time-series function may not take CASE
+        # as its value argument.
+        if "CASE(" in assignment:
+            return assignment
+        return _BARE_TS_VALUE_ARG.sub(_repl, assignment)
+
+    return [_wrap_inner(assignment) for assignment in assignments]
 
 
 def _infer_stats_metric_field(expr: str) -> str:
@@ -4783,19 +5196,19 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 ts_func = bare_ts.group(1)
                 ts_window = bare_ts.group(2).strip()
                 outer = _TS_TO_OUTER_AGG.get(ts_func, "AVG")
-                new_expr = f"{outer}({ts_func}({metric_field}, {ts_window}))"
+                new_expr = f"{outer}({_range_call(ts_func, metric_field, ts_window)})"
                 warning = (
-                    f"Wrapped {ts_func}({metric_field}, {ts_window}) in {outer}(...) so "
+                    f"Wrapped {_range_call(ts_func, metric_field, ts_window)} in {outer}(...) so "
                     f"the grouped TS panel target validates (no bare time-series "
                     f"aggregate mixed with regular aggregates)"
                 )
             elif bare_regular:
                 outer = bare_regular.group(1)
                 ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
-                new_expr = f"{outer}({ts_func}({metric_field}, {window}))"
+                new_expr = f"{outer}({_range_call(ts_func, metric_field, window)})"
                 warning = (
                     f"Converted {outer}({metric_field}) to "
-                    f"{outer}({ts_func}({metric_field}, {window})) so the grouped "
+                    f"{outer}({_range_call(ts_func, metric_field, window)}) so the grouped "
                     f"TS panel target validates"
                 )
             else:
@@ -4810,10 +5223,10 @@ def _normalize_mixed_ts_stats_exprs(specs):
                 continue
             outer = bare_regular.group(1)
             ts_func = _OUTER_TO_SAFE_TS_INNER[outer]
-            new_expr = f"{ts_func}({metric_field}, {window})"
+            new_expr = f"{_range_call(ts_func, metric_field, window)}"
             warning = (
                 f"Converted {outer}({metric_field}) to "
-                f"{ts_func}({metric_field}, {window}) so mixed TS panel targets validate"
+                f"{_range_call(ts_func, metric_field, window)} so mixed TS panel targets validate"
             )
 
         warnings = list(spec.warnings)
@@ -5590,9 +6003,11 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
-        if plan and "Dropped group_left label enrichment" not in (plan.warnings or []):
-            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        _lj_warn = "Dropped group_left label enrichment; kept primary metric series only"
+        if plan and _lj_warn not in (plan.warnings or []):
+            plan.warnings.append(_lj_warn)
         return plan
 
     # A bare group_left/group_right vector-matching join without an outer
@@ -5637,13 +6052,11 @@ def _build_formula_plan(
             allow_direct_ts_gauge=allow_direct_ts_gauge,
             preferred_group_labels_origin=preferred_group_labels_origin,
             allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+            drop_legend_labels=drop_legend_labels,
         )
-        if (
-            plan
-            and not enrichment_labels
-            and "Dropped group_left label enrichment" not in (plan.warnings or [])
-        ):
-            plan.warnings.append("Dropped group_left label enrichment; kept primary metric series only")
+        _lj_warn2 = "Dropped group_left label enrichment; kept primary metric series only"
+        if plan and not enrichment_labels and _lj_warn2 not in (plan.warnings or []):
+            plan.warnings.append(_lj_warn2)
         return plan
 
     if frag and frag.family == "binary_expr":
@@ -5798,14 +6211,12 @@ def _build_formula_plan(
                 )
                 if plan:
                     var_name = (phantom_side.metric or "").removeprefix("label_") or "var"
-                    if (
-                        f"Grafana variable ${var_name} dropped"
-                        not in (plan.warnings or [])
-                    ):
-                        plan.warnings.append(
-                            f"Grafana variable ${var_name} used as scalar "
-                            f"multiplier/divisor was dropped; chart values unscaled"
-                        )
+                    _gv_warn = (
+                        f"Grafana variable ${var_name} used as scalar "
+                        f"multiplier/divisor was dropped; chart values unscaled"
+                    )
+                    if _gv_warn not in (plan.warnings or []):
+                        plan.warnings.append(_gv_warn)
                     return plan
 
         # A caller-supplied ``alias_hint`` (e.g. a multi-target ``target_ref_id``
@@ -5978,6 +6389,33 @@ def _build_formula_plan(
             warnings=warnings,
         )
 
+    # label_join(v, dst, sep, src1, ...) — the outer label-join is a pure
+    # post-STATS decoration; unwrap to the inner fragment so the formula-plan
+    # path can build the STATS spec correctly.  _build_multi_target_series_query
+    # injects the EVAL CONCAT and extends the KEEP/group_fields afterwards.
+    if frag and frag.family == "label_join":
+        inner_frag = frag.extra.get("lj_inner_frag")
+        if inner_frag is not None:
+            inner_plan = _build_formula_plan(
+                inner_frag,
+                resolver,
+                rule_pack,
+                alias_hint=alias_hint,
+                summary_mode=summary_mode,
+                preferred_group_labels=preferred_group_labels,
+                allow_direct_ts_gauge=allow_direct_ts_gauge,
+                preferred_group_labels_origin=preferred_group_labels_origin,
+                allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+                drop_legend_labels=drop_legend_labels,
+            )
+            if inner_plan:
+                lj_dst = frag.extra.get("lj_dst", "")
+                if lj_dst:
+                    msg = f"label_join({lj_dst!r}) approximated as ES|QL EVAL CONCAT"
+                    if msg not in inner_plan.warnings:
+                        inner_plan.warnings.append(msg)
+            return inner_plan
+
     spec = _build_measure_spec(
         frag,
         resolver,
@@ -6030,6 +6468,7 @@ __all__ = [
     "_parse_logql_selector",
     "_parse_selector_matchers",
     "_quote_esql_string",
+    "_range_call",
     "_scalar_fragment_expr",
     "_selector_filters",
     "_split_top_level_csv",
@@ -6043,3 +6482,163 @@ __all__ = [
     "substitute_grafana_range_macros",
     "substitute_scalar_template_vars",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Co-located per-element arithmetic (agg(A op B))
+# --------------------------------------------------------------------------- #
+#
+# ``agg(A op B) != agg(A) op agg(B)``, which is why the normaliser refuses this
+# shape by default. That inequality only matters if A and B must be aggregated
+# separately. When the operands share a label set they land on the SAME document
+# row in every Prometheus->Elasticsearch layout (one document per timestamp +
+# label-set carrying each metric of that set), so ES|QL can evaluate ``A op B``
+# per row and aggregate the result -- which is exactly ``agg(A op B)``.
+#
+# PromQL itself proves the label sets match: a binary operation with no
+# ``on()``/``ignoring()`` modifier matches on ALL labels, so a dashboard that
+# renders in Grafana necessarily has aligned operands. Fragments carrying
+# ``vector_matching``/``join_labels`` are excluded -- those are the genuinely
+# unaligned joins.
+#
+# The renderer is deliberately closed: anything outside the allowlist returns
+# None and keeps the existing not-feasible behaviour. A wrong rendering here
+# produces silently incorrect numbers rather than a visible failure, so the bias
+# is strongly toward refusing.
+
+_COLOCATED_BINARY_OPS = frozenset({"+", "-", "*", "/"})
+
+_COLOCATED_RANGE_FUNCS = frozenset({
+    "rate", "irate", "increase", "delta",
+    "avg_over_time", "max_over_time", "min_over_time", "sum_over_time",
+    "last_over_time",
+})
+
+
+def _colocated_leaf_matchers(frag):
+    return tuple(sorted(
+        (str(m.get("label", "")), str(m.get("op", "")), str(m.get("value", "")))
+        for m in (frag.matchers or [])
+        if isinstance(m, dict)
+    ))
+
+
+def _render_colocated_arithmetic(frag, resolver, rule_pack, depth=0):
+    """Render ``A op B`` as one inline ES|QL expression, or None if unsafe.
+
+    Returns ``(expression, matcher_signature)``. ``matcher_signature`` is the
+    label-matcher set every metric leaf shares; a mismatch means the operands
+    are not the same series and the caller must refuse.
+    """
+    if frag is None or depth > 32:
+        return None
+
+    family = getattr(frag, "family", "")
+    extra = getattr(frag, "extra", {}) or {}
+    if extra.get("vector_matching") or extra.get("join_labels"):
+        return None
+
+    if family == "binary_expr":
+        op = (frag.binary_op or "").strip()
+        if op not in _COLOCATED_BINARY_OPS:
+            return None
+        left = _render_colocated_arithmetic(extra.get("left_frag"), resolver, rule_pack, depth + 1)
+        right = _render_colocated_arithmetic(extra.get("right_frag"), resolver, rule_pack, depth + 1)
+        if left is None or right is None:
+            return None
+        l_expr, l_sig = left
+        r_expr, r_sig = right
+        if l_sig is not None and r_sig is not None and l_sig != r_sig:
+            return None
+        sig = l_sig if l_sig is not None else r_sig
+        # No divide-by-zero guard: ES|QL already yields NULL for ``x / 0``
+        # (verified: ROW a=5.0, b=0.0 | EVAL a/b -> null), which is the absent
+        # point we want. NULLIF is not an ES|QL function -- using it here made
+        # every such query fail with "Unknown function [NULLIF]".
+        return (f"({l_expr} {op} {r_expr})", sig)
+
+    if getattr(frag, "is_scalar", False) or frag.scalar_value is not None:
+        try:
+            return (repr(float(frag.scalar_value)), None)
+        except (TypeError, ValueError):
+            return None
+
+    if not frag.metric:
+        return None
+    # An operand carrying its own aggregation is a separate reduction; only bare
+    # selectors and single range calls are safe to inline.
+    if frag.outer_agg or frag.group_labels:
+        return None
+
+    field = resolver.resolve_metric_field(frag.metric) if resolver else frag.metric
+    field_ref = _esql_identifier(field)
+    sig = _colocated_leaf_matchers(frag)
+
+    if family == "simple_metric" and not frag.range_func:
+        return (field_ref, sig)
+
+    rf = (frag.range_func or "").lower()
+    if family == "range_agg" and rf in _COLOCATED_RANGE_FUNCS:
+        esql_fn = AGG_FUNCTION_MAP.get(rf)
+        window = frag.range_window or ""
+        if not esql_fn or not window:
+            return None
+        return (_range_call(esql_fn, field_ref, window), sig)
+    return None
+
+
+def first_colocated_leaf(frag, depth=0):
+    """First metric-bearing leaf of a rendered arithmetic tree."""
+    if frag is None or depth > 32:
+        return None
+    if getattr(frag, "metric", ""):
+        return frag
+    extra = getattr(frag, "extra", {}) or {}
+    for key in ("left_frag", "right_frag"):
+        found = first_colocated_leaf(extra.get(key), depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def colocated_metric_fields(frag, resolver, out=None, depth=0):
+    """Resolved field paths of every metric leaf in an arithmetic tree."""
+    if out is None:
+        out = []
+    if frag is None or depth > 32:
+        return out
+    if getattr(frag, "metric", ""):
+        field = resolver.resolve_metric_field(frag.metric) if resolver else frag.metric
+        if field and field not in out:
+            out.append(field)
+        return out
+    extra = getattr(frag, "extra", {}) or {}
+    for key in ("left_frag", "right_frag"):
+        colocated_metric_fields(extra.get(key), resolver, out, depth + 1)
+    return out
+
+
+def colocated_binary_agg_plan(frag, resolver, rule_pack):
+    """``(value_expr, leaf)`` for a renderable ``agg(A op B)``, else None."""
+    if not frag or not frag.outer_agg:
+        return None
+    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
+    if inner is None or getattr(inner, "family", "") != "binary_expr":
+        return None
+    rendered = _render_colocated_arithmetic(inner, resolver, rule_pack)
+    if rendered is None:
+        return None
+    value_expr, matcher_sig = rendered
+    if matcher_sig is None:
+        # Pure scalar arithmetic: no metric to read.
+        return None
+    # NOTE: the OUTER aggregation lives in OUTER_AGG_MAP. AGG_FUNCTION_MAP is the
+    # RANGE-function map and has no "sum"/"avg" -- looking the outer agg up there
+    # silently returns None, which is how an earlier attempt at this fell through
+    # to the generic single-metric builder and dropped an operand.
+    if (frag.outer_agg or "").lower() not in OUTER_AGG_MAP:
+        return None
+    leaf = first_colocated_leaf(inner)
+    if leaf is None:
+        return None
+    return value_expr, leaf

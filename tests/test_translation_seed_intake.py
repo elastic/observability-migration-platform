@@ -34,8 +34,8 @@ _GOOD_ALIAS_QUERY = (
 
 _GOOD_CASE_WRAP_QUERY = (
     "TS metrics-*\n"
-    '| STATS a = SUM(CASE((mode == "user"), IRATE(m, 1m), NULL)), '
-    "b = SUM(CASE(true, IRATE(other, 1m), NULL)) BY time_bucket = TBUCKET(5 minute)\n"
+    '| STATS a = SUM(CASE((mode == "user"), IRATE(m), NULL)), '
+    "b = SUM(CASE(true, IRATE(other), NULL)) BY time_bucket = TBUCKET(5 minute)\n"
 )
 
 _DATADOG_GOOD_QUERY = (
@@ -58,7 +58,7 @@ def corrupt_to_inner_case_irate(query: str) -> str:
     return (
         "TS metrics-*\n"
         '| STATS a = SUM(IRATE(CASE((mode == "user"), m, NULL), 1m)), '
-        "b = SUM(IRATE(other, 1m)) BY time_bucket = TBUCKET(5 minute)\n"
+        "b = SUM(IRATE(other)) BY time_bucket = TBUCKET(5 minute)\n"
     )
 
 
@@ -218,7 +218,7 @@ def test_intake_flips_data_gap_when_alias_bug(tmp_path):
 def test_intake_skips_plain_data_gap(tmp_path):
     query = (
         "TS metrics-*\n"
-        "| STATS x = AVG(RATE(http_requests_total, 5m)) BY time_bucket = TBUCKET(5 minute)\n"
+        "| STATS x = AVG(RATE(http_requests_total)) BY time_bucket = TBUCKET(5 minute)\n"
     )
     report = {
         "panels": [

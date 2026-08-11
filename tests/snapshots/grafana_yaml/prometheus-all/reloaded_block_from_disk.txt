@@ -1,7 +1,0 @@
-title: Reloaded block from disk
-grafana_type: graph
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['prometheus_tsdb_reloads_total']
-breakdown: instance

@@ -5,7 +5,7 @@
 
 The migration tool used to fold Grafana ``type=="row"`` containers into the
 ``Total panels found`` count and the verification gate's ``Green`` tally, which
-made the summary self-inconsistent with the compilation table (panels column
+made the summary self-inconsistent with the per-dashboard table (panels column
 included rows but OK/Warn/Man/NF columns did not). These tests pin the
 corrected shape:
 
@@ -17,8 +17,8 @@ Renderable panels:   41
   Skipped:           0 (0.0%)
 Verification gate:   38 Green / 3 Yellow / 0 Red
 
-Dashboard  Panels  OK  Warn  Man  NF  Rows  Compiled
-ArgoCD         41  38     3    0   0     9       YES
+Dashboard  Panels  OK  Warn  Man  NF  Skip  Rows
+ArgoCD         41  38     3    0   0     0     9
 ```
 
 Rows are surfaced inline on the ``Elements`` summary line and as a dedicated
@@ -29,13 +29,18 @@ panel-derived metrics (percentages, Verification gate counts).
 from __future__ import annotations
 
 import io
+import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from observability_migration.core.reporting.report import (
     MigrationResult,
     PanelResult,
+    build_runtime_summary,
     print_report,
+    save_detailed_report,
 )
 
 
@@ -83,17 +88,13 @@ def _argocd_fixture() -> MigrationResult:
     result.requires_manual = 0
     result.not_feasible = 0
     result.skipped = 9
-    result.compiled = True
     return result
 
 
 def _capture_report(*results: MigrationResult) -> str:
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_report(
-            list(results),
-            [(r.dashboard_title, True, "") for r in results],
-        )
+        print_report(list(results))
     return buf.getvalue()
 
 
@@ -131,19 +132,19 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         self.assertIn("Verification gate:   38 Green / 3 Yellow / 0 Red", output)
         self.assertNotIn("47 Green", output)
 
-    def test_compilation_table_has_rows_column(self):
-        # Per-dashboard table: Panels = OK + Warn + Man + NF + Skip, and a new
+    def test_per_dashboard_table_has_rows_column(self):
+        # Per-dashboard table: Panels = OK + Warn + Man + NF + Skip, and a
         # ``Rows`` column surfaces structural containers without conflating
         # them with panel counts.
         output = _capture_report(_argocd_fixture())
-        # Header includes Rows between NF and Compiled.
+        # Header ends with Skip then Rows.
         self.assertIn(
-            f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} {'NF':>5} {'Skip':>5} {'Rows':>5} {'Compiled':>10}",
+            f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} {'NF':>5} {'Skip':>5} {'Rows':>5}",
             output,
         )
         # Data row: Panels=41, Skip=0, Rows=9.
         self.assertIn(
-            f"{'ArgoCD':<40} {41:>6} {38:>5} {3:>5} {0:>5} {0:>5} {0:>5} {9:>5} {'YES':>10}",
+            f"{'ArgoCD':<40} {41:>6} {38:>5} {3:>5} {0:>5} {0:>5} {0:>5} {9:>5}",
             output,
         )
 
@@ -154,14 +155,13 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         result.panel_results = [_panel("p", "migrated", gate="Green")]
         result.total_panels = 1
         result.migrated = 1
-        result.compiled = True
 
         output = _capture_report(result)
         self.assertIn("Elements:            1 total (1 panel)", output)
         self.assertNotIn("+ 0 rows", output)
         # ``Rows`` column still present (predictable output) and shows 0.
         self.assertIn(
-            f"{'no-rows':<40} {1:>6} {1:>5} {0:>5} {0:>5} {0:>5} {0:>5} {0:>5} {'YES':>10}",
+            f"{'no-rows':<40} {1:>6} {1:>5} {0:>5} {0:>5} {0:>5} {0:>5} {0:>5}",
             output,
         )
 
@@ -172,7 +172,6 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         result.panel_results = [_row(f"r-{i}") for i in range(3)]
         result.total_panels = 3
         result.skipped = 3
-        result.compiled = True
 
         output = _capture_report(result)
         self.assertIn("Elements:            3 total (0 panels + 3 rows)", output)
@@ -193,7 +192,6 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         result.total_panels = 3
         result.migrated = 1
         result.skipped = 2  # one panel-skip + one row, the model lumps these
-        result.compiled = True
 
         output = _capture_report(result)
         # Elements: 1 panel + 1 panel-skip = 2 renderable panels, + 1 row.
@@ -203,7 +201,7 @@ class PrintReportRowAccountingTests(unittest.TestCase):
         self.assertIn("Skipped:           1 (50.0%)", output)
         # Table: panels=2, skip=1, rows=1.
         self.assertIn(
-            f"{'mixed-skips':<40} {2:>6} {1:>5} {0:>5} {0:>5} {0:>5} {1:>5} {1:>5} {'YES':>10}",
+            f"{'mixed-skips':<40} {2:>6} {1:>5} {0:>5} {0:>5} {0:>5} {1:>5} {1:>5}",
             output,
         )
 
@@ -220,10 +218,9 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
         result.panel_results = [_panel("p", "migrated", gate="Green")]
         result.total_panels = 1
         result.migrated = 1
-        result.compiled = True
         buf = io.StringIO()
         with redirect_stdout(buf):
-            print_report([result], [("d", True, "")], field_discovery=field_discovery)
+            print_report([result], field_discovery=field_discovery)
         return buf.getvalue()
 
     def test_offline_fallback_emits_warning_and_remediation(self):
@@ -302,6 +299,84 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
         # Back-compat: callers that don't pass field_discovery print no warning.
         out = self._run(None)
         self.assertNotIn("may render empty", out)
+
+
+class UploadPanelLossReportingTests(unittest.TestCase):
+    """Panels Kibana dropped behind an HTTP 200 must reach the operator report.
+
+    A count of failed uploads is not enough: nothing in it says *which* panels
+    the "successful" dashboards are missing.
+    """
+
+    @staticmethod
+    def _uploaded_result(dropped: list[dict] | None) -> MigrationResult:
+        result = _argocd_fixture()
+        result.upload_attempted = True
+        result.uploaded = not dropped
+        result.upload_error = "Dash: lossy" if dropped else ""
+        result.upload_dropped_panels = list(dropped or [])
+        return result
+
+    def test_dropped_panels_are_named_in_the_migration_report(self):
+        output = _capture_report(
+            self._uploaded_result(
+                [
+                    {
+                        "title": "Memory usage",
+                        "reason": "Unable to transform panel config. Error: [color]",
+                        "section": "Overview",
+                        "grid": {"x": 12, "y": 0, "w": 12, "h": 6},
+                    }
+                ]
+            )
+        )
+        self.assertIn("UPLOAD DATA LOSS", output)
+        self.assertIn("ArgoCD: Memory usage [section Overview]", output)
+        self.assertIn("Unable to transform panel config", output)
+        self.assertIn("1 panel(s) are missing from the uploaded dashboard(s)", output)
+        # A lossy upload never counts as uploaded.
+        self.assertIn("Upload results:      0/1", output)
+
+    def test_clean_upload_prints_no_data_loss_section(self):
+        output = _capture_report(self._uploaded_result(None))
+        self.assertNotIn("UPLOAD DATA LOSS", output)
+        self.assertIn("Upload results:      1/1", output)
+
+    def test_runtime_summary_carries_the_dropped_panels(self):
+        dropped = [{"title": "Memory usage", "reason": "boom", "section": "", "grid": {}}]
+        summary = build_runtime_summary(self._uploaded_result(dropped))
+        self.assertEqual(summary["upload"]["status"], "fail")
+        self.assertEqual(summary["upload"]["dropped_panels"], dropped)
+
+    def test_runtime_summary_dropped_panels_is_empty_on_a_clean_upload(self):
+        summary = build_runtime_summary(self._uploaded_result(None))
+        self.assertEqual(summary["upload"]["status"], "pass")
+        self.assertEqual(summary["upload"]["dropped_panels"], [])
+
+
+class CompileReportingRemovedTests(unittest.TestCase):
+    """Drift guard: the dashboard-YAML compile path no longer exists, so no
+    reporting surface may claim compile / YAML-lint / compiled-layout status."""
+
+    def test_console_report_has_no_compilation_surface(self):
+        output = _capture_report(_argocd_fixture())
+        self.assertNotIn("Compilation results:", output)
+        self.assertNotIn("COMPILATION ERRORS:", output)
+        self.assertNotIn("Compiled", output)
+
+    def test_detailed_report_and_runtime_summary_drop_compile_stages(self):
+        result = _argocd_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "migration_report.json"
+            save_detailed_report([result], output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        for key in ("compiled_ok", "yaml_lint_ok", "layout_ok"):
+            self.assertNotIn(key, payload["summary"])
+        for key in ("compiled", "compile_error", "compiled_path", "yaml_path"):
+            self.assertNotIn(key, payload["dashboards"][0])
+        # Upload is the only remaining runtime stage.
+        self.assertEqual(list(build_runtime_summary(result)), ["upload"])
 
 
 if __name__ == "__main__":

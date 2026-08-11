@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,6 +52,7 @@ class PanelAudit:
     source_type: str = ""
     source_panel_type: str = ""
     kibana_type: str = ""
+    dashboards_api_type: str = ""
     status: str = ""
     confidence: float = 0.0
     source_queries: list[str] = field(default_factory=list)
@@ -130,6 +130,36 @@ def _safe_ir_dict(ir_obj: Any) -> dict:
     return {}
 
 
+def _controls_from_dashboard_ir(dashboard_ir: Any) -> list[dict]:
+    """Return the audit's view of a translated dashboard's controls.
+
+    Both source branches read controls off the in-memory ``DashboardIR``.
+    Neither re-parses emitted YAML off disk: that reported ``controls = []``
+    whenever the artifact was absent or unreadable, so a dashboard with
+    template variables looked like a dashboard with none.
+
+    ``ControlIR.to_yaml_control`` replays the translator's own control dict
+    verbatim when one exists (``source_extension``) — that is what the trace
+    docs render. Datadog annotates ``variable_name`` / ``variable_type`` /
+    ``available_options`` onto the ``ControlIR`` *after* that dict was built
+    (``datadog/generate.py::generate_dashboard_artifacts``), so they are
+    absent from it; overlay them here so a control reports the same identity
+    whichever source produced it.
+    """
+    controls: list[dict] = []
+    for control in (getattr(dashboard_ir, "controls", None) or []):
+        entry = control.to_yaml_control()
+        for key in ("variable_name", "variable_type"):
+            value = str(getattr(control, key, "") or "")
+            if value and not entry.get(key):
+                entry[key] = value
+        options = [str(opt) for opt in (getattr(control, "available_options", None) or [])]
+        if options and not entry.get("available_options"):
+            entry["available_options"] = options
+        controls.append(entry)
+    return controls
+
+
 def _build_dd_query_ir(result: Any) -> dict:
     """Build a lightweight query IR from a Datadog TranslationResult."""
     query = str(getattr(result, "esql_query", "") or "")
@@ -157,12 +187,97 @@ def _build_dd_query_ir(result: Any) -> dict:
     }
 
 
+def _dashboards_api_family(panel: dict[str, Any]) -> str:
+    panel_type = str(panel.get("type") or "")
+    if not panel_type and isinstance(panel.get("panels"), list):
+        return "section"
+    if panel_type == "vis":
+        config = panel.get("config")
+        config = config if isinstance(config, dict) else {}
+        return f"vis:{config.get('type', '')}"
+    return panel_type
+
+
+def _native_title_to_api_families(native_dashboard: Any) -> dict[str, list[str]]:
+    title_map: dict[str, list[str]] = {}
+    if native_dashboard is None:
+        return title_map
+    try:
+        payload = native_dashboard.to_api_payload()
+    except Exception:
+        return title_map
+
+    def _walk(panels: list[dict[str, Any]]) -> None:
+        for panel in panels or []:
+            if not isinstance(panel, dict):
+                continue
+            config = panel.get("config")
+            config = config if isinstance(config, dict) else {}
+            title = str(config.get("title") or panel.get("title") or "")
+            family = _dashboards_api_family(panel)
+            if title and family:
+                title_map.setdefault(title, []).append(family)
+            if not panel.get("type") and isinstance(panel.get("panels"), list):
+                _walk(panel.get("panels") or [])
+
+    _walk(payload.get("panels") or [])
+    return title_map
+
+
+def _fallback_dashboards_api_type(kibana_type: str, source_panel_type: str = "") -> str:
+    panel_type = str(kibana_type or "").strip().lower()
+    source_type = str(source_panel_type or "").strip().lower()
+    if panel_type in {"line", "bar", "area", "xy"}:
+        return "vis:xy"
+    if panel_type == "metric":
+        return "vis:metric"
+    if panel_type == "gauge":
+        return "vis:gauge"
+    if panel_type in {"datatable", "table"}:
+        return "vis:data_table"
+    if panel_type == "heatmap":
+        return "vis:heatmap"
+    if panel_type in {"pie", "partition"}:
+        return "vis:pie"
+    if panel_type == "treemap":
+        return "vis:treemap"
+    if panel_type in {"markdown", "links", "image", "section"}:
+        return panel_type
+    if panel_type == "group" or source_type in {"row", "group"}:
+        return "section"
+    return panel_type
+
+
+def _attach_dashboards_api_types(
+    panels: list[PanelAudit],
+    native_dashboard: Any,
+) -> None:
+    title_map = _native_title_to_api_families(native_dashboard)
+    for panel in panels:
+        if str(panel.source_panel_type or "").strip().lower() in {"row", "group"} or (
+            str(panel.kibana_type or "").strip().lower() in {"section", "group"}
+        ):
+            panel.dashboards_api_type = "section"
+            continue
+        families = title_map.get(panel.title or "")
+        if families:
+            panel.dashboards_api_type = families.pop(0)
+        else:
+            panel.dashboards_api_type = _fallback_dashboards_api_type(
+                panel.kibana_type,
+                panel.source_panel_type,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Grafana audit
 # ---------------------------------------------------------------------------
 
 def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardAudit:
     from observability_migration.adapters.source.grafana.panels import translate_dashboard
+    from observability_migration.targets.kibana.dashboards_api import (
+        native_dashboard_from_ir,
+    )
 
     raw = json.loads(dashboard_path.read_text())
     if "dashboard" in raw and isinstance(raw["dashboard"], dict):
@@ -171,10 +286,11 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         dash = raw
     dash["__source_file__"] = str(dashboard_path)
 
-    tmp = tempfile.mkdtemp(prefix="audit_grafana_")
     try:
-        result, yaml_path = translate_dashboard(
-            dash, tmp,
+        # Translation writes nothing; the audit reads the in-memory result /
+        # IR (see ``controls`` below).
+        result = translate_dashboard(
+            dash,
             datasource_index=data_view,
             esql_index=data_view,
         )
@@ -189,8 +305,6 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
                 warnings=[f"Pipeline crashed: {exc}"],
             )],
         )
-
-    yaml_content = yaml_path.read_text() if yaml_path and yaml_path.exists() else ""
 
     panels = []
     for pr in result.panel_results:
@@ -243,16 +357,16 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         "skipped": result.skipped,
     }
 
-    controls = []
-    if yaml_content:
-        try:
-            import yaml as _yaml
-            doc = _yaml.safe_load(yaml_content) or {}
-            dashboards = doc.get("dashboards", [])
-            if dashboards:
-                controls = dashboards[0].get("controls", [])
-        except Exception:
-            pass
+    # Controls come straight from the translated ``DashboardIR``. This used
+    # to re-parse the emitted dashboard YAML off disk, which silently
+    # reported ``controls = []`` whenever the YAML was absent or unreadable.
+    controls = _controls_from_dashboard_ir(getattr(result, "dashboard_ir", None))
+    native_dashboard = None
+    try:
+        native_dashboard, _native_counts = native_dashboard_from_ir(result.dashboard_ir)
+    except Exception:
+        native_dashboard = None
+    _attach_dashboards_api_types(panels, native_dashboard)
 
     return DashboardAudit(
         source="grafana",
@@ -262,7 +376,6 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         total_panels=result.total_panels,
         status_counts=counts,
         panels=panels,
-        yaml_content=yaml_content,
         controls=controls,
         feature_gap_summary=dict(getattr(result, "feature_gap_summary", {}) or {}),
     )
@@ -274,7 +387,10 @@ def _audit_grafana_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
 
 def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardAudit:
     from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-    from observability_migration.adapters.source.datadog.generate import generate_dashboard_yaml
+    from observability_migration.adapters.source.datadog.generate import (
+        dashboard_yaml_from_ir,
+        generate_dashboard_artifacts,
+    )
     from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
     from observability_migration.adapters.source.datadog.planner import plan_widget
     from observability_migration.adapters.source.datadog.translate import translate_widget
@@ -371,11 +487,22 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
     for widget in dashboard.widgets:
         process_widget(widget)
 
+    # ``generate_dashboard_artifacts`` is what ``generate_dashboard_yaml``
+    # calls internally, and it also hands back the ``DashboardIR`` — the only
+    # place Datadog's controls exist. Calling the YAML wrapper threw that IR
+    # away, so this branch reported ``controls = 0`` for every dashboard even
+    # when the source declared template variables. The trace doc renders the
+    # YAML export too, so derive it from that same IR (the migration run itself
+    # no longer builds it).
+    controls: list[dict] = []
+    native_dashboard = None
     try:
-        yaml_str = generate_dashboard_yaml(
+        native_dashboard, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard, panel_results, data_view=data_view,
             field_map=field_map,
         )
+        yaml_str = dashboard_yaml_from_ir(dashboard_ir)
+        controls = _controls_from_dashboard_ir(dashboard_ir)
     except Exception as exc:
         yaml_str = f"# YAML generation failed: {exc}"
 
@@ -387,6 +514,7 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
                 if yp and isinstance(yp, dict):
                     pa.yaml_fragment = {k: v for k, v in yp.items() if not k.startswith("_")}
                 break
+    _attach_dashboards_api_types(panels_audit, native_dashboard)
 
     tpl_vars = []
     for tv in (dashboard.template_variables or []):
@@ -406,6 +534,7 @@ def _audit_datadog_dashboard(dashboard_path: Path, data_view: str) -> DashboardA
         status_counts=status_counts,
         panels=panels_audit,
         yaml_content=yaml_str,
+        controls=controls,
         template_variables=tpl_vars,
     )
 
@@ -554,6 +683,156 @@ def _render_operational_ir(lines: list[str], oir: dict) -> None:
     lines.append("")
 
 
+def _panel_type_summary_rows(audits: list[DashboardAudit]) -> list[dict[str, Any]]:
+    rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for audit in audits:
+        for panel in audit.panels:
+            key = (
+                audit.source,
+                panel.source_panel_type or "—",
+                panel.kibana_type or "—",
+                panel.dashboards_api_type or _fallback_dashboards_api_type(
+                    panel.kibana_type,
+                    panel.source_panel_type,
+                ) or "—",
+            )
+            row = rows.setdefault(
+                key,
+                {
+                    "source": key[0],
+                    "source_panel_type": key[1],
+                    "kibana_type": key[2],
+                    "dashboards_api_type": key[3],
+                    "total": 0,
+                    "translated_ok": 0,
+                    "translated_warning": 0,
+                    "requires_manual": 0,
+                    "not_feasible": 0,
+                    "skipped": 0,
+                    "error": 0,
+                    "verdicts": {},
+                },
+            )
+            row["total"] += 1
+            status = str(panel.status or "")
+            if status in {"migrated", "ok"}:
+                row["translated_ok"] += 1
+            elif status in {"migrated_with_warnings", "warning"}:
+                row["translated_warning"] += 1
+            elif status == "requires_manual":
+                row["requires_manual"] += 1
+            elif status in {"not_feasible", "blocked"}:
+                row["not_feasible"] += 1
+            elif status == "skipped":
+                row["skipped"] += 1
+            elif status == "error":
+                row["error"] += 1
+            verdict = _verdict(panel)
+            verdicts = row["verdicts"]
+            verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    return sorted(
+        rows.values(),
+        key=lambda row: (
+            row["source"],
+            -row["total"],
+            row["source_panel_type"],
+            row["kibana_type"],
+            row["dashboards_api_type"],
+        ),
+    )
+
+
+def _dashboards_api_family_usage_rows(audits: list[DashboardAudit]) -> list[dict[str, Any]]:
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    for audit in audits:
+        for panel in audit.panels:
+            family = panel.dashboards_api_type or _fallback_dashboards_api_type(
+                panel.kibana_type,
+                panel.source_panel_type,
+            ) or "—"
+            key = (audit.source, family)
+            row = rows.setdefault(
+                key,
+                {
+                    "source": audit.source,
+                    "dashboards_api_type": family,
+                    "total": 0,
+                    "translated_ok": 0,
+                    "translated_warning": 0,
+                    "requires_manual": 0,
+                    "not_feasible": 0,
+                    "skipped": 0,
+                    "error": 0,
+                },
+            )
+            row["total"] += 1
+            status = str(panel.status or "")
+            if status in {"migrated", "ok"}:
+                row["translated_ok"] += 1
+            elif status in {"migrated_with_warnings", "warning"}:
+                row["translated_warning"] += 1
+            elif status == "requires_manual":
+                row["requires_manual"] += 1
+            elif status in {"not_feasible", "blocked"}:
+                row["not_feasible"] += 1
+            elif status == "skipped":
+                row["skipped"] += 1
+            elif status == "error":
+                row["error"] += 1
+    return sorted(
+        rows.values(),
+        key=lambda row: (row["source"], -row["total"], row["dashboards_api_type"]),
+    )
+
+
+def _section_panel_type_summary(audits: list[DashboardAudit]) -> str:
+    rows = _panel_type_summary_rows(audits)
+    lines = [
+        "## Panel Type Mapping Summary",
+        "",
+        "| Source | Source Type | Kibana Type | Dashboards API | Panels | OK | Warn | Manual | NF | Skip | Error |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['source']} "
+            f"| `{_escape_md(row['source_panel_type'])}` "
+            f"| `{_escape_md(row['kibana_type'])}` "
+            f"| `{_escape_md(row['dashboards_api_type'])}` "
+            f"| {row['total']} "
+            f"| {row['translated_ok']} "
+            f"| {row['translated_warning']} "
+            f"| {row['requires_manual']} "
+            f"| {row['not_feasible']} "
+            f"| {row['skipped']} "
+            f"| {row['error']} |"
+        )
+    return "\n".join(lines)
+
+
+def _section_dashboards_api_usage(audits: list[DashboardAudit]) -> str:
+    rows = _dashboards_api_family_usage_rows(audits)
+    lines = [
+        "## Dashboards API Family Usage",
+        "",
+        "| Source | Dashboards API | Panels | OK | Warn | Manual | NF | Skip | Error |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['source']} "
+            f"| `{_escape_md(row['dashboards_api_type'])}` "
+            f"| {row['total']} "
+            f"| {row['translated_ok']} "
+            f"| {row['translated_warning']} "
+            f"| {row['requires_manual']} "
+            f"| {row['not_feasible']} "
+            f"| {row['skipped']} "
+            f"| {row['error']} |"
+        )
+    return "\n".join(lines)
+
+
 def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
     lines: list[str] = []
     lines.append("# Pipeline Trace — Auto-Generated Audit\n")
@@ -596,6 +875,11 @@ def generate_pipeline_trace_md(audits: list[DashboardAudit]) -> str:
     for v in ("CORRECT", "MINOR_ISSUE", "EXPECTED_LIMITATION", "WRONG", "ERROR"):
         if v in verdicts:
             lines.append(f"| {v} | {verdicts[v]} |")
+    lines.append("")
+
+    lines.append(_section_panel_type_summary(audits))
+    lines.append("")
+    lines.append(_section_dashboards_api_usage(audits))
     lines.append("")
 
     # Per-dashboard detail
@@ -731,8 +1015,10 @@ def _to_json(audits: list[DashboardAudit]) -> str:
         for p in a.panels:
             d["panels"].append({
                 "title": p.title,
+                "source_type": p.source_type,
                 "source_panel_type": p.source_panel_type,
                 "kibana_type": p.kibana_type,
+                "dashboards_api_type": p.dashboards_api_type,
                 "status": p.status,
                 "confidence": p.confidence,
                 "verdict": _verdict(p),
@@ -756,6 +1042,17 @@ def _to_json(audits: list[DashboardAudit]) -> str:
             })
         data.append(d)
     return json.dumps(data, indent=2, default=str)
+
+
+def _panel_type_summary_json(audits: list[DashboardAudit]) -> str:
+    return json.dumps(
+        {
+            "panel_type_summary": _panel_type_summary_rows(audits),
+            "dashboards_api_usage": _dashboards_api_family_usage_rows(audits),
+        },
+        indent=2,
+        default=str,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1268,6 +1565,9 @@ def main():
             json_path = args.output_dir / "audit_results.json"
             json_path.write_text(_to_json(audits))
             print(f"\nJSON audit: {json_path}")
+            summary_path = args.output_dir / "panel_type_summary.json"
+            summary_path.write_text(_panel_type_summary_json(audits))
+            print(f"Panel type summary: {summary_path}")
         if args.output_format in ("markdown", "both"):
             md_path = args.output_dir / "pipeline_trace.md"
             md_path.write_text(generate_pipeline_trace_md(audits))

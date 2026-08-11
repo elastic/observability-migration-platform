@@ -78,8 +78,8 @@ class MetricsQueryIndexConsistencyTests(unittest.TestCase):
         )
         self.assertNotIn(f"PROMQL index={BROAD}", query)
 
-    def test_esql_fallback_uses_same_esql_index(self):
-        """Panel that falls through to ES|QL must TS/FROM the same concrete index."""
+    def test_grouped_rate_uses_same_concrete_index(self):
+        """Grouped rate panels must query the same concrete stream on either path."""
         panel = {
             "id": 2,
             "type": "timeseries",
@@ -96,16 +96,20 @@ class MetricsQueryIndexConsistencyTests(unittest.TestCase):
         }
         yaml_panel, _result = self.translate(panel)
         query = (yaml_panel.get("esql") or {}).get("query") or ""
-        self.assertFalse(
-            query.startswith("PROMQL"),
-            f"expected ES|QL fallback for by(instance), got: {query[:160]}",
-        )
-        self.assertRegex(
-            query,
-            rf"^(TS|FROM) {re.escape(CONCRETE)}\b",
-            f"ES|QL must target esql_index={CONCRETE}:\n{query}",
-        )
-        self.assertNotRegex(query, rf"^(TS|FROM) {re.escape(BROAD)}\b")
+        if query.startswith("PROMQL"):
+            self.assertIn(
+                f"PROMQL index={CONCRETE}",
+                query,
+                f"native PROMQL must use esql_index={CONCRETE}, not data-view={BROAD}:\n{query}",
+            )
+            self.assertNotIn(f"PROMQL index={BROAD}", query)
+        else:
+            self.assertRegex(
+                query,
+                rf"^(TS|FROM) {re.escape(CONCRETE)}\b",
+                f"ES|QL must target esql_index={CONCRETE}:\n{query}",
+            )
+            self.assertNotRegex(query, rf"^(TS|FROM) {re.escape(BROAD)}\b")
 
     def test_same_target_when_only_data_view_set(self):
         panel = {

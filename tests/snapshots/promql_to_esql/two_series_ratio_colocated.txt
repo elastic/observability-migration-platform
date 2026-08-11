@@ -1,0 +1,10 @@
+source: max(node_filesystem_avail_bytes / node_filesystem_size_bytes)
+feasibility: feasible
+warning: Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align)
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE node_filesystem_avail_bytes IS NOT NULL
+| WHERE node_filesystem_size_bytes IS NOT NULL
+| STATS computed_value = MAX((node_filesystem_avail_bytes / node_filesystem_size_bytes)) BY time_bucket = TBUCKET(5 minute)
+| SORT time_bucket ASC

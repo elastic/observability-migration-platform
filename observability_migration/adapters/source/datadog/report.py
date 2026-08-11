@@ -240,6 +240,8 @@ def print_report(results: list[DashboardResult]) -> None:
 
         print(f"\n  Dashboard: {dr.dashboard_title}")
         print(f"    Source:  {dr.source_file}")
+        if dr.curated_pack_name:
+            print(f"    Curated pack: {dr.curated_pack_name}")
         print(f"    Elements: {_elements_phrase(renderable_widgets, groups)}")
         print(f"    Renderable widgets: {renderable_widgets}")
         print(f"    OK: {dr.migrated}  Warning: {dr.migrated_with_warnings}  "
@@ -248,14 +250,16 @@ def print_report(results: list[DashboardResult]) -> None:
         if groups:
             print(f"    Groups: {groups} (structural, not migrated)")
 
-        if dr.compile_error:
-            print(f"    COMPILE ERROR: {dr.compile_error}")
-
         if dr.upload_attempted:
             upload_status = "pass" if dr.uploaded and not dr.upload_error else "fail"
             print(f"    Upload: {upload_status}")
             if dr.upload_error:
                 print(f"    UPLOAD ERROR: {dr.upload_error}")
+            for dropped in dr.upload_dropped_panels or []:
+                reason = f": {str(dropped.get('reason') or '')[:300]}" if dropped.get("reason") else ""
+                print(
+                    f"    UPLOAD DROPPED PANEL: {dropped.get('title') or '(untitled)'}{reason}"
+                )
         if dr.smoke_attempted:
             print(f"    Smoke: {dr.smoke_status}")
             if dr.smoke_error:
@@ -346,6 +350,7 @@ def save_detailed_report(
         report["metric_map_summary"] = metric_map_summary
 
     total_widgets = 0
+    total_renderable = 0
     total_ok = 0
     total_warning = 0
     total_manual = 0
@@ -357,7 +362,9 @@ def save_detailed_report(
 
     for dr in results:
         dr.recompute_counts()
+        groups = sum(1 for pr in dr.panel_results if getattr(pr, "kibana_type", "") == "group")
         total_widgets += dr.total_widgets
+        total_renderable += max(dr.total_widgets - groups, 0)
         total_ok += dr.migrated
         total_warning += dr.migrated_with_warnings
         total_manual += dr.requires_manual
@@ -378,10 +385,10 @@ def save_detailed_report(
             "not_feasible": dr.not_feasible,
             "skipped": dr.skipped,
             "blocked": dr.blocked,
-            "compiled": dr.compiled,
-            "compiled_path": dr.compiled_path,
-            "compile_error": dr.compile_error,
-            "yaml_path": dr.yaml_path,
+            "artifact_stem": dr.artifact_stem,
+            "curated_pack": dr.curated_pack_name,
+            "native_artifact_path": dr.native_artifact_path,
+            "ir_artifact_path": dr.ir_artifact_path,
             "runtime_summary": dr.build_runtime_summary(),
             "validation": dr.validation_summary,
             "verification_summary": dr.verification_summary,
@@ -389,6 +396,7 @@ def save_detailed_report(
                 "attempted": dr.upload_attempted,
                 "uploaded": dr.uploaded,
                 "error": dr.upload_error,
+                "dropped_panels": list(dr.upload_dropped_panels or []),
                 "space": dr.uploaded_space,
                 "kibana_url": dr.uploaded_kibana_url,
                 "saved_object_id": dr.kibana_saved_object_id,
@@ -458,8 +466,11 @@ def save_detailed_report(
         "smoke_failed": sum(1 for dr in results if dr.smoke_status == "fail"),
         "verification_red": sum((dr.verification_summary or {}).get("red", 0) for dr in results),
         "success_rate": (
-            f"{(total_ok + total_warning) / total_widgets * 100:.1f}%"
-            if total_widgets > 0
+            # Denominator is renderable widgets (excludes structural groups),
+            # matching the console report — not total_widgets which still
+            # counts groups as elements.
+            f"{(total_ok + total_warning) / total_renderable * 100:.1f}%"
+            if total_renderable > 0
             else "0.0%"
         ),
     }
@@ -532,8 +543,6 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         green=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Green")),
         yellow=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Yellow")),
         red=sum(1 for dr in results for pr in _renderable(dr) if _gate(pr, "Red")),
-        compiled_ok=sum(1 for dr in results if dr.compiled),
-        compiled_total=len(results),
         uploaded_ok=sum(1 for dr in results if dr.uploaded),
         upload_attempted=sum(1 for dr in results if dr.upload_attempted),
         native_promql=sum(
@@ -558,13 +567,12 @@ def build_summary_view(results, *, review_queue=None, run_id: str = "") -> Summa
         dashboards.append(
             DashboardRow(
                 title=dr.dashboard_title,
-                elements=len(renderable),
+                # Match the ✓/⚠/?/✗ columns — exclude structural skips/groups.
+                elements=dr.migrated + dr.migrated_with_warnings + dr.requires_manual + dr.not_feasible,
                 migrated=dr.migrated,
                 warnings=dr.migrated_with_warnings,
                 manual=dr.requires_manual,
                 not_feasible=dr.not_feasible,
-                compiled=dr.compiled,
-                compile_error=dr.compile_error,
                 risk_score=risk_by_title.get(dr.dashboard_title),
                 rollout_state="",
                 native_promql=prov.count(PanelProvenance.NATIVE),

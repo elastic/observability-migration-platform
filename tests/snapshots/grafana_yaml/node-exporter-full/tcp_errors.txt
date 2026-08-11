@@ -1,9 +1,0 @@
-title: TCP Errors
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed', 'ListenDrops_SYNs_to_LISTEN_sockets_ignored', 'TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits', 'RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted', 'InErrs_Segments_received_in_error_e_g_bad_TCP_checksums', 'OutRsts_Segments_sent_with_RST_flag', 'TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit', 'TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it']
-breakdown: series_group
-axis_title: counter
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

@@ -1,0 +1,47 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    cluster: redis-rig
+    namespace: default
+
+scrape_configs:
+  - job_name: redis_exporter
+    static_configs:
+      - targets:
+          - redis_exporter:9121
+        labels:
+          instance: redis:6379
+          namespace: default
+
+  # Same targets, and the SAME instance/job labels, as redis_scraper.py sends to
+  # Elasticsearch. Prometheus can then act as a reference implementation for
+  # panels the ES|QL PROMQL command cannot evaluate -- `> bool`, `on(..)
+  # group_left(..)`, `or`, nested binary expressions -- which is 26 panels across
+  # the audited dashboards that otherwise get no numeric verification at all.
+  - job_name: node_exporter
+    static_configs:
+      - targets:
+          - node_exporter:9100
+        labels:
+          instance: node:9100
+          namespace: default
+
+  - job_name: mysqld_exporter
+    static_configs:
+      - targets:
+          - mysqld_exporter:9104
+        labels:
+          instance: mysql:3306
+          namespace: default
+
+  - job_name: postgres_exporter
+    static_configs:
+      - targets:
+          - postgres_exporter:9187
+        labels:
+          instance: postgres:5432
+          namespace: default
+
+# ES ingestion is handled by the OTEL Collector (otelcol service) which scrapes
+# redis_exporter independently and pushes via the elasticsearch exporter.

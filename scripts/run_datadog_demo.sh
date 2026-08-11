@@ -64,7 +64,7 @@ Options:
   --with-alloy         For local target startup, enable the Alloy profile.
   --recreate-lab       For local target, force a clean local-lab recreate first.
   --input-dir PATH     Optional Datadog dashboard directory instead of the bundled smoke subset.
-  --output-dir PATH    Output directory for generated YAML, reports, and compiled artifacts.
+  --output-dir PATH    Output directory for native dashboard artifacts and reports.
   --field-profile ID   Datadog field profile to use. Default: otel.
   --data-view PATTERN  Metrics data view / index pattern. Default: metrics-*.
   --logs-index PATTERN Logs data view / index pattern. Default: logs-*.
@@ -329,7 +329,7 @@ if [[ $OUTPUT_DIR_SET -eq 0 ]]; then
 fi
 
 ALERT_ARTIFACT_DIR="$OUTPUT_DIR/alerts"
-DASHBOARD_YAML_DIR="$OUTPUT_DIR/dashboards/yaml"
+DASHBOARD_ARTIFACT_DIR="$OUTPUT_DIR/dashboards"
 RUN_SUMMARY="$OUTPUT_DIR/run_summary.json"
 
 if [[ $INPUT_DIR_SET -eq 1 ]]; then
@@ -382,7 +382,7 @@ fi
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-printf 'Preparing Datadog demo YAML\n'
+printf 'Preparing Datadog native dashboard artifacts\n'
 prepare_cmd=(
   "$PYTHON_BIN"
   -m
@@ -413,7 +413,7 @@ KEY="${ES_API_KEY:-dummy}" \
 DATA_HOURS="$DATA_HOURS" \
 INTERVAL_SEC="$INTERVAL_SEC" \
 BATCH_DOC_LIMIT="$BATCH_DOC_LIMIT" \
-  "$PYTHON_BIN" "$ROOT/scripts/setup_telemetry_data.py" "$DASHBOARD_YAML_DIR"
+  "$PYTHON_BIN" "$ROOT/scripts/setup_telemetry_data.py" "$DASHBOARD_ARTIFACT_DIR"
 
 wait_for_esql_query "metrics" "FROM $DATA_VIEW | LIMIT 1" 45 2
 wait_for_esql_query "logs" "FROM $LOGS_INDEX | LIMIT 1" 45 2
@@ -431,7 +431,6 @@ validate_cmd=(
   --data-view "$DATA_VIEW"
   --logs-index "$LOGS_INDEX"
   --preflight
-  --compile
   --validate
   --upload
   --smoke
@@ -465,6 +464,6 @@ Datadog demo completed.
 
 Artifacts:
   Output: $OUTPUT_DIR
-  YAML:   $DASHBOARD_YAML_DIR
+  Artifacts: $DASHBOARD_ARTIFACT_DIR (native/, ir/)
   Run summary: $RUN_SUMMARY
 EOF

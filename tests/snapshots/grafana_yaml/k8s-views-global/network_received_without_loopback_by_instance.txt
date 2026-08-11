@@ -1,8 +1,0 @@
-title: Network Received (without loopback)  by instance
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Received_bytes_in', 'Transmitted_bytes_in', 'Received_bytes_in_C', 'Transmitted_bytes_in_D']
-breakdown: instance
-axis_title: BANDWIDTH

@@ -158,18 +158,18 @@ run_grafana_scenario() {
     --max-combinations "$INTERACTION_MAX_COMBINATIONS"
 
   if [[ "$LIVE_VALIDATE" == "1" ]]; then
-    phase "$scenario_id: YAML/schema lint and live ES|QL validation"
+    phase "$scenario_id: artifact lint and live ES|QL validation"
     "$PY" -m observability_migration.targets.kibana.interaction_audit_local \
       validate-final \
       --migration-out "$final_artifacts" \
       --es-url "$ES_URL" \
       --api-key "$ES_API_KEY"
   else
-    phase "$scenario_id: YAML/schema lint only (LIVE_VALIDATE=0)"
+    phase "$scenario_id: artifact lint only (LIVE_VALIDATE=0)"
     "$PY" - <<PY
 from pathlib import Path
-from observability_migration.targets.kibana.interaction_audit_local import lint_migration_yaml
-lint_migration_yaml(Path(r"$final_artifacts"))
+from observability_migration.targets.kibana.interaction_audit_local import lint_migration_artifacts
+lint_migration_artifacts(Path(r"$final_artifacts"))
 print("lint ok")
 PY
   fi
@@ -210,7 +210,6 @@ run_synthetic_scenario() {
   phase "$scenario_id: upload reviewed native artifact"
   "$PY" -m observability_migration.app.cli upload \
     --artifact-dir "$final_artifacts" \
-    --artifact-format native \
     --kibana-url "$KIBANA_URL" \
     --kibana-api-key "$KIBANA_API_KEY"
 }

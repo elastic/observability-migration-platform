@@ -9,6 +9,7 @@ from typing import Any
 
 PROMQL_COMMAND_V0 = "promql_command_v0"
 PROMQL_LABEL_MATCHER_PARAMS = "promql_label_matcher_params"
+KIBANA_PROMQL_CONTROL_PARAMS = "kibana_promql_control_params"
 # Native ``histogram_quantile`` PromQL support. Landed in Elasticsearch 9.5
 # (elastic/elasticsearch#150578); on stacks reporting it, histogram_quantile
 # panels pass through the native PROMQL path instead of the ES|QL PERCENTILE()

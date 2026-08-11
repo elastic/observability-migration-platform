@@ -332,6 +332,25 @@ class TestMergedSeriesChecks:
         findings = lint_report_panel(panel, "Dash")
         assert InvariantCategory.VISUAL_SEMANTIC_DRIFT not in _categories(findings)
 
+    def test_job_scoped_instance_breakdown_is_not_merge_flagged(self) -> None:
+        # Translator keeps instance as the XY breakdown when job is dashboard
+        # scope via ?job — not an undisclosed multi-dimension collapse.
+        panel = _esql_panel(
+            query=(
+                "TS metrics-* "
+                "| WHERE (?job == \"\" OR (labels.job RLIKE ?job "
+                "OR (labels.job IS NULL AND \"\" RLIKE ?job))) "
+                "| STATS value = AVG(rate) "
+                "BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), "
+                "labels.instance, labels.job "
+                "| SORT time_bucket"
+            ),
+            breakdown_field="labels.instance",
+            output_group_fields=["time_bucket", "labels.instance", "labels.job"],
+        )
+        findings = lint_report_panel(panel, "Dash")
+        assert InvariantCategory.VISUAL_SEMANTIC_DRIFT not in _categories(findings)
+
     def test_datatable_with_many_groups_is_not_merge_flagged(self) -> None:
         # datatables use multi-column breakdowns; not an XY merge.
         panel = _esql_panel(

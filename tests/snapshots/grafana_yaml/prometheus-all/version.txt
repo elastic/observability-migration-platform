@@ -1,5 +1,0 @@
-title: Version
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: prometheus_build_info

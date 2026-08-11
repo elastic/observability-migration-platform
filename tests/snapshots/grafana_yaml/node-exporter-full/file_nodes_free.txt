@@ -1,7 +1,0 @@
-title: File Nodes Free
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['node_filesystem_files_free']
-axis_title: file nodes

@@ -49,12 +49,23 @@ def infer_query_language(query_text: str, datasource_type: str = "", panel_type:
 
     if not query_text:
         return "unknown"
-    if "loki" in datasource_type or panel_type == "logs":
+    # An explicit datasource wins over the panel type. Grafana's Logs panel is a
+    # renderer, not a datasource: it is routinely pointed at Prometheus to show a
+    # metric as a table. Treating panel_type == "logs" as LogQL before reading the
+    # datasource sent such panels down the LogQL path, where labels resolve with
+    # OTEL/ECS naming -- a canary panel with a Prometheus datasource and
+    # ``sum(redis_db_keys) by (instance)`` emitted ``service.instance.id`` and
+    # failed in Kibana with "Unknown column", while every other panel type on the
+    # same dashboard correctly used the prometheus_native passthrough field.
+    if "loki" in datasource_type:
         return "logql"
     if "elastic" in datasource_type:
         return "esql" if ESQL_PREFIX_RE.match(query_text) else "elasticsearch"
     if "prom" in datasource_type or "mimir" in datasource_type:
         return "promql"
+    # No usable datasource hint: the Logs panel type is then the best signal.
+    if panel_type == "logs":
+        return "logql"
     if ESQL_PREFIX_RE.match(query_text):
         return "esql"
     if LOGQL_TOKEN_RE.search(query_text):
@@ -119,14 +130,95 @@ def analyze_panel_targets(panel: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _value_mapping_count(field_config: Any) -> int:
+    """Count Grafana value mappings (value -> display text) on a panel.
+
+    Kibana's panel schema has ``ColorValueMapping`` / ``ColorRangeMapping``,
+    which assign *colors*; there is no value -> text equivalent, so these
+    cannot be translated and must be surfaced rather than dropped silently.
+    """
+    if not isinstance(field_config, dict):
+        return 0
+    defaults = field_config.get("defaults")
+    if not isinstance(defaults, dict):
+        return 0
+    mappings = defaults.get("mappings")
+    return len(mappings) if isinstance(mappings, list) else 0
+
+
+def _field_override_properties(field_config: Any) -> list[dict[str, Any]]:
+    if not isinstance(field_config, dict):
+        return []
+    overrides = field_config.get("overrides")
+    if not isinstance(overrides, list):
+        return []
+    properties: list[dict[str, Any]] = []
+    for override in overrides:
+        if not isinstance(override, dict):
+            continue
+        override_properties = override.get("properties")
+        if not isinstance(override_properties, list):
+            continue
+        for prop in override_properties:
+            if not isinstance(prop, dict):
+                continue
+            properties.append(prop)
+    return properties
+
+
+def _override_property_is_supported(prop: dict[str, Any]) -> bool:
+    property_id = str(prop.get("id") or "").strip()
+    if property_id == "color":
+        return True
+    if property_id == "custom.axisPlacement":
+        return str(prop.get("value") or "").strip() == "hidden"
+    if property_id == "custom.fillOpacity":
+        return True
+    if property_id == "custom.stacking":
+        value = prop.get("value")
+        if isinstance(value, dict):
+            return (
+                str(value.get("mode") or "").strip() == "normal"
+                and value.get("group") is False
+            )
+        return False
+    if property_id == "custom.transform":
+        return str(prop.get("value") or "").strip() == "negative-Y"
+    return False
+
+
+def _override_property_is_cosmetic_gap(prop: dict[str, Any]) -> bool:
+    """True for unsupported overrides that change legend/tooltip chrome only.
+
+    Grafana's ``custom.hideFrom`` (commonly paired with ``byValue`` /
+    ``allIsZero`` to hide empty series from the legend) has no Kibana XY
+    equivalent. Surfacing it with the generic "verify visual mappings"
+    note Yellows panels that otherwise migrate cleanly (e.g. Redis Total
+    Items per DB). Report it as an informational note instead — same
+    pattern as value-mapping display-text loss.
+    """
+    return str(prop.get("id") or "").strip() == "custom.hideFrom"
+
+
 def collect_panel_inventory(panel: dict[str, Any]) -> dict[str, Any]:
     field_config = panel.get("fieldConfig") or {}
     overrides = field_config.get("overrides") if isinstance(field_config, dict) else []
+    override_properties = _field_override_properties(field_config)
+    unsupported = [
+        prop for prop in override_properties if not _override_property_is_supported(prop)
+    ]
+    cosmetic = [prop for prop in unsupported if _override_property_is_cosmetic_gap(prop)]
+    actionable = [prop for prop in unsupported if not _override_property_is_cosmetic_gap(prop)]
     return {
         "targets": len(panel.get("targets", [])),
         "links": len(panel.get("links", []) or []),
         "transformations": len(panel.get("transformations", []) or []),
         "field_overrides": len(overrides or []),
+        "field_override_properties": len(override_properties),
+        "non_color_field_override_properties": len(unsupported),
+        "actionable_field_override_properties": len(actionable),
+        "cosmetic_field_override_properties": len(cosmetic),
+        "value_mappings": _value_mapping_count(field_config),
         "has_repeat": bool(panel.get("repeat")),
         "has_library_panel": bool(panel.get("libraryPanel")),
         "has_description": bool(str(panel.get("description") or "").strip()),
@@ -140,16 +232,28 @@ def collect_panel_notes(panel: dict[str, Any], panel_analysis: dict[str, Any] | 
         notes.append(f"Grafana panel has {inventory['links']} link(s); verify drilldowns manually")
     if inventory["transformations"]:
         notes.append(f"Grafana panel has {inventory['transformations']} transformation(s); manual review recommended")
-    if inventory["field_overrides"]:
+    if inventory["actionable_field_override_properties"]:
         notes.append(
-            f"Grafana panel has {inventory['field_overrides']} field override(s); verify visual mappings manually"
+            "Grafana panel has "
+            f"{inventory['field_overrides']} field override(s) including "
+            f"{inventory['actionable_field_override_properties']} non-color override property "
+            "(e.g. stacking, transforms); verify visual mappings manually"
+        )
+    elif inventory["cosmetic_field_override_properties"]:
+        notes.append(
+            "Grafana hide-from-legend/tooltip field override(s) are not applied in Kibana; "
+            "matching series still appear in the legend"
+        )
+    if inventory["value_mappings"]:
+        notes.append(
+            f"Grafana panel has {inventory['value_mappings']} value mapping(s) "
+            "(e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, "
+            "not display text, so the raw value is shown instead"
         )
     if inventory["has_repeat"]:
         notes.append("Grafana repeating panel behavior is not preserved automatically")
     if inventory["has_library_panel"]:
         notes.append("Grafana library panel reference detected; verify source ownership manually")
-    if inventory["has_description"]:
-        notes.append("Grafana panel description is not carried into Kibana YAML automatically")
     if panel_analysis and panel_analysis.get("mixed_datasource"):
         notes.append("Panel mixes datasource or query-language types and needs manual redesign")
     return notes
@@ -258,12 +362,12 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "uid": getattr(result, "dashboard_uid", ""),
             "source_file": getattr(result, "source_file", ""),
             "folder_title": getattr(result, "folder_title", ""),
-            "yaml_path": getattr(result, "yaml_path", ""),
-            "compiled_path": getattr(result, "compiled_path", ""),
+            "artifact_stem": getattr(result, "artifact_stem", ""),
             "native_artifact_path": getattr(result, "native_artifact_path", ""),
             "ir_artifact_path": getattr(result, "ir_artifact_path", ""),
             "uploaded_space": getattr(result, "uploaded_space", ""),
             "uploaded_kibana_url": getattr(result, "uploaded_kibana_url", ""),
+            "curated_pack": getattr(result, "curated_pack", "") or "",
             "runtime_summary": runtime_summary,
             "inventory": getattr(result, "inventory", {}) or {},
             "metadata_polish": getattr(result, "metadata_polish", {}) or {},
@@ -364,9 +468,26 @@ def build_migration_manifest(results: list[Any]) -> dict[str, Any]:
             "migrated_with_warnings": sum(1 for panel in flat_panels if panel["status"] == "migrated_with_warnings"),
             "requires_manual": sum(1 for panel in flat_panels if panel["status"] == "requires_manual"),
             "not_feasible": sum(1 for panel in flat_panels if panel["status"] == "not_feasible"),
-            "green": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"),
-            "yellow": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"),
-            "red": sum(1 for panel in flat_panels if (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"),
+            # Gate tallies exclude skipped panels (rows / non-migrated) so Green
+            # matches the Migrated scorecard rather than the raw element count.
+            "green": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Green"
+            ),
+            "yellow": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Yellow"
+            ),
+            "red": sum(
+                1
+                for panel in flat_panels
+                if panel.get("status") != "skipped"
+                and (panel.get("verification_packet") or {}).get("semantic_gate") == "Red"
+            ),
             "control_warnings": sum(
                 len(dashboard.get("control_warnings", []))
                 for dashboard in dashboards

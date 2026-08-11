@@ -1,7 +1,0 @@
-title: Network Traffic Drop
-grafana_type: timeseries
-status: migrated
-chart_type: line
-dimension: time_bucket
-metrics: ['Receive_drop', 'Transmit_drop']
-axis_title: packets out (-) / in (+)

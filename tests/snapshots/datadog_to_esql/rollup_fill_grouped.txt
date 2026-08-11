@@ -3,7 +3,6 @@ status: warning
 backend: esql
 kibana_type: xy
 warning: Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana
-warning: Scope filter with template variable could not be bound exactly; apply specific values via Kibana dashboard controls
 warning: rollup interval is approximated in ES|QL
 warning: fill(zero) only applies to null values in returned rows; empty buckets may still be omitted
 ---

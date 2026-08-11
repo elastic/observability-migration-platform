@@ -30,7 +30,7 @@ DEFAULT_CHROME_CANDIDATES = (
 DEFAULT_SAVED_OBJECTS_PER_PAGE = 1000
 GRID_WIDTH = 48
 QUERY_EXPECTED_PANEL_TYPES = {"lens", "search", "visualization"}
-NO_QUERY_EXPECTED_PANEL_TYPES = {"control_group", "markdown"}
+NO_QUERY_EXPECTED_PANEL_TYPES = {"control_group", "markdown", "links"}
 BROWSER_ERROR_PATTERNS = (
     r"dashboardPanelError",
     r"embPanel__error",
@@ -40,6 +40,10 @@ BROWSER_ERROR_PATTERNS = (
     r"Could not locate that (?:data view|index-pattern)",
     r"No matching data view",
     r"Embeddable factory",
+)
+BROWSER_EMPTY_STATE_PATTERNS = (
+    r'data-test-subj=["\']emptyPlaceholder["\'][^>]*>.*?<p>\s*No results found\s*</p>',
+    r'class=["\'][^"\']*echMetricText__value[^"\']*["\'][^>]*>\s*N/A\s*<',
 )
 
 
@@ -749,7 +753,14 @@ def capture_segmented_screenshots(saved_object, args):
 def _browser_audit_issues(html):
     issues = []
     for pattern in BROWSER_ERROR_PATTERNS:
-        match = re.search(pattern, html, flags=re.IGNORECASE)
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
+        if snippet:
+            issues.append(snippet[:240])
+    for pattern in BROWSER_EMPTY_STATE_PATTERNS:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
         if not match:
             continue
         snippet = re.sub(r"\s+", " ", html[max(0, match.start() - 120) : match.end() + 120]).strip()
@@ -808,8 +819,23 @@ def capture_browser_audit(saved_object, args):
         if proc.returncode == 0:
             html = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
             issues = _browser_audit_issues(html)
+            if not issues:
+                return {
+                    "status": "clean",
+                    "path": str(output_path),
+                    "error": "",
+                    "issues": [],
+                    "url": url,
+                }
+            # Headless Chrome can dump a transient pre-settled DOM even when the
+            # eventual dashboard screenshot is fine. Give visible DOM issues the
+            # same larger-budget retry path as outright browser failures before
+            # declaring a dashboard-level browser error.
+            last_error = "; ".join(issues)[:800]
+            if attempt < max(0, args.screenshot_retries):
+                continue
             return {
-                "status": "error" if issues else "clean",
+                "status": "error",
                 "path": str(output_path),
                 "error": "",
                 "issues": issues,

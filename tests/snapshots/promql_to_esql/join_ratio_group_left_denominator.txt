@@ -3,7 +3,7 @@ feasibility: feasible
 ---
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS numerator = SUM(CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total, 1m), NULL)), denominator = SUM(CASE(true, IRATE(node_cpu_seconds_total, 1m), NULL)) BY time_bucket = TBUCKET(5 minute), service.instance.id
+| STATS numerator = SUM(CASE((mode == "user"), IRATE(node_cpu_guest_seconds_total), NULL)), denominator = SUM(CASE(true, IRATE(node_cpu_seconds_total), NULL)) BY time_bucket = TBUCKET(5 minute), service.instance.id
 | EVAL node_cpu_guest_seconds_total_ratio = numerator / denominator
 | KEEP time_bucket, service.instance.id, node_cpu_guest_seconds_total_ratio
 | SORT time_bucket ASC

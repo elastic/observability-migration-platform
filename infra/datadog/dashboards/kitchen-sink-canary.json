@@ -1,0 +1,489 @@
+{
+ "id": "dd-kitchen",
+ "title": "Datadog Kitchen Sink Canary",
+ "layout_type": "ordered",
+ "template_variables": [
+  {
+   "name": "instance",
+   "prefix": "instance",
+   "default": "*"
+  }
+ ],
+ "widgets": [
+  {
+   "id": 1,
+   "definition": {
+    "type": "timeseries",
+    "title": "timeseries widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 0,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 2,
+   "definition": {
+    "type": "query_value",
+    "title": "query_value widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 0,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 3,
+   "definition": {
+    "type": "toplist",
+    "title": "toplist widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 4,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 4,
+   "definition": {
+    "type": "bar_chart",
+    "title": "bar_chart widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 4,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 5,
+   "definition": {
+    "type": "table",
+    "title": "table widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 8,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 6,
+   "definition": {
+    "type": "query_table",
+    "title": "query_table widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 8,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 7,
+   "definition": {
+    "type": "heatmap",
+    "title": "heatmap widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 12,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 8,
+   "definition": {
+    "type": "distribution",
+    "title": "distribution widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 12,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 9,
+   "definition": {
+    "type": "change",
+    "title": "change widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 16,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 10,
+   "definition": {
+    "type": "pie",
+    "title": "pie widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 16,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 11,
+   "definition": {
+    "type": "treemap",
+    "title": "treemap widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 20,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 12,
+   "definition": {
+    "type": "sunburst",
+    "title": "sunburst widget",
+    "requests": [
+     {
+      "q": "avg:redis_memory_used_bytes{*} by {instance}"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 20,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 13,
+   "definition": {
+    "type": "scatterplot",
+    "title": "scatterplot widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 24,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 14,
+   "definition": {
+    "type": "geomap",
+    "title": "geomap widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 6,
+    "y": 24,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 15,
+   "definition": {
+    "type": "hostmap",
+    "title": "hostmap widget",
+    "requests": [
+     {
+      "queries": [
+       {
+        "name": "a",
+        "data_source": "metrics",
+        "query": "avg:redis_memory_used_bytes{*} by {instance}"
+       }
+      ],
+      "response_format": "timeseries"
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 28,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 16,
+   "definition": {
+    "type": "log_stream",
+    "title": "log_stream widget",
+    "query": "*"
+   },
+   "layout": {
+    "x": 6,
+    "y": 28,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 17,
+   "definition": {
+    "type": "list_stream",
+    "title": "list_stream widget",
+    "query": "*"
+   },
+   "layout": {
+    "x": 0,
+    "y": 32,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 18,
+   "definition": {
+    "type": "note",
+    "title": "note widget",
+    "content": "canary note"
+   },
+   "layout": {
+    "x": 6,
+    "y": 32,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 19,
+   "definition": {
+    "type": "free_text",
+    "title": "free_text widget",
+    "content": "canary note"
+   },
+   "layout": {
+    "x": 0,
+    "y": 36,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 20,
+   "definition": {
+    "type": "image",
+    "title": "image widget",
+    "url": "https://example.invalid/x.png"
+   },
+   "layout": {
+    "x": 6,
+    "y": 36,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 21,
+   "definition": {
+    "type": "iframe",
+    "title": "iframe widget",
+    "url": "https://example.invalid/"
+   },
+   "layout": {
+    "x": 0,
+    "y": 40,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 22,
+   "definition": {
+    "type": "check_status",
+    "title": "check_status widget",
+    "check": "redis.can_connect",
+    "query": "*"
+   },
+   "layout": {
+    "x": 6,
+    "y": 40,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 23,
+   "definition": {
+    "type": "manage_status",
+    "title": "manage_status widget",
+    "check": "redis.can_connect",
+    "query": "*"
+   },
+   "layout": {
+    "x": 0,
+    "y": 44,
+    "width": 6,
+    "height": 4
+   }
+  },
+  {
+   "id": 99,
+   "definition": {
+    "type": "group",
+    "title": "group widget",
+    "layout_type": "ordered",
+    "widgets": [
+     {
+      "id": 100,
+      "definition": {
+       "type": "timeseries",
+       "title": "nested timeseries",
+       "requests": [
+        {
+         "queries": [
+          {
+           "name": "a",
+           "data_source": "metrics",
+           "query": "avg:redis_memory_used_bytes{*} by {instance}"
+          }
+         ],
+         "response_format": "timeseries"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "layout": {
+    "x": 0,
+    "y": 100,
+    "width": 12,
+    "height": 6
+   }
+  }
+ ]
+}

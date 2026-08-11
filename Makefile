@@ -4,10 +4,10 @@
 .DEFAULT_GOAL := help
 
 PYTHON := .venv/bin/python
-KIBANA_DASHBOARDS_API_SCHEMA_URL ?=
 
 .PHONY: help sync licenses test test-e2e lint typecheck check-native-schema \
-	setup-browser test-interactions interaction-audit-local bump-version
+	refresh-native-schema setup-browser test-interactions interaction-audit-local \
+	bump-version
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -55,15 +55,16 @@ lint: sync ## Run ruff linter and source header check
 typecheck: sync ## Run targeted mypy type checks
 	$(PYTHON) -m mypy
 
-check-native-schema: sync ## Check full Kibana Dashboards API OpenAPI schema
-	@test -n "$(KIBANA_DASHBOARDS_API_SCHEMA_URL)" || ( \
-	  echo "KIBANA_DASHBOARDS_API_SCHEMA_URL must point at the full Dashboards API OpenAPI YAML/JSON bundle"; \
-	  exit 2; \
-	)
+check-native-schema: sync ## Validate committed Kibana Dashboards API OpenAPI schema
 	$(PYTHON) scripts/fetch_dashboards_api_schema.py \
+	  --url docs/dashboards/kibana_dashboards_api.openapi.yaml \
 	  --check-only \
+	  --require-full-schema
+
+refresh-native-schema: sync ## Refresh committed Kibana Dashboards API OpenAPI schema
+	$(PYTHON) scripts/fetch_dashboards_api_schema.py \
 	  --require-full-schema \
-	  --url "$(KIBANA_DASHBOARDS_API_SCHEMA_URL)"
+	  --output docs/dashboards/kibana_dashboards_api.openapi.yaml
 
 setup-browser: sync ## Install Chromium used by dashboard interaction tests
 	$(PYTHON) -m playwright install chromium

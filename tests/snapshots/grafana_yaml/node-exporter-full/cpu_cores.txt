@@ -1,6 +1,0 @@
-title: CPU Cores
-grafana_type: stat
-status: migrated_with_warnings
-chart_type: metric
-primary: node_cpu_seconds_total_count
-warning: Approximated nested count(count()) as COUNT_DISTINCT(cpu)

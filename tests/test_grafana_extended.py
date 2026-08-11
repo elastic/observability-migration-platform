@@ -18,7 +18,6 @@ import json
 import pathlib
 import re
 import sys
-import tempfile
 import time
 import unittest
 
@@ -74,13 +73,12 @@ def _translate_panel(panel, rule_pack=None, resolver=None):
 def _translate_dashboard(dashboard, rule_pack=None, resolver=None):
     rp = rule_pack or rules.RulePackConfig()
     res = resolver or schema.SchemaResolver(rp)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result, yaml_path = panels.translate_dashboard(
-            dashboard, pathlib.Path(tmpdir),
-            datasource_index="metrics-*", esql_index="metrics-*",
-            rule_pack=rp, resolver=res,
-        )
-        payload = yaml.safe_load(yaml_path.read_text())
+    result = panels.translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*", esql_index="metrics-*",
+        rule_pack=rp, resolver=res,
+    )
+    payload = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, payload
 
 
@@ -424,15 +422,14 @@ class TestClassificationCorrectness(unittest.TestCase):
             self.assertLessEqual(warned_result.confidence, clean_result.confidence)
 
     def test_not_feasible_has_reasons(self):
-        # Bare classic _bucket series (no sum by (le)) stays not_feasible —
-        # PERCENTILE cannot preserve per-series identity without an explicit le agg.
-        panel = _make_panel(1, "histogram_quantile(0.99, rate(http_duration_bucket[5m]))")
+        # sum by (instance) collapses le — quantile is meaningless; stays not_feasible.
+        panel = _make_panel(1, "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))")
         _, result = _translate_panel(panel)
         self.assertEqual(result.status, "not_feasible")
         self.assertTrue(result.reasons, "not_feasible must have reasons")
 
     def test_not_feasible_preserves_original_query(self):
-        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
+        expr = "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
@@ -499,7 +496,7 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("topk(10, sum(rate(http_requests_total[5m])) by (handler))", panel_type="barchart")
 
         self.assertEqual(ctx.feasibility, "feasible")
-        self.assertIn("SUM(RATE(http_requests_total, 5m))", ctx.esql_query)
+        self.assertIn("SUM(RATE(http_requests_total))", ctx.esql_query)
         self.assertIn("BY time_bucket = TBUCKET(5 minute), handler", ctx.esql_query)
         self.assertIn("STATS value = LAST(_bucket_value, time_bucket) BY handler", ctx.esql_query)
         self.assertNotIn("value = MAX(_bucket_value)", ctx.esql_query)
@@ -512,9 +509,14 @@ class TestFailureHonesty(unittest.TestCase):
         ctx = _translate("sum without (instance) (rate(foo_total[5m]))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
-    def test_histogram_quantile_bare_bucket_series_is_not_feasible(self):
-        # Bare classic *_bucket without sum by (le) cannot preserve series identity.
+    def test_histogram_quantile_bare_bucket_series_is_feasible(self):
+        # A bare rate(bucket[w]) preserves le implicitly — translates to PERCENTILE.
         ctx = _translate("histogram_quantile(0.9, rate(http_duration_seconds_bucket[5m]))")
+        self.assertEqual(ctx.feasibility, "feasible")
+
+    def test_histogram_quantile_sum_without_le_is_not_feasible(self):
+        # sum by (instance) collapses le — PERCENTILE cannot reconstruct quantiles.
+        ctx = _translate("histogram_quantile(0.9, sum by (instance) (rate(http_duration_seconds_bucket[5m])))")
         self.assertEqual(ctx.feasibility, "not_feasible")
 
     def test_name_introspection_is_not_feasible(self):
@@ -588,16 +590,28 @@ class TestFailureHonesty(unittest.TestCase):
 
     def test_not_feasible_panel_preserves_original_in_report(self):
         """Unsupported panels must preserve the original query for review."""
-        expr = "histogram_quantile(0.99, rate(http_duration_bucket[5m]))"
+        expr = "histogram_quantile(0.99, sum by (instance) (rate(http_duration_bucket[5m])))"
         panel = _make_panel(1, expr)
         yaml_panel, _result = _translate_panel(panel)
         self.assertIn("markdown", yaml_panel)
         content = yaml_panel["markdown"]["content"]
         self.assertIn("histogram_quantile", content, "Original query must be in report")
 
-    def test_bottomk_is_not_feasible(self):
+    def test_bottomk_translates_with_ascending_sort(self):
+        # graph/timeseries panels emit a time-series breakdown (no LIMIT, no value sort);
+        # LIMIT+sort only apply in the bar-chart / stat collapse path.
         ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))")
-        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertIn("SORT time_bucket ASC", ctx.esql_query)
+        self.assertNotIn("LIMIT 3", ctx.esql_query)
+        self.assertTrue(any("time-series breakdown" in w for w in ctx.warnings))
+
+    def test_bottomk_barchart_produces_sorted_limited_snapshot(self):
+        # bar-chart panels keep the latest-bucket collapse with ASC sort + LIMIT.
+        ctx = _translate("bottomk(3, sum by (job) (rate(foo_total[5m])))", panel_type="barchart")
+        self.assertEqual(ctx.feasibility, "feasible")
+        self.assertIn("| SORT value ASC", ctx.esql_query)
+        self.assertIn("| LIMIT 3", ctx.esql_query)
 
     def test_count_values_is_not_feasible(self):
         ctx = _translate('count_values("version", build_info)')
@@ -630,8 +644,8 @@ class TestFailureHonesty(unittest.TestCase):
         # denominator is also outer-CASE-shaped (``CASE(true, RATE(...), NULL)``)
         # so ES does not ClassCast mixed value-arg forms.
         self.assertIn('CASE((status RLIKE "5..")', query)
-        self.assertIn("CASE(true, RATE(http_requests_total, 5m), NULL)", query)
-        self.assertNotIn("SUM(RATE(http_requests_total, 5m))", query)
+        self.assertIn("CASE(true, RATE(http_requests_total), NULL)", query)
+        self.assertNotIn("SUM(RATE(http_requests_total))", query)
         self.assertNotIn("RATE(CASE(", query)
         # Service filter is common to both sides and stays in WHERE.
         self.assertIn('service.name RLIKE "api|worker"', query)
@@ -2175,7 +2189,7 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         panel = panels._build_esql_xy_panel(
             (
                 "TS metrics-*\n"
-                "| STATS v = SUM(RATE(node_cpu_seconds_total, 5m)) "
+                "| STATS v = SUM(RATE(node_cpu_seconds_total)) "
                 "BY time_bucket = TBUCKET(5 minute), service.instance.id\n"
                 "| SORT time_bucket ASC"
             ),
@@ -2238,6 +2252,41 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             warnings,
         )
 
+    def test_long_form_series_group_xy_uses_value_metric_and_breakdown(self):
+        panel = panels._build_esql_xy_panel(
+            (
+                "TS metrics-*\n"
+                "| STATS cpu = AVG(system.cpu.total.norm.pct) BY time_bucket = TBUCKET(5 minute)\n"
+                "| EVAL series_group = \"CPU Busy\", value = cpu\n"
+                "| KEEP time_bucket, series_group, value\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_col="series_group",
+            by_cols=["time_bucket"],
+        )
+
+        self.assertEqual(panel["metrics"], [{"field": "value"}])
+        self.assertEqual(panel["breakdown"]["field"], "series_group")
+
+    def test_long_form_series_group_multi_series_xy_degrades_to_breakdown_chart(self):
+        panel = panels._build_esql_multi_series_xy(
+            (
+                "TS metrics-*\n"
+                "| STATS recv = AVG(system.network.in.bytes) BY time_bucket = TBUCKET(5 minute), host.name\n"
+                "| EVAL series_group = CONCAT(host.name, \" / recv\"), value = recv\n"
+                "| KEEP time_bucket, series_group, value\n"
+                "| SORT time_bucket ASC"
+            ),
+            "area",
+            metric_fields=["series_group", "value"],
+            by_cols=["time_bucket"],
+            mode="stacked",
+        )
+
+        self.assertEqual(panel["metrics"], [{"field": "value"}])
+        self.assertEqual(panel["breakdown"]["field"], "series_group")
+
     def test_topk_without_labels_translates_with_warnings(self):
         # Ungrouped topk now uses single-bucket fallback (not not_feasible)
         panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")
@@ -2258,7 +2307,15 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "metric")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        # Adaptive, but NOT bare: Elasticsearch rejects a stepless PROMQL command
+        # at plan time ("provide either [step] or all of [start], [end], and
+        # [buckets]"), and Kibana does not synthesise the missing args -- it only
+        # substitutes ``?name`` placeholders. ``?_tstart`` / ``?_tend`` ARE those
+        # placeholders, so the window still tracks the dashboard time picker.
+        self.assertIn("start=?_tstart", query)
+        self.assertIn("end=?_tend", query)
+        self.assertIn("buckets=", query)
+        self.assertNotIn("step=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_gauge_panel_emits_range_collapsed_latest_value(self):
@@ -2269,7 +2326,15 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(esql["type"], "gauge")
         query = esql["query"]
         self.assertNotIn("time=?_tend", query)
-        self.assertIn("start=?_tstart end=?_tend buckets=50", query)
+        # Adaptive, but NOT bare: Elasticsearch rejects a stepless PROMQL command
+        # at plan time ("provide either [step] or all of [start], [end], and
+        # [buckets]"), and Kibana does not synthesise the missing args -- it only
+        # substitutes ``?name`` placeholders. ``?_tstart`` / ``?_tend`` ARE those
+        # placeholders, so the window still tracks the dashboard time picker.
+        self.assertIn("start=?_tstart", query)
+        self.assertIn("end=?_tend", query)
+        self.assertIn("buckets=", query)
+        self.assertNotIn("step=", query)
         self.assertIn("| STATS value = LAST(value, step)", query)
 
     def test_timeseries_panel_emits_adaptive_range_query(self):
@@ -2446,11 +2511,12 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertNotIn("step=", query)
 
     def test_multi_target_overlay_is_windowless_and_stepless(self):
-        """The multi-target native overlay path (the ``label_replace + or``
-        fallback) also emits adaptive resolution: no ``step=`` (#272), windowless
-        rate for ``$__rate_interval`` targets, and explicit windows preserved
-        (#273). Exercised directly because the overlay is only reached as a
-        fallback when the ES|QL merge is not_feasible."""
+        """As of August 7, 2026 the multi-target native overlay path stays
+        disabled because Elasticsearch 9.5 still rejects ``label_replace()`` at
+        runtime (and bare ``or`` collapses same-label mirrored series), so
+        translation must fall back instead of emitting a native PROMQL panel
+        that Kibana cannot render correctly. See
+        docs/design/node-exporter-1860-phase3-native-promql.md."""
         panel = {
             "id": 1, "type": "timeseries", "title": "Overlay", "targets": [],
             "fieldConfig": {"defaults": {}, "overrides": []},
@@ -2469,15 +2535,7 @@ class TestNativePromQLIntegrity(unittest.TestCase):
             {"type": "prometheus"}, "metrics-*", self.rp, [], {},
             targets_with_expr, resolver=self.resolver,
         )
-        self.assertIsNotNone(out)
-        yaml_panel, _ = out
-        query = yaml_panel["esql"]["query"]
-        self.assertTrue(query.startswith("PROMQL index=metrics-*"), query)
-        self.assertNotIn("step=", query)
-        self.assertNotIn("$__rate_interval", query)
-        # $__rate_interval target -> windowless; explicit [5m] target -> kept.
-        self.assertIn('label_replace(rate(http_requests_total), "__series"', query)
-        self.assertIn('label_replace(rate(http_errors_total[5m]), "__series"', query)
+        self.assertIsNone(out)
 
     def test_multi_series_bargauge_defers_native_promql_to_bar_chart(self):
         """Native PROMQL must not short-circuit multi-series bargauge into a
@@ -2898,6 +2956,58 @@ class TestWarningPatternHonesty(unittest.TestCase):
         # 0.5 * 100 == 50
         self.assertIn("50", esql)
 
+    # --- label_join translation -----------------------------------------------
+    def test_label_join_src_in_by_clause_translates(self):
+        # When all src labels appear in the inner expression's by() clause,
+        # label_join translates to a post-STATS EVAL CONCAT.
+        expr = (
+            'label_join(sum by (destination_workload, destination_service)'
+            ' (rate(istio_requests_total[5m])), "dst_var", ".", "destination_workload")'
+        )
+        ctx = _translate(expr)
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn("CONCAT(", esql)
+        self.assertIn("dst_var", esql)
+        self.assertIn("| EVAL dst_var", esql)
+        # The EVAL must come after the STATS, before the SORT
+        stats_pos = esql.find("STATS")
+        eval_pos = esql.find("| EVAL dst_var")
+        sort_pos = esql.find("| SORT")
+        self.assertLess(stats_pos, eval_pos, "EVAL must follow STATS")
+        if sort_pos != -1:
+            self.assertLess(eval_pos, sort_pos, "EVAL must precede SORT")
+        self.assertIn("dst_var", ctx.output_group_fields,
+                      "dst label must be in output_group_fields for downstream KEEP")
+
+    def test_label_join_missing_src_from_by_clause_stays_not_feasible(self):
+        # A src label absent from the inner by() clause cannot be translated;
+        # the panel must stay not_feasible with an informative message.
+        expr = (
+            'label_join(rate(istio_requests_total[5m]),'
+            ' "dst_var", ".", "destination_workload")'
+        )
+        ctx = _translate(expr)
+        self.assertEqual(ctx.feasibility, "not_feasible")
+        self.assertTrue(
+            any("label_join" in w.lower() for w in ctx.warnings),
+            f"Expected label_join warning, got: {ctx.warnings}",
+        )
+
+    def test_label_join_multi_src_all_in_by_translates(self):
+        # Two src labels, both present in the inner by() clause → feasible.
+        expr = (
+            'label_join(sum by (ns, pod) (rate(kube_pod_container_restarts_total[5m])),'
+            ' "ns_pod", "/", "ns", "pod")'
+        )
+        ctx = _translate(expr)
+        self.assertNotEqual(ctx.feasibility, "not_feasible", ctx.warnings)
+        esql = ctx.esql_query or ""
+        self.assertIn('CONCAT(ns, "/", pod)', esql)
+        self.assertIn("ns_pod", esql)
+        self.assertIn("ns_pod", ctx.output_group_fields,
+                      "dst label must be in output_group_fields for downstream KEEP")
+
     # --- elementwise math / trig wrappers: exact ES|QL function maps -------
     def test_math_trig_functions_translate_exactly(self):
         # Each PromQL math/trig wrapper maps to an exact ES|QL function/expression.
@@ -3232,13 +3342,13 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "sum by (job) (rate(foo_total[5m]))", panel_type="piechart")
         yaml_panel, result = _translate_panel(panel)
         self.assertEqual(yaml_panel["esql"]["type"], "pie")
-        # The per-group collapse now uses ``MAX`` instead of ``LAST`` so
-        # multi-target TS queries with per-series nulls inside a bucket
-        # don't render as all-null (see
+        # A piechart with no explicit reduceOptions.calcs takes Grafana's default
+        # of lastNotNull, so the per-group collapse is ``LAST`` -- which is what
+        # this test's name has always claimed. ``MAX`` was a null-safety
+        # substitute for multi-target TS queries with per-series nulls inside a
+        # bucket; that path is keyed on multi-series and still holds (see
         # ``test_collapse_summary_uses_null_safe_aggregate_for_multi_series_ts``).
-        # For a single-series query like this one the behaviour is
-        # identical, but the emitted token is now ``MAX``.
-        self.assertIn("MAX(foo_total)", result.esql_query)
+        self.assertIn("LAST(foo_total, time_bucket)", result.esql_query)
         self.assertIn("service.name", result.esql_query)
 
     def test_legacy_range_false_summary_keeps_latest_bucket(self):
@@ -3249,16 +3359,19 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         panel = _make_panel(1, "avg(node_load1)", panel_type="gauge")
         panel["targets"][0]["range"] = False
         _yaml_panel, result = _translate_panel(panel, rule_pack=rp)
+        # This gauge declares no reduceOptions.calcs, so it takes Grafana's
+        # default of lastNotNull -- which a single whole-range bucket cannot
+        # express, since AVG over one bucket is the RANGE MEAN rather than the
+        # current value ("Sys Load" read 3.48 against Grafana's 6.2). It keeps
+        # the resolution and collapses with LAST instead.
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
-        self.assertIn("| SORT time_bucket ASC", result.esql_query)
-        # ``MAX(node_load1)`` replaces the previous
-        # ``LAST(node_load1, time_bucket)`` so the collapse is null-safe
-        # across multi-target TS queries; behaviour for this
-        # single-series case is identical.
+        # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
+        # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(
-            "| STATS time_bucket = MAX(time_bucket), node_load1 = MAX(node_load1)",
+            "| STATS node_load1 = LAST(node_load1, time_bucket)",
             result.esql_query,
         )
+        self.assertNotIn("time_bucket = MAX(time_bucket)", result.esql_query)
         self.assertNotIn("| SORT time_bucket DESC", result.esql_query)
         self.assertNotIn("| LIMIT 1", result.esql_query)
 
@@ -3276,19 +3389,19 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
 class TestPanelNotesHonesty(unittest.TestCase):
     """Feature gaps that are not translated should be captured in notes."""
 
-    def test_description_is_noted(self):
+    def test_description_is_preserved_on_panel(self):
         panel = _make_panel(1)
         panel["description"] = "Important context"
-        _, result = _translate_panel(panel)
-        self.assertTrue(any("description" in note.lower() for note in result.notes),
-                        f"Description should be noted: {result.notes}")
+        yaml_panel, result = _translate_panel(panel)
+        self.assertFalse(any("description" in note.lower() for note in result.notes), result.notes)
+        self.assertEqual(yaml_panel["description"], "Important context")
 
-    def test_field_overrides_are_noted(self):
+    def test_unsupported_field_overrides_are_noted(self):
         panel = _make_panel(1)
         panel["fieldConfig"]["overrides"] = [
             {
                 "matcher": {"id": "byName", "options": "Value #A"},
-                "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF0000"}}],
+                "properties": [{"id": "custom.transform", "value": "constant"}],
             }
         ]
         _, result = _translate_panel(panel)
@@ -3404,14 +3517,45 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         # http_requests_total -> inferred counter
         mot = translate_promql_to_esql("max_over_time(http_requests_total[1h])").esql_query
         self.assertIn("MAX_OVER_TIME(TO_DOUBLE(http_requests_total)", mot)
-        # rate() consumes the counter directly: no cast
+        # rate() consumes the counter directly: no cast, and no window either
+        # (the window follows the time bucket -- see counter_range_window_rule).
         rate = translate_promql_to_esql("rate(http_requests_total[5m])").esql_query
-        self.assertIn("RATE(http_requests_total,", rate)
+        self.assertIn("RATE(http_requests_total)", rate)
         self.assertNotIn("RATE(TO_DOUBLE", rate)
         # gauge: no cast, no churn
         gauge = translate_promql_to_esql("max_over_time(node_load1[1h])").esql_query
         self.assertIn("MAX_OVER_TIME(node_load1,", gauge)
         self.assertNotIn("TO_DOUBLE", gauge)
+
+    def test_counter_range_fns_omit_the_window_but_over_time_keeps_it(self):
+        # Elasticsearch computes RATE/IRATE/INCREASE over the TIME BUCKET, not
+        # over the window argument: RateDoubleGroupingAggregatorFunction
+        # extrapolates to tbucketStart/tbucketEnd and divides by that span, and
+        # the window defaults to NO_WINDOW = Duration.ZERO ("use the bucket").
+        #
+        # Pinning a window next to an ADAPTIVE TBUCKET(100, ?_tstart, ?_tend)
+        # desynchronises them the moment the dashboard range grows. Measured on
+        # the rig against node_cpu_seconds_total (true idle rate ~0.98):
+        #     50 min range, 2.5 min buckets   RATE(x) 0.982   RATE(x) 0.982
+        #     12 h   range, 7.2 min buckets   RATE(x) 1.937   RATE(x) 0.984
+        # Every rate panel on an ordinary 12-hour view read about double.
+        #
+        # The *_OVER_TIME family takes its window as a real lookback and keeps it.
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+        for expr, fn in (
+            ("rate(http_requests_total[5m])", "RATE"),
+            ("irate(http_requests_total[5m])", "IRATE"),
+            ("increase(http_requests_total[1h])", "INCREASE"),
+        ):
+            q = translate_promql_to_esql(expr).esql_query
+            self.assertIn(f"{fn}(http_requests_total)", q, expr)
+            self.assertNotRegex(q, rf"\b{fn}\(http_requests_total,\s*\d", expr)
+
+        # the lookback family is untouched
+        avg = translate_promql_to_esql("avg_over_time(node_load1[1h])").esql_query
+        self.assertRegex(avg, r"AVG_OVER_TIME\(node_load1,\s*\d")
 
     def test_increase_degraded_to_gauge_fn_still_casts_to_double(self):
         # Regression for the MySQL "Network Usage Hourly" runtime failure:
@@ -3563,6 +3707,51 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         self.assertIsNotNone(frag)
         self.assertFalse(frag.extra.get("not_feasible_reasons"))
         self.assertTrue(frag.extra.get("has_sgn"))
+
+    # --- aggregation OUTER wrapping math INNER (regression for math_fns drop) --
+
+    def test_agg_outer_abs_inner_promotes_math_fns(self):
+        # sum(abs(rate(...))) by (job) — math key must surface on the top-level
+        # fragment so value_wrapper_transforms_rule emits | EVAL … = ABS(…).
+        ctx = self._translate("sum(abs(rate(http_requests_total[5m]))) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertIn("abs", frag.extra.get("math_fns") or [])
+        esql = ctx.esql_query or ""
+        self.assertIn("ABS(", esql)
+
+    def test_agg_outer_ceil_inner_promotes_math_fns(self):
+        ctx = self._translate("max(ceil(node_memory_MemAvailable_bytes)) by (host)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertIn("ceil", frag.extra.get("math_fns") or [])
+        self.assertIn("CEIL(", ctx.esql_query or "")
+
+    def test_agg_outer_sgn_inner_promotes_has_sgn(self):
+        ctx = self._translate("sum(sgn(metric)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_sgn"))
+        self.assertIn("SIGNUM(", ctx.esql_query or "")
+
+    def test_agg_outer_clamp_min_inner_promotes_clamp_min_value(self):
+        ctx = self._translate("sum(clamp_min(rate(http_requests_total[5m]), 0)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertEqual(frag.extra.get("clamp_min_value"), 0.0)
+        self.assertIn("GREATEST(", ctx.esql_query or "")
+
+    def test_agg_outer_round_inner_promotes_has_round(self):
+        ctx = self._translate("avg(round(rate(http_requests_total[5m]), 0.01)) by (job)")
+        frag = ctx.fragment
+        self.assertIsNotNone(frag)
+        self.assertFalse(frag.extra.get("not_feasible_reasons"))
+        self.assertTrue(frag.extra.get("has_round"))
+        self.assertIn("ROUND(", ctx.esql_query or "")
 
 
 class TestGaugeSeriesFidelity(unittest.TestCase):
@@ -4138,6 +4327,343 @@ class TestNativePromqlLiveValidationFallback(unittest.TestCase):
         self.assertNotIn("$__rate_interval", validated)
         self.assertNotIn("[5m]", validated)
         self.assertNotIn("step=", validated)
+
+
+class TestGrafanaSkippedPanelsDoNotInflateGreen(unittest.TestCase):
+    """Rows / alert lists are status=skipped and must not count as Green."""
+
+    def test_skipped_gate_and_manifest_exclude_from_green(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            build_migration_manifest,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+        )
+        from observability_migration.core.reporting.report import (
+            MigrationResult,
+            PanelResult,
+        )
+
+        clean = PanelResult(
+            title="CPU",
+            grafana_type="timeseries",
+            kibana_type="xy",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(cpu)",
+            promql_expr="avg(node_cpu)",
+            source_panel_id="1",
+        )
+        skipped = PanelResult(
+            title="Alert list",
+            grafana_type="alertlist",
+            kibana_type="markdown",
+            status="skipped",
+            confidence=0.0,
+            esql_query="",
+            promql_expr="",
+            reasons=["alert list panels are not migrated"],
+            source_panel_id="2",
+        )
+        result = MigrationResult(
+            dashboard_title="Dash",
+            dashboard_uid="dash",
+            total_panels=2,
+            migrated=1,
+            skipped=1,
+            panel_results=[clean, skipped],
+        )
+        clean.verification_packet = build_verification_packet("Dash", clean)
+        skipped.verification_packet = build_verification_packet("Dash", skipped)
+        self.assertEqual(clean.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(skipped.verification_packet["semantic_gate"], "Skipped")
+
+        manifest = build_migration_manifest([result])
+        self.assertEqual(manifest["summary"]["migrated"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["yellow"], 0)
+        self.assertEqual(manifest["summary"]["red"], 0)
+
+
+class TestFieldOverrideNotesPromoteWarningStatus(unittest.TestCase):
+    """Notes that Yellow the gate must also land in With-warnings, not Migrated."""
+
+    def test_field_override_note_upgrades_migrated_status(self):
+        from observability_migration.adapters.source.grafana.panels import (
+            _enrich_panel_result,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+            panel_notes_imply_warning,
+        )
+        from observability_migration.core.reporting.report import PanelResult
+
+        note = (
+            "Grafana panel has 7 field override(s) including 2 non-color override property "
+            "(e.g. stacking, transforms); verify visual mappings manually"
+        )
+        self.assertTrue(panel_notes_imply_warning([note]))
+
+        panel_result = PanelResult(
+            title="CPU Basic",
+            grafana_type="timeseries",
+            kibana_type="line",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(cpu)",
+            promql_expr="avg(node_cpu_seconds_total)",
+        )
+        enriched = _enrich_panel_result(
+            panel_result,
+            panel={"id": 1, "type": "timeseries"},
+            notes=[note],
+        )
+        self.assertEqual(enriched.status, "migrated_with_warnings")
+        packet = build_verification_packet("Node", enriched)
+        self.assertEqual(packet["semantic_gate"], "Yellow")
+
+    def test_hide_from_legend_override_is_cosmetic_not_yellow(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+        from observability_migration.adapters.source.grafana.panels import (
+            _enrich_panel_result,
+        )
+        from observability_migration.adapters.source.grafana.verification import (
+            build_verification_packet,
+            panel_notes_imply_warning,
+        )
+        from observability_migration.core.reporting.report import PanelResult
+
+        panel = {
+            "title": "Total Items per DB",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {
+                            "id": "byValue",
+                            "options": {"op": "gte", "reducer": "allIsZero", "value": 0},
+                        },
+                        "properties": [
+                            {
+                                "id": "custom.hideFrom",
+                                "value": {"legend": True, "tooltip": True, "viz": False},
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertTrue(any("hide-from-legend" in note for note in notes), notes)
+        self.assertFalse(any("verify visual mappings" in note for note in notes), notes)
+        self.assertFalse(panel_notes_imply_warning(notes), notes)
+
+        panel_result = PanelResult(
+            title="Total Items per DB",
+            grafana_type="timeseries",
+            kibana_type="area",
+            status="migrated",
+            confidence=0.9,
+            esql_query="FROM metrics-* | STATS v = AVG(keys)",
+            promql_expr='sum(redis_db_keys) by (db, instance)',
+        )
+        enriched = _enrich_panel_result(panel_result, panel=panel, notes=notes)
+        self.assertEqual(enriched.status, "migrated")
+        packet = build_verification_packet("Redis", enriched)
+        self.assertEqual(packet["semantic_gate"], "Green")
+
+
+class TestValueMappingsAreReported(unittest.TestCase):
+    """Grafana value mappings have no Kibana equivalent and must not vanish silently.
+
+    Kibana's panel schema offers ColorValueMapping / ColorRangeMapping, which
+    assign colors; there is no value -> display-text mapping. A Grafana panel
+    that renders "N/A" for null, or "Up" for 1, will show the raw value after
+    migration, so the loss has to be surfaced (degrade-gracefully rule).
+    """
+
+    def test_value_mappings_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "CPU Busy",
+            "type": "stat",
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [
+                        {"type": "special",
+                         "options": {"match": "null", "result": {"text": "N/A"}}}
+                    ]
+                }
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertTrue(
+            any("value mapping" in n for n in notes),
+            f"value mappings must be reported, got {notes}",
+        )
+
+    def test_panel_without_value_mappings_gets_no_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        notes = collect_panel_notes({"title": "x", "type": "stat", "fieldConfig": {"defaults": {}}})
+        self.assertFalse([n for n in notes if "value mapping" in n])
+
+    def test_inventory_counts_value_mappings(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_inventory,
+        )
+
+        panel = {"fieldConfig": {"defaults": {"mappings": [{"type": "value"}, {"type": "special"}]}}}
+        self.assertEqual(collect_panel_inventory(panel)["value_mappings"], 2)
+        self.assertEqual(collect_panel_inventory({})["value_mappings"], 0)
+
+    def test_color_only_field_overrides_do_not_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Memory Stack",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Apps"},
+                        "properties": [{"id": "color", "value": {"fixedColor": "#629E51", "mode": "fixed"}}],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertFalse([n for n in notes if "field override" in n], notes)
+
+    def test_negative_y_field_overrides_do_not_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Network Traffic",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ]
+            },
+        }
+        notes = collect_panel_notes(panel)
+        self.assertFalse([n for n in notes if "field override" in n], notes)
+
+    def test_non_color_field_overrides_still_produce_a_panel_note(self):
+        from observability_migration.adapters.source.grafana.manifest import (
+            collect_panel_inventory,
+            collect_panel_notes,
+        )
+
+        panel = {
+            "title": "Memory Stack",
+            "type": "timeseries",
+            "fieldConfig": {
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "Apps"},
+                        "properties": [{"id": "color", "value": {"fixedColor": "#629E51", "mode": "fixed"}}],
+                    },
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Hardware Corrupted - *./"},
+                        "properties": [{"id": "custom.transform", "value": "constant"}],
+                    },
+                ]
+            },
+        }
+        inventory = collect_panel_inventory(panel)
+        self.assertEqual(inventory["field_overrides"], 2)
+        self.assertEqual(inventory["field_override_properties"], 2)
+        self.assertEqual(inventory["non_color_field_override_properties"], 1)
+        notes = collect_panel_notes(panel)
+        self.assertTrue([n for n in notes if "non-color override property" in n], notes)
+
+    def test_negative_y_override_negates_matching_target(self):
+        panel = {
+            "id": 7,
+            "type": "timeseries",
+            "title": "Network Traffic",
+            "targets": [
+                {
+                    "expr": "irate(node_network_receive_bytes_total{instance=\"$node\"}[5m])*8",
+                    "legendFormat": "{{device}} - Receive",
+                    "refId": "A",
+                    "datasource": {"type": "prometheus"},
+                },
+                {
+                    "expr": "irate(node_network_transmit_bytes_total{instance=\"$node\"}[5m])*8",
+                    "legendFormat": "{{device}} - Transmit",
+                    "refId": "B",
+                    "datasource": {"type": "prometheus"},
+                },
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": [
+                    {
+                        "matcher": {"id": "byRegexp", "options": "/.*Trans.*/"},
+                        "properties": [{"id": "custom.transform", "value": "negative-Y"}],
+                    }
+                ],
+            },
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        }
+        _yaml, result = _translate_panel(panel)
+        self.assertIn("(-1 *", result.esql_query)
+        self.assertNotIn("field override", " || ".join(result.notes))
+
+
+class TestNonPromqlPanelsNameTheirQueryLanguage(unittest.TestCase):
+    """"No PromQL expression found" reads like a parser failure.
+
+    Grafana dashboards routinely mix data sources. A panel backed by InfluxDB,
+    Graphite or SQL has nothing for a PromQL translator to do, and reporting it
+    as a missing expression sends the operator hunting for a bug instead of
+    telling them the panel must be rebuilt.
+    """
+
+    def _placeholder_reason(self, panel):
+        from observability_migration.adapters.source.grafana.panels import (
+            _make_placeholder_panel,
+        )
+
+        _yaml, result = _make_placeholder_panel({}, "T", "graph", "line", panel=panel)
+        return result.reasons[0]
+
+    def test_influxdb_panel_names_influxql(self):
+        panel = {
+            "type": "graph",
+            "targets": [{"dsType": "influxdb", "query": 'SELECT mean("value")'}],
+        }
+        reason = self._placeholder_reason(panel)
+        self.assertIn("InfluxDB", reason)
+        self.assertNotIn("No PromQL expression found", reason)
+
+    def test_datasource_type_is_also_recognised(self):
+        panel = {"type": "graph", "datasource": {"type": "graphite"}, "targets": [{}]}
+        self.assertIn("Graphite", self._placeholder_reason(panel))
+
+    def test_unidentifiable_panel_keeps_the_generic_reason(self):
+        panel = {"type": "graph", "targets": [{}]}
+        self.assertEqual(
+            self._placeholder_reason(panel),
+            "No PromQL expression found in panel targets",
+        )
 
 
 if __name__ == "__main__":

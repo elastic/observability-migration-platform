@@ -174,9 +174,9 @@ CASES: list[tuple[str, str, str]] = [
         "time() - node_boot_time_seconds{job='node'}",
         "timeseries",
     ),
-    # --- two-vector multiplication: correctly not_feasible ------------------
+    # --- two-vector ratio: co-located, so divided per document --------------
     (
-        "two_series_ratio_not_feasible",
+        "two_series_ratio_colocated",
         "max(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),
@@ -253,16 +253,29 @@ CASES: list[tuple[str, str, str]] = [
     # flip from not_feasible back to feasible (see the design doc's History
     # section for why it was reverted).
     #
-    # An explicit by() that requires an enrichment-only label (one that exists
-    # only via the group_left(...) join, not on the primary metric) cannot be
-    # safely approximated — stays not_feasible with a specific message naming
-    # the offending label.
+    # An explicit by() that borrows enrichment labels from a group_left(_info)
+    # join is now feasible: the `_info` suffix signals that the RHS is a
+    # constant-1 labeler, and by convention its labels also exist on the primary
+    # metric (verified against the schema at translate time when a resolver is
+    # available). The join is dropped and the outer by() is satisfied directly.
     (
-        "agg_join_by_enrichment_label_not_feasible",
+        "agg_join_info_by_enrichment_label_feasible",
         (
             "sum(rabbitmq_queue_messages_ready"
             " * on(instance, job) group_left(rabbitmq_cluster, rabbitmq_node) rabbitmq_identity_info)"
             " by(rabbitmq_node)"
+        ),
+        "timeseries",
+    ),
+    # A non-_info RHS with enrichment labels in the outer by() stays not_feasible:
+    # without the info-metric convention there is no basis for assuming the
+    # enrichment label exists on the primary metric once the join is dropped.
+    (
+        "agg_join_non_info_by_enrichment_label_not_feasible",
+        (
+            "sum(node_network_receive_bytes_total"
+            " * on(instance) group_left(nodename) node_weight_factor)"
+            " by(nodename)"
         ),
         "timeseries",
     ),
@@ -438,8 +451,13 @@ CASES: list[tuple[str, str, str]] = [
     ),
     # --- explicit hard blockers ---------------------------------------------
     (
-        "histogram_quantile_not_feasible",
+        "histogram_quantile_bare_rate_feasible",
         "histogram_quantile(0.9, rate(alertmanager_notification_latency_seconds_bucket[5m]))",
+        "timeseries",
+    ),
+    (
+        "histogram_quantile_sum_no_le_not_feasible",
+        "histogram_quantile(0.9, sum by (instance) (rate(alertmanager_notification_latency_seconds_bucket[5m])))",
         "timeseries",
     ),
     (
@@ -464,7 +482,7 @@ CASES: list[tuple[str, str, str]] = [
         "timeseries",
     ),
     (
-        "bottomk_grouped_not_feasible",
+        "bottomk_grouped",
         "bottomk(3, sum by (job) (rate(foo_total[5m])))",
         "timeseries",
     ),
@@ -484,9 +502,10 @@ CASES: list[tuple[str, str, str]] = [
         'sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance"}[30m]) / increase(prometheus_tsdb_compaction_duration_count{instance="$instance"}[30m])) by (instance)',
         "timeseries",
     ),
-    # Unrelated per-element ratio (not a histogram _sum/_count pair) stays not_feasible.
+    # Per-element ratio (not a histogram _sum/_count pair). No on()/ignoring(),
+    # so the operands share a label set and the division happens per document.
     (
-        "per_element_ratio_not_feasible",
+        "per_element_ratio_colocated",
         "sum(node_filesystem_avail_bytes / node_filesystem_size_bytes)",
         "timeseries",
     ),
@@ -697,6 +716,19 @@ CASES: list[tuple[str, str, str]] = [
         "vector_scalar_not_feasible",
         "vector(1)",
         "stat",
+    ),
+    # --- label_join → post-STATS EVAL CONCAT ------------------------------------
+    # All src labels are in the inner sum by() — translates to EVAL CONCAT.
+    (
+        "label_join_src_in_by_feasible",
+        'label_join(sum by (destination_workload,destination_workload_namespace,destination_service) (rate(istio_requests_total{reporter=~"source|waypoint"}[5m])), "destination_workload_var", ".", "destination_workload", "destination_workload_namespace")',
+        "table",
+    ),
+    # src label missing from by() — cannot CONCAT a non-existent column.
+    (
+        "label_join_missing_src_not_feasible",
+        'label_join(sum by (destination_workload,destination_service) (rate(istio_requests_total[5m])), "dst", ".", "destination_workload", "destination_workload_namespace")',
+        "table",
     ),
 ]
 

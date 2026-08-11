@@ -1,0 +1,194 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 763 (redis_exporter)
+# https://grafana.com/grafana/dashboards/763-redis-dashboard-for-prometheus-redis-exporter-1-x/
+#
+# Layout: Grafana 24-col → Kibana 48-col (2× scale on x and w; h scaled for readability)
+# Fidelity: PERFECT = 100% semantic parity | APPROXIMATE = documented delta
+
+schema_version: 1
+gnet_id: 763
+gnet_revision: 6
+dashboard_title: "Redis Dashboard for Prometheus Redis Exporter 1.x"
+
+panels:
+  - id: 9
+    title: "Max Uptime"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: "max_over_time over $__interval is rewritten to max() gauge agg"
+    grafana_grid: {x: 0, y: 0, w: 3, h: 7}
+    kibana_grid: {x: 0, y: 0, w: 8, h: 6}
+
+  - id: 12
+    title: "Clients"
+    grafana_type: stat
+    fidelity: PERFECT
+    notes: ""
+    grafana_grid: {x: 3, y: 0, w: 2, h: 7}
+    kibana_grid: {x: 8, y: 0, w: 8, h: 6}
+
+  - id: 11
+    title: "Memory Usage"
+    grafana_type: gauge
+    fidelity: APPROXIMATE
+    notes: >
+      Ratio formula sum(100 * used / max). The generic co-located binary-expression
+      translator emits a single FROM query (both metrics land in the same
+      prometheus_native document per label-set from the redis_scraper). Panel shows
+      empty when Redis maxmemory=0 (no limit configured). APPROXIMATE because the
+      co-location assumption could fail on non-standard scrapers; semantically
+      correct for the default layout.
+    grafana_grid: {x: 5, y: 0, w: 3, h: 7}
+    kibana_grid: {x: 16, y: 0, w: 10, h: 6}
+
+  - id: 18
+    title: "Total Commands/sec"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "rate(redis_commands_total[1m]) by (cmd) — straightforward counter rate"
+    grafana_grid: {x: 8, y: 0, w: 8, h: 7}
+    kibana_grid: {x: 26, y: 0, w: 14, h: 6}
+
+  - id: 1
+    title: "Hits / Misses per Sec"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "irate of keyspace_hits + keyspace_misses — two counter series"
+    grafana_grid: {x: 16, y: 0, w: 8, h: 7}
+    kibana_grid: {x: 0, y: 6, w: 16, h: 8}
+
+  - id: 7
+    title: "Total Memory Usage"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "used_bytes and max_bytes as gauge series"
+    grafana_grid: {x: 0, y: 7, w: 12, h: 7}
+    kibana_grid: {x: 16, y: 6, w: 16, h: 8}
+
+  - id: 10
+    title: "Network I/O"
+    grafana_type: timeseries
+    fidelity: APPROXIMATE
+    notes: >
+      Two-series line chart: input and output byte rates. The Grafana legendFormat uses
+      {{ input }} and {{ output }} which are NOT real Prometheus labels; the generic
+      legendFormat/fusion path treats those tokens as series aliases (not BY dimensions)
+      so both targets fuse into a single STATS query. WHERE uses OR logic to include
+      documents with either metric present. APPROXIMATE because the WHERE OR filter
+      requires both metrics to be discoverable in the index but reads them from
+      co-located documents.
+    grafana_grid: {x: 12, y: 7, w: 12, h: 7}
+    kibana_grid: {x: 32, y: 6, w: 16, h: 8}
+
+  - id: 5
+    title: "Total Items per DB"
+    grafana_type: timeseries
+    fidelity: APPROXIMATE
+    notes: >
+      redis_db_keys grouped by labels.db and labels.instance. Grafana renders one series
+      per (db, instance) pair with both labels in the legend. Kibana XY supports only one
+      breakdown dimension; the translator emits a single breakdown field and builds a
+      synthetic CONCAT(db, instance) legend via an EVAL, which collapses the two-dimension
+      grouping into a single series key. Semantically equivalent for typical single-instance
+      deployments but loses the independent db/instance breakdown axis in multi-instance setups.
+    grafana_grid: {x: 0, y: 14, w: 12, h: 7}
+    kibana_grid: {x: 0, y: 14, w: 16, h: 8}
+
+  - id: 13
+    title: "Expiring vs Not-Expiring Keys"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: >
+      Two-series stacked area: not-expiring (db_keys - db_keys_expiring) and expiring keys.
+      ES|QL EVAL computes the subtraction within the STATS pipeline per time bucket and
+      instance — mathematically equivalent to the PromQL binary subtraction since both
+      gauge metrics are co-located in the same prometheus_native document per label-set.
+    grafana_grid: {x: 12, y: 14, w: 12, h: 7}
+    kibana_grid: {x: 16, y: 14, w: 16, h: 8}
+
+  - id: 8
+    title: "Expired / Evicted Keys"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "rate of expired_keys_total and evicted_keys_total grouped by instance"
+    grafana_grid: {x: 0, y: 21, w: 12, h: 7}
+    kibana_grid: {x: 32, y: 14, w: 16, h: 8}
+
+  - id: 16
+    title: "Connected / Blocked Clients"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "connected_clients and blocked_clients gauge series"
+    grafana_grid: {x: 12, y: 21, w: 12, h: 7}
+    kibana_grid: {x: 0, y: 22, w: 16, h: 8}
+
+  - id: 20
+    title: "Avg Time Spent by Command"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: >
+      Per-cmd average latency: SUM(IRATE(duration_total)) / SUM(IRATE(commands_total)) per
+      time bucket and cmd label. ES|QL EVAL computes the division after STATS — equivalent
+      to the PromQL binary division since both counter metrics are co-located and aggregated
+      by the same cmd grouping key.
+    grafana_grid: {x: 0, y: 28, w: 12, h: 7}
+    kibana_grid: {x: 16, y: 22, w: 16, h: 8}
+
+  - id: 14
+    title: "Total Time Spent by Command"
+    grafana_type: timeseries
+    fidelity: PERFECT
+    notes: "irate of redis_commands_duration_seconds_total by cmd"
+    grafana_grid: {x: 12, y: 28, w: 12, h: 7}
+    kibana_grid: {x: 32, y: 22, w: 16, h: 8}
+
+variables:
+  - name: namespace
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_up, namespace) — translates to keyword terms aggregation.
+      Live-validated with prometheus_native: "default" option found from labels.namespace field. PASS.
+
+  - name: instance
+    type: query
+    fidelity: PERFECT
+    notes: >
+      label_values(redis_up{namespace=~'$namespace'}, instance) — filtered terms agg.
+      prometheus_native profile uses `labels.instance` directly. Live-validated locally
+      with ES 9.5.0-SNAPSHOT + python prometheus_native scraper: shows 'redis:6379'.
+      The migrated instance control query preserves the upstream namespace scope via
+      a named ES|QL param predicate. PASS.
+
+summary:
+  total_panels: 13
+  perfect: 10
+  approximate: 3
+  not_feasible: 0
+  overall_fidelity: HIGH
+  live_validation:
+    date: "2026-07-29"
+    environment: "ES 9.5.0-SNAPSHOT + Python prometheus_native scraper + Kibana 9.5.0-SNAPSHOT"
+    panels_render_ok: 13
+    panels_not_feasible: 0
+    migration_flags: "--translation-mode esql (required; native PROMQL mode fails on ?instance params in PromQL label filters)"
+    plugin: none (generic translator + pack.yaml cover Memory Usage ratio and Network I/O fusion)
+    namespace_control: PASS
+    namespace_control_note: >
+      Shows 'default' option; wildcard .* selected by default. The downstream
+      instance control query binds ?namespace so the option list stays scoped.
+    instance_control: PASS
+    instance_control_note: >
+      prometheus_native profile uses labels.instance directly; shows 'redis:6379' option.
+      Both controls work correctly. Select 'redis:6379' for stat panels to render (wildcard
+      does not bind ?instance for TS queries in auto mode).
+    ingestion_method: >
+      Custom Python scraper writing metrics.* + labels.* prometheus_native format directly to
+      metrics-redis.prometheus-default TSDB data stream. Index template uses
+      metrics-prometheus@mappings with explicit counter/gauge field mappings for RATE() support.
+    data_stream: "metrics-redis.prometheus-default"
+    ts_command: PASS
+    ts_rate_queries: PASS
+    kibana_url: "http://localhost:5602/app/dashboards#/view/d5659bf3-4a3d-b6c9-9dc0-9adbd28535b5"

@@ -1,0 +1,6 @@
+source: max(node_filesystem_avail_bytes / node_filesystem_size_bytes)
+status: migrated_with_warnings
+chart_type: line
+dimension: time_bucket
+metrics: ['computed_value']
+warning: Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align)

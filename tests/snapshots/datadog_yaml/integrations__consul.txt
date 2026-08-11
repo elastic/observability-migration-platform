@@ -4,7 +4,7 @@ widgets: 27
 panels: 22
 controls: 3
 filters: 0
-statuses: {'ok': 6, 'requires_manual': 4, 'skipped': 5, 'warning': 12}
+statuses: {'ok': 16, 'requires_manual': 4, 'skipped': 5, 'warning': 2}
 - title='Datadog note 5050150571228312'; kind=markdown
 - title='Datadog note 5453680244314134'; kind=markdown
 - title='Datadog note 2570179001713344'; kind=markdown

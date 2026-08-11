@@ -1,0 +1,367 @@
+[
+  {
+    "title": "Context Switches / Interrupts",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Context switches",
+        "Interrupts"
+      ],
+      "exprs": [
+        "irate(node_context_switches_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "irate(node_intr_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Context_switches",
+          "label": "Context switches"
+        },
+        {
+          "field": "Interrupts",
+          "label": "Interrupts"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_context_switches_total IS NOT NULL OR metrics.node_intr_total IS NOT NULL\n| STATS Context_switches = AVG(IRATE(metrics.node_context_switches_total)), Interrupts = AVG(IRATE(metrics.node_intr_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Context_switches, Interrupts\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "System Load",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 3,
+      "legends": [
+        "Load 1m",
+        "Load 5m",
+        "Load 15m"
+      ],
+      "exprs": [
+        "node_load1{instance=\"$node\",job=\"$job\"}",
+        "node_load5{instance=\"$node\",job=\"$job\"}",
+        "node_load15{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 3,
+      "metrics": [
+        {
+          "field": "Load_1m",
+          "label": "Load 1m"
+        },
+        {
+          "field": "Load_5m",
+          "label": "Load 5m"
+        },
+        {
+          "field": "Load_15m",
+          "label": "Load 15m"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_load1 IS NOT NULL OR metrics.node_load5 IS NOT NULL OR metrics.node_load15 IS NOT NULL\n| STATS Load_1m = AVG(LAST_OVER_TIME(metrics.node_load1)), Load_5m = AVG(LAST_OVER_TIME(metrics.node_load5)), Load_15m = AVG(LAST_OVER_TIME(metrics.node_load15)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Load_1m, Load_5m, Load_15m\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "CPU Frequency Scaling",
+    "grafana": {
+      "unit": "hertz",
+      "stack": "none",
+      "draw": "line",
+      "n": 3,
+      "legends": [
+        "CPU {{ cpu }}",
+        "Max",
+        "Min"
+      ],
+      "exprs": [
+        "node_cpu_scaling_frequency_hertz{instance=\"$node\",job=\"$job\"}",
+        "avg(node_cpu_scaling_frequency_max_hertz{instance=\"$node\",job=\"$job\"})",
+        "avg(node_cpu_scaling_frequency_min_hertz{instance=\"$node\",job=\"$job\"})"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "line",
+      "n": 6,
+      "metrics": [
+        {
+          "field": "value",
+          "label": null
+        }
+      ],
+      "live_series": [
+        "CPU 0",
+        "CPU 1",
+        "CPU 2",
+        "CPU 3",
+        "Max",
+        "Min"
+      ],
+      "curated": true,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_cpu_scaling_frequency_hertz IS NOT NULL OR metrics.node_cpu_scaling_frequency_max_hertz IS NOT NULL OR metrics.node_cpu_scaling_frequency_min_hertz IS NOT NULL\n| STATS CPU = AVG(LAST_OVER_TIME(metrics.node_cpu_scaling_frequency_hertz)), Max = AVG(LAST_OVER_TIME(metrics.node_cpu_scaling_frequency_max_hertz)), Min = AVG(LAST_OVER_TIME(metrics.node_cpu_scaling_frequency_min_hertz)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu\n| EVAL cpu_label = CONCAT(\"CPU \", COALESCE(TO_STRING(labels.cpu), \"\"))\n| EVAL __labels = CASE(labels.cpu == \"0\", MV_APPEND(MV_APPEND(cpu_label, \"Max\"), \"Min\"), cpu_label)\n| EVAL __values = CASE(labels.cpu == \"0\", MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), \"\"), COALESCE(TO_STRING(Max), \"\")), COALESCE(TO_STRING(Min), \"\")), COALESCE(TO_STRING(CPU), \"\"))\n| EVAL __pairs = MV_ZIP(__labels, __values, \"~\")\n| MV_EXPAND __pairs\n| EVAL series_group = MV_FIRST(SPLIT(__pairs, \"~\")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, \"~\")))\n| KEEP time_bucket, series_group, value\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Pressure Stall Information",
+    "grafana": {
+      "unit": "percentunit",
+      "stack": "none",
+      "draw": "line",
+      "n": 5,
+      "legends": [
+        "CPU some",
+        "Memory some",
+        "Memory full",
+        "I/O some",
+        "I/O full"
+      ],
+      "exprs": [
+        "rate(node_pressure_cpu_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "rate(node_pressure_memory_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "rate(node_pressure_memory_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "rate(node_pressure_io_waiting_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])",
+        "rate(node_pressure_io_stalled_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 5,
+      "metrics": [
+        {
+          "field": "CPU_some",
+          "label": "CPU some"
+        },
+        {
+          "field": "Memory_some",
+          "label": "Memory some"
+        },
+        {
+          "field": "Memory_full",
+          "label": "Memory full"
+        },
+        {
+          "field": "I_O_some",
+          "label": "I/O some"
+        },
+        {
+          "field": "I_O_full",
+          "label": "I/O full"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_pressure_cpu_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_memory_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_memory_stalled_seconds_total IS NOT NULL OR metrics.node_pressure_io_waiting_seconds_total IS NOT NULL OR metrics.node_pressure_io_stalled_seconds_total IS NOT NULL\n| STATS CPU_some = AVG(RATE(metrics.node_pressure_cpu_waiting_seconds_total)), Memory_some = AVG(RATE(metrics.node_pressure_memory_waiting_seconds_total)), Memory_full = AVG(RATE(metrics.node_pressure_memory_stalled_seconds_total)), I_O_some = AVG(RATE(metrics.node_pressure_io_waiting_seconds_total)), I_O_full = AVG(RATE(metrics.node_pressure_io_stalled_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, CPU_some, Memory_some, Memory_full, I_O_some, I_O_full\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Interrupts Detail",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "{{ type }} - {{ info }}"
+      ],
+      "exprs": [
+        "irate(node_interrupts_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_interrupts_total",
+          "label": "Node Interrupts Total"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_interrupts_total IS NOT NULL\n| STATS node_interrupts_total = AVG(IRATE(metrics.node_interrupts_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.type\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Schedule timeslices executed by each cpu",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "CPU {{ cpu }}"
+      ],
+      "exprs": [
+        "irate(node_schedstat_timeslices_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_schedstat_timeslices_total",
+          "label": "Node Schedstat Timeslices Total"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_schedstat_timeslices_total IS NOT NULL\n| STATS node_schedstat_timeslices_total = AVG(IRATE(metrics.node_schedstat_timeslices_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "Entropy",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "Entropy available to random number generators"
+      ],
+      "exprs": [
+        "node_entropy_available_bits{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "node_entropy_available_bits",
+          "label": "Entropy available to random number generators"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.node_entropy_available_bits IS NOT NULL\n| STATS node_entropy_available_bits = AVG(LAST_OVER_TIME(metrics.node_entropy_available_bits)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "CPU time spent in user and system contexts",
+    "grafana": {
+      "unit": "s",
+      "stack": "none",
+      "draw": "line",
+      "n": 1,
+      "legends": [
+        "Time spent"
+      ],
+      "exprs": [
+        "irate(process_cpu_seconds_total{instance=\"$node\",job=\"$job\"}[$__rate_interval])"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 1,
+      "metrics": [
+        {
+          "field": "process_cpu_seconds_total",
+          "label": "Time spent"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": true,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.process_cpu_seconds_total IS NOT NULL\n| STATS process_cpu_seconds_total = AVG(IRATE(metrics.process_cpu_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  },
+  {
+    "title": "File Descriptors",
+    "grafana": {
+      "unit": "short",
+      "stack": "none",
+      "draw": "line",
+      "n": 2,
+      "legends": [
+        "Maximum open file descriptors",
+        "Open file descriptors"
+      ],
+      "exprs": [
+        "process_max_fds{instance=\"$node\",job=\"$job\"}",
+        "process_open_fds{instance=\"$node\",job=\"$job\"}"
+      ],
+      "neg": false
+    },
+    "kibana": {
+      "series": "area",
+      "n": 2,
+      "metrics": [
+        {
+          "field": "Maximum_open_file_descriptors",
+          "label": "Maximum open file descriptors"
+        },
+        {
+          "field": "Open_file_descriptors",
+          "label": "Open file descriptors"
+        }
+      ],
+      "live_series": null,
+      "curated": false,
+      "neg": false,
+      "tbucket": "TBUCKET(100, ?_tstart, ?_tend)",
+      "irate": false,
+      "query": "TS metrics-node.prometheus-default\n| WHERE (?node == \"\" OR (labels.instance RLIKE ?node OR (labels.instance IS NULL AND \"\" RLIKE ?node)))\n| WHERE (?job == \"\" OR (labels.job RLIKE ?job OR (labels.job IS NULL AND \"\" RLIKE ?job)))\n| WHERE metrics.process_max_fds IS NOT NULL OR metrics.process_open_fds IS NOT NULL\n| STATS Maximum_open_file_descriptors = AVG(LAST_OVER_TIME(metrics.process_max_fds)), Open_file_descriptors = AVG(LAST_OVER_TIME(metrics.process_open_fds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.instance, labels.job\n| KEEP time_bucket, `labels.instance`, `labels.job`, Maximum_open_file_descriptors, Open_file_descriptors\n| SORT time_bucket ASC"
+    },
+    "live_ok": true,
+    "verdict": "Good"
+  }
+]

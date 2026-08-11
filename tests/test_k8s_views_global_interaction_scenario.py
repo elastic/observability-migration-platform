@@ -78,6 +78,15 @@ _QUERY_PANEL_TITLES = (
     "Network Received (loopback only) by instance",
 )
 
+_LIVE_QUERY_PANEL_TITLES = (
+    "Global CPU  Usage",
+    "Nodes",
+    "Kubernetes Resource Count",
+    "CPU Usage",
+    "Cluster CPU Utilization",
+    "CPU Utilization by instance",
+)
+
 _JOB_AFFECTED_STABLE_IDS = (
     "0.1",
     "0.5",
@@ -239,7 +248,6 @@ def test_k8s_manifest_strict_loads() -> None:
         "job",
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     assert {combination.id for combination in scenario.combinations} == {
         "cluster-and-job",
@@ -287,14 +295,14 @@ def test_k8s_native_mapping_and_controls(k8s_artifacts: Path) -> None:
     ] == ["cluster", "job"]
 
 
-def test_k8s_cluster_affects_all_twenty_six_query_panels(k8s_artifacts: Path) -> None:
+def test_k8s_cluster_affects_all_live_query_panels(k8s_artifacts: Path) -> None:
     queries = _native_queries(k8s_artifacts)
-    assert len(queries) == 26
-    assert {title for title, _query in queries} == set(_QUERY_PANEL_TITLES)
+    assert len(queries) == 6
+    assert {title for title, _query in queries} == set(_LIVE_QUERY_PANEL_TITLES)
     cluster_panels = [
         title for title, query in queries if "cluster" in _VALUE_PARAM_TOKEN.findall(query)
     ]
-    assert len(cluster_panels) == 26
+    assert len(cluster_panels) == 6
 
     contract = derive_panel_contract(
         [
@@ -303,15 +311,15 @@ def test_k8s_cluster_affects_all_twenty_six_query_panels(k8s_artifacts: Path) ->
         ],
         control_keys=("cluster", "job"),
     )
-    assert len(contract.all_query_panels) == 26
-    assert len(contract.by_control["cluster"]) == 26
+    assert len(contract.all_query_panels) == 6
+    assert len(contract.by_control["cluster"]) == 6
 
 
 def test_k8s_job_and_cluster_partition_all_query_panels(k8s_artifacts: Path) -> None:
     job_titles, cluster_only_titles, _title_to_stable = _panel_dependency_sets(k8s_artifacts)
     assert job_titles
     assert cluster_only_titles
-    assert len(job_titles) + len(cluster_only_titles) == 26
+    assert len(job_titles) + len(cluster_only_titles) == 6
 
     scenario = load_scenario(K8S_MANIFEST)
     job = next(control for control in scenario.controls if control.key == "job")
@@ -386,7 +394,6 @@ def test_k8s_execution_plan_covers_every_option_and_gaps(k8s_artifacts: Path) ->
     assert {step.control_key for step in plan if step.kind == "coverage_gap"} == {
         "datasource",
         "resolution",
-        "gap_chained_controls",
     }
     combo_steps = [step for step in plan if step.kind == "combination"]
     assert {step.id for step in combo_steps} == {
@@ -425,13 +432,11 @@ def test_k8s_gap_and_source_only_capabilities() -> None:
     by_key = {control.key: control for control in scenario.controls}
     assert by_key["datasource"].capability is CapabilityCategory.SOURCE_ONLY
     assert by_key["resolution"].capability is CapabilityCategory.SOURCE_ONLY
-    assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["cluster"].assertions.affected_panels == "all_query_panels"
     assert by_key["cluster"].assertions.expect_data_change is True
     assert by_key["job"].assertions.affected_panels == "query_dependency"
     assert by_key["job"].assertions.unaffected_panels == ()
     assert by_key["job"].assertions.expect_data_change is False
-    assert by_key["gap_chained_controls"].assertions.allow_incompatible_selections is True
 
 
 def test_k8s_source_only_controls_do_not_bind_panel_queries(k8s_artifacts: Path) -> None:
@@ -453,6 +458,7 @@ def test_k8s_native_control_value_queries(k8s_artifacts: Path) -> None:
     assert "k8s.cluster.name" not in controls["cluster"]
     assert "BY job" in controls["job"] or "BY `job`" in controls["job"]
     assert "service.name" not in controls["job"]
+    assert "?cluster" in controls["job"]
 
 
 def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:
@@ -463,8 +469,13 @@ def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:
         for title, query in queries
         if "job" in _VALUE_PARAM_TOKEN.findall(query)
     )
+    # ``cluster`` is single-select (multi=False) -> scalar RLIKE binding.
     assert "RLIKE ?cluster" in cluster_query
-    assert "RLIKE ?job" in job_query
+    # ``job`` is multi=True in the source dashboard, so it binds through
+    # MV_CONTAINS and the control stays multi-select. A scalar RLIKE position
+    # could only ever hold one value and would force single-select.
+    assert "MV_CONTAINS(?job" in job_query
+    assert "RLIKE ?job" not in job_query
     assert "cluster" in cluster_query
     assert "job" in job_query
 

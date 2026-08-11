@@ -15,11 +15,16 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
 Usage: bash scripts/generate_dashboard_schema.sh
 
-Regenerate the canonical dashboard schema artifacts under docs/dashboards/.
+Regenerate the canonical dashboard dict-shape schema under docs/dashboards/.
 
 The script provisions a temporary virtualenv, installs kb-dashboard-core, and
-emits docs/dashboards/schema.json plus docs/dashboards/schema.toon when npx is
-available.
+emits docs/dashboards/schema.json (the reference for DashboardIR.to_yaml_dict()).
+
+The native Kibana Dashboards API OpenAPI bundle is separate:
+  docs/dashboards/kibana_dashboards_api.openapi.yaml
+Refresh that with:
+  make refresh-native-schema
+  # or: .venv/bin/python scripts/fetch_dashboards_api_schema.py --require-full-schema
 
 Optional overrides:
   SCHEMA_CORE_SOURCE  Pinned kb-dashboard-core spec, e.g. "kb-dashboard-core==1.2.3"
@@ -34,7 +39,6 @@ SCHEMA_CORE_SOURCE="${SCHEMA_CORE_SOURCE:-kb-dashboard-core}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 DOCS_DIR="docs/dashboards"
 SCHEMA_JSON="${DOCS_DIR}/schema.json"
-SCHEMA_TOON="${DOCS_DIR}/schema.toon"
 VENV_DIR=""
 TMP_SCHEMA_JSON=""
 
@@ -102,10 +106,3 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 
 cp "${TMP_SCHEMA_JSON}" "${SCHEMA_JSON}"
 echo "Wrote ${SCHEMA_JSON}"
-
-if command -v npx >/dev/null 2>&1; then
-  npx @toon-format/cli "${TMP_SCHEMA_JSON}" -o "${SCHEMA_TOON}"
-  echo "Wrote ${SCHEMA_TOON}"
-else
-  echo "Skipping ${SCHEMA_TOON} (npx not available)"
-fi

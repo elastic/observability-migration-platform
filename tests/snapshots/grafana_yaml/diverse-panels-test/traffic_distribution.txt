@@ -1,6 +1,0 @@
-title: Traffic Distribution
-grafana_type: piechart
-status: migrated
-chart_type: pie
-metrics: ['http_requests_total']
-breakdowns: ['handler']

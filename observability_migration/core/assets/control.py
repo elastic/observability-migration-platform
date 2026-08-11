@@ -48,6 +48,43 @@ class ControlIR:
         d["status"] = self.status.value
         return d
 
+    @classmethod
+    def from_dict(cls, raw: Any) -> ControlIR:
+        """Rebuild a :class:`ControlIR` from its :meth:`to_dict` form.
+
+        Inverse of :meth:`to_dict`, used to read back the on-disk
+        ``ir/<stem>.ir.json`` artifact. ``status`` arrives as the plain
+        string ``to_dict`` wrote, so it is mapped back onto
+        :class:`AssetStatus`.
+        """
+        raw = raw if isinstance(raw, dict) else {}
+        try:
+            status = AssetStatus(str(raw.get("status") or ""))
+        except ValueError:
+            status = AssetStatus.SKIPPED
+        source_extension = raw.get("source_extension")
+        metadata = raw.get("metadata")
+        return cls(
+            control_id=str(raw.get("control_id") or ""),
+            name=str(raw.get("name") or ""),
+            label=str(raw.get("label") or ""),
+            kind=str(raw.get("kind") or ""),
+            default_value=str(raw.get("default_value") or ""),
+            query=str(raw.get("query") or ""),
+            datasource=str(raw.get("datasource") or ""),
+            variable_name=str(raw.get("variable_name") or ""),
+            variable_type=str(raw.get("variable_type") or ""),
+            data_view=str(raw.get("data_view") or ""),
+            field_name=str(raw.get("field_name") or ""),
+            selected_options=[str(item) for item in (raw.get("selected_options") or [])],
+            available_options=[str(item) for item in (raw.get("available_options") or [])],
+            multiple=raw.get("multiple", True) is not False,
+            status=status,
+            warnings=[str(item) for item in (raw.get("warnings") or [])],
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+            source_extension=dict(source_extension) if isinstance(source_extension, dict) else {},
+        )
+
     def to_yaml_control(self) -> dict[str, Any]:
         """Serialize back to one kb-dashboard-core ``controls[]`` entry.
 

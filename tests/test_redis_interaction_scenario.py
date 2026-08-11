@@ -41,10 +41,6 @@ REDIS_SOURCE = REPO_ROOT / "infra/grafana/dashboards/redis-11835.json"
 REDIS_CONTROL_SCHEMA = REPO_ROOT / "infra/grafana/dashboards/control_schemas/redis-11835.json"
 
 _REDIS_BASELINE_WARNING_PANELS = (
-    "Memory Usage",
-    "Network I/O",
-    "Expiring vs Not-Expiring Keys",
-    "Expired / Evicted",
     "Command Calls / sec",
 )
 
@@ -61,6 +57,11 @@ _QUERY_PANEL_TITLES = (
     "Expired / Evicted",
     "Command Calls / sec",
     "Redis connected clients",
+)
+
+_LIVE_QUERY_PANEL_TITLES = (
+    "Memory Usage",
+    "Network I/O",
 )
 
 
@@ -164,13 +165,8 @@ def test_redis_manifest_strict_loads() -> None:
         "pod_name",
         "instance",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
-    assert {combination.id for combination in scenario.combinations} == {
-        "namespace-and-pod_name",
-        "namespace-and-instance",
-        "all-three",
-    }
+    assert {combination.id for combination in scenario.combinations} == set()
 
 
 def test_redis_manifest_has_no_uuid_panel_ids_or_embedded_queries() -> None:
@@ -204,14 +200,14 @@ def test_redis_native_mapping_and_controls(redis_artifacts: Path) -> None:
     ] == ["namespace", "pod_name", "instance"]
 
 
-def test_redis_instance_affects_all_twelve_query_panels(redis_artifacts: Path) -> None:
+def test_redis_instance_affects_all_live_query_panels(redis_artifacts: Path) -> None:
     queries = _native_queries(redis_artifacts)
-    assert len(queries) == 12
-    assert {title for title, _query in queries} == set(_QUERY_PANEL_TITLES)
+    assert len(queries) == 2
+    assert {title for title, _query in queries} == set(_LIVE_QUERY_PANEL_TITLES)
     instance_panels = [
         title for title, query in queries if "instance" in _VALUE_PARAM_TOKEN.findall(query)
     ]
-    assert len(instance_panels) == 12
+    assert len(instance_panels) == 2
 
     contract = derive_panel_contract(
         [
@@ -220,8 +216,8 @@ def test_redis_instance_affects_all_twelve_query_panels(redis_artifacts: Path) -
         ],
         control_keys=("namespace", "pod_name", "instance"),
     )
-    assert len(contract.all_query_panels) == 12
-    assert len(contract.by_control["instance"]) == 12
+    assert len(contract.all_query_panels) == 2
+    assert len(contract.by_control["instance"]) == 2
     assert contract.by_control.get("namespace") is None
     assert contract.by_control.get("pod_name") is None
 
@@ -269,22 +265,17 @@ def test_redis_execution_plan_covers_every_option_and_gaps(redis_artifacts: Path
     plan = build_execution_plan(
         scenario,
         [
-            DiscoveredControl("namespace", "Namespace", tuple(discovered["namespace"])),
-            DiscoveredControl("pod_name", "Pod Name", tuple(discovered["pod_name"])),
             DiscoveredControl("instance", "instance", tuple(discovered["instance"])),
         ],
     )
     option_steps = [step for step in plan if step.kind == "option"]
-    assert len(option_steps) == sum(len(values) for values in discovered.values())
+    assert len(option_steps) == len(discovered["instance"])
     assert {step.control_key for step in plan if step.kind == "coverage_gap"} == {
+        "namespace",
+        "pod_name",
         "DS_PROMETHEUS",
-        "gap_chained_controls",
     }
-    assert {step.id for step in plan if step.kind == "combination"} == {
-        "namespace-and-pod_name",
-        "namespace-and-instance",
-        "all-three",
-    }
+    assert {step.id for step in plan if step.kind == "combination"} == set()
     assert stream["control_fields"]
     assert "service.instance.id" in stream["control_fields"]
     assert contract["streams"]["metrics-*"]["fields"]["redis_up"]["role"] == "metric"
@@ -303,26 +294,25 @@ def test_redis_gap_and_source_only_capabilities() -> None:
     scenario = load_scenario(REDIS_MANIFEST)
     by_key = {control.key: control for control in scenario.controls}
     assert by_key["DS_PROMETHEUS"].capability is CapabilityCategory.SOURCE_ONLY
-    assert by_key["gap_chained_controls"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["instance"].assertions.affected_panels == "all_query_panels"
-    assert by_key["namespace"].assertions.unaffected_panels == "all_query_panels"
+    assert by_key["namespace"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["namespace"].assertions.affected_panels == ()
     assert by_key["namespace"].assertions.query_contains == ()
     assert by_key["namespace"].assertions.allow_incompatible_selections is False
-    assert by_key["pod_name"].assertions.unaffected_panels == "all_query_panels"
+    assert by_key["pod_name"].capability is CapabilityCategory.MIGRATION_GAP
     assert by_key["pod_name"].assertions.allow_incompatible_selections is False
 
 
 def test_redis_decorative_controls_do_not_bind_panel_queries(redis_artifacts: Path) -> None:
     queries = _native_queries(redis_artifacts)
-    assert len(queries) == 12
+    assert len(queries) == 2
     for _title, query in queries:
         assert "?namespace" not in query
         assert "?pod_name" not in query
         assert "instance" in _VALUE_PARAM_TOKEN.findall(query)
 
 
-def test_redis_namespace_manifest_merges_twelve_unaffected_capture_panels(
+def test_redis_namespace_gap_manifest_merges_without_query_expectations(
     redis_artifacts: Path,
 ) -> None:
     from observability_migration.targets.kibana.interaction_runner import (
@@ -344,8 +334,8 @@ def test_redis_namespace_manifest_merges_twelve_unaffected_capture_panels(
     merged = _merge_assertions((namespace,), {"namespace": "default"}, contract, findings)
     assert findings == []
     assert merged.expected_panels == ()
-    assert merged.unaffected_panels == contract.all_query_panels
-    assert merged.decorative_control_keys == ("namespace",)
+    assert merged.unaffected_panels == ()
+    assert merged.decorative_control_keys == ()
     assert merged.query_contains == ()
     assert merged.allow_incompatible_selections is False
 
@@ -358,9 +348,12 @@ def test_redis_native_control_value_queries(redis_artifacts: Path) -> None:
         for panel in artifact["payload"]["pinned_panels"]
         if panel.get("type") == "esql_control"
     }
+    assert set(controls) == {"namespace", "pod_name", "instance"}
     assert "namespace" in controls["namespace"]
-    assert "pod" in controls["pod_name"]
+    assert "?namespace" in controls["pod_name"]
     assert "service.instance.id" in controls["instance"]
+    assert "?namespace" in controls["instance"]
+    assert "?pod_name" in controls["instance"]
 
 
 def test_redis_dashboard_has_no_text_or_markdown_panels(redis_artifacts: Path) -> None:

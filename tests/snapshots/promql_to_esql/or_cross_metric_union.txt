@@ -6,7 +6,7 @@ warning: PromQL series labels were not retained; output is bucket-level and may 
 TS metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | WHERE http_requests_total IS NOT NULL OR http_errors_total IS NOT NULL
-| STATS http_requests_total_rate = RATE(http_requests_total, 5m), http_errors_total_rate = RATE(http_errors_total, 5m) BY time_bucket = TBUCKET(5 minute)
+| STATS http_requests_total_rate = RATE(http_requests_total), http_errors_total_rate = RATE(http_errors_total) BY time_bucket = TBUCKET(5 minute)
 | EVAL computed_value = COALESCE(http_requests_total_rate, http_errors_total_rate)
 | KEEP time_bucket, computed_value
 | SORT time_bucket ASC

@@ -15,9 +15,11 @@ the native API accepts.
 
 This module has no knowledge of YAML, Grafana, or Datadog: it only knows the
 typed API's own shape and its item-count caps (see
-``docs/explore-analyze/dashboards/create-dashboards-programmatically`` and
-``scripts/fetch_dashboards_api_schema.py`` for schema refresh). Per-panel
-mapping (chart-type dispatch, column/format/color rules) stays in
+``docs/explore-analyze/dashboards/create-dashboards-programmatically`` and the
+committed OpenAPI pin
+``docs/dashboards/kibana_dashboards_api.openapi.yaml``, refreshed via
+``make refresh-native-schema`` / ``scripts/fetch_dashboards_api_schema.py``).
+Per-panel mapping (chart-type dispatch, column/format/color rules) stays in
 ``dashboards_api.py``, which is the single place those live-verified quirks are
 encoded; this module is where the *assembled dashboard* — items in order,
 section nesting, top-level/section/pinned-control caps — is modeled and
@@ -32,9 +34,8 @@ from typing import Any
 # Current Dashboards API limits (Elastic docs, preview 9.4+): up to 1,000
 # top-level dashboard items (panels + sections combined), up to 1,000 panels
 # per section, up to 100 pinned controls, and at most 1,000 combined panels /
-# sections / controls across the dashboard. The API schema is technical preview
-# and externally hosted; use ``scripts/fetch_dashboards_api_schema.py`` to
-# refresh/check it when Kibana moves.
+# sections / controls across the dashboard. Keep these in sync with the
+# committed OpenAPI pin at ``docs/dashboards/kibana_dashboards_api.openapi.yaml``.
 MAX_DASHBOARD_ITEMS = 1000
 MAX_SECTION_PANELS = 1000
 MAX_PINNED_CONTROLS = 100
@@ -274,6 +275,10 @@ class NativeDashboard:
     items: list[NativeItem] = field(default_factory=list)
     controls: list[NativeControl] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
+    # Dashboard-level tags. Kibana stores these and accepts plain strings on
+    # create (verified on 9.5). They reach here straight from the IR, never via
+    # the YAML document shape, whose schema forbids unknown keys.
+    tags: list[str] = field(default_factory=list)
     dashboard_id: str = ""
 
     def enforce_item_cap(
@@ -324,6 +329,8 @@ class NativeDashboard:
             payload["pinned_panels"] = [control.to_api_dict() for control in self.controls]
         if self.filters:
             payload["filters"] = self.filters
+        if self.tags:
+            payload["tags"] = list(self.tags)
         return payload
 
 

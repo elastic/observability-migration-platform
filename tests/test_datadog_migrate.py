@@ -46,7 +46,11 @@ from observability_migration.adapters.source.datadog.field_map import (
     FieldMapProfile,
     load_profile,
 )
-from observability_migration.adapters.source.datadog.generate import generate_dashboard_yaml
+from observability_migration.adapters.source.datadog.generate import (
+    dashboard_yaml_from_ir,
+    generate_dashboard_artifacts,
+    generate_dashboard_yaml,
+)
 from observability_migration.adapters.source.datadog.log_parser import (
     log_ast_to_esql_where,
     log_ast_to_kql,
@@ -87,6 +91,7 @@ from observability_migration.adapters.source.datadog.report import save_detailed
 from observability_migration.adapters.source.datadog.rollout import build_rollout_plan
 from observability_migration.adapters.source.datadog.translate import translate_widget
 from observability_migration.adapters.source.datadog.verification import annotate_results_with_verification
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.core.verification.field_capabilities import FieldCapability
 from observability_migration.targets.kibana.adapter import KibanaTargetAdapter
@@ -1355,6 +1360,53 @@ class TestTranslation(unittest.TestCase):
             result.warnings,
         )
 
+    def test_metric_template_variable_with_control_does_not_warn(self):
+        result = self._translate_metric_widget(
+            "avg:system.cpu.user{host:$host}",
+            force_esql=True,
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(
+            any("template variable" in warning.lower() for warning in result.warnings),
+            result.warnings,
+        )
+
+    def test_log_template_variable_warning_only_lists_unresolved_scope(self):
+        raw_query = "source:redis $host $scope status:error"
+        widget = NormalizedWidget(
+            id="logs",
+            widget_type="log_stream",
+            title="Logs",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="logs",
+                    raw_query=raw_query,
+                    log_query=parse_log_query(raw_query),
+                    query_type="log",
+                )
+            ],
+        )
+
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(
+            any(
+                "Log filter with template variable '$scope' was omitted" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+        self.assertFalse(
+            any(
+                "Log filter with" in warning and "$host" in warning
+                for warning in result.warnings
+            ),
+            result.warnings,
+        )
+
     def test_negated_filter_translated(self):
         result = self._translate_metric_widget("avg:system.cpu.user{!env:staging}", force_esql=True)
         self.assertIn("!=", result.esql_query)
@@ -1483,7 +1535,7 @@ class TestTranslation(unittest.TestCase):
     def test_metric_template_variable_becomes_broad_match(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:$host}", force_esql=True)
         self.assertNotIn("$host", result.esql_query)
-        self.assertTrue(any("template variable" in w.lower() for w in result.warnings))
+        self.assertFalse(any("template variable" in w.lower() for w in result.warnings), result.warnings)
 
     def test_boolean_scope_or_is_translated_safely(self):
         result = self._translate_metric_widget(
@@ -1492,7 +1544,7 @@ class TestTranslation(unittest.TestCase):
         self.assertIn("response_code LIKE \"2%\"", result.esql_query)
         self.assertIn("OR", result.esql_query)
         self.assertNotIn("`(response_code`", result.esql_query)
-        self.assertTrue(any("template variable" in w.lower() for w in result.warnings), result.warnings)
+        self.assertFalse(any("template variable" in w.lower() for w in result.warnings), result.warnings)
 
     def test_boolean_scope_or_across_keys_is_preserved(self):
         result = self._translate_metric_widget(
@@ -2338,13 +2390,9 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(w, plan, OTEL_PROFILE)
         self.assertNotIn("$svc", result.esql_query)
         self.assertNotIn("service.name ==", result.esql_query)
-        self.assertEqual(result.status, "warning")
-        self.assertTrue(
-            any(
-                "log filter with template variable '$svc' was omitted"
-                in warning.lower()
-                for warning in result.warnings
-            ),
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(
+            any("log filter with template variable" in warning.lower() for warning in result.warnings),
             result.warnings,
         )
 
@@ -2367,7 +2415,7 @@ class TestTranslation(unittest.TestCase):
         w = NormalizedWidget(id="1", widget_type="query_value", title="Test", queries=[wq])
         plan = plan_widget(w)
         result = translate_widget(w, plan, PASSTHROUGH_PROFILE)
-        self.assertIn("system_cpu_user", result.esql_query)
+        self.assertIn("system.cpu.user", result.esql_query)
 
 
 # =========================================================================
@@ -2423,6 +2471,30 @@ class TestYAMLGeneration(unittest.TestCase):
 
         self.assertIn("`client-id`", esql["query"])
         self.assertEqual(esql["breakdown"]["field"], "client-id")
+
+    def test_series_group_quotes_hyphenated_dimension_in_concat(self):
+        query = "sum:kafka.consumer.messages_in{*} by {client-id,env}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="timeseries",
+            title="Messages Consumed",
+            queries=[wq],
+            layout={"x": 0, "y": 0, "width": 4, "height": 2},
+        )
+        dash = self._render_dashboard([widget])
+        esql = dash["panels"][0]["esql"]
+
+        self.assertEqual(esql["breakdown"]["field"], "series_group")
+        self.assertIn('TO_STRING(`client-id`)', esql["query"])
+        self.assertNotIn("TO_STRING(client-id)", esql["query"])
 
     def test_generate_from_sample(self):
         path = Path(__file__).parent.parent / "infra" / "datadog" / "dashboards" / "sample_dashboard.json"
@@ -2716,13 +2788,21 @@ class TestYAMLGeneration(unittest.TestCase):
 
         self.assertEqual(result.yaml_panel["esql"]["primary"]["format"]["decimals"], 3)
 
-    def test_query_value_conditional_format_emits_native_dynamic_color(self):
-        # The YAML schema's ``primary_metric`` color is ``MetricChartColor``
+    def test_query_value_single_conditional_format_emits_native_static_color(self):
+        # The intermediate ``primary_metric`` color is ``MetricChartColor``
         # (``apply_to`` + ascending ``thresholds``); the target mapper
-        # (``dashboards_api._api_color``) turns that into the native
-        # Dashboards API's dynamic ``range``/``steps`` color-by-value. A
-        # single ">" conditional format becomes a single open-ended band from
-        # its threshold up.
+        # (``dashboards_api._api_color``) turns that into a native Dashboards
+        # API color. A single ">" conditional format yields ONE band, and this
+        # test used to assert that shipped as a one-step dynamic palette.
+        #
+        # It cannot: Kibana rejects a single-step dynamic palette outright with
+        #   [metrics.0.color.0.steps.1]: At least one of "gte", "lt", or "lte"
+        #   must be provided
+        # and drops the whole panel from the saved dashboard -- verified live,
+        # where it silently cost 6 panels across 4 Datadog integration
+        # dashboards. One band has no boundary to switch at, so it means
+        # "always this color", which is precisely a static color. The threshold
+        # assertions below still hold; only the API color shape changed.
         query = "avg:system.cpu.user{*}"
         mq = parse_metric_query(query)
         wq = WidgetQuery(name="q1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
@@ -2751,13 +2831,14 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertTrue(threshold["color"].startswith("#"))
 
         native = _api_color(color)
-        self.assertEqual(native["type"], "dynamic")
-        self.assertEqual(native["range"], "absolute")
-        self.assertEqual(len(native["steps"]), 1)
-        step = native["steps"][0]
-        self.assertEqual(step["gte"], 80)
-        self.assertNotIn("lt", step)
-        self.assertTrue(step["color"].startswith("#"))
+        self.assertEqual(native["type"], "static")
+        self.assertTrue(native["color"].startswith("#"))
+        # The colour is carried over from the band, not invented.
+        self.assertEqual(native["color"], threshold["color"])
+        # A single-step dynamic palette is what Kibana drops the panel over, so
+        # the shape must not survive anywhere in the emitted colour.
+        self.assertNotIn("steps", native)
+        self.assertNotIn("range", native)
 
     def test_query_value_multi_conditional_formats_build_contiguous_bands(self):
         # Two ">" rules (warn at 70, critical at 90) become contiguous absolute
@@ -2872,6 +2953,13 @@ class TestYAMLGeneration(unittest.TestCase):
         self.assertEqual(extent["mode"], "custom")
         self.assertEqual(extent["min"], 0.0)
         self.assertEqual(extent["max"], 100.0)
+
+    def test_y_axis_opaque_shorthand_label_is_suppressed(self):
+        result = self._translate_with_yaml(
+            self._make_timeseries_widget({"label": "aqu-sz"})
+        )
+        y_left = result.yaml_panel["esql"]["appearance"].get("y_left_axis", {})
+        self.assertFalse(y_left.get("title"))
 
     def test_y_axis_max_only_with_include_zero_true_infers_min_zero(self):
         # Regression: max-only + include_zero=true previously emitted {mode:custom, max:N}
@@ -3908,11 +3996,12 @@ class TestFieldMap(unittest.TestCase):
             ],
         )
 
-        yaml_string, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             [],
             field_map=OTEL_PROFILE,
         )
+        yaml_string = dashboard_yaml_from_ir(dashboard_ir)
 
         # Remapped env → deployment.environment drops Datadog default "prod"
         # as a preselected filter (would empty panels against OTel values).
@@ -3977,7 +4066,7 @@ class TestFieldMap(unittest.TestCase):
             for widget in dashboard.widgets
         ]
 
-        _yaml, _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
             dashboard,
             results,
             field_map=OTEL_PROFILE,
@@ -3993,6 +4082,191 @@ class TestFieldMap(unittest.TestCase):
                 ),
                 result.warnings,
             )
+
+    def test_mixed_metric_log_template_variable_skips_warning_when_field_matches(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        metric_query_text = "avg:system.cpu.user{host:$host}"
+        metric_query = parse_metric_query(metric_query_text)
+        log_query_text = "host:$host"
+        dashboard = NormalizedDashboard(
+            id="mixed-host-controls",
+            title="Mixed host controls",
+            template_variables=[TemplateVariable(name="host", tag="host")],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="timeseries",
+                    title="Metric",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="metrics",
+                            raw_query=metric_query_text,
+                            metric_query=metric_query,
+                            query_type="metric",
+                        )
+                    ],
+                ),
+                NormalizedWidget(
+                    id="log",
+                    widget_type="log_stream",
+                    title="Logs",
+                    queries=[
+                        WidgetQuery(
+                            name="q1",
+                            data_source="logs",
+                            raw_query=log_query_text,
+                            log_query=parse_log_query(log_query_text),
+                            query_type="log",
+                        )
+                    ],
+                ),
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id=widget.id,
+                title=widget.title,
+                status="ok",
+                backend="markdown",
+                kibana_type="markdown",
+            )
+            for widget in dashboard.widgets
+        ]
+
+        _native, _stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(dashboard_ir.controls[0].data_view, "metrics-*")
+        for result in results:
+            self.assertEqual(result.status, "ok")
+            self.assertFalse(
+                any(
+                    "used by both metric and log widgets" in warning
+                    for warning in result.warnings
+                ),
+                result.warnings,
+            )
+
+    def test_noop_scope_template_variable_suppresses_panel_warnings(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        dashboard = NormalizedDashboard(
+            id="noop-scope",
+            title="No-op scope",
+            template_variables=[TemplateVariable(name="scope", default="*", available_values=[])],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="query_value",
+                    title="Metric",
+                    queries=[],
+                ),
+                NormalizedWidget(
+                    id="log",
+                    widget_type="log_stream",
+                    title="Logs",
+                    queries=[],
+                ),
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id="metric",
+                title="Metric",
+                status="warning",
+                backend="esql",
+                kibana_type="metric",
+                warnings=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+                semantic_losses=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+            ),
+            TranslationResult(
+                widget_id="log",
+                title="Logs",
+                status="warning",
+                backend="esql_with_kql",
+                kibana_type="table",
+                warnings=[
+                    "Log filter with template variable '$scope' was omitted because Datadog log template substitutions cannot be bound exactly in the translated query; recreate the filter in Kibana"
+                ],
+                semantic_losses=[
+                    "Log filter with template variable '$scope' was omitted because Datadog log template substitutions cannot be bound exactly in the translated query; recreate the filter in Kibana"
+                ],
+            ),
+        ]
+
+        _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(results[0].status, "ok")
+        self.assertEqual(results[0].warnings, [])
+        self.assertEqual(results[0].semantic_losses, [])
+        self.assertEqual(results[1].status, "ok")
+        self.assertEqual(results[1].warnings, [])
+        self.assertEqual(results[1].semantic_losses, [])
+
+    def test_nondefault_scope_template_variable_keeps_panel_warnings(self):
+        from observability_migration.adapters.source.datadog.generate import (
+            generate_dashboard_artifacts,
+        )
+
+        dashboard = NormalizedDashboard(
+            id="real-scope",
+            title="Real scope",
+            template_variables=[TemplateVariable(name="scope", default="service:web", available_values=[])],
+            widgets=[
+                NormalizedWidget(
+                    id="metric",
+                    widget_type="query_value",
+                    title="Metric",
+                    queries=[],
+                )
+            ],
+        )
+        results = [
+            TranslationResult(
+                widget_id="metric",
+                title="Metric",
+                status="warning",
+                backend="esql",
+                kibana_type="metric",
+                warnings=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+                semantic_losses=[
+                    "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+                ],
+            )
+        ]
+
+        _native, _stats, _dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            results,
+            field_map=OTEL_PROFILE,
+        )
+
+        self.assertEqual(results[0].status, "warning")
+        self.assertEqual(
+            results[0].warnings,
+            [
+                "Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana"
+            ],
+        )
 
     def test_otel_tag_map_prefers_otel_kubernetes_semconv_fields(self):
         self.assertEqual(OTEL_PROFILE.map_tag("pod_name"), "k8s.pod.name")
@@ -4066,7 +4340,7 @@ class TestFieldMap(unittest.TestCase):
         self.assertEqual(profile.map_tag("docker_image", context="metric"), "docker_image.keyword")
 
     def test_passthrough_keeps_names(self):
-        self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system_cpu_user")
+        self.assertEqual(PASSTHROUGH_PROFILE.map_metric("system.cpu.user"), "system.cpu.user")
         self.assertEqual(PASSTHROUGH_PROFILE.map_tag("host"), "host")
 
     def test_prometheus_metricbeat_profile_uses_prometheus_metrics_and_labels(self):
@@ -4192,6 +4466,15 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(args.field_profile, "otel")
 
+    def test_field_profile_help_mentions_otel_metric_map_and_passthrough_strictness(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit) as exc:
+            datadog_cli.parse_args(["--help"])
+        self.assertEqual(exc.exception.code, 0)
+        out = buf.getvalue()
+        self.assertIn("metric renames still need --metric-map-file", out)
+        self.assertIn("passthrough (strict raw names)", out)
+
     def test_parse_args_accepts_input_mode_alias_for_source(self):
         args = datadog_cli.parse_args(["--input-mode", "api"])
 
@@ -4201,21 +4484,6 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
     def test_parse_args_rejects_conflicting_source_and_input_mode(self):
         with self.assertRaises(SystemExit):
             datadog_cli.parse_args(["--source", "files", "--input-mode", "api"])
-
-    def test_parse_args_skips_legacy_compile_by_default(self):
-        args = datadog_cli.parse_args([])
-
-        self.assertFalse(args.compile)
-
-    def test_parse_args_compile_still_opts_into_legacy_compile(self):
-        args = datadog_cli.parse_args(["--compile"])
-
-        self.assertTrue(args.compile)
-
-    def test_parse_args_can_disable_default_compile(self):
-        args = datadog_cli.parse_args(["--no-compile"])
-
-        self.assertFalse(args.compile)
 
     def test_parse_args_does_not_default_data_view_over_profile_index(self):
         args = datadog_cli.parse_args(["--field-profile", "prometheus"])
@@ -4231,6 +4499,26 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
         ])
 
         self.assertEqual(args.data_view, "metrics-custom-*")
+
+    def test_startup_note_warns_that_otel_does_not_rename_metrics(self):
+        field_map = load_profile("otel")
+        args = argparse.Namespace(metric_map_file=[])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            datadog_cli._print_field_profile_startup_note(field_map, args)
+        out = buf.getvalue()
+        self.assertIn("not metric names", out)
+        self.assertIn("--metric-map-file", out)
+
+    def test_startup_note_warns_that_passthrough_is_strict(self):
+        field_map = load_profile("passthrough")
+        args = argparse.Namespace(metric_map_file=[])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            datadog_cli._print_field_profile_startup_note(field_map, args)
+        out = buf.getvalue()
+        self.assertIn("raw Datadog metric and", out)
+        self.assertIn("exact names", out)
 
     def test_target_readiness_contract_reports_mapped_field_status(self):
         field_map = load_profile("otel")
@@ -4314,6 +4602,8 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
 
         self.assertEqual(offline_contract["required_fields"]["system_cpu_user"]["status"], "unknown")
         self.assertEqual(offline_contract["required_fields"]["host.name"]["status"], "unknown")
+        self.assertIn("operator_guidance", offline_contract)
+        self.assertIn("--metric-map-file", offline_contract["operator_guidance"]["next_step"])
 
     def test_target_readiness_contract_includes_counter_expectations_for_as_rate(self):
         field_map = load_profile("otel")
@@ -4350,6 +4640,63 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
         )
         self.assertEqual(contract["totals"].get("counters_expected"), 1)
 
+    def test_target_readiness_contract_reports_profile_mismatch_for_prometheus_native_caps(self):
+        field_map = load_profile("otel")
+        field_map.metric_field_caps = {
+            "metrics.redis_up": FieldCapability(name="metrics.redis_up", type="double"),
+            "labels.instance": FieldCapability(name="labels.instance", type="keyword"),
+        }
+        field_map.field_caps = dict(field_map.metric_field_caps)
+        query = "avg:redis.up{host:redis}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="query_value",
+            title="Redis up",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                )
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract([dashboard], field_map)
+
+        self.assertEqual(contract["detected_schema_profile"], "prometheus_native")
+        self.assertTrue(contract["profile_mismatch"])
+        self.assertEqual(
+            contract["operator_guidance"]["suggested_field_profile"],
+            "prometheus_native",
+        )
+
+    def test_target_readiness_contract_always_explains_elastic_agent_metric_coverage_limit(self):
+        field_map = load_profile("elastic_agent")
+        query = "avg:system.cpu.user{*}"
+        widget = NormalizedWidget(
+            id="w1",
+            widget_type="query_value",
+            title="CPU",
+            queries=[
+                WidgetQuery(
+                    name="q1",
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=parse_metric_query(query),
+                    query_type="metric",
+                )
+            ],
+        )
+        dashboard = NormalizedDashboard(id="dash1", title="Dash", widgets=[widget])
+
+        contract = datadog_preflight.build_target_readiness_contract([dashboard], field_map)
+
+        self.assertIn("operator_guidance", contract)
+        self.assertIn("common system metrics only", contract["operator_guidance"]["next_step"])
+
     def test_dashboard_pipeline_writes_target_readiness_contract(self):
         args = argparse.Namespace(
             source="files",
@@ -4380,7 +4727,6 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
                 output_dir=Path(tmpdir),
                 dd_creds={},
                 target_adapter=None,
-                compile_requested=False,
             )
 
             contract_path = Path(tmpdir) / "target_readiness_contract.json"
@@ -4431,7 +4777,6 @@ class TestDatadogCliFieldProfileContract(unittest.TestCase):
                 output_dir=Path(tmpdir),
                 dd_creds={},
                 target_adapter=None,
-                compile_requested=False,
             )
 
             summary_exists = (Path(tmpdir) / "migration_summary.md").exists()
@@ -4555,10 +4900,8 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertEqual(blocked_result.asset_status, AssetStatus.NOT_FEASIBLE)
 
     def test_dashboard_result_runtime_summary(self):
-        dr = DashboardResult(dashboard_title="Test", compiled=True)
+        dr = DashboardResult(dashboard_title="Test")
         summary = dr.build_runtime_summary()
-        self.assertEqual(summary["compile"]["status"], "pass")
-        self.assertEqual(summary["yaml_lint"]["status"], "not_run")
         self.assertEqual(summary["upload"]["status"], "not_run")
 
     def test_dashboard_result_runtime_summary_upload_failure(self):
@@ -4617,8 +4960,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         dr = DashboardResult(
             dashboard_id="dash-1",
             dashboard_title="Test",
-            compiled=True,
-            compiled_path="/tmp/compiled/dash-1",
             upload_attempted=True,
             uploaded=True,
             uploaded_space="shadow",
@@ -4630,7 +4971,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             payload = json.loads(output_path.read_text())
 
         dashboard_entry = payload["dashboards"][0]
-        self.assertEqual(dashboard_entry["compiled_path"], "/tmp/compiled/dash-1")
         self.assertTrue(dashboard_entry["upload"]["attempted"])
         self.assertTrue(dashboard_entry["upload"]["uploaded"])
         self.assertEqual(dashboard_entry["upload"]["space"], "shadow")
@@ -4795,7 +5135,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         self.assertIsNone(preflight)
         self.assertEqual(lookup, {})
 
-    def test_dashboard_pipeline_clears_stale_yaml_before_writing_current_run(self):
+    def test_dashboard_pipeline_clears_stale_artifacts_before_writing_current_run(self):
         field_map = datadog_cli.load_profile("otel")
         dashboard = NormalizedDashboard(id="current-id", title="Current Dashboard", widgets=[])
         args = argparse.Namespace(
@@ -4811,12 +5151,29 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            yaml_dir = output_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            (yaml_dir / "stale-from-other-run.yaml").write_text(
+            native_dir = output_dir / "native"
+            ir_dir = output_dir / "ir"
+            native_dir.mkdir(parents=True)
+            ir_dir.mkdir(parents=True)
+            (native_dir / "stale-from-other-run.native.json").write_text("{}", encoding="utf-8")
+            (ir_dir / "stale-from-other-run.ir.json").write_text("{}", encoding="utf-8")
+            # `yaml/` and `compiled/` directories left behind by a pre-native
+            # release must both be swept: a stale artifact directory sitting
+            # next to fresh native/ ones invites an operator to upload
+            # something this run never generated.
+            legacy_yaml_dir = output_dir / "yaml"
+            legacy_yaml_dir.mkdir(parents=True)
+            (legacy_yaml_dir / "stale-from-other-run.yaml").write_text(
                 "dashboard: stale\n",
                 encoding="utf-8",
             )
+            legacy_compiled_dir = output_dir / "compiled"
+            (legacy_compiled_dir / "stale-from-other-run").mkdir(parents=True)
+            (
+                legacy_compiled_dir
+                / "stale-from-other-run"
+                / "compiled_dashboards.ndjson"
+            ).write_text("{}", encoding="utf-8")
 
             with patch.object(
                 datadog_cli,
@@ -4830,10 +5187,9 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                 datadog_cli,
                 "generate_dashboard_artifacts",
                 return_value=(
-                    "dashboard: current\n",
                     NativeDashboard(title="Current Dashboard"),
                     {},
-                    None,
+                    DashboardIR(title="Current Dashboard", uid="current-id"),
                 ),
             ), patch.object(
                 datadog_cli,
@@ -4869,270 +5225,132 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
                     output_dir=output_dir,
                     dd_creds={},
                     target_adapter=mock.Mock(),
-                    compile_requested=False,
                 )
 
-            yaml_names = sorted(path.name for path in yaml_dir.glob("*.yaml"))
+            native_names = sorted(path.name for path in native_dir.glob("*.native.json"))
+            ir_names = sorted(path.name for path in ir_dir.glob("*.ir.json"))
+            legacy_yaml_exists = legacy_yaml_dir.exists()
+            legacy_compiled_exists = legacy_compiled_dir.exists()
 
-        self.assertEqual(yaml_names, ["current_dashboard.yaml"])
+        self.assertEqual(native_names, ["current_dashboard.native.json"])
+        self.assertEqual(ir_names, ["current_dashboard.ir.json"])
+        self.assertFalse(legacy_yaml_exists)
+        self.assertFalse(legacy_compiled_exists)
 
-    def test_allocate_yaml_stem_avoids_case_collision(self):
+    def test_allocate_artifact_stem_avoids_case_collision(self):
         used_stems: set[str] = set()
-        first = datadog_cli._allocate_yaml_stem("Test", "dash-001", used_stems)
-        second = datadog_cli._allocate_yaml_stem("test", "dash-002", used_stems)
-        self.assertEqual(first, "test")
-        self.assertEqual(second, "test_dash-002")
-        self.assertNotEqual(first, second)
+        first = datadog_cli._allocate_artifact_stem("Test", "dash-001", used_stems)
+        second = datadog_cli._allocate_artifact_stem("test", "dash-002", used_stems)
+        # (stem, id_disambiguator): the token that made the stem unique also
+        # keeps the two dashboards off one Kibana dashboard id.
+        self.assertEqual(first, ("test", ""))
+        self.assertEqual(second, ("test_dash-002", "dash-002"))
+        self.assertNotEqual(first[0], second[0])
 
-    def test_allocate_yaml_stem_uses_numeric_suffix_without_id(self):
+    def test_allocate_artifact_stem_uses_numeric_suffix_without_id(self):
         used_stems: set[str] = {"test"}
-        stem = datadog_cli._allocate_yaml_stem("Test", None, used_stems)
-        self.assertEqual(stem, "test_2")
+        stem = datadog_cli._allocate_artifact_stem("Test", None, used_stems)
+        self.assertEqual(stem, ("test_2", "2"))
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_skips_compile_failures_for_legacy_import(self, mock_upload_dashboard):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_path = output_dir / "yaml" / "dash.yaml"
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("dashboards: []", encoding="utf-8")
+    def test_upload_all_dashboards_uploads_generated_native_dashboard(self, mock_upload_dashboard):
+        mock_upload_dashboard.return_value = {
+            "success": True,
+            "output": "",
+            "kibana_url": "https://kibana.example",
+        }
 
-            dr = DashboardResult(
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                compiled=False,
-                compile_error="compile failed",
-            )
+        dr = DashboardResult(
+            dashboard_title="Dash",
+            artifact_stem="dash",
+            native_dashboard=NativeDashboard(title="Dash"),
+        )
 
-            datadog_cli._upload_all_dashboards(
-                [dr],
-                output_dir,
-                type(
-                    "Args",
-                    (),
-                    {
-                        "kibana_url": "https://kibana.example",
-                        "kibana_api_key": "secret",
-                        "space_id": "shadow",
-                        "legacy_import": True,
-                    },
-                )(),
-                KibanaTargetAdapter(),
-            )
+        datadog_cli._upload_all_dashboards(
+            [dr],
+            type(
+                "Args",
+                (),
+                {
+                    "kibana_url": "https://kibana.example",
+                    "kibana_api_key": "secret",
+                    "space_id": "shadow",
+                },
+            )(),
+            KibanaTargetAdapter(),
+        )
 
-            self.assertTrue(dr.upload_attempted)
-            self.assertFalse(dr.uploaded)
-            self.assertIn("compile failed", dr.upload_error)
-            mock_upload_dashboard.assert_not_called()
+        self.assertTrue(dr.upload_attempted)
+        self.assertTrue(dr.uploaded)
+        mock_upload_dashboard.assert_called_once()
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_native_path_allows_uncompiled_yaml(self, mock_upload_dashboard):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_path = output_dir / "yaml" / "dash.yaml"
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("dashboards: []", encoding="utf-8")
-            mock_upload_dashboard.return_value = {
-                "success": True,
-                "output": "",
-                "kibana_url": "https://kibana.example",
-            }
+    def test_upload_all_dashboards_skips_dashboard_without_native_artifact(self, mock_upload_dashboard):
+        # Nothing to upload: the run never generated a native payload for this
+        # dashboard, so the upload must be recorded as skipped rather than
+        # silently reported as a success.
+        dr = DashboardResult(
+            dashboard_title="Dash",
+            artifact_stem="dash",
+            native_dashboard=None,
+        )
 
-            dr = DashboardResult(
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                compiled=False,
-                compile_error="",
-            )
+        datadog_cli._upload_all_dashboards(
+            [dr],
+            type(
+                "Args",
+                (),
+                {
+                    "kibana_url": "https://kibana.example",
+                    "kibana_api_key": "secret",
+                    "space_id": "shadow",
+                },
+            )(),
+            KibanaTargetAdapter(),
+        )
 
-            datadog_cli._upload_all_dashboards(
-                [dr],
-                output_dir,
-                type(
-                    "Args",
-                    (),
-                    {
-                        "kibana_url": "https://kibana.example",
-                        "kibana_api_key": "secret",
-                        "space_id": "shadow",
-                        "legacy_import": False,
-                    },
-                )(),
-                KibanaTargetAdapter(),
-            )
-
-            self.assertTrue(dr.upload_attempted)
-            self.assertTrue(dr.uploaded)
-            mock_upload_dashboard.assert_called_once()
+        self.assertTrue(dr.upload_attempted)
+        self.assertFalse(dr.uploaded)
+        self.assertIn("no dashboard artifact was generated", dr.upload_error)
+        mock_upload_dashboard.assert_not_called()
 
     @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
     def test_upload_all_dashboards_native_path_passes_native_dashboard_ir(self, mock_upload_dashboard):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_path = output_dir / "yaml" / "dash.yaml"
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("dashboards: []", encoding="utf-8")
-            native_dashboard = NativeDashboard(title="Dash")
-            mock_upload_dashboard.return_value = {
-                "success": True,
-                "output": "",
-                "kibana_url": "https://kibana.example",
-            }
+        native_dashboard = NativeDashboard(title="Dash")
+        mock_upload_dashboard.return_value = {
+            "success": True,
+            "output": "",
+            "kibana_url": "https://kibana.example",
+        }
 
-            dr = DashboardResult(
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                compiled=False,
-                native_dashboard=native_dashboard,
-                native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
-            )
+        dr = DashboardResult(
+            dashboard_title="Dash",
+            artifact_stem="dash",
+            native_dashboard=native_dashboard,
+            native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+        )
 
-            datadog_cli._upload_all_dashboards(
-                [dr],
-                output_dir,
-                type(
-                    "Args",
-                    (),
-                    {
-                        "kibana_url": "https://kibana.example",
-                        "kibana_api_key": "secret",
-                        "space_id": "shadow",
-                        "legacy_import": False,
-                    },
-                )(),
-                KibanaTargetAdapter(),
-            )
+        datadog_cli._upload_all_dashboards(
+            [dr],
+            type(
+                "Args",
+                (),
+                {
+                    "kibana_url": "https://kibana.example",
+                    "kibana_api_key": "secret",
+                    "space_id": "shadow",
+                },
+            )(),
+            KibanaTargetAdapter(),
+        )
 
-            self.assertTrue(dr.uploaded)
-            mock_upload_dashboard.assert_called_once()
-            self.assertIs(mock_upload_dashboard.call_args.kwargs["native_dashboard"], native_dashboard)
-            self.assertEqual(
-                mock_upload_dashboard.call_args.kwargs["native_dashboard_stats"],
-                {"mapped": 1, "unmapped": 0, "reasons": {}},
-            )
-
-    def test_compile_all_dashboards_layout_validates_each_successful_dashboard(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_dir = output_dir / "yaml"
-            yaml_dir.mkdir(parents=True)
-            bad_yaml = yaml_dir / "bad.yaml"
-            good_yaml = yaml_dir / "good.yaml"
-            bad_yaml.write_text("dashboards: []", encoding="utf-8")
-            good_yaml.write_text("dashboards: []", encoding="utf-8")
-            bad = DashboardResult(dashboard_title="Bad", yaml_path=str(bad_yaml))
-            good = DashboardResult(dashboard_title="Good", yaml_path=str(good_yaml))
-            target_adapter = mock.Mock()
-            target_adapter.compile_dashboard.side_effect = [
-                (False, "bad compile failed"),
-                (True, "good compiled"),
-            ]
-
-            with patch.object(
-                datadog_cli,
-                "validate_compiled_layout",
-                return_value=(True, "layout ok"),
-            ) as mock_layout:
-                datadog_cli._compile_all_dashboards(
-                    [bad, good],
-                    output_dir,
-                    target_adapter,
-                )
-
-            self.assertFalse(bad.compiled)
-            self.assertEqual(bad.compile_error, "bad compile failed")
-            self.assertFalse(bad.layout_checked)
-            self.assertTrue(good.compiled)
-            self.assertTrue(good.layout_checked)
-            self.assertEqual(good.layout_error, "")
-            mock_layout.assert_called_once_with(output_dir / "compiled" / "good")
-
-    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_skips_layout_failures_for_legacy_import(self, mock_upload_dashboard):
-        # Legacy ``kb-dashboard-cli`` layout validation only gates the legacy
-        # ``--legacy-import`` upload path -- it inspects the compiled NDJSON
-        # layout, which the native Dashboards API upload never touches (see
-        # test_upload_all_dashboards_native_path_ignores_legacy_layout_failures
-        # below, and the matching Grafana CLI behavior).
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_path = output_dir / "yaml" / "dash.yaml"
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("dashboards: []", encoding="utf-8")
-
-            dr = DashboardResult(
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                compiled=True,
-                layout_checked=True,
-                layout_error="1 overlap(s), 0 invalid size(s), 0 out-of-bounds panel(s)",
-            )
-
-            datadog_cli._upload_all_dashboards(
-                [dr],
-                output_dir,
-                type(
-                    "Args",
-                    (),
-                    {
-                        "kibana_url": "https://kibana.example",
-                        "kibana_api_key": "secret",
-                        "space_id": "shadow",
-                        "legacy_import": True,
-                    },
-                )(),
-                KibanaTargetAdapter(),
-            )
-
-            self.assertTrue(dr.upload_attempted)
-            self.assertFalse(dr.uploaded)
-            self.assertIn("layout validation failed", dr.upload_error)
-            mock_upload_dashboard.assert_not_called()
-
-    @patch("observability_migration.targets.kibana.adapter.KibanaTargetAdapter.upload_dashboard")
-    def test_upload_all_dashboards_native_path_ignores_legacy_layout_failures(self, mock_upload_dashboard):
-        # A stale/irrelevant legacy-compile layout error (e.g. left over from
-        # an earlier ``--compile`` run) must not block the default native
-        # Dashboards API upload path -- mirrors the Grafana CLI's
-        # ``not use_dashboards_api`` gate on its own layout-error check.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_path = output_dir / "yaml" / "dash.yaml"
-            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            yaml_path.write_text("dashboards: []", encoding="utf-8")
-            mock_upload_dashboard.return_value = {
-                "success": True,
-                "output": "",
-                "kibana_url": "https://kibana.example",
-            }
-
-            dr = DashboardResult(
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                compiled=True,
-                layout_checked=True,
-                layout_error="1 overlap(s), 0 invalid size(s), 0 out-of-bounds panel(s)",
-            )
-
-            datadog_cli._upload_all_dashboards(
-                [dr],
-                output_dir,
-                type(
-                    "Args",
-                    (),
-                    {
-                        "kibana_url": "https://kibana.example",
-                        "kibana_api_key": "secret",
-                        "space_id": "shadow",
-                        "legacy_import": False,
-                    },
-                )(),
-                KibanaTargetAdapter(),
-            )
-
-            self.assertTrue(dr.upload_attempted)
-            self.assertTrue(dr.uploaded)
-            mock_upload_dashboard.assert_called_once()
+        self.assertTrue(dr.uploaded)
+        mock_upload_dashboard.assert_called_once()
+        self.assertIs(mock_upload_dashboard.call_args.kwargs["native_dashboard"], native_dashboard)
+        self.assertEqual(
+            mock_upload_dashboard.call_args.kwargs["native_dashboard_stats"],
+            {"mapped": 1, "unmapped": 0, "reasons": {}},
+        )
 
     def test_smoke_uploaded_dashboards_updates_dashboard_and_panel_runtime_state(self):
         panel_fail = TranslationResult(
@@ -5295,7 +5513,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_id="d1",
             dashboard_title="Dash",
             source_file="dash.json",
-            compiled=True,
             uploaded=True,
             panel_results=[clean, broken],
         )
@@ -5359,7 +5576,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_id="d1",
             dashboard_title="Dash",
             source_file="dash.json",
-            compiled=True,
             uploaded=True,
             panel_results=[widget],
         )
@@ -5403,7 +5619,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_id="d1",
             dashboard_title="Dash",
             source_file="dash.json",
-            compiled=True,
             uploaded=True,
             panel_results=[widget],
         )
@@ -5483,7 +5698,6 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_id="d1",
             dashboard_title="Dash",
             source_file="dash.json",
-            compiled=True,
             uploaded=True,
             panel_results=[panel],
         )
@@ -5606,8 +5820,10 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             dashboard_id="dash-1",
             dashboard_title="Infra",
             source_file="infra.json",
-            yaml_path="yaml/infra.yaml",
-            compiled_path="compiled/infra",
+            artifact_stem="infra",
+            curated_pack_name="datadog_redis_overview",
+            native_artifact_path="native/infra.native.json",
+            ir_artifact_path="ir/infra.ir.json",
             uploaded=True,
             uploaded_space="shadow",
             kibana_saved_object_id="kb-1",
@@ -5618,10 +5834,10 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         manifest = build_migration_manifest([dashboard])
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            (base / "yaml").mkdir()
-            (base / "compiled" / "infra").mkdir(parents=True)
-            (base / "yaml" / "infra.yaml").write_text("dashboards: []", encoding="utf-8")
-            (base / "compiled" / "infra" / "compiled_dashboards.ndjson").write_text("{}", encoding="utf-8")
+            (base / "native").mkdir()
+            (base / "ir").mkdir()
+            (base / "native" / "infra.native.json").write_text("{}", encoding="utf-8")
+            (base / "ir" / "infra.ir.json").write_text("{}", encoding="utf-8")
             rollout = build_rollout_plan(
                 [dashboard],
                 target_space="prod",
@@ -5631,14 +5847,151 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             )
 
         self.assertEqual(manifest["summary"]["dashboards"], 1)
-        self.assertEqual(manifest["dashboards"][0]["kibana_saved_object_id"], "kb-1")
+        manifest_entry = manifest["dashboards"][0]
+        self.assertEqual(manifest_entry["kibana_saved_object_id"], "kb-1")
+        self.assertEqual(manifest_entry["artifact_stem"], "infra")
+        self.assertEqual(manifest_entry["curated_pack"], "datadog_redis_overview")
+        # Drift guard: the compile/upload YAML path is gone, so a manifest entry
+        # must never advertise a YAML or compiled artifact again.
+        self.assertNotIn("yaml_path", manifest_entry)
+        self.assertNotIn("compiled_path", manifest_entry)
         self.assertEqual(rollout.dashboards[0].rollout_state, "shadow_imported")
         self.assertEqual(rollout.dashboards[0].kibana_saved_object_id, "kb-1")
+        # The artifact bundle must describe what the run produced: native/ + ir/,
+        # never a yaml/ or compiled/ directory.
+        bundle = rollout.artifact_bundle.to_dict()
+        self.assertNotIn("yaml_paths", bundle)
+        self.assertNotIn("compiled_paths", bundle)
+        self.assertEqual(
+            [Path(item).name for item in bundle["native_artifact_paths"]],
+            ["infra.native.json"],
+        )
+        self.assertEqual(
+            [Path(item).name for item in bundle["ir_artifact_paths"]],
+            ["infra.ir.json"],
+        )
+        self.assertEqual(
+            rollout.dashboards[0].native_artifact_path,
+            "native/infra.native.json",
+        )
+
+    def test_manifest_gate_counts_exclude_structural_group_widgets(self):
+        """Skipped Datadog groups must not inflate Green past the OK scorecard."""
+        from observability_migration.adapters.source.datadog.verification import (
+            build_verification_packet,
+        )
+
+        ok = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = AVG(system_cpu_user)",
+            query_language="datadog_metric",
+            source_queries=["avg:system.cpu.user{*}"],
+        )
+        group = TranslationResult(
+            widget_id="g1",
+            source_panel_id="g1",
+            title="group widget",
+            dd_widget_type="group",
+            kibana_type="group",
+            status="skipped",
+            backend="none",
+            esql_query="",
+            query_language="datadog_widget",
+            source_queries=[],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            total_widgets=2,
+            panel_results=[ok, group],
+        )
+        ok.verification_packet = build_verification_packet(dr, ok)
+        group.verification_packet = build_verification_packet(dr, group)
+        self.assertEqual(ok.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(group.verification_packet["semantic_gate"], "Skipped")
+
+        manifest = build_migration_manifest([dr])
+        self.assertEqual(manifest["summary"]["ok"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["panels"], 2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "report.json"
+            from observability_migration.adapters.source.datadog.report import (
+                save_detailed_report,
+            )
+
+            save_detailed_report([dr], output_path=output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        # 1 OK of 1 renderable widget (group excluded) → 100%, not 50%.
+        self.assertEqual(payload["summary"]["success_rate"], "100.0%")
+        self.assertEqual(payload["summary"]["total_widgets"], 2)
+
+    def test_manifest_counts_ok_with_warnings_as_warning_bucket(self):
+        """status=ok + warnings must match recompute_counts / summary.md."""
+        from observability_migration.adapters.source.datadog.verification import (
+            build_verification_packet,
+        )
+
+        clean = TranslationResult(
+            widget_id="w1",
+            source_panel_id="w1",
+            title="CPU",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = AVG(system_cpu_user)",
+            query_language="datadog_metric",
+            source_queries=["avg:system.cpu.user{*}"],
+        )
+        warned = TranslationResult(
+            widget_id="w2",
+            source_panel_id="w2",
+            title="Frontend 2xx",
+            dd_widget_type="timeseries",
+            kibana_type="xy",
+            status="ok",
+            backend="esql",
+            esql_query="FROM metrics-* | STATS v = SUM(haproxy_2xx)",
+            query_language="datadog_metric",
+            source_queries=["sum:haproxy.2xx{*} by {svc,release}"],
+            warnings=["XY chart grouped by multiple tags; composited into a single breakdown column"],
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            source_file="dash.json",
+            total_widgets=2,
+            panel_results=[clean, warned],
+        )
+        clean.verification_packet = build_verification_packet(dr, clean)
+        warned.verification_packet = build_verification_packet(dr, warned)
+        self.assertEqual(clean.verification_packet["semantic_gate"], "Green")
+        self.assertEqual(warned.verification_packet["semantic_gate"], "Yellow")
+
+        dr.recompute_counts()
+        self.assertEqual(dr.migrated, 1)
+        self.assertEqual(dr.migrated_with_warnings, 1)
+
+        manifest = build_migration_manifest([dr])
+        self.assertEqual(manifest["summary"]["ok"], 1)
+        self.assertEqual(manifest["summary"]["warning"], 1)
+        self.assertEqual(manifest["summary"]["green"], 1)
+        self.assertEqual(manifest["summary"]["yellow"], 1)
 
     def test_detailed_report_includes_smoke_and_verification_sections(self):
         dr = DashboardResult(
             dashboard_id="dash-1",
             dashboard_title="Test",
+            curated_pack_name="datadog_redis_overview",
             smoke_attempted=True,
             smoke_status="fail",
             smoke_error="1 panel runtime error(s)",
@@ -5663,6 +6016,7 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
 
         self.assertIn("smoke", payload)
         self.assertIn("verification", payload)
+        self.assertEqual(payload["dashboards"][0]["curated_pack"], "datadog_redis_overview")
         self.assertEqual(payload["dashboards"][0]["smoke"]["status"], "fail")
         self.assertEqual(payload["dashboards"][0]["verification_summary"]["red"], 1)
 
@@ -5689,44 +6043,39 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
         if plan.backend == "lens":
             plan.backend = "esql"
         panel_result = translate_widget(widget, plan, field_map)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_dir = output_dir / "yaml"
-            yaml_dir.mkdir(parents=True, exist_ok=True)
-            yaml_path = yaml_dir / "dash.yaml"
-            yaml_path.write_text(
-                generate_dashboard_yaml(
-                    dashboard,
-                    [panel_result],
-                    data_view=field_map.metric_index,
-                    metrics_dataset_filter=field_map.metrics_dataset_filter,
-                    logs_dataset_filter=field_map.logs_dataset_filter,
-                    logs_index=field_map.logs_index,
-                    field_map=field_map,
-                ),
-                encoding="utf-8",
-            )
-            dr = DashboardResult(
-                dashboard_id="d1",
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                panel_results=[panel_result],
-            )
-            mock_validate.return_value = {
-                "status": "fail",
-                "query": panel_result.esql_query,
-                "error": "Unknown column [system_cpu_user]",
-                "analysis": {"raw_error": "Unknown column [system_cpu_user]"},
-                "fix_attempts": [],
-            }
+        native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            [panel_result],
+            data_view=field_map.metric_index,
+            metrics_dataset_filter=field_map.metrics_dataset_filter,
+            logs_dataset_filter=field_map.logs_dataset_filter,
+            logs_index=field_map.logs_index,
+            field_map=field_map,
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            artifact_stem="dash",
+            panel_results=[panel_result],
+            dashboard_ir=dashboard_ir,
+            native_dashboard=native_dashboard,
+            native_dashboard_stats=native_stats,
+        )
+        mock_validate.return_value = {
+            "status": "fail",
+            "query": panel_result.esql_query,
+            "error": "Unknown column [system_cpu_user]",
+            "analysis": {"raw_error": "Unknown column [system_cpu_user]"},
+            "fix_attempts": [],
+        }
 
-            records, summary = datadog_cli._validate_all_dashboards(
-                [(dr, dashboard)],
-                field_map,
-                argparse.Namespace(es_url="https://example.es", es_api_key="secret"),
-            )
+        records, summary = datadog_cli._validate_all_dashboards(
+            [(dr, dashboard)],
+            field_map,
+            argparse.Namespace(es_url="https://example.es", es_api_key="secret"),
+        )
 
-            payload = yaml.safe_load(yaml_path.read_text())
+        payload = {"dashboards": [dr.dashboard_ir.to_yaml_dict()]}
 
         self.assertEqual(records[0]["status"], "fail")
         self.assertEqual(summary["counts"]["fail"], 1)
@@ -5759,44 +6108,39 @@ class TestDatadogAssetStatusIntegration(unittest.TestCase):
             plan.backend = "esql"
         panel_result = translate_widget(widget, plan, field_map)
         fixed_query = "FROM metrics-* | STATS AVG(system_cpu_user) | LIMIT 10"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir)
-            yaml_dir = output_dir / "yaml"
-            yaml_dir.mkdir(parents=True, exist_ok=True)
-            yaml_path = yaml_dir / "dash.yaml"
-            yaml_path.write_text(
-                generate_dashboard_yaml(
-                    dashboard,
-                    [panel_result],
-                    data_view=field_map.metric_index,
-                    metrics_dataset_filter=field_map.metrics_dataset_filter,
-                    logs_dataset_filter=field_map.logs_dataset_filter,
-                    logs_index=field_map.logs_index,
-                    field_map=field_map,
-                ),
-                encoding="utf-8",
-            )
-            dr = DashboardResult(
-                dashboard_id="d1",
-                dashboard_title="Dash",
-                yaml_path=str(yaml_path),
-                panel_results=[panel_result],
-            )
-            mock_validate.return_value = {
-                "status": "fixed",
-                "query": fixed_query,
-                "error": "",
-                "analysis": {"result_rows": 1},
-                "fix_attempts": ["Unknown column [foo]"],
-            }
+        native_dashboard, native_stats, dashboard_ir = generate_dashboard_artifacts(
+            dashboard,
+            [panel_result],
+            data_view=field_map.metric_index,
+            metrics_dataset_filter=field_map.metrics_dataset_filter,
+            logs_dataset_filter=field_map.logs_dataset_filter,
+            logs_index=field_map.logs_index,
+            field_map=field_map,
+        )
+        dr = DashboardResult(
+            dashboard_id="d1",
+            dashboard_title="Dash",
+            artifact_stem="dash",
+            panel_results=[panel_result],
+            dashboard_ir=dashboard_ir,
+            native_dashboard=native_dashboard,
+            native_dashboard_stats=native_stats,
+        )
+        mock_validate.return_value = {
+            "status": "fixed",
+            "query": fixed_query,
+            "error": "",
+            "analysis": {"result_rows": 1},
+            "fix_attempts": ["Unknown column [foo]"],
+        }
 
-            records, summary = datadog_cli._validate_all_dashboards(
-                [(dr, dashboard)],
-                field_map,
-                argparse.Namespace(es_url="https://example.es", es_api_key="secret"),
-            )
+        records, summary = datadog_cli._validate_all_dashboards(
+            [(dr, dashboard)],
+            field_map,
+            argparse.Namespace(es_url="https://example.es", es_api_key="secret"),
+        )
 
-            payload = yaml.safe_load(yaml_path.read_text())
+        payload = {"dashboards": [dr.dashboard_ir.to_yaml_dict()]}
 
         self.assertEqual(records[0]["status"], "fixed")
         self.assertEqual(summary["counts"]["fixed"], 1)
@@ -6536,7 +6880,6 @@ class TestDatadogSummaryView(unittest.TestCase):
         )
 
         dr = DashboardResult(dashboard_id="d1", dashboard_title="DD One", source_file="dd.json")
-        dr.compiled = True
         ok = TranslationResult(widget_id="1", title="CPU", status="ok")
         ok.verification_packet = {"semantic_gate": "Green"}
         nf = TranslationResult(widget_id="2", title="APM thing", status="not_feasible")

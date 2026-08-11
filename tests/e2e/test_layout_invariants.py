@@ -138,18 +138,16 @@ class LayoutInvariantTests(unittest.TestCase):
     def test_grafana_dashboards_have_sound_layout(self):
         rule_pack = RulePackConfig()
         resolver = SchemaResolver(rule_pack)
-        import tempfile
 
         for path in sorted(GRAFANA_DIR.glob("*.json")):
             with self.subTest(dashboard=path.name):
                 dashboard = json.loads(path.read_text(encoding="utf-8"))
-                with tempfile.TemporaryDirectory() as td:
-                    _result, yaml_path = translate_dashboard(
-                        dashboard, Path(td),
-                        datasource_index="metrics-*", esql_index="metrics-*",
-                        rule_pack=rule_pack, resolver=resolver,
-                    )
-                    yaml_doc = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+                result = translate_dashboard(
+                    dashboard,
+                    datasource_index="metrics-*", esql_index="metrics-*",
+                    rule_pack=rule_pack, resolver=resolver,
+                )
+                yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
                 problems = _layout_violations(yaml_doc)
                 self.assertEqual(problems, [], f"{path.name}: {problems}")
 

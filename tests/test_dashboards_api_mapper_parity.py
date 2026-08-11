@@ -178,6 +178,31 @@ _REPRESENTATIVE_PANELS: list[tuple[str, dict[str, Any]]] = [
         _panel(config={"type": "datatable", "query": "FROM metrics-* | LIMIT 1"}),
     ),
     (
+        # A data_table metric colour is stored by neither mapper (Kibana keeps
+        # ``color: null`` for every shape), so both must omit it identically.
+        "datatable_metric_conditional_colour_is_dropped",
+        _panel(
+            config={
+                "type": "datatable",
+                "query": "FROM metrics-* | STATS value = AVG(metric) BY service.name",
+                "metrics": [
+                    {
+                        "field": "requests",
+                        "color": {
+                            "type": "dynamic",
+                            "range": "absolute",
+                            "steps": [
+                                {"lt": 0.95, "color": "#F5A700"},
+                                {"gte": 0.95, "color": "#24C780"},
+                            ],
+                        },
+                    }
+                ],
+                "breakdowns": [{"field": "service.name"}],
+            }
+        ),
+    ),
+    (
         "heatmap_full",
         _panel(
             config={

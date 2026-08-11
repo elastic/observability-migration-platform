@@ -32,6 +32,16 @@ class DashboardIR:
     folder: str = ""
     tags: list[str] = field(default_factory=list)
 
+    # Extra token appended to the title-slug Kibana dashboard id when another
+    # dashboard in the same run carries the same title. Empty for the common
+    # unique-title case, which is what keeps every already-uploaded dashboard's
+    # id byte-identical -- the id is the upsert key, so changing it orphans the
+    # uploaded copy (see
+    # ``targets/kibana/dashboards_api.py::_stable_dashboard_id_from_ir``).
+    # Allocated together with the artifact stem so the two agree: artifact
+    # ``shared_title_dash-beta`` carries id ``obs-migrate-shared-title-dash-beta``.
+    id_disambiguator: str = ""
+
     description: str = ""
     filters: list[dict[str, Any]] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -49,6 +59,58 @@ class DashboardIR:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> DashboardIR:
+        """Rebuild a :class:`DashboardIR` from its :meth:`to_dict` form.
+
+        Inverse of :meth:`to_dict`. This is the *import* direction of the
+        on-disk IR artifact (``ir/<stem>.ir.json``, written by
+        ``targets/kibana/native_artifacts.py::write_ir_artifact``): every
+        in-repo tool that used to read the dashboard YAML off disk now reads
+        that artifact and rebuilds the IR here, so the artifact readers and
+        the migration share one definition of what a dashboard is.
+
+        Restores dashboard identity, ``panels`` (with layout + presentation),
+        ``controls``, ``filters`` and ``settings`` -- everything
+        :meth:`to_yaml_dict` and the artifact readers consume. The referenced
+        asset collections (``alerts``/``annotations``/``links``/
+        ``transforms``) are left empty: no artifact reader consumes them, and
+        they are exported through :meth:`to_dict` rather than through this
+        path.
+        """
+        raw = raw if isinstance(raw, dict) else {}
+        settings = raw.get("settings")
+        metadata = raw.get("metadata")
+        source_extension = raw.get("source_extension")
+        return cls(
+            title=str(raw.get("title") or ""),
+            uid=str(raw.get("uid") or ""),
+            source_adapter=str(raw.get("source_adapter") or ""),
+            source_file=str(raw.get("source_file") or ""),
+            folder=str(raw.get("folder") or ""),
+            tags=[str(tag) for tag in (raw.get("tags") or [])],
+            # Part of dashboard identity: without it a re-upload from the
+            # persisted IR would resolve a disambiguated dashboard back to the
+            # plain title slug and overwrite its same-titled sibling.
+            id_disambiguator=str(raw.get("id_disambiguator") or ""),
+            description=str(raw.get("description") or ""),
+            filters=[item for item in (raw.get("filters") or []) if isinstance(item, dict)],
+            settings=dict(settings) if isinstance(settings, dict) else {},
+            minimum_kibana_version=str(raw.get("minimum_kibana_version") or ""),
+            panels=[
+                PanelIR.from_dict(panel)
+                for panel in (raw.get("panels") or [])
+                if isinstance(panel, dict)
+            ],
+            controls=[
+                ControlIR.from_dict(control)
+                for control in (raw.get("controls") or [])
+                if isinstance(control, dict)
+            ],
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+            source_extension=dict(source_extension) if isinstance(source_extension, dict) else {},
+        )
 
     def to_yaml_dict(self) -> dict[str, Any]:
         """Serialize to one kb-dashboard-core ``dashboards[]`` entry.

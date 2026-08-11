@@ -23,7 +23,6 @@ error").
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 
 from observability_migration.adapters.source.grafana.panels import (
@@ -268,9 +267,7 @@ class TestDropdownMatchesHardcodedEndToEnd(unittest.TestCase):
                 }
             ],
         }
-        with tempfile.TemporaryDirectory() as out_dir:
-            out = translate_dashboard(dashboard, output_dir=out_dir, rule_pack=_native_rule_pack())
-        result = out[0] if isinstance(out, tuple) else out
+        result = translate_dashboard(dashboard, rule_pack=_native_rule_pack())
         panel = next(pr for pr in result.panel_results if pr.grafana_type == "timeseries")
         return panel.status, list(panel.reasons or [])
 

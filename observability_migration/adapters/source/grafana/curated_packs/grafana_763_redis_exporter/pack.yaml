@@ -1,0 +1,150 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 763
+# https://grafana.com/grafana/dashboards/763-redis-dashboard-for-prometheus-redis-exporter-1-x/
+#
+# Source: oliver006/redis_exporter  (Prometheus scrape)
+# Panels: 13 total — 13 PERFECT
+# Translation mode: auto (PromQL-first when native-PromQL is enabled; ES|QL fallback)
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # This pack targets Prometheus-native redis_exporter scrapes. In mixed ECS /
+  # compatibility layouts the live resolver can see both bare helper fields
+  # (instance, namespace, db, cmd) and the source-faithful labels.* fields.
+  # The bare helpers are sufficient for some probes but they produced a Kibana
+  # render mismatch on dashboard 763, while the labels.* path renders cleanly
+  # on the closely related helm dashboard 11835. Pin the source labels here so
+  # the curated dashboard stays stable instead of following field-caps tie-breaks.
+  label_rewrites:
+    instance: labels.instance
+    namespace: labels.namespace
+    job: labels.job
+    cmd: labels.cmd
+    db: labels.db
+
+  # --- counter / gauge classification -----------------------------------
+  # Counters: have rate()/irate() applied in the source PromQL expressions.
+  # Gauges:   point-in-time readings used with sum()/max() directly.
+  metric_kinds:
+    redis_commands_total: counter
+    redis_keyspace_hits_total: counter
+    redis_keyspace_misses_total: counter
+    redis_net_input_bytes_total: counter
+    redis_net_output_bytes_total: counter
+    redis_expired_keys_total: counter
+    redis_evicted_keys_total: counter
+    redis_commands_duration_seconds_total: counter
+    redis_uptime_in_seconds: gauge
+    redis_connected_clients: gauge
+    redis_blocked_clients: gauge
+    redis_memory_used_bytes: gauge
+    redis_memory_max_bytes: gauge
+    redis_db_keys: gauge
+    redis_db_keys_expiring: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  # Listed in resolution priority order (first match wins).
+  # prometheus_native layout (default for redis_exporter scrapes) stores all
+  # Prometheus labels under labels.<name>.  Those candidates are listed first
+  # so offline migrations produce the correct field name without needing a
+  # live ES field-caps probe.  In live mode the source-faithful shortcut in
+  # SchemaResolver already returns labels.<name> for prometheus_native indices,
+  # so these candidates only matter for the offline fallback path.
+  label_candidates:
+    instance:
+      - labels.instance     # prometheus_native (primary for redis_exporter)
+      - service.instance.id # OTel ECS mode
+      - service.node.name   # OTel ECS mode: prometheus `instance` label -> service.node.name
+      - host.name
+    job:
+      - labels.job          # prometheus_native
+      - service.name        # OTel ECS mode
+    namespace:
+      - labels.namespace    # prometheus_native
+      - service.namespace   # OTel ECS mode
+      - namespace           # OTel ECS mode: prometheus `namespace` label stored as top-level field
+    cmd:
+      - labels.cmd
+      - cmd                 # OTel ECS mode: stored as top-level field
+    db:
+      - labels.db
+      - db
+
+controls:
+  field_overrides:
+    instance: labels.instance
+    namespace: labels.namespace
+
+panel:
+  query_overrides:
+    # Memory Usage (gauge → metric): auto-translation is APPROXIMATE because the
+    # binary expression (used/max) has no outer aggregation and no on() modifier,
+    # so the join-faithfulness check fires and per-document arithmetic is used.
+    # This hand-crafted query computes the ratio in a single STATS clause —
+    # semantically exact for the prometheus_native TSDB layout.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
+        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL value = (used / max) * 100.0
+        | STATS value = LAST(value, time_bucket)
+        | KEEP value
+      status_override: migrated
+    # The dashboard defaults to a one-hour view while the seeded redis_exporter
+    # counters land every 60s. Adaptive ``TBUCKET(100, ?_tstart, ?_tend)``
+    # collapses those panels to ~36s buckets, which leaves RATE/IRATE with one
+    # sample per bucket and a blank chart. Clamp these rate panels to 2 minutes
+    # and bind the dashboard time range explicitly in WHERE so Kibana still
+    # respects the global picker.
+    - title_match: "Network I/O"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
+        | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(2 minute)
+        | KEEP time_bucket, input, output
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Average Time Spent by Command / sec"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL OR {{metric:redis_commands_total:counter}} IS NOT NULL
+        | STATS dur = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})), cnt = SUM(IRATE({{metric:redis_commands_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
+        | EVAL computed_value = (dur / cnt)
+        | KEEP time_bucket, `labels.cmd`, computed_value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Total Time Spent by Command / sec"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL
+        | STATS redis_commands_duration_seconds_total = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
+        | KEEP time_bucket, `labels.cmd`, redis_commands_duration_seconds_total
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    - title_match: "Max Uptime"
+      position: {x: 0, y: 0}
+      size: {w: 6}
+    - title_match: "Clients"
+      position: {x: 6, y: 0}
+      size: {w: 6}
+    - title_match: "Memory Usage"
+      position: {x: 12, y: 0}
+      size: {w: 8}
+    - title_match: "Total Commands / sec"
+      position: {x: 20, y: 0}
+      size: {w: 14}
+    - title_match: "Hits / Misses per Sec"
+      position: {x: 34, y: 0}
+      size: {w: 14}

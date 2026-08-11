@@ -1,0 +1,272 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Redis 763 curated-pack validation rig
+# Usage:
+#   cd parity-rig/curated/grafana_763_redis_exporter
+#   docker compose up -d --wait
+#
+# Ports (non-conflicting with the main parity rig):
+#   9201 → Elasticsearch
+#   5602 → Kibana
+#   3001 → Grafana
+#   9091 → Prometheus
+#   9122 → redis_exporter
+#   9101 → node_exporter
+#   9104 → mysqld_exporter
+#   9187 → postgres_exporter
+#   6380 → Redis
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.0-SNAPSHOT
+    container_name: redis-rig-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.license.self_generated.type=trial
+    ports:
+      - "9201:9200"
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.0-SNAPSHOT
+    container_name: redis-rig-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+      - SERVER_NAME=kibana
+    ports:
+      - "5602:5601"
+    networks:
+      - redis-rig
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5601/api/status"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-rig-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Seed some activity so panels show data
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+
+  redis-load:
+    image: redis:7-alpine
+    container_name: redis-rig-load
+    networks:
+      - redis-rig
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          for i in $(seq 1 50); do
+            redis-cli -h redis SET "key:$$i" "value:$$i" EX 300 > /dev/null
+            redis-cli -h redis GET "key:$$i" > /dev/null
+            redis-cli -h redis GET "key:missing:$$i" > /dev/null
+          done
+          sleep 5
+        done
+
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-rig-exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    ports:
+      - "9122:9121"
+    networks:
+      - redis-rig
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Additional exporters so the parity gate has real data for the dashboards we
+  # audit panel-by-panel (Node Exporter Full, MySQL Overview, PostgreSQL). Without
+  # them every panel compares against a redis-only index and reports DATA_GAP,
+  # which verifies nothing and cannot show whether a panel lights up.
+  node_exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: redis-rig-node-exporter
+    # Node Exporter Full expects a fully instrumented host. These collectors are
+    # off by default but do work in a container, and each lights up panels that
+    # would otherwise report a data gap. Deliberately NOT enabled: systemd (no
+    # dbus socket) and interrupts (/proc/interrupts is empty in Docker Desktop's
+    # VM) -- both only log a collector error every scrape. Hardware sensors
+    # (hwmon, cooling_device, power_supply, cpu scaling) are unavailable for the
+    # same reason, so those panels stay honest data gaps.
+    # Mount the host root so filesystem collectors see real mountpoints. Without
+    # it only the container's own tmpfs /var and /tmp exist, so every panel that
+    # filters mountpoint="/" (RootFS Total, Root FS Used, Disk Space Used) is
+    # empty -- and Grafana against the same exporter would be equally empty.
+    volumes:
+      - /:/host:ro
+    command:
+      - --path.rootfs=/host
+      - --collector.processes
+      - --collector.tcpstat
+      - --collector.netdev
+      - --collector.netstat
+      - --collector.sockstat
+      - --collector.meminfo
+      - --collector.vmstat
+      - --collector.schedstat
+    pid: host
+    ports:
+      - "9101:9100"
+    networks:
+      - redis-rig
+
+  mysql:
+    image: mysql:8.0
+    container_name: redis-rig-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=rigpass
+      - MYSQL_DATABASE=rigdb
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -prigpass || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  mysqld_exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: redis-rig-mysqld-exporter
+    environment:
+      - MYSQLD_EXPORTER_PASSWORD=rigpass
+    command:
+      - --mysqld.username=root
+      - --mysqld.address=mysql:3306
+      - --collect.global_status
+      - --collect.global_variables
+      - --collect.info_schema.innodb_metrics
+      - --collect.info_schema.processlist
+    ports:
+      - "9104:9104"
+    networks:
+      - redis-rig
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: redis-rig-postgres
+    environment:
+      - POSTGRES_PASSWORD=rigpass
+      - POSTGRES_DB=rigdb
+    networks:
+      - redis-rig
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  postgres_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: redis-rig-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:rigpass@postgres:5432/rigdb?sslmode=disable
+    ports:
+      - "9187:9187"
+    networks:
+      - redis-rig
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: redis-rig-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    networks:
+      - redis-rig
+    depends_on:
+      - redis_exporter
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+
+  redis-scraper:
+    image: python:3.11-slim
+    container_name: redis-rig-scraper
+    volumes:
+      - ./redis_scraper.py:/app/redis_scraper.py:ro
+    working_dir: /app
+    command: >
+      /bin/sh -c "pip install requests --quiet && python redis_scraper.py"
+    networks:
+      - redis-rig
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redis_exporter:
+        condition: service_started
+      node_exporter:
+        condition: service_started
+      mysqld_exporter:
+        condition: service_started
+      postgres_exporter:
+        condition: service_started
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:11.3.1
+    container_name: redis-rig-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SERVER_HTTP_PORT=3000
+    volumes:
+      - ./grafana_provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - redis-rig
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+networks:
+  redis-rig:
+    driver: bridge

@@ -90,7 +90,7 @@ What it does under the hood: uses the official `datadog-api-client` to call the 
 
 ## TLS for self-signed or custom-CA clusters
 
-Two TLS knobs apply across the migration/upload/connectivity paths the tool drives — source (Grafana/Prometheus/Loki), Elasticsearch, and Kibana — including the Node `kb-dashboard-cli` upload step where applicable (mapped to `NODE_EXTRA_CA_CERTS` / `NODE_TLS_REJECT_UNAUTHORIZED`). They live on `obs-migrate` (and the dedicated aliases):
+Two TLS knobs apply across the migration/upload/connectivity paths the tool drives — source (Grafana/Prometheus/Loki), Elasticsearch, and Kibana, including the dashboard upload (a plain HTTPS call to the Kibana Dashboards API from the same client). They live on `obs-migrate` (and the dedicated aliases):
 
 - `--ca-cert <path>` (env `OBS_MIGRATE_CA_CERT`): verify TLS against a custom CA bundle/file. Use this for a private/internal CA — it keeps verification **on**.
 - `--insecure` (env `OBS_MIGRATE_INSECURE`): skip certificate verification entirely. **Testing / trusted-network migration only.** It prints a one-time loud stderr warning and is vulnerable to interception. Prefer `--ca-cert` whenever you can.

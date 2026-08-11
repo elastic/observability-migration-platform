@@ -1,8 +1,0 @@
-title: Node Exporter Scrape Time
-grafana_type: timeseries
-status: migrated
-chart_type: area
-dimension: time_bucket
-metrics: ['node_scrape_collector_duration_seconds']
-mode: stacked
-axis_title: seconds

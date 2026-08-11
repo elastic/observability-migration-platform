@@ -1,7 +1,0 @@
-title: Partial Target Drop
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['api', 'load']
-warning: Dropped 1 incompatible target(s); showing 2 mergeable targets

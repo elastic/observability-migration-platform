@@ -33,6 +33,40 @@ RUNTIME_WARNING_ROLLUPS = {
     "validation_skipped",
 }
 
+# Tokens that turn a panel note/reason into a verification semantic loss (Yellow).
+# Keep in sync with status promotion in panels._enrich_panel_result so Migrated
+# and Green do not diverge for the same operator-facing note.
+_REASON_SEMANTIC_LOSS_TOKENS = (
+    "approximat",
+    "drop",
+    "manual",
+    "fallback",
+    "mixed datasource",
+)
+_NOTE_SEMANTIC_LOSS_TOKENS = (
+    "manual",
+    "verify",
+    "not preserved",
+    "redesign",
+    "transformation",
+    "link",
+)
+
+
+def reason_implies_semantic_loss(text: str) -> bool:
+    lowered = str(text).lower()
+    return any(token in lowered for token in _REASON_SEMANTIC_LOSS_TOKENS)
+
+
+def note_implies_semantic_loss(text: str) -> bool:
+    lowered = str(text).lower()
+    return any(token in lowered for token in _NOTE_SEMANTIC_LOSS_TOKENS)
+
+
+def panel_notes_imply_warning(notes: list[Any] | None) -> bool:
+    return any(note_implies_semantic_loss(str(note)) for note in (notes or []))
+
+
 
 def _append_unique(items: list[str], value: str) -> None:
     if value and value not in items:
@@ -129,12 +163,10 @@ def _collect_semantic_losses(panel_result: Any) -> list[str]:
     for item in (query_ir.get("semantic_losses", []) or []):
         _append_unique(losses, str(item))
     for item in (getattr(panel_result, "reasons", []) or []):
-        lowered = str(item).lower()
-        if any(token in lowered for token in ("approximat", "drop", "manual", "fallback", "mixed datasource")):
+        if reason_implies_semantic_loss(str(item)):
             _append_unique(losses, str(item))
     for item in (getattr(panel_result, "notes", []) or []):
-        lowered = str(item).lower()
-        if any(token in lowered for token in ("manual", "verify", "not preserved", "redesign", "transformation", "link")):
+        if note_implies_semantic_loss(str(item)):
             _append_unique(losses, str(item))
     return losses
 
@@ -162,12 +194,6 @@ def _runtime_rollups(
         _append_unique(rollups, "empty_result")
     if dashboard_result:
         runtime_summary = build_runtime_summary(dashboard_result)
-        if runtime_summary["yaml_lint"]["status"] == "fail":
-            _append_unique(rollups, "yaml_lint_failed")
-        if runtime_summary["compile"]["status"] == "fail":
-            _append_unique(rollups, "compile_failed")
-        if runtime_summary["layout"]["status"] == "fail":
-            _append_unique(rollups, "layout_failed")
         if runtime_summary["upload"]["status"] == "fail":
             _append_unique(rollups, "upload_failed")
     return rollups
@@ -183,9 +209,6 @@ def _runtime_state(
     smoke_status = "fail" if "smoke_failed" in rollups else "empty_result" if "empty_result" in rollups else "not_runtime_checked" if "not_runtime_checked" in rollups else "not_run"
     browser_status = "fail" if "browser_failed" in rollups else "not_run"
     return {
-        "yaml_lint": dashboard_runtime.get("yaml_lint", {"status": "not_run", "error": ""}),
-        "compile": dashboard_runtime.get("compile", {"status": "not_run", "error": ""}),
-        "layout": dashboard_runtime.get("layout", {"status": "not_run", "error": ""}),
         "upload": dashboard_runtime.get("upload", {"status": "not_run", "error": ""}),
         "validation": {
             "status": validation_record.get("status", "not_run") if validation_record else "not_run",
@@ -206,6 +229,10 @@ def _semantic_gate(
     status = str(getattr(panel_result, "status", "") or "").lower()
     if status in {"not_feasible", "requires_manual"}:
         return "Red"
+    # Rows / intentionally skipped panels are not fidelity outcomes — counting
+    # them as Green inflated migration_manifest.green past the OK scorecard.
+    if status == "skipped":
+        return "Skipped"
     # A panel dispositioned as self-healing kept its real visualization because
     # its only validation failure was missing target data; it is empty-but-
     # correct and recovers once telemetry arrives. The failed target validation

@@ -57,7 +57,7 @@ ARTIFACT_DIRS=()
 
 # Grafana: /tmp/obs-migrate-e2e/grafana/<slug>/dashboards/
 for dashboards_dir in "$E2E_ROOT/grafana"/*/dashboards; do
-  [ -d "$dashboards_dir/yaml" ] || continue
+  [ -d "$dashboards_dir/ir" ] || continue
   ARTIFACT_DIRS+=("$dashboards_dir")
 done
 
@@ -65,7 +65,7 @@ done
 DD_OUT_ROOT="$PROJECT_ROOT/e2e_datadog_run"
 if [ -d "$DD_OUT_ROOT" ]; then
   for dashboards_dir in "$DD_OUT_ROOT"/*/dashboards; do
-    [ -d "$dashboards_dir/yaml" ] || continue
+    [ -d "$dashboards_dir/ir" ] || continue
     ARTIFACT_DIRS+=("$dashboards_dir")
   done
 fi
@@ -73,8 +73,8 @@ fi
 if [ ${#ARTIFACT_DIRS[@]} -eq 0 ]; then
   echo "ERROR: No artifact directories found." >&2
   echo "  Expected:" >&2
-  echo "    $E2E_ROOT/grafana/<slug>/dashboards/yaml/ (run scripts/run_e2e_grafana.sh first)" >&2
-  echo "    $DD_OUT_ROOT/<slug>/dashboards/yaml/      (run scripts/run_e2e_datadog.sh first)" >&2
+  echo "    $E2E_ROOT/grafana/<slug>/dashboards/ir/ (run scripts/run_e2e_grafana.sh first)" >&2
+  echo "    $DD_OUT_ROOT/<slug>/dashboards/ir/      (run scripts/run_e2e_datadog.sh first)" >&2
   exit 1
 fi
 

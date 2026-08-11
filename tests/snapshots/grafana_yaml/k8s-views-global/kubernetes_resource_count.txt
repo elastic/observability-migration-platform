@@ -1,7 +1,0 @@
-title: Kubernetes Resource Count
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['Namespaces', 'Running_Containers', 'Running_Pods', 'Services', 'Endpoints', 'Ingresses', 'Deployments', 'Statefulsets', 'Daemonsets', 'Persistent_Volume_Claims', 'Horizontal_Pod_Autoscalers', 'Configmaps', 'Secrets', 'Network_Policies', 'Nodes']
-warning: Approximated nested count(count()) as COUNT_DISTINCT(k8s.node.name)

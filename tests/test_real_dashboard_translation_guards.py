@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -80,24 +79,28 @@ def _assert_sort_before_limit(query: str, context: str) -> None:
     limit_indices = [
         idx for idx, stage in enumerate(stages) if stage[1:].strip().lower().startswith("limit ")
     ]
-    if sort_indices and limit_indices:
-        assert max(sort_indices) < min(limit_indices), f"{context}: SORT must precede LIMIT\n{query}"
+    # What matters is that every LIMIT has a SORT above it, so the rows it keeps
+    # are the intended ones. Requiring ALL sorts before ALL limits is stricter
+    # than that and rejects a legitimate shape: reaching the penultimate bucket
+    # needs SORT DESC | LIMIT 2 | SORT ASC | LIMIT 1, since ES|QL has no OFFSET.
+    for limit_idx in limit_indices:
+        assert any(sort_idx < limit_idx for sort_idx in sort_indices), (
+            f"{context}: LIMIT with no SORT above it\n{query}"
+        )
 
 
 def _translate_grafana_fixture(filename: str) -> tuple[Any, dict[str, Any]]:
     dashboard = json.loads((GRAFANA_DASHBOARDS / filename).read_text(encoding="utf-8"))
     rule_pack = _grafana_rule_pack_with_named_params()
     resolver = SchemaResolver(rule_pack)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result, yaml_path = translate_dashboard(
-            dashboard,
-            Path(tmpdir),
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=rule_pack,
-            resolver=resolver,
-        )
-        yaml_doc = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+        resolver=resolver,
+    )
+    yaml_doc = {"dashboards": [result.dashboard_ir.to_yaml_dict()]}
     return result, yaml_doc
 
 

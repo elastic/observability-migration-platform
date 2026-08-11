@@ -1,0 +1,57 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 18405
+# https://grafana.com/grafana/dashboards/18405-redis-enterprise-cluster-status/
+#
+# Source: Redis Enterprise Prometheus endpoint (bdb_* metrics)
+# Panels: 9 stat panels — 8 PERFECT, 1 APPROXIMATE (memory-usage ratio)
+# Note: Redis Enterprise exports rate metrics (bdb_total_req) as Prometheus gauges
+#       (already ops/sec); no rate() needed in PromQL or ES|QL.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  # All bdb_* metrics are Prometheus gauges from Redis Enterprise.
+  # bdb_total_req is a pre-computed ops/sec rate; classify as gauge so
+  # ES|QL translation reads the raw value without applying an extra rate.
+  metric_kinds:
+    bdb_up: gauge
+    bdb_used_memory: gauge
+    bdb_memory_limit: gauge
+    bdb_total_req: gauge
+    bdb_avg_latency: gauge
+    bdb_expired_objects: gauge
+    bdb_no_of_keys: gauge
+    bdb_conns: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  # Listed in resolution priority order (first match wins). Redis Enterprise
+  # exposes a Prometheus endpoint, so the prometheus_native layout
+  # (``labels.<name>``) is the primary target and must come first: offline
+  # migrations (no ``--es-url``) fall through to the FIRST candidate without
+  # probing, so an OTel-first order silently emits ``service.name`` for a
+  # prometheus_native deployment. In live mode the source-faithful shortcut in
+  # SchemaResolver already returns ``labels.<name>``, so this ordering only
+  # changes the offline path -- which is exactly where it was wrong.
+  label_candidates:
+    cluster:
+      - labels.cluster     # prometheus_native (primary for Redis Enterprise)
+      - service.name       # OTel ECS mode
+    bdb:
+      - labels.bdb         # prometheus_native
+      - db.name            # OTel ECS mode
+
+panel:
+  query_overrides:
+    # Memory Usage (stat → metric): auto-translation marks this APPROXIMATE because
+    # the binary expression (bdb_used_memory / bdb_memory_limit) has no outer
+    # aggregation and no on() modifier. The hand-crafted query computes the ratio
+    # directly in a single STATS clause — semantically exact.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS value = MAX(LAST_OVER_TIME(metrics.bdb_used_memory)) / MAX(LAST_OVER_TIME(metrics.bdb_memory_limit))
+      status_override: migrated

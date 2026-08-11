@@ -1,0 +1,108 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 11835
+# https://grafana.com/grafana/dashboards/11835-redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha/
+#
+# Source: oliver006/redis_exporter (Prometheus scrape via helm stable/redis-ha chart)
+# Panels: 12 total — 9 PERFECT, 3 APPROXIMATE
+#
+# Key difference from pack 763: this dashboard uses redis_commands_processed_total
+# (the helm chart's processed-command counter) instead of redis_commands_total for
+# the Commands Executed/sec panel, and uses redis_commands_total only in topk().
+# Both counters must be classified so ES|QL doesn't fall back to the unverified-type
+# warning path when offline.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  # Counters: have rate()/irate() applied in the source PromQL expressions.
+  # Gauges:   point-in-time readings used with sum()/max() directly.
+  metric_kinds:
+    redis_commands_processed_total: counter
+    redis_keyspace_hits_total: counter
+    redis_keyspace_misses_total: counter
+    redis_net_input_bytes_total: counter
+    redis_net_output_bytes_total: counter
+    redis_expired_keys_total: counter
+    redis_evicted_keys_total: counter
+    redis_commands_total: counter
+    redis_uptime_in_seconds: gauge
+    redis_connected_clients: gauge
+    redis_memory_used_bytes: gauge
+    redis_memory_max_bytes: gauge
+    redis_db_keys: gauge
+    redis_db_keys_expiring: gauge
+
+  # --- Prometheus label → OTel/Elastic field candidates -----------------
+  # Listed in resolution priority order (first match wins).
+  # prometheus_native (labels.<name>) first: offline migrations fall through
+  # to the FIRST candidate without probing the target, so an OTel-first
+  # order silently emits the wrong field for a Prometheus scrape deployment.
+  label_candidates:
+    instance:
+      - labels.instance     # prometheus_native (primary for redis_exporter)
+      - service.instance.id # OTel ECS mode
+      - host.name
+    job:
+      - labels.job          # prometheus_native
+      - service.name        # OTel ECS mode
+    namespace:
+      - labels.namespace    # prometheus_native
+      - service.namespace   # OTel ECS mode
+      - namespace
+    db:
+      - labels.db
+      - db
+    pod:
+      - labels.pod       # prometheus_native (helm chart scrapes use {pod=...})
+      - k8s.pod.name     # OTel ECS
+    cmd:
+      - labels.cmd
+      - cmd
+
+panel:
+  query_overrides:
+    # Memory Usage (singlestat → metric): auto-translation marks this APPROXIMATE
+    # because the binary expression has no outer aggregation and no on() modifier,
+    # so the join-faithfulness check fires. The hand-crafted query computes the
+    # ratio directly in a single STATS clause — semantically exact.
+    - title_match: "Memory Usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
+        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | EVAL value = (used / max) * 100.0
+        | STATS value = LAST(value, time_bucket)
+        | KEEP value
+      status_override: migrated
+    # Network I/O is a simple two-counter panel: input and output are display
+    # aliases, not real labels, so the curated query keeps them as two value
+    # columns rather than a phantom breakdown field.
+    - title_match: "Network I/O"
+      esql_query: |
+        TS metrics-*
+        | WHERE (?instance == "" OR ({{control:instance}} RLIKE ?instance OR ({{control:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
+        | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | KEEP time_bucket, input, output
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    - title_match: "Uptime"
+      position: {x: 0, y: 0}
+      size: {w: 6}
+    - title_match: "Clients"
+      position: {x: 6, y: 0}
+      size: {w: 6}
+    - title_match: "Memory Usage"
+      position: {x: 12, y: 0}
+      size: {w: 8}
+    - title_match: "Commands Executed / sec"
+      position: {x: 20, y: 0}
+      size: {w: 14}
+    - title_match: "Hits / Misses per Sec"
+      position: {x: 34, y: 0}
+      size: {w: 14}

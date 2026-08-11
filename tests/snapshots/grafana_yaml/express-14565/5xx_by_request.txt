@@ -1,7 +1,0 @@
-title: 5xx by request
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['http_requests_total']
-warning: Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value

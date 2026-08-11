@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.coverage.interaction_canary import (
     INTERACTION_CANARY_TITLE,
     build_interaction_canary,
@@ -33,8 +34,10 @@ from observability_migration.targets.kibana.interaction_scenarios import (
     DashboardScenario,
     load_scenario,
 )
-from observability_migration.targets.kibana.lint import lint_dashboard_yaml
+from observability_migration.targets.kibana.lint import unbound_param_findings
 from observability_migration.targets.kibana.native_artifacts import (
+    IR_ARTIFACT_DIRNAME,
+    IR_ARTIFACT_SUFFIX,
     write_ir_artifact,
     write_native_artifact,
     write_native_artifact_index,
@@ -480,18 +483,69 @@ def _native_payload_panel_count(payload: Mapping[str, Any]) -> int:
     return total
 
 
-def lint_migration_yaml(migration_out: Path) -> None:
-    yaml_dir = migration_out / "yaml"
-    yaml_files = sorted(yaml_dir.glob("*.yaml"))
-    if not yaml_files:
-        raise FileNotFoundError(f"no dashboard YAML found under {yaml_dir}")
+def load_dashboard_documents_from_ir(
+    migration_out: Path,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return ``(artifact name, kb-dashboard-core document)`` per IR artifact.
+
+    Rebuilds each dashboard from ``ir/<stem>.ir.json`` through
+    :meth:`DashboardIR.to_yaml_dict`, so callers get the same
+    ``{"dashboards": [...]}`` shape the dashboard YAML carried without reading
+    the YAML export.
+    """
+    ir_dir = migration_out / IR_ARTIFACT_DIRNAME
+    documents: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(ir_dir.glob(f"*{IR_ARTIFACT_SUFFIX}")):
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+        dashboard_ir = artifact.get("dashboard_ir") if isinstance(artifact, Mapping) else None
+        if not isinstance(dashboard_ir, Mapping):
+            continue
+        entry = DashboardIR.from_dict(dict(dashboard_ir)).to_yaml_dict()
+        documents.append((path.name, {"dashboards": [entry]}))
+    return documents
+
+
+def lint_migration_artifacts(migration_out: Path) -> None:
+    """Fail before live validation when the emitted dashboards are unusable.
+
+    Reads ``ir/*.ir.json`` rather than globbing ``yaml/*.yaml``. Two checks
+    survive the move, both of which hold on the artifacts that stay:
+
+    1. every dashboard exposes leaf-panel identities
+       (:func:`load_stable_panels_from_ir`), so the audit can map stable ids
+       onto the uploaded dashboard at all;
+    2. every ES|QL ``?param``/``??param`` a panel emits is bound by a control
+       (issues #131 / #282) -- the in-process finding the old YAML lint
+       contributed, now evaluated on the IR-derived document.
+
+    The ``kb-dashboard-lint`` pass is deliberately not carried over: it lints
+    the YAML export, which belongs to the deprecated compile path.
+    """
+    documents = load_dashboard_documents_from_ir(migration_out)
+    if not documents:
+        raise FileNotFoundError(
+            f"no dashboard IR found under {migration_out / IR_ARTIFACT_DIRNAME}"
+        )
     failures: list[str] = []
-    for yaml_file in yaml_files:
-        ok, output = lint_dashboard_yaml(str(yaml_file))
-        if not ok:
-            failures.append(f"{yaml_file.name}:\n{output.strip()}")
+    for name, document in documents:
+        findings = [
+            finding
+            for finding in unbound_param_findings(document)
+            if finding.get("severity") == "error"
+        ]
+        if findings:
+            detail = "\n".join(
+                f"  - [{finding.get('dashboard_name', '')}] "
+                f"{finding.get('panel_title', '')}: {finding.get('rule_id', '')} - "
+                f"{finding.get('message', '')}"
+                for finding in findings
+            )
+            failures.append(f"{name}:\n{detail}")
     if failures:
-        raise RuntimeError("dashboard YAML lint failed:\n" + "\n".join(failures))
+        raise RuntimeError("dashboard artifact lint failed:\n" + "\n".join(failures))
+    # Raises FileNotFoundError naming ir/ when no dashboard carries panel
+    # identities, which is the successor to "no dashboard YAML found".
+    load_stable_panels_from_ir(migration_out)
 
 
 def run_live_validate(migration_out: Path, es_url: str, *, api_key: str = "", project_root: Path | None = None) -> None:
@@ -516,7 +570,7 @@ def run_live_validate(migration_out: Path, es_url: str, *, api_key: str = "", pr
 
 
 def validate_final_artifact(migration_out: Path, es_url: str, *, api_key: str = "", project_root: Path | None = None) -> None:
-    lint_migration_yaml(migration_out)
+    lint_migration_artifacts(migration_out)
     run_live_validate(migration_out, es_url, api_key=api_key, project_root=project_root)
 
 
@@ -791,9 +845,10 @@ __all__ = [
     "fetch_runtime_panels_by_title",
     "fetch_runtime_query_panels",
     "find_dashboard_ids_by_title",
-    "lint_migration_yaml",
+    "lint_migration_artifacts",
     "load_control_keys_from_ir",
     "load_control_keys_from_migration_out",
+    "load_dashboard_documents_from_ir",
     "load_stable_panels_from_ir",
     "map_stable_panel_ids",
     "parse_scenario_selection",

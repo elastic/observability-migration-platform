@@ -9,6 +9,7 @@ import re
 
 from observability_migration.core.verification.translation_oracle.pipeline import (
     parse_stats_assignments,
+    parse_stats_grouping,
     split_pipeline_stages,
 )
 from observability_migration.core.verification.translation_oracle.types import (
@@ -31,9 +32,16 @@ _EVAL_SIMPLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 _EVAL_BODY = re.compile(r"^EVAL\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$", re.IGNORECASE | re.DOTALL)
 _ESQL_FIELD_REFERENCE_PATTERN = r"(?:`(?:\\.|``|[^`])*`|[A-Za-z_][A-Za-z0-9_.]*)"
 _BARE_TS_VALUE_ARG = re.compile(
-    r"\b(?P<func>RATE|IRATE|INCREASE|DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
+    # The counter family carries no window -- it is emitted windowless so the rate
+    # follows the time bucket (see counter_range_window_rule). Requiring the comma
+    # for these silently retired this gate for exactly the calls it guards.
+    r"\b(?:(?P<counter_func>IRATE|RATE|INCREASE)"
+    rf"\((?P<counter_field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*(?:,\s*[^)]+)?\)"
+    # The lookback family keeps a real window, and its single-argument form
+    # (LAST_OVER_TIME(field)) is a legitimate emission that is not a bare value arg.
+    r"|(?P<func>DELTA|DERIV|AVG_OVER_TIME|SUM_OVER_TIME|"
     r"MIN_OVER_TIME|MAX_OVER_TIME|COUNT_OVER_TIME|LAST_OVER_TIME|PRESENT_OVER_TIME)"
-    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\)"
+    rf"\((?P<field>{_ESQL_FIELD_REFERENCE_PATTERN})\s*,\s*(?P<window>[^)]+)\))"
 )
 _TS_INNER_CASE_VALUE = re.compile(
     r"\b(?:RATE|IRATE|INCREASE|DELTA|DERIV)"
@@ -78,6 +86,9 @@ def check_esql_structure(
                 lhs_match = _ASSIGNMENT_LHS.match(assignment.strip())
                 if lhs_match:
                     defined_columns.add(lhs_match.group(1))
+            # A STATS emits its grouping keys alongside its aggregates, so they
+            # are equally defined downstream.
+            defined_columns.update(parse_stats_grouping(stage))
             findings.extend(_check_stats_assignments(stats_assignments))
         elif stage_upper.startswith("EVAL"):
             eval_match = _EVAL_BODY.match(stage.strip())

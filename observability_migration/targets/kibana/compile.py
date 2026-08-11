@@ -1,67 +1,33 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
-"""YAML compilation, upload, and post-validation sync helpers.
+"""Kibana space-URL helpers and post-validation IR sync.
+
+The YAML *artifact* surfaces this module used to host -- rendering a
+kb-dashboard YAML document, shelling out to ``kb-dashboard-cli compile``, and
+the legacy saved-objects ``_import`` upload -- have been removed. A migration
+writes ``native/*.native.json`` + ``ir/*.ir.json`` and uploads through the
+typed Kibana Dashboards API; nothing produces or consumes dashboard YAML.
+
+The ``*_yaml_*`` names that remain here (``YAML_ROUND_TRIPPED_IR_FIELDS``,
+``carry_over_non_yaml_ir_fields``) describe the internal ``DashboardIR``
+*dict* shape that ``native_dashboard_from_ir`` maps through -- not a file
+format. See ``docs/architecture/asset-model.md``.
 """
 
 from __future__ import annotations
 
-import os
+import copy
+import dataclasses
 import re
-import shlex
-import subprocess
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import yaml
-
 from observability_migration.core.assets.visual import refresh_visual_ir
-from observability_migration.core.http import apply_subprocess_tls_env
-from observability_migration.targets.kibana import layout as layout_module
-from observability_migration.targets.kibana import lint as lint_module
-from observability_migration.targets.kibana._kbtool import tool_argv
-from observability_migration.targets.kibana.emit.esql_utils import extract_esql_columns
-
-COMMAND_TIMEOUT_SECONDS = 90
-VALIDATION_TIMEOUT_SECONDS = 120
-
-
-def _run_command(cmd, timeout, env=None):
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return False, f"Command timed out after {timeout}s: {shlex.join(str(part) for part in cmd)}"
-    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
-
-
-def compile_yaml(yaml_path, output_dir):
-    cmd = tool_argv("kb-dashboard-cli") + [
-        "compile",
-        "--input-file",
-        str(yaml_path),
-        "--output-dir",
-        str(output_dir),
-    ]
-    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS)
-
-
-def compile_all(yaml_dir, compiled_dir):
-    Path(compiled_dir).mkdir(parents=True, exist_ok=True)
-    results = []
-    for yaml_file in sorted(Path(yaml_dir).glob("*.yaml")):
-        out_dir = Path(compiled_dir) / yaml_file.stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        success, output = compile_yaml(yaml_file, out_dir)
-        results.append((yaml_file.name, success, output))
-    return results
-
-
-def lint_dashboard_yaml(yaml_dir):
-    return lint_module.lint_dashboard_yaml(yaml_dir)
-
-
-def validate_compiled_layout(compiled_dir):
-    return layout_module.validate_compiled_layout(compiled_dir)
+from observability_migration.targets.kibana.emit.esql_utils import (
+    extract_esql_columns,
+    extract_esql_shape,
+    is_time_like_output_field,
+)
 
 
 def detect_space_id_from_kibana_url(kibana_url):
@@ -91,40 +57,11 @@ def kibana_url_for_space(kibana_url, space_id=""):
     return urlunsplit((split.scheme, split.netloc, normalized_path, split.query, split.fragment))
 
 
-def upload_yaml(
-    yaml_path,
-    output_dir,
-    kibana_url,
-    space_id="",
-    kibana_api_key="",
-    verify: bool | str = True,
-):
-    upload_url = kibana_url_for_space(kibana_url, space_id)
-    cmd = tool_argv("kb-dashboard-cli") + [
-        "compile",
-        "--input-file",
-        str(yaml_path),
-        "--output-dir",
-        str(output_dir),
-        "--upload",
-        "--kibana-url",
-        str(upload_url),
-        "--no-browser",
-    ]
-    if kibana_api_key:
-        cmd.extend(["--kibana-api-key", str(kibana_api_key)])
-    # The uploader is a Python/aiohttp tool: --insecure (verify is False) only
-    # takes effect via its own flag, not the Node TLS env vars.
-    if verify is False:
-        cmd.append("--kibana-no-ssl-verify")
-    env = apply_subprocess_tls_env(verify, env=os.environ.copy())
-    return _run_command(cmd, timeout=COMMAND_TIMEOUT_SECONDS, env=env)
-
-
 def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
     esql_config = yaml_panel.get("esql")
     if not isinstance(esql_config, dict):
         return False
+    new_shape = extract_esql_shape(new_query or "")
     old_metric, old_by_cols = extract_esql_columns(old_query or "")
     new_metric, new_by_cols = extract_esql_columns(new_query or "")
     changed = False
@@ -137,6 +74,66 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
             container["field"] = new_value
             changed = True
 
+    def _sync_dimension(field_name):
+        nonlocal changed
+        if not field_name:
+            return
+        dimension = esql_config.get("dimension")
+        if not isinstance(dimension, dict):
+            esql_config["dimension"] = {"field": field_name}
+            dimension = esql_config["dimension"]
+            changed = True
+        elif dimension.get("field") != field_name:
+            dimension["field"] = field_name
+            changed = True
+        if is_time_like_output_field(field_name):
+            if dimension.get("data_type") != "date":
+                dimension["data_type"] = "date"
+                changed = True
+        elif "data_type" in dimension:
+            dimension.pop("data_type", None)
+            changed = True
+
+    # Long-form XY queries keep a single numeric metric column (`value`) plus a
+    # synthetic series identity column (`series_group`). When post-validation
+    # swaps a panel's query to that shape, field-by-field replacement mutates
+    # the existing multi-metric config into an invalid/weak XY contract
+    # (`series_group` becomes a y-metric). Rebuild the panel surface explicitly.
+    projected = list(new_shape.projected_fields or [])
+    new_time_field = next((field for field in (new_shape.time_fields or []) if field in projected), "")
+    if (
+        esql_config.get("type") in {"line", "area", "bar"}
+        and "series_group" in projected
+        and "value" in projected
+        and new_time_field
+    ):
+        _sync_dimension(new_time_field)
+        breakdown = esql_config.get("breakdown")
+        if not isinstance(breakdown, dict):
+            esql_config["breakdown"] = {"field": "series_group"}
+            changed = True
+        elif breakdown.get("field") != "series_group":
+            breakdown["field"] = "series_group"
+            changed = True
+        format_cfg = None
+        metrics = esql_config.get("metrics")
+        if isinstance(metrics, list):
+            for item in metrics:
+                if isinstance(item, dict) and isinstance(item.get("format"), dict):
+                    format_cfg = copy.deepcopy(item["format"])
+                    break
+        new_metric_item = {"field": "value"}
+        if format_cfg:
+            new_metric_item["format"] = format_cfg
+        if esql_config.get("metrics") != [new_metric_item]:
+            esql_config["metrics"] = [new_metric_item]
+            changed = True
+        breakdowns = esql_config.get("breakdowns")
+        if isinstance(breakdowns, list) and breakdowns != [{"field": "series_group"}]:
+            esql_config["breakdowns"] = [{"field": "series_group"}]
+            changed = True
+        return changed
+
     for key in ("primary", "metric"):
         _replace_field(esql_config.get(key), old_metric, new_metric)
 
@@ -146,16 +143,7 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
             _replace_field(item, old_metric, new_metric)
 
     if old_by_cols and new_by_cols:
-        dimension = esql_config.get("dimension")
-        _replace_field(dimension, old_by_cols[0], new_by_cols[0])
-        if isinstance(dimension, dict):
-            if dimension.get("field") == "time_bucket":
-                if dimension.get("data_type") != "date":
-                    dimension["data_type"] = "date"
-                    changed = True
-            elif "data_type" in dimension:
-                dimension.pop("data_type", None)
-                changed = True
+        _sync_dimension(new_by_cols[0])
 
     if len(old_by_cols) > 1:
         breakdown = esql_config.get("breakdown")
@@ -397,12 +385,101 @@ def _ensure_controls_for_emitted_params(dashboard, leaf_panels):
     return True
 
 
-def sync_result_queries_to_yaml(result, yaml_path):
-    payload = yaml.safe_load(Path(yaml_path).read_text()) or {}
-    dashboards = payload.get("dashboards") or []
-    if not dashboards:
+# The YAML document shape is a LOSSY carrier for a ``DashboardIR``: its schema
+# (``docs/dashboards/schema.json``) declares ``additionalProperties: false``, so
+# ``DashboardIR.to_yaml_dict()`` emits -- and ``from_yaml_dict()`` restores --
+# only the fields below. Rebuilding an IR from that document therefore resets
+# every *other* field to its dataclass default unless it is carried across
+# explicitly (see :func:`carry_over_non_yaml_ir_fields`).
+YAML_ROUND_TRIPPED_IR_FIELDS: frozenset[str] = frozenset(
+    {
+        "title",
+        "description",
+        "minimum_kibana_version",
+        "settings",
+        "panels",
+        "filters",
+        "controls",
+    }
+)
+
+# The complement: ``DashboardIR`` fields the YAML shape cannot express, which the
+# rebuild has to carry over from the pre-rebuild IR. Spelled out rather than
+# derived so the exhaustiveness guard in ``tests/test_migrate.py``
+# (``test_validate_stage_ir_rebuild_classifies_every_dashboard_ir_field``) fails
+# when a new IR field is left unclassified. The rebuild itself carries *any*
+# field outside :data:`YAML_ROUND_TRIPPED_IR_FIELDS`, so a newly added field is
+# never silently dropped while that classification is pending.
+IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD: frozenset[str] = frozenset(
+    {
+        "version",
+        "uid",
+        "source_adapter",
+        "source_file",
+        "folder",
+        "tags",
+        # Part of dashboard identity. Losing it here would rebuild the native
+        # payload under the plain title slug, and the rebuilt dashboard would
+        # upsert over its same-titled sibling on upload.
+        "id_disambiguator",
+        "alerts",
+        "annotations",
+        "links",
+        "transforms",
+        "metadata",
+        "source_extension",
+    }
+)
+
+# ``sync_result_queries_to_ir`` lives in shared target code but is only reached
+# from the Grafana pipeline today, so the rebuild needs a source adapter to name
+# when the IR under sync does not carry one. It is a *fallback*, never an
+# override -- see :func:`carry_over_non_yaml_ir_fields`.
+_REBUILD_FALLBACK_SOURCE_ADAPTER = "grafana"
+
+
+def carry_over_non_yaml_ir_fields(rebuilt, original, *, fallback_source_adapter=""):
+    """Copy every ``DashboardIR`` field the YAML document shape cannot carry.
+
+    Driven off ``dataclasses.fields(DashboardIR)`` instead of a hand-written copy
+    list: a field added to the IR is carried across automatically, so this cannot
+    quietly start losing data (dashboard ``tags`` -- which
+    ``dashboards_api.native_dashboard_from_ir`` reads straight off the IR and
+    uploads to Kibana -- were lost exactly that way). Values are deep-copied so
+    the pre- and post-rebuild IRs never alias each other.
+
+    ``source_adapter`` is handled deliberately rather than copied blind: the
+    original IR is authoritative, and ``fallback_source_adapter`` applies only
+    when it is empty.
+    """
+    from observability_migration.core.assets.dashboard import DashboardIR
+
+    for ir_field in dataclasses.fields(DashboardIR):
+        name = ir_field.name
+        if name in YAML_ROUND_TRIPPED_IR_FIELDS or not hasattr(original, name):
+            continue
+        value = getattr(original, name)
+        if name == "source_adapter":
+            setattr(rebuilt, name, str(value or fallback_source_adapter))
+            continue
+        setattr(rebuilt, name, copy.deepcopy(value))
+    return rebuilt
+
+
+def sync_result_queries_to_ir(result):
+    """Fold post-validation query fixes back into ``result.dashboard_ir``.
+
+    Validation mutates ``panel_result.esql_query`` (auto-fixes) and can
+    manualize a panel into a markdown placeholder. Those fixes have to reach
+    the artifacts the run actually writes (``native/``, ``ir/``), so this walks
+    the dashboard dict derived from the IR, applies the fixes to it, and
+    rebuilds both the IR and the native payload from the mutated dict. Nothing
+    is written to disk here.
+    """
+    dashboard_ir = getattr(result, "dashboard_ir", None)
+    if dashboard_ir is None:
         return False
-    dashboard = dashboards[0]
+    dashboard = dashboard_ir.to_yaml_dict()
     panels = dashboard.get("panels") or []
     leaf_panels = list(_iter_leaf_panels(panels))
     yaml_panel_results = getattr(result, "yaml_panel_results", None)
@@ -437,41 +514,44 @@ def sync_result_queries_to_yaml(result, yaml_path):
     if _ensure_controls_for_emitted_params(dashboard, leaf_panels):
         updated = True
     if updated:
-        if getattr(result, "native_dashboard", None) is not None or getattr(result, "dashboard_ir", None) is not None:
-            # Deferred import: dashboards_api.py imports kibana_url_for_space
-            # from this module, so a module-level import here would cycle.
-            # `DashboardIR` becomes the primary artifact from this point on:
-            # rebuild it from the same in-memory `dashboard` dict just
-            # mutated (post-validation fixes -- placeholder rewrites,
-            # corrected queries/indexes/controls) and derive both the native
-            # IR and the on-disk YAML *from that IR*, so neither one can
-            # drift from post-validation fixes or from each other.
-            from observability_migration.core.assets.dashboard import DashboardIR
-            from observability_migration.targets.kibana.dashboards_api import (
-                native_dashboard_from_ir,
-            )
-
-            dashboard_ir = DashboardIR.from_yaml_dict(dashboard, source_adapter="grafana")
-            result.dashboard_ir = dashboard_ir
-            payload = {"dashboards": [dashboard_ir.to_yaml_dict()]}
-            native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
-            result.native_dashboard = native_dashboard
-            native_counts_dict, native_reasons = native_counts.as_dicts()
-            result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
-        Path(yaml_path).write_text(
-            yaml.dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
+        # Deferred import: dashboards_api.py imports kibana_url_for_space
+        # from this module, so a module-level import here would cycle.
+        # `DashboardIR` is the primary artifact: rebuild it from the same
+        # in-memory `dashboard` dict just mutated (post-validation fixes --
+        # placeholder rewrites, corrected queries/indexes/controls) and derive
+        # the native payload *from that IR*, so the two artifacts the run
+        # writes cannot drift from post-validation fixes or from each other.
+        from observability_migration.core.assets.dashboard import DashboardIR
+        from observability_migration.targets.kibana.dashboards_api import (
+            native_dashboard_from_ir,
         )
+
+        # The YAML document is a lossy carrier (additionalProperties: false), so
+        # the rebuild alone would reset dashboard identity, lineage and the
+        # referenced asset collections to their defaults -- shipping the
+        # dashboard to Kibana with, for one, its `tags` stripped.
+        previous_ir = dashboard_ir
+        dashboard_ir = DashboardIR.from_yaml_dict(
+            dashboard, source_adapter=_REBUILD_FALLBACK_SOURCE_ADAPTER
+        )
+        carry_over_non_yaml_ir_fields(
+            dashboard_ir,
+            previous_ir,
+            fallback_source_adapter=_REBUILD_FALLBACK_SOURCE_ADAPTER,
+        )
+        result.dashboard_ir = dashboard_ir
+        native_dashboard, native_counts = native_dashboard_from_ir(dashboard_ir)
+        result.native_dashboard = native_dashboard
+        native_counts_dict, native_reasons = native_counts.as_dicts()
+        result.native_dashboard_stats = {**native_counts_dict, "reasons": native_reasons}
     return updated
 
 
 __all__ = [
-    "COMMAND_TIMEOUT_SECONDS",
-    "compile_all",
-    "compile_yaml",
+    "IR_FIELDS_CARRIED_ACROSS_YAML_REBUILD",
+    "YAML_ROUND_TRIPPED_IR_FIELDS",
+    "carry_over_non_yaml_ir_fields",
     "detect_space_id_from_kibana_url",
     "kibana_url_for_space",
-    "lint_dashboard_yaml",
-    "sync_result_queries_to_yaml",
-    "upload_yaml",
-    "validate_compiled_layout",
+    "sync_result_queries_to_ir",
 ]

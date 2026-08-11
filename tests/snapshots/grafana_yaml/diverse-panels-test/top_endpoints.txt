@@ -1,8 +1,0 @@
-title: Top Endpoints
-grafana_type: barchart
-status: migrated_with_warnings
-chart_type: bar
-dimension: handler
-metrics: ['value']
-mode: unstacked
-warning: Translated grouped topk() as latest-bucket ES|QL top N

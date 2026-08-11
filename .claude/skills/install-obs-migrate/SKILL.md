@@ -29,7 +29,7 @@ Do **not** use this skill for vendor/Elastic credentials — that is
 ## Supported platforms
 
 - **macOS and Linux** only. Windows is not supported.
-- **Python 3.11+** required (3.12+ preferred for in-venv Kibana compile tools).
+- **Python 3.11+** required (3.11–3.13 is the tested range).
 - Canonical docs: `https://github.com/elastic/observability-migration-platform/blob/main/docs/command-contract.md` → Install And Setup; `README.md`.
 
 ## Step 0 — Detect current state
@@ -60,7 +60,7 @@ Interpret:
 | `command not found: obs-migrate` but `uvx` works | The bare command was run without a launcher — re-run as `uvx --from 'elastic-observability-migration[all]' obs-migrate …`, `.venv/bin/obs-migrate …`, or after `source .venv/bin/activate` (spell the package out: `PKG` may be unset in this shell) |
 | Python `<3.11` | Install/use a newer Python (pyenv, python.org, Homebrew `python@3.12`), then retry |
 | doctor notes Datadog client not installed | Reinstall with `[datadog]` or `[all]` if the user needs Datadog **API** mode |
-| doctor Ready but kb-dashboard only via `uvx fallback` | Fine for default typed upload; keep `uv` on `PATH` on Python 3.11 |
+| doctor prints `uv on PATH: no` / `uvx on PATH: no` | Informational, not a blocker — no command shells out to `uvx` at runtime. Install `uv` only if you want the `uvx` launcher |
 
 ## Step 1 — Install `uv` (recommended path)
 
@@ -167,7 +167,7 @@ uv run obs-migrate doctor
 - `Ready.`
 - Required dependencies `ok`
 - For Datadog API work: `datadog (datadog-api-client): ok`
-- `uv`/`uvx` on `PATH` when relying on kb-dashboard `uvx` fallback (Python 3.11)
+- `uv`/`uvx` on `PATH` is reported for information only — no command needs it at runtime
 
 Then run one offline smoke (still no source credentials needed):
 
@@ -180,10 +180,13 @@ originally asked for.
 
 ## Kibana tooling note
 
-Default **typed Dashboards API** upload does **not** require `kb-dashboard-cli`.
-`doctor` may report kb-dashboard as `installed` or `uvx fallback` — both are
-fine. Legacy `--compile` / `--legacy-import` prefer an in-venv
-`[kibana]` extra on Python 3.12+, otherwise `uvx` fallback.
+No external Kibana tool is needed. `obs-migrate migrate` writes native
+Dashboard-as-Code artifacts (`dashboards/native/*.native.json`) and
+`obs-migrate upload --artifact-dir <dir>` sends them through the typed Kibana
+Dashboards API (`PUT /api/dashboards/{id}`) — there is no dashboard-YAML
+compile step, so nothing installs or fetches `kb-dashboard-cli` /
+`kb-dashboard-lint`, and `doctor` does not check for them. Migrate and upload
+work without the `[kibana]` extra.
 
 ## Honest limits / Do NOT
 

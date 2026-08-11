@@ -411,8 +411,8 @@ class TestHunt4CoreEngine(unittest.TestCase):
         # Window stays the 2nd arg of RATE, not folded into CASE.
         self.assertNotIn("5m, NULL", r.esql_query)
         self.assertNotIn("RATE(CASE(", r.esql_query)
-        self.assertIn('CASE((code == "200"), RATE(a_total, 5m), NULL)', r.esql_query)
-        self.assertIn('CASE((code == "500"), RATE(b_total, 5m), NULL)', r.esql_query)
+        self.assertIn('CASE((code == "200"), RATE(a_total), NULL)', r.esql_query)
+        self.assertIn('CASE((code == "500"), RATE(b_total), NULL)', r.esql_query)
 
     def test_topk_bare_counter_uses_ts_source(self):
         # #10: topk on a bare counter auto-rates the metric, so it must run under

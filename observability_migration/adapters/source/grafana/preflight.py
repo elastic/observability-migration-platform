@@ -800,6 +800,12 @@ def build_target_schema_contract(
                 list(contract["metric_map"].get("gaps", [])) + recording_rule_gaps
             )
             contract["metric_map"]["totals"]["gaps"] = len(contract["metric_map"]["gaps"])
+        summary_fn = getattr(resolver, "field_resolution_summary", None)
+        if callable(summary_fn):
+            summary = summary_fn()
+            guidance = summary.get("operator_guidance")
+            if guidance:
+                contract["operator_guidance"] = guidance
     return contract
 
 
@@ -862,18 +868,20 @@ def build_preflight_report(
     )
 
     total_panels = sum(r.total_panels for r in results)
-    green = sum(
-        1 for r in results for pr in r.panel_results
-        if (pr.verification_packet or {}).get("semantic_gate") == "Green"
-    )
-    yellow = sum(
-        1 for r in results for pr in r.panel_results
-        if (pr.verification_packet or {}).get("semantic_gate") == "Yellow"
-    )
-    red = sum(
-        1 for r in results for pr in r.panel_results
-        if (pr.verification_packet or {}).get("semantic_gate") == "Red"
-    )
+
+    def _gate_panels(results_):
+        return [
+            pr
+            for r in results_
+            for pr in r.panel_results
+            if getattr(pr, "status", "") != "skipped"
+            and getattr(pr, "grafana_type", "") != "row"
+        ]
+
+    gate_panels = _gate_panels(results)
+    green = sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Green")
+    yellow = sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Yellow")
+    red = sum(1 for pr in gate_panels if (pr.verification_packet or {}).get("semantic_gate") == "Red")
 
     ready = sum(
         1 for r in results for pr in r.panel_results
@@ -1148,7 +1156,9 @@ def _build_action_summary(
     total = sum(r.total_panels for r in results)
     green = sum(
         1 for r in results for pr in r.panel_results
-        if (pr.verification_packet or {}).get("semantic_gate") == "Green"
+        if getattr(pr, "status", "") != "skipped"
+        and getattr(pr, "grafana_type", "") != "row"
+        and (pr.verification_packet or {}).get("semantic_gate") == "Green"
     )
     lines.append(f"Dashboards: {len(results)}")
     if evidence_level == "full":

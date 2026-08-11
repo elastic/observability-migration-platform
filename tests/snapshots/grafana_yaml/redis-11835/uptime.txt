@@ -1,5 +1,0 @@
-title: Uptime
-grafana_type: singlestat
-status: migrated
-chart_type: metric
-primary: redis_uptime_in_seconds

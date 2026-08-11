@@ -173,6 +173,7 @@ class TestTranslationMode(unittest.TestCase):
             es_url="",
             es_api_key="",
             dataset_filter="",
+            kibana_promql_control_params=False,
             ca_cert="",
             insecure=False,
             translation_mode="auto",
@@ -236,6 +237,25 @@ class TestTranslationMode(unittest.TestCase):
     def test_grafana_cli_rejects_invalid_translation_mode(self):
         with self.assertRaises(SystemExit):
             cli.parse_args(["--translation-mode", "bogus"])
+
+    def test_grafana_cli_accepts_kibana_promql_control_param_opt_in(self):
+        args = cli.parse_args(["--kibana-promql-control-params"])
+        self.assertTrue(args.kibana_promql_control_params)
+
+    def test_apply_native_promql_records_kibana_control_param_override(self):
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            get_runtime_features,
+        )
+
+        rp = rules.RulePackConfig()
+        cli._apply_native_promql_to_rule_pack(
+            rp,
+            self._args(kibana_promql_control_params=True),
+        )
+        self.assertTrue(
+            get_runtime_features(rp)[KIBANA_PROMQL_CONTROL_PARAMS]["supported"]
+        )
 
 
 class TestDatadogTranslationModeNoOp(unittest.TestCase):

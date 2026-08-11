@@ -24,8 +24,10 @@ ROLLOUT_STATES = (
 class ArtifactBundle:
     run_id: str = ""
     timestamp: float = field(default_factory=time.time)
-    yaml_paths: list[str] = field(default_factory=list)
-    compiled_paths: list[str] = field(default_factory=list)
+    # Migration writes native/ + ir/ artifacts, never a yaml/ directory, so this
+    # manifest lists what the run actually produced (replaces ``yaml_paths``).
+    native_artifact_paths: list[str] = field(default_factory=list)
+    ir_artifact_paths: list[str] = field(default_factory=list)
     report_path: str = ""
     manifest_path: str = ""
     verification_path: str = ""
@@ -35,8 +37,8 @@ class ArtifactBundle:
         return {
             "run_id": self.run_id,
             "timestamp": self.timestamp,
-            "yaml_paths": self.yaml_paths,
-            "compiled_paths": self.compiled_paths,
+            "native_artifact_paths": self.native_artifact_paths,
+            "ir_artifact_paths": self.ir_artifact_paths,
             "report_path": self.report_path,
             "manifest_path": self.manifest_path,
             "verification_path": self.verification_path,
@@ -51,8 +53,8 @@ class DashboardLineage:
     source_file: str = ""
     kibana_saved_object_id: str = ""
     kibana_space: str = ""
-    yaml_path: str = ""
-    compiled_path: str = ""
+    native_artifact_path: str = ""
+    ir_artifact_path: str = ""
     panel_count: int = 0
     migrated_panels: int = 0
     semantic_gate_summary: dict[str, int] = field(default_factory=dict)
@@ -79,8 +81,8 @@ class DashboardLineage:
             "source_file": self.source_file,
             "kibana_saved_object_id": self.kibana_saved_object_id,
             "kibana_space": self.kibana_space,
-            "yaml_path": self.yaml_path,
-            "compiled_path": self.compiled_path,
+            "native_artifact_path": self.native_artifact_path,
+            "ir_artifact_path": self.ir_artifact_path,
             "panel_count": self.panel_count,
             "migrated_panels": self.migrated_panels,
             "semantic_gate_summary": self.semantic_gate_summary,
@@ -142,8 +144,8 @@ def build_rollout_plan(
         base = Path(output_dir)
         plan.artifact_bundle = ArtifactBundle(
             run_id=plan.run_id,
-            yaml_paths=[str(path) for path in sorted(base.glob("yaml/*.yaml"))],
-            compiled_paths=[str(path) for path in sorted(base.glob("compiled/*/compiled_dashboards.ndjson"))],
+            native_artifact_paths=[str(path) for path in sorted(base.glob("native/*.native.json"))],
+            ir_artifact_paths=[str(path) for path in sorted(base.glob("ir/*.ir.json"))],
             report_path=str(base / "migration_report.json"),
             manifest_path=str(base / "migration_manifest.json"),
             verification_path=str(base / "verification_packets.json"),
@@ -163,8 +165,8 @@ def build_rollout_plan(
             source_file=str(getattr(result, "source_file", "") or ""),
             kibana_saved_object_id=str(getattr(result, "kibana_saved_object_id", "") or ""),
             kibana_space=str(getattr(result, "uploaded_space", "") or ""),
-            yaml_path=str(getattr(result, "yaml_path", "") or ""),
-            compiled_path=str(getattr(result, "compiled_path", "") or ""),
+            native_artifact_path=str(getattr(result, "native_artifact_path", "") or ""),
+            ir_artifact_path=str(getattr(result, "ir_artifact_path", "") or ""),
             panel_count=len(getattr(result, "panel_results", []) or []),
             migrated_panels=sum(
                 1

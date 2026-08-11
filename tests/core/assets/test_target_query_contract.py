@@ -82,7 +82,7 @@ class TestTargetQueryContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.json"
-            report.save_detailed_report([result], [], output_path)
+            report.save_detailed_report([result], output_path)
             payload = json.loads(output_path.read_text(encoding="utf-8"))
 
         saved_panel = payload["dashboards"][0]["panels"][0]
@@ -113,7 +113,7 @@ class TestTargetQueryContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.json"
-            report.save_detailed_report([result], [], output_path)
+            report.save_detailed_report([result], output_path)
             payload = json.loads(output_path.read_text(encoding="utf-8"))
 
         saved_panel = payload["dashboards"][0]["panels"][0]

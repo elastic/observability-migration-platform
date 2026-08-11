@@ -58,32 +58,32 @@ class MigrationResult:
     # PanelResult-style tracking of their own, so this is dashboard-scoped
     # rather than per-panel.
     control_warnings: list = field(default_factory=list)
-    compiled: bool = False
-    compile_error: str = ""
     source_file: str = ""
     folder_title: str = ""
     inventory: dict = field(default_factory=dict)
     metadata_polish: dict = field(default_factory=dict)
     verification_summary: dict = field(default_factory=dict)
     review_explanations: dict = field(default_factory=dict)
-    yaml_linted: bool | None = None
-    yaml_lint_error: str = ""
-    layout_validated: bool | None = None
-    layout_error: str = ""
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
     upload_warnings: list = field(default_factory=list)
+    # Leaf panels Kibana silently dropped while accepting the upload with an
+    # HTTP 200 (``{"title", "reason", "section", "grid"}`` each). Non-empty means
+    # the uploaded dashboard is missing panels even though nothing failed.
+    upload_dropped_panels: list = field(default_factory=list)
     kibana_saved_object_id: str = ""
     uploaded_space: str = ""
     uploaded_kibana_url: str = ""
-    yaml_path: str = ""
-    compiled_path: str = ""
+    # Filename stem shared by this dashboard's artifacts
+    # (``native/<stem>.native.json``, ``ir/<stem>.ir.json``). Empty when
+    # translation failed.
+    artifact_stem: str = ""
     # Native Dashboard-as-Code review artifacts (see
     # targets/kibana/native_artifacts.py): the on-disk twin of
     # `native_dashboard`/`dashboard_ir`, written before upload so the exact
     # typed API payload can be reviewed and later deployed with
-    # `obs-migrate upload --artifact-dir ... --artifact-format native`.
+    # `obs-migrate upload --artifact-dir ...`.
     native_artifact_path: str = ""
     ir_artifact_path: str = ""
     runtime_summary: dict = field(default_factory=dict)
@@ -94,6 +94,7 @@ class MigrationResult:
     alert_results: list = field(default_factory=list)  # list of AlertingIR.to_dict()
     alert_summary: dict = field(default_factory=dict)  # {"total": N, "automated": N, "draft_review": N, "manual_required": N, "by_kind": {...}}
     translation_error: str = ""   # non-empty iff translate_dashboard() raised
+    curated_pack: str = ""        # non-empty when a curated pack was applied (e.g. "grafana_763_redis_exporter")
     # Semantic DashboardIR -- the primary working artifact of the IR-first
     # pipeline. `native_dashboard` and the on-disk YAML are both *derived*
     # from this (see targets.kibana.dashboards_api.native_dashboard_from_ir /
@@ -270,29 +271,57 @@ def recompute_result_counts(result):
     result.skipped = sum(1 for item in result.panel_results if item.status == "skipped")
 
 
-def _stage_summary(completed, error):
-    if completed is None:
-        return {"status": "not_run", "error": ""}
-    return {"status": "pass" if completed and not error else "fail", "error": error or ""}
-
-
 def build_runtime_summary(result):
-    upload_status = {"status": "not_run", "error": "", "warnings": []}
+    upload_status = {"status": "not_run", "error": "", "warnings": [], "dropped_panels": []}
     if getattr(result, "upload_attempted", False) or getattr(result, "upload_error", ""):
         upload_status = {
             "status": "pass" if getattr(result, "uploaded", False) and not getattr(result, "upload_error", "") else "fail",
             "error": getattr(result, "upload_error", "") or "",
             "warnings": list(getattr(result, "upload_warnings", []) or []),
+            # Panels Kibana dropped behind an HTTP 200. These ride in the
+            # runtime summary (not just the log) so the manifest and any CI gate
+            # reading it can see *which* panels a "successful" upload lost.
+            "dropped_panels": list(getattr(result, "upload_dropped_panels", []) or []),
         }
     return {
-        "yaml_lint": _stage_summary(getattr(result, "yaml_linted", None), getattr(result, "yaml_lint_error", "")),
-        "compile": {
-            "status": "pass" if getattr(result, "compiled", False) else "fail" if getattr(result, "compile_error", "") else "not_run",
-            "error": getattr(result, "compile_error", "") or "",
-        },
-        "layout": _stage_summary(getattr(result, "layout_validated", None), getattr(result, "layout_error", "")),
         "upload": upload_status,
     }
+
+
+def upload_panel_loss_rows(results):
+    """``(dashboard_title, dropped_panel)`` for every panel lost on upload."""
+    return [
+        (getattr(result, "dashboard_title", ""), dropped)
+        for result in results
+        for dropped in (getattr(result, "upload_dropped_panels", None) or [])
+        if isinstance(dropped, dict)
+    ]
+
+
+def print_upload_panel_loss(results):
+    """Report panels Kibana dropped while returning HTTP 200 on the upload.
+
+    This is a data-loss section, not a warning list: the dashboards below were
+    reported as uploaded and are missing panels. Printed even though the same
+    dashboards already count as upload failures, because the count alone never
+    says *which* panels vanished.
+    """
+    rows = upload_panel_loss_rows(results)
+    if not rows:
+        return
+    print("UPLOAD DATA LOSS (Kibana returned HTTP 200 but dropped panels):")
+    for dashboard_title, dropped in rows:
+        title = dropped.get("title") or "(untitled)"
+        section = f" [section {dropped.get('section')}]" if dropped.get("section") else ""
+        print(f"  ✗ {dashboard_title}: {title}{section}")
+        reason = str(dropped.get("reason") or "")
+        if reason:
+            print(f"      {reason[:300]}")
+    print(
+        f"  {len(rows)} panel(s) are missing from the uploaded dashboard(s). "
+        "Fix the panel(s) and re-upload."
+    )
+    print()
 
 
 def _row_count(result):
@@ -394,7 +423,7 @@ def print_field_discovery_warning(field_discovery):
     )
 
 
-def print_report(results, compile_results, field_discovery=None):
+def print_report(results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
     # from _flatten_dashboard_panels). The user-facing "renderable panels"
@@ -409,7 +438,6 @@ def print_report(results, compile_results, field_discovery=None):
     # The remainder is genuine panel skips (variable-expansion warnings, L4
     # repeat caps, non-normalized group panels, etc.).
     total_panel_skipped = sum(r.skipped for r in results) - total_rows
-    compiled_ok = sum(1 for _, ok, _ in compile_results if ok)
     total_green = sum(
         1
         for r in results
@@ -452,41 +480,31 @@ def print_report(results, compile_results, field_discovery=None):
     print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
         print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
-    print(f"\nCompilation results: {compiled_ok}/{len(compile_results)} dashboards compiled successfully")
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
+    print_upload_panel_loss(results)
 
     print("─" * 70)
     # ``Skip`` and ``Rows`` columns make the per-dashboard totals add up
     # (Panels = OK + Warn + Man + NF + Skip; Rows is informational).
     print(
         f"{'Dashboard':<40} {'Panels':>6} {'OK':>5} {'Warn':>5} {'Man':>5} "
-        f"{'NF':>5} {'Skip':>5} {'Rows':>5} {'Compiled':>10}"
+        f"{'NF':>5} {'Skip':>5} {'Rows':>5}"
     )
     print("─" * 70)
 
     for r in results:
-        comp_status = "YES" if r.compiled else "FAIL" if r.compile_error else "?"
         rows_for_dashboard = _row_count(r)
         panels_for_dashboard = r.total_panels - rows_for_dashboard
         skip_for_dashboard = r.skipped - rows_for_dashboard
         print(
             f"{r.dashboard_title[:39]:<40} {panels_for_dashboard:>6} {r.migrated:>5} "
             f"{r.migrated_with_warnings:>5} {r.requires_manual:>5} {r.not_feasible:>5} "
-            f"{skip_for_dashboard:>5} {rows_for_dashboard:>5} {comp_status:>10}"
+            f"{skip_for_dashboard:>5} {rows_for_dashboard:>5}"
         )
 
     print("─" * 70)
-
-    if any(not ok for _, ok, _ in compile_results):
-        print("\nCOMPILATION ERRORS:")
-        for name, ok, output in compile_results:
-            if not ok:
-                print(f"\n  {name}:")
-                for line in output.strip().split("\n"):
-                    if "error" in line.lower() or "validation" in line.lower():
-                        print(f"    {line.strip()}")
 
     not_feasible_panels = [(r.dashboard_title, pr) for r in results for pr in r.panel_results if pr.status == "not_feasible"]
     if not_feasible_panels:
@@ -508,6 +526,31 @@ def print_report(results, compile_results, field_discovery=None):
         for dash_title, warning in control_warnings[:20]:
             print(f"  [{dash_title}] {warning}")
 
+    # Data-readiness gaps. Live discovery can PROVE a metric is absent from the
+    # target, and we still emit the query so the panel self-heals once the
+    # telemetry lands. But ES|QL rejects an unknown column outright, so until
+    # then Kibana renders a red "Unknown column [...]" card -- where Grafana
+    # would simply have drawn an empty panel. Staying quiet about that means
+    # the operator meets it in the browser instead of in the run that knew.
+    readiness_gaps = []
+    for result in results:
+        for panel in getattr(result, "panel_results", []) or []:
+            for reason in (getattr(panel, "reasons", None) or []):
+                if "missing from live schema discovery" in str(reason):
+                    readiness_gaps.append(
+                        (result.dashboard_title, getattr(panel, "title", ""), str(reason))
+                    )
+    if readiness_gaps:
+        print(f"\nDATA READINESS ({len(readiness_gaps)} panel(s) will show an error until telemetry lands):")
+        for dash_title, panel_title, reason in readiness_gaps[:20]:
+            field = reason.split("Target field ", 1)[-1].split(" is missing", 1)[0]
+            print(f"  [{dash_title}] {panel_title}: '{field}' is absent from the target.")
+        print(
+            "  These panels are translated correctly. Kibana shows 'Unknown column'\n"
+            "  rather than an empty chart because ES|QL rejects unknown columns; they\n"
+            "  start working as soon as the metric is ingested."
+        )
+
     total_alerts = sum(len(getattr(r, "alert_results", [])) for r in results)
     if total_alerts:
         automated = sum(sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated") for r in results)
@@ -525,7 +568,7 @@ def pct(n, total):
     return f"{n / total * 100:.1f}%" if total > 0 else "0%"
 
 
-def save_detailed_report(results, compile_results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
+def save_detailed_report(results, output_path, validation_summary=None, validation_records=None, verification_payload=None, field_discovery=None, metric_map_summary=None):
     runtime_features = {}
     for result in results:
         runtime_features.update(dict(getattr(result, "runtime_features", {}) or {}))
@@ -538,11 +581,11 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "requires_manual": sum(r.requires_manual for r in results),
             "not_feasible": sum(r.not_feasible for r in results),
             "skipped": sum(r.skipped for r in results),
-            "compiled_ok": sum(1 for _, ok, _ in compile_results if ok),
             "uploaded_ok": sum(1 for r in results if r.uploaded),
             "upload_attempted": sum(1 for r in results if r.upload_attempted),
-            "yaml_lint_ok": sum(1 for r in results if build_runtime_summary(r)["yaml_lint"]["status"] == "pass"),
-            "layout_ok": sum(1 for r in results if build_runtime_summary(r)["layout"]["status"] == "pass"),
+            # Leaf panels Kibana dropped behind an HTTP 200 upload. Any non-zero
+            # value means at least one "uploaded" dashboard is incomplete.
+            "upload_panels_dropped": len(upload_panel_loss_rows(results)),
             "total_alerts": sum(len(getattr(r, "alert_results", [])) for r in results),
             "alerts_automated": sum(
                 sum(1 for a in getattr(r, "alert_results", []) if a.get("automation_tier") == "automated")
@@ -579,8 +622,6 @@ def save_detailed_report(results, compile_results, output_path, validation_summa
             "uid": r.dashboard_uid,
             "source_file": r.source_file,
             "folder_title": r.folder_title,
-            "compiled": r.compiled,
-            "compile_error": r.compile_error,
             "runtime_summary": runtime_summary,
             "inventory": r.inventory,
             "metadata_polish": r.metadata_polish,
@@ -670,7 +711,6 @@ def _gap_tasks_from_grafana(gap_data: dict) -> list[GapTask]:
 
 def build_summary_view(
     results,
-    compile_results,
     *,
     review_queue=None,
     gap_data=None,
@@ -711,8 +751,6 @@ def build_summary_view(
         green=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Green")),
         yellow=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Yellow")),
         red=sum(1 for r in results for pr in _renderable(r) if _gate(pr, "Red")),
-        compiled_ok=sum(1 for _, ok, _ in compile_results if ok),
-        compiled_total=len(compile_results),
         uploaded_ok=sum(1 for r in results if r.uploaded),
         upload_attempted=sum(1 for r in results if r.upload_attempted),
         native_promql=sum(
@@ -737,13 +775,12 @@ def build_summary_view(
         dashboards.append(
             DashboardRow(
                 title=r.dashboard_title,
-                elements=len(renderable),
+                # Match the ✓/⚠/?/✗ columns — exclude skipped so the row sums.
+                elements=r.migrated + r.migrated_with_warnings + r.requires_manual + r.not_feasible,
                 migrated=r.migrated,
                 warnings=r.migrated_with_warnings,
                 manual=r.requires_manual,
                 not_feasible=r.not_feasible,
-                compiled=r.compiled,
-                compile_error=r.compile_error,
                 risk_score=risk_by_title.get(r.dashboard_title),
                 rollout_state="",
                 native_promql=prov.count(PanelProvenance.NATIVE),

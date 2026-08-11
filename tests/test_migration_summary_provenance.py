@@ -34,8 +34,6 @@ def _totals(**overrides) -> SummaryTotals:
         green=0,
         yellow=0,
         red=0,
-        compiled_ok=1,
-        compiled_total=1,
         uploaded_ok=0,
         upload_attempted=0,
     )
@@ -113,8 +111,6 @@ class RenderProvenanceTests(unittest.TestCase):
                     warnings=0,
                     manual=0,
                     not_feasible=1,
-                    compiled=True,
-                    compile_error="",
                     risk_score=None,
                     rollout_state="",
                     native_promql=3,
@@ -128,8 +124,6 @@ class RenderProvenanceTests(unittest.TestCase):
                     warnings=0,
                     manual=0,
                     not_feasible=0,
-                    compiled=True,
-                    compile_error="",
                     risk_score=None,
                     rollout_state="",
                     native_promql=2,
@@ -183,8 +177,6 @@ class RenderProvenanceTests(unittest.TestCase):
                     warnings=0,
                     manual=0,
                     not_feasible=1,
-                    compiled=True,
-                    compile_error="",
                     risk_score=None,
                     rollout_state="",
                     native_promql=0,
@@ -214,7 +206,6 @@ class GrafanaBuilderProvenanceTests(unittest.TestCase):
 
         r = MigrationResult("Alpha", "alpha-uid")
         r.source_file = "alpha.json"
-        r.compiled = True
 
         native = PanelResult("CPU", "timeseries", "xy", "migrated", 1.0)
         native.esql_query = "PROMQL index=metrics-* step=1m value=(rate(cpu[5m]))"
@@ -243,7 +234,6 @@ class GrafanaBuilderProvenanceTests(unittest.TestCase):
 
         view = build_summary_view(
             [self._result()],
-            [("alpha.yaml", True, "")],
             run_id="r1",
         )
         self.assertEqual(view.totals.native_promql, 1)

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 from observability_migration.adapters.source.datadog.generate import _build_yaml_panel
@@ -181,8 +179,7 @@ def test_synthesized_links_panel_is_included_in_target_panel_denominator():
         ],
     }
 
-    with tempfile.TemporaryDirectory() as output_dir:
-        result, _ = translate_dashboard(dashboard, Path(output_dir))
+    result = translate_dashboard(dashboard)
 
     rows = sum(1 for panel in result.panel_results if panel.grafana_type == "row")
     disposition_total = (
@@ -266,8 +263,7 @@ def test_grafana_link_context_forwarding_loss_is_reported():
         ],
     }
 
-    with tempfile.TemporaryDirectory() as output_dir:
-        result, _ = translate_dashboard(dashboard, Path(output_dir))
+    result = translate_dashboard(dashboard)
 
     links_result = next(panel for panel in result.panel_results if panel.kibana_type == "links")
     assert links_result.status == "migrated_with_warnings"

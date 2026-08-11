@@ -89,3 +89,26 @@ def test_main_writes_fetched_schema(tmp_path, monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert "/api/dashboards" in output.read_text(encoding="utf-8")
     assert "full_write_schema=True" in capsys.readouterr().out
+
+
+def test_committed_openapi_schema_is_full() -> None:
+    """CI authority: the pinned OpenAPI file must stay a full write schema."""
+    path = fetcher.COMMITTED_SCHEMA
+    assert path.is_file(), f"missing committed OpenAPI pin: {path}"
+    schema = fetcher.parse_schema(path.read_text(encoding="utf-8"))
+    summary = fetcher.validate_dashboard_schema(schema, require_full_schema=True)
+    assert summary["dashboard_paths"] >= 1
+    assert summary["has_full_dashboard_write_schema"] is True
+
+
+def test_main_check_only_accepts_committed_schema_path(capsys) -> None:
+    exit_code = fetcher.main(
+        [
+            "--url",
+            str(fetcher.COMMITTED_SCHEMA),
+            "--check-only",
+            "--require-full-schema",
+        ]
+    )
+    assert exit_code == 0
+    assert "full_write_schema=True" in capsys.readouterr().out

@@ -10,6 +10,7 @@ and capability preflight for the alert migration pipeline.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from typing import Any
 
@@ -431,6 +432,162 @@ def _normalize_rule_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
     return normalized
+
+
+# ---------------------------------------------------------------------------
+# Requested-but-not-performed rule creation
+#
+# ``--create-alert-rules`` used to skip with a bare print and no exit-code
+# consequence, so an operator who explicitly asked for rules, got none, and saw
+# a green run had nothing to act on. This mirrors the ``lossy`` upload status in
+# ``dashboards_api._record_panel_loss``: the outcome carries a status plus a
+# message that names the cause, so it can fail the exit code AND ride into the
+# migration report instead of scrolling past mid-run.
+#
+# ``skipped`` means *no creation was attempted at all*. It is deliberately not
+# "created nothing": a run whose translations are all ``manual_required`` legally
+# creates zero rules, and failing that would be a false alarm on the common path.
+# ---------------------------------------------------------------------------
+
+RULE_CREATION_NOT_REQUESTED = "not_requested"
+RULE_CREATION_ATTEMPTED = "attempted"
+RULE_CREATION_SKIPPED = "skipped"
+
+# Printed where the skip happens, mid-run. The full message below is printed
+# once more at the end, next to the non-zero exit -- same split as the upload
+# path, which names each dropped panel in place and then aggregates.
+_RULE_CREATION_SKIP_HEADLINES = {
+    "missing_kibana_url": "no Kibana alerting rules were created (--kibana-url missing)",
+    "missing_kibana_api_key": "no Kibana alerting rules were created (--kibana-api-key missing)",
+    "preflight_unreachable": (
+        "no Kibana alerting rules were created (alerting preflight unreachable)"
+    ),
+}
+
+_RULE_CREATION_SKIP_MESSAGES = {
+    "missing_kibana_url": (
+        "--create-alert-rules was requested but no Kibana target was given, so "
+        "no rules were created. Re-run with --kibana-url (and --kibana-api-key)."
+    ),
+    "missing_kibana_api_key": (
+        "--create-alert-rules was requested but --kibana-api-key was not "
+        "provided, so no rules were created. Rule creation writes to Kibana and "
+        "needs a key; re-run with --kibana-api-key. The translated alert "
+        "payloads were still written to the output directory."
+    ),
+    "preflight_unreachable": (
+        "--create-alert-rules was requested but the Kibana alerting preflight "
+        "was unreachable, so no rules were created. Check --kibana-url, the "
+        "space, and the API key's alerting privileges, then re-run."
+    ),
+}
+
+
+def rule_creation_not_requested() -> dict[str, Any]:
+    """Status for a run that never asked for rules. The silent common path."""
+    return {
+        "requested": False,
+        "status": RULE_CREATION_NOT_REQUESTED,
+        "reason": "",
+        "message": "",
+    }
+
+
+def rule_creation_skipped(reason: str) -> dict[str, Any]:
+    """Status for a requested creation that was never attempted."""
+    return {
+        "requested": True,
+        "status": RULE_CREATION_SKIPPED,
+        "reason": reason,
+        "headline": _RULE_CREATION_SKIP_HEADLINES.get(
+            reason,
+            f"no Kibana alerting rules were created ({reason})",
+        ),
+        "message": _RULE_CREATION_SKIP_MESSAGES.get(
+            reason,
+            f"--create-alert-rules was requested but no rules were created ({reason}).",
+        ),
+    }
+
+
+def rule_creation_attempted(rule_upload: dict[str, Any]) -> dict[str, Any]:
+    """Status for a creation that actually ran against Kibana.
+
+    An unreachable preflight creates nothing, so it is reported as a skip even
+    though ``create_rules_from_payloads`` returned normally.
+    """
+    if rule_upload.get("preflight_unreachable"):
+        return rule_creation_skipped("preflight_unreachable")
+    return {
+        "requested": True,
+        "status": RULE_CREATION_ATTEMPTED,
+        "reason": "",
+        "message": "",
+        "summary": dict(rule_upload.get("summary", {}) or {}),
+    }
+
+
+def rule_creation_capability_gap(args: Any) -> dict[str, Any] | None:
+    """Skip status when a requested creation cannot run against the target.
+
+    Unlike the argument validation in the ``migrate`` command, this is a
+    *capability* check: it describes what this target/credential set can do, not
+    whether the command line was well formed. Returns ``None`` when creation can
+    proceed.
+    """
+    if not getattr(args, "kibana_url", ""):
+        return rule_creation_skipped("missing_kibana_url")
+    if not getattr(args, "kibana_api_key", ""):
+        return rule_creation_skipped("missing_kibana_api_key")
+    return None
+
+
+def exit_if_rule_creation_incomplete(alert_summary: Any) -> None:
+    """Fail the run when requested rule creation did not fully succeed.
+
+    Two distinct incomplete outcomes, both of which used to exit 0:
+
+    * **skipped** -- creation never ran (no api key, unreachable preflight).
+    * **attempted with failures** -- creation ran and some rules were rejected.
+      Those printed ``FAILED:`` lines and still exited 0, so CI went green on a
+      partially-created alert set. Loud-but-green is better than silent, but it
+      is still a requested operation that did not happen.
+
+    Keyed on ``failed`` rather than on ``created``: a translation set that is
+    entirely ``manual_required`` legitimately creates zero rules and must stay
+    green, so a zero count is not evidence of failure.
+
+    Called after the run summary is written, so the operator keeps the
+    translated alert artifacts and the ``rule_creation`` record either way; only
+    the exit code and a stderr line are added on top.
+    """
+    if not isinstance(alert_summary, dict):
+        return
+    status = alert_summary.get("rule_creation")
+    if not isinstance(status, dict):
+        return
+    if status.get("status") == RULE_CREATION_SKIPPED:
+        print(f"\nERROR: {status.get('message', '')}", file=sys.stderr)
+        sys.exit(1)
+    if status.get("status") != RULE_CREATION_ATTEMPTED:
+        return
+    summary = status.get("summary")
+    failed = int((summary or {}).get("failed", 0) or 0) if isinstance(summary, dict) else 0
+    if failed <= 0:
+        return
+    created = int((summary or {}).get("created", 0) or 0)
+    print(
+        f"\nERROR: {failed} Kibana alerting rule(s) failed to be created "
+        f"({created} succeeded). The alert set in Kibana is incomplete; see the "
+        "rule-upload results artifact for the per-rule reason.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+# Kept as an alias: the old name described only the skip case, which is now one
+# of two incomplete outcomes this guard covers.
+exit_if_rule_creation_skipped = exit_if_rule_creation_incomplete
 
 
 def _preflight_unreachable(preflight: dict[str, Any] | None) -> bool:
@@ -1111,6 +1268,9 @@ def validate_rule_payload(
 
 
 __all__ = [
+    "RULE_CREATION_ATTEMPTED",
+    "RULE_CREATION_NOT_REQUESTED",
+    "RULE_CREATION_SKIPPED",
     "audit_migrated_rules",
     "cleanup_rules",
     "collect_emitted_rule_payloads",
@@ -1120,11 +1280,17 @@ __all__ = [
     "delete_rule",
     "disable_rule",
     "enable_rule",
+    "exit_if_rule_creation_incomplete",
+    "exit_if_rule_creation_skipped",
     "get_alerting_health",
     "list_connector_types",
     "list_connectors",
     "list_rule_types",
     "list_rules",
+    "rule_creation_attempted",
+    "rule_creation_capability_gap",
+    "rule_creation_not_requested",
+    "rule_creation_skipped",
     "run_alerting_preflight",
     "validate_rule_payload",
     "verify_emitted_rule_uploads",

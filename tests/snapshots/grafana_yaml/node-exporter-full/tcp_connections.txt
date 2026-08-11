@@ -1,9 +1,0 @@
-title: TCP Connections
-grafana_type: timeseries
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['CurrEstab_TCP_connections_for_which_the_current_state_is_either_ESTABLISHED_or_CLOSE_WAIT', 'MaxConn_Limit_on_the_total_number_of_TCP_connections_the_entity_can_support_Dynamic_is_1']
-breakdown: series_group
-axis_title: connections
-warning: Composited multi-label grouping (instance, job) into a single XY breakdown column

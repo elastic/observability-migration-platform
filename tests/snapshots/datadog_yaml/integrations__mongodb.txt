@@ -4,7 +4,7 @@ widgets: 43
 panels: 34
 controls: 1
 filters: 0
-statuses: {'ok': 12, 'requires_manual': 1, 'skipped': 9, 'warning': 21}
+statuses: {'ok': 25, 'requires_manual': 1, 'skipped': 9, 'warning': 8}
 - title='Datadog note 7601198205415224'; kind=markdown
 - title='Datadog note 7939246017097054'; kind=markdown
 - title='Averaged uptime'; kind=esql; type=metric; dimension=; metrics=[]; breakdowns=[]; primary=value; metric=

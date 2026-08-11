@@ -1,8 +1,0 @@
-title: Rule evaulation duration
-grafana_type: graph
-status: migrated_with_warnings
-chart_type: line
-dimension: time_bucket
-metrics: ['prometheus_evaluator_duration_seconds']
-breakdown: series_group
-warning: Composited multi-label grouping (instance, quantile) into a single XY breakdown column
