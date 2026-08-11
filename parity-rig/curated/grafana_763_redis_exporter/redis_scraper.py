@@ -39,6 +39,13 @@ TARGETS = [
         "redis:6379",
         {"pod": "redis-0"},
     ),
+    (
+        "http://redis_exporter_b:9121/metrics",
+        "redis.prometheus",
+        "redis_exporter",
+        "redis-b:6379",
+        {"pod": "redis-1", "namespace": "staging"},
+    ),
     ("http://node_exporter:9100/metrics", "node.prometheus", "node_exporter", "node:9100", {}),
     ("http://mysqld_exporter:9104/metrics", "mysql.prometheus", "mysqld_exporter", "mysql:3306", {}),
     (

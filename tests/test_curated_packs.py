@@ -1283,6 +1283,43 @@ def test_763_network_io_panel_uses_curated_override():
     assert "| KEEP time_bucket, input, output" in query
 
 
+def test_763_hits_misses_panel_uses_curated_override():
+    """The 763 pack's hit/miss rates must use buckets wide enough for IRATE."""
+    dashboard = {"gnetId": 763, "title": "Redis...", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "timeseries",
+        "title": "Hits / Misses per Sec",
+        "targets": [
+            {
+                "expr": 'irate(redis_keyspace_hits_total{instance=~"$instance"}[5m])',
+                "legendFormat": "hits, {{ instance }}",
+                "refId": "A",
+            },
+            {
+                "expr": 'irate(redis_keyspace_misses_total{instance=~"$instance"}[5m])',
+                "legendFormat": "misses, {{ instance }}",
+                "refId": "B",
+            },
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "@timestamp >= ?_tstart" in query
+    assert "TBUCKET(2 minute)" in query
+    assert "AVG(IRATE(" in query
+    assert "redis_keyspace_hits_total" in query
+    assert "redis_keyspace_misses_total" in query
+    assert "labels.instance" in query
+    assert "| KEEP time_bucket, `labels.instance`, hits, misses" in query
+
+
 def test_763_average_time_spent_panel_uses_curated_override():
     """The 763 pack's per-command average latency panel must avoid adaptive null buckets."""
     dashboard = {"gnetId": 763, "title": "Redis...", "tags": []}

@@ -35,11 +35,11 @@ panels:
     fidelity: APPROXIMATE
     notes: >
       Ratio formula sum(100 * used / max). The generic co-located binary-expression
-      translator emits a single FROM query (both metrics land in the same
-      prometheus_native document per label-set from the redis_scraper). Panel shows
-      empty when Redis maxmemory=0 (no limit configured). APPROXIMATE because the
-      co-location assumption could fail on non-standard scrapers; semantically
-      correct for the default layout.
+      translator emits a single FROM query. The curated TS query combines both
+      prometheus_native series by label set. Panel shows empty when Redis
+      maxmemory=0 because no finite utilization percentage exists. APPROXIMATE
+      because Grafana returns +Inf for that zero denominator while Kibana renders
+      no value; both produce the same finite percentage when maxmemory is set.
     grafana_grid: {x: 5, y: 0, w: 3, h: 7}
     kibana_grid: {x: 16, y: 0, w: 10, h: 6}
 
@@ -55,7 +55,10 @@ panels:
     title: "Hits / Misses per Sec"
     grafana_type: timeseries
     fidelity: PERFECT
-    notes: "irate of keyspace_hits + keyspace_misses — two counter series"
+    notes: >
+      Two IRATE counter series, preserved by a curated ES|QL override. The fixed
+      two-minute bucket keeps at least two samples for supported scrape intervals;
+      adaptive count-based buckets can otherwise produce all-null rates.
     grafana_grid: {x: 16, y: 0, w: 8, h: 7}
     kibana_grid: {x: 0, y: 6, w: 16, h: 8}
 

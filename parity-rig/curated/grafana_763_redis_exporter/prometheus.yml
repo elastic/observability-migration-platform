@@ -13,6 +13,12 @@ scrape_configs:
         labels:
           instance: redis:6379
           namespace: default
+      # Second Redis target for multi-value namespace/instance controls.
+      - targets:
+          - redis_exporter_b:9121
+        labels:
+          instance: redis-b:6379
+          namespace: staging
 
   # Same targets, and the SAME instance/job labels, as redis_scraper.py sends to
   # Elasticsearch. Prometheus can then act as a reference implementation for
@@ -43,5 +49,16 @@ scrape_configs:
           instance: postgres:5432
           namespace: default
 
-# ES ingestion is handled by the OTEL Collector (otelcol service) which scrapes
-# redis_exporter independently and pushes via the elasticsearch exporter.
+# The OTEL Collector still supports the parity-rig ingest path. This additional
+# path exercises the operator-facing Prometheus → ES native remote_write flow in
+# a dedicated namespace, without relying on redis_scraper.
+remote_write:
+  - url: "http://elasticsearch:9200/_prometheus/metrics/redis/rw/api/v1/write"
+    queue_config:
+      max_samples_per_send: 1000
+      capacity: 10000
+      batch_send_deadline: 5s
+    write_relabel_configs:
+      - source_labels: [job]
+        regex: redis_exporter
+        action: keep

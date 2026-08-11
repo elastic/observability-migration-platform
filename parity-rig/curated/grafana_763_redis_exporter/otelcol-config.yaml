@@ -17,6 +17,10 @@ receivers:
               labels:
                 instance: "redis:6379"
                 namespace: "default"
+            - targets: [redis_exporter_b:9121]
+              labels:
+                instance: "redis-b:6379"
+                namespace: "staging"
 
 processors:
   resourcedetection:
