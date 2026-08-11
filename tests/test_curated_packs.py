@@ -354,7 +354,7 @@ def test_redis_memory_ratio_uses_ts_source():
     assert "MV_CONTAINS(?instance" in query, f"should preserve multi-select binding: {query}"
     assert 'MV_CONTAINS(?instance, ".*")' in query, query
     assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
-    # Dial domain 0–100 must survive sync: emitted query carries ``_gauge_*``
+    # Dial domain 0-100 must survive sync: emitted query carries ``_gauge_*``
     # and ``panel_result.esql_query`` must match so validate does not strip them.
     assert yaml_panel["esql"].get("maximum") == {"field": "_gauge_max"}
     assert "_gauge_max = 100" in query, query
@@ -536,7 +536,13 @@ def test_763_curated_pack_preserves_namespace_and_instance_controls():
     controls = payload.get("controls", [])
 
     assert {control.get("variable_name") for control in controls} == {"namespace", "instance"}
-    assert any("variable 'namespace' has a Kibana control" in warning for warning in result.control_warnings)
+    # Cascade parent: no panel binds ?namespace, but the instance control query
+    # does — so namespace must stay without the "renders but changes no panel"
+    # inert-control warning.
+    assert not any(
+        "variable 'namespace' has a Kibana control" in warning
+        for warning in result.control_warnings
+    ), result.control_warnings
     namespace_control = next(control for control in controls if control.get("variable_name") == "namespace")
     instance_control = next(control for control in controls if control.get("variable_name") == "instance")
     assert namespace_control.get("label") == "namespace"
@@ -566,8 +572,16 @@ def test_11835_curated_pack_preserves_source_control_graph():
         "pod_name",
         "instance",
     }
-    assert any("variable 'namespace' has a Kibana control" in warning for warning in result.control_warnings)
-    assert any("variable 'pod_name' has a Kibana control" in warning for warning in result.control_warnings)
+    # Cascade parents (namespace → pod_name → instance) bind each other via
+    # control populate queries, so they must not get the inert-control warning.
+    assert not any(
+        "variable 'namespace' has a Kibana control" in warning
+        for warning in result.control_warnings
+    ), result.control_warnings
+    assert not any(
+        "variable 'pod_name' has a Kibana control" in warning
+        for warning in result.control_warnings
+    ), result.control_warnings
     namespace_control = next(control for control in controls if control.get("variable_name") == "namespace")
     pod_control = next(control for control in controls if control.get("variable_name") == "pod_name")
     instance_control = next(control for control in controls if control.get("variable_name") == "instance")

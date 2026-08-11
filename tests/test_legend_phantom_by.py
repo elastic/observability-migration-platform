@@ -47,11 +47,11 @@ from observability_migration.adapters.source.grafana.promql import (
     _drop_legend_labels_if_redundant,
     _legend_grouping_redundant_on_ts,
 )
+from observability_migration.adapters.source.grafana.rules import RulePackConfig
+from observability_migration.adapters.source.grafana.schema import SchemaResolver
 from observability_migration.adapters.source.grafana.translate import (
     translate_promql_to_esql,
 )
-from observability_migration.adapters.source.grafana.rules import RulePackConfig
-from observability_migration.adapters.source.grafana.schema import SchemaResolver
 from observability_migration.targets.kibana.emit.esql_utils import (
     split_esql_pipeline,
     split_top_level_assignment,
