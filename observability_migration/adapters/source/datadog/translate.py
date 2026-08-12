@@ -768,9 +768,15 @@ def _translate_formula_metric_widget(
         or reducer is not None
         or bool(output_reducers)
     )
+    rate_safe = any(
+        spec.mq.as_rate or _needs_rate(spec.mq) for spec in used_specs
+    ) or any(
+        _collect_derivative_query_refs(formula.ast) for formula in formulas
+    )
     dim_exprs, dim_aliases = _metric_dimension_exprs(
         used_specs[0].group_fields,
         include_time_bucket=include_time_bucket,
+        rate_safe=rate_safe,
     )
     needs_bucket_span = any(_formula_needs_bucket_span(formula.ast) for formula in formulas)
 
@@ -1274,6 +1280,7 @@ def _try_translate_formula_reducer(
     dim_exprs, _ = _metric_dimension_exprs(
         spec.group_fields,
         include_time_bucket=plan.kibana_type in ("xy", "heatmap"),
+        rate_safe=False,
     )
     first_stage = (
         f"| STATS {spec.alias} = {spec.agg_expr} BY {', '.join(dim_exprs)}"
@@ -1331,6 +1338,7 @@ def _try_translate_count_formula_pipeline(
     dim_exprs, _dim_aliases = _metric_dimension_exprs(
         spec.group_fields,
         include_time_bucket=include_time_bucket,
+        rate_safe=False,
     )
     lines = [
         f"FROM {spec.index}",
@@ -1539,11 +1547,12 @@ def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
 def _metric_dimension_exprs(
     group_fields: list[str],
     include_time_bucket: bool,
+    rate_safe: bool = False,
 ) -> tuple[list[str], list[str]]:
     exprs: list[str] = []
     aliases: list[str] = []
     if include_time_bucket:
-        exprs.append(f"time_bucket = {TIME_BUCKET_EXPR}")
+        exprs.append(f"time_bucket = {_time_bucket_expr(rate_safe)}")
         aliases.append("time_bucket")
     exprs.extend(group_fields)
     aliases.extend(group_fields)

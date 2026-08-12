@@ -34,9 +34,9 @@ class TestTimeBucketExprHelper(unittest.TestCase):
 
 
 from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetFormula, WidgetQuery
 from observability_migration.adapters.source.datadog.planner import plan_widget
-from observability_migration.adapters.source.datadog.query_parser import parse_metric_query
-from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetQuery
+from observability_migration.adapters.source.datadog.query_parser import parse_formula, parse_metric_query
 from observability_migration.adapters.source.datadog.translate import translate_widget
 
 
@@ -87,3 +87,48 @@ class TestSingleQueryFromPathBucketSplit(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
+
+
+class TestFormulaFromPathBucketSplit(unittest.TestCase):
+    def _formula_widget(self, queries: list[tuple[str, str]], formula_raw: str) -> NormalizedWidget:
+        wqs = []
+        for name, query in queries:
+            mq = parse_metric_query(query)
+            wqs.append(
+                WidgetQuery(
+                    name=name,
+                    data_source="metrics",
+                    raw_query=query,
+                    metric_query=mq,
+                    query_type="metric",
+                )
+            )
+        wf = WidgetFormula(raw=formula_raw)
+        wf.expression = parse_formula(formula_raw)
+        return NormalizedWidget(id="1", widget_type="timeseries", title="w", queries=wqs, formulas=[wf])
+
+    def test_plain_ratio_formula_uses_75_bucket(self):
+        widget = self._formula_widget(
+            [("query1", "sum:haproxy.backend.response.2xx{*}"), ("query2", "sum:haproxy.backend.response.4xx{*}")],
+            "query1 / (query1 + query2) * 100",
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
+
+    def test_rate_formula_on_gauge_uses_20_bucket(self):
+        widget = self._formula_widget([("query1", "avg:mysql.performance.user_time{*}")], "rate(query1)")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+
+    def test_diff_formula_on_gauge_uses_20_bucket(self):
+        widget = self._formula_widget([("query1", "sum:redis.keyspace.hits{*}")], "diff(query1)")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+
+    def test_as_rate_query_used_in_formula_uses_20_bucket(self):
+        widget = self._formula_widget(
+            [("query1", "sum:http.requests{*}.as_rate()"), ("query2", "sum:http.errors{*}.as_rate()")],
+            "query1 - query2",
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
