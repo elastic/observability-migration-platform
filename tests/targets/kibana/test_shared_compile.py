@@ -32,8 +32,16 @@ class TestSharedCompileBehavior(unittest.TestCase):
                 "query": "TS metrics-* | STATS Busy_System = AVG(v) BY time_bucket = TBUCKET(10, ?_tstart, ?_tend) | KEEP time_bucket, Busy_System",
                 "dimension": {"field": "time_bucket", "data_type": "date"},
                 "metrics": [
-                    {"field": "Busy_System", "format": {"type": "percent"}},
-                    {"field": "Busy_User", "format": {"type": "percent"}},
+                    {
+                        "field": "Busy_System",
+                        "label": "Busy System",
+                        "format": {"type": "percent"},
+                    },
+                    {
+                        "field": "Busy_User",
+                        "label": "Busy User",
+                        "format": {"type": "percent"},
+                    },
                 ],
                 "mode": "percentage",
             },
@@ -58,6 +66,55 @@ class TestSharedCompileBehavior(unittest.TestCase):
         self.assertEqual(
             esql["metrics"],
             [{"field": "value", "format": {"type": "percent"}}],
+        )
+
+    def test_sync_esql_panel_fields_preserves_placeholder_value_label_on_rebuild(self):
+        """A ``value``/``computed_value`` fallback label (issue #351) must survive.
+
+        Post-validation query swaps rebuild the long-form XY metric list from
+        scratch (see ``test_sync_esql_panel_fields_rebuilds_long_form_xy_breakdown``).
+        Before this fix that rebuild kept ``format`` but dropped any ``label``
+        the translator had derived for the placeholder ``value`` column,
+        silently regressing a labeled axis back to the raw column name.
+        """
+        yaml_panel = {
+            "title": "Disk Space Used Basic",
+            "esql": {
+                "type": "line",
+                "query": "TS metrics-* | STATS computed_value = AVG(v) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend) | KEEP time_bucket, computed_value",
+                "dimension": {"field": "time_bucket", "data_type": "date"},
+                "metrics": [
+                    {
+                        "field": "computed_value",
+                        "label": "Disk Space Used Basic",
+                        "format": {"type": "number", "suffix": "%"},
+                    }
+                ],
+            },
+        }
+        new_query = (
+            "TS metrics-* "
+            "| STATS computed_value = AVG(v) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.mountpoint "
+            "| EVAL series_group = labels.mountpoint, value = computed_value "
+            "| KEEP time_bucket, series_group, value"
+        )
+
+        changed = shared_compile._sync_esql_panel_fields(
+            yaml_panel,
+            yaml_panel["esql"]["query"],
+            new_query,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            yaml_panel["esql"]["metrics"],
+            [
+                {
+                    "field": "value",
+                    "format": {"type": "number", "suffix": "%"},
+                    "label": "Disk Space Used Basic",
+                }
+            ],
         )
 
     def test_sync_esql_panel_fields_keeps_time_dimension_metadata_when_query_changes(self):

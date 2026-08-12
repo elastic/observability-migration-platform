@@ -116,15 +116,30 @@ def _sync_esql_panel_fields(yaml_panel, old_query, new_query):
             breakdown["field"] = "series_group"
             changed = True
         format_cfg = None
+        label_cfg = None
         metrics = esql_config.get("metrics")
         if isinstance(metrics, list):
             for item in metrics:
-                if isinstance(item, dict) and isinstance(item.get("format"), dict):
+                if not isinstance(item, dict):
+                    continue
+                if format_cfg is None and isinstance(item.get("format"), dict):
                     format_cfg = copy.deepcopy(item["format"])
-                    break
+                if (
+                    label_cfg is None
+                    and str(item.get("field") or item.get("column") or "").strip()
+                    in {"value", "computed_value"}
+                    and str(item.get("label") or "").strip()
+                ):
+                    label_cfg = item["label"]
         new_metric_item = {"field": "value"}
         if format_cfg:
             new_metric_item["format"] = format_cfg
+        # Preserve a caller-derived label (panel title / static legend
+        # fallback for the placeholder ``value`` column, issue #351) across
+        # this rebuild -- otherwise a post-validation query swap silently
+        # regresses a labeled axis back to the raw column name.
+        if label_cfg:
+            new_metric_item["label"] = label_cfg
         if esql_config.get("metrics") != [new_metric_item]:
             esql_config["metrics"] = [new_metric_item]
             changed = True

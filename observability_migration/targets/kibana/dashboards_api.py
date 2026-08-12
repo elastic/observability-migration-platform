@@ -740,11 +740,19 @@ _FORMAT_TYPE_TO_Y_AXIS_TITLE: dict[str, str] = {
 }
 
 
+# YAML/visual-IR spellings that put a series on the right-hand axis. Kept in
+# sync with the ``axis`` mapping in :func:`_api_column` (role ``xy_y``).
+_RIGHT_AXIS_VALUES = {"right", "y2"}
+
+
 def _infer_y_axis_title(metrics: list[Any]) -> str:
     """Return a Y-axis title inferred from a uniform metric format, or ''."""
     left_formats = set()
     for m in metrics:
-        if not isinstance(m, dict) or m.get("axis") == "right":
+        if (
+            not isinstance(m, dict)
+            or str(m.get("axis") or "") in _RIGHT_AXIS_VALUES
+        ):
             continue
         fmt = m.get("format")
         if isinstance(fmt, dict):
@@ -772,11 +780,6 @@ def _xy_metrics(cfg: dict[str, Any]) -> list[Any]:
             if isinstance(layer, dict) and isinstance(layer.get("metrics"), list):
                 metrics.extend(layer["metrics"])
     return metrics
-
-
-# YAML/visual-IR spellings that put a series on the right-hand axis. Kept in
-# sync with the ``axis`` mapping in :func:`_api_column` (role ``xy_y``).
-_RIGHT_AXIS_VALUES = {"right", "y2"}
 
 
 def _has_right_axis_series(cfg: dict[str, Any]) -> bool:
@@ -876,6 +879,26 @@ def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
     if axis and (axis.get("y") or {}).get("title"):
         return axis
     metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
+    left = [
+        m for m in metrics
+        if (
+            isinstance(m, dict)
+            and str(m.get("axis") or "") not in _RIGHT_AXIS_VALUES
+        )
+    ]
+    if len(left) == 1 and _xy_single_metric_uses_placeholder_name(cfg, left[0]):
+        placeholder_label = str(left[0].get("label") or "").strip()
+        if placeholder_label:
+            # The caller-derived label names the composite series more
+            # specifically than a generic unit title such as "%" or "Bytes".
+            shown: dict[str, Any] = {
+                "title": {"text": placeholder_label, "visible": True}
+            }
+            if axis:
+                merged_shown = dict(axis)
+                merged_shown["y"] = {**merged_shown.get("y", {}), **shown}
+                return merged_shown
+            return {"y": shown}
     inferred = _infer_y_axis_title(metrics)
     if not inferred:
         # No unit-derived title available. With two or more left-axis series
@@ -885,10 +908,6 @@ def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
         # (axisLabel is empty), so hide it rather than let Kibana invent a
         # wrong one. A single series keeps the default, where the column name
         # does describe the axis.
-        left = [
-            m for m in metrics
-            if isinstance(m, dict) and m.get("axis") != "right"
-        ]
         if len(left) >= 2:
             # ``visible: false`` alone hides the title; a companion ``text: ""``
             # names nothing and Kibana does not store it (see _api_axis_title).

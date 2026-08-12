@@ -2082,7 +2082,37 @@ def _static_legend_label(legend_format):
     return label
 
 
-def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
+def _panel_static_legend_label(panel):
+    """Return the one unambiguous static legend shared by visible targets."""
+    labels = []
+    for target in panel.get("targets") or []:
+        if not isinstance(target, dict) or target.get("hide"):
+            continue
+        label = _static_legend_label(target.get("legendFormat", ""))
+        if not label:
+            return ""
+        if label not in labels:
+            labels.append(label)
+    return labels[0] if len(labels) == 1 else ""
+
+
+_PLACEHOLDER_VALUE_METRIC_FIELDS = frozenset({"value", "computed_value"})
+
+
+def _label_placeholder_value_metric(yaml_panel, *, title, legend_format=""):
+    """Give a synthetic ``value``/``computed_value`` metric column a real label.
+
+    Both the native-PROMQL path (single ``value=(...)`` column) and the
+    general ES|QL translator (single ``computed_value`` scalar-expression
+    column) collapse a panel's target(s) into one numeric column with a
+    placeholder name. Kibana's Lens then falls back to that raw column name
+    -- ``value``/``computed_value`` -- as the axis/legend label (issue #351).
+    Curated-pack overrides that fuse multiple metrics into one ``value``
+    column via ``EVAL value = ...`` hit the same gap.
+
+    Uses the same fallback as a single-target panel: the target's static
+    legend text if the operator set one, otherwise the panel title.
+    """
     esql = yaml_panel.get("esql")
     if not isinstance(esql, dict):
         return
@@ -2098,7 +2128,7 @@ def _label_native_promql_value_metric(yaml_panel, *, title, legend_format=""):
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
-        if metric.get("field") != "value":
+        if metric.get("field") not in _PLACEHOLDER_VALUE_METRIC_FIELDS:
             continue
         metric.setdefault("label", fallback_label)
 
@@ -2730,7 +2760,7 @@ def _translate_panel_native_promql(
 
     yaml_panel["esql"] = native_panel
     enrich_yaml_panel_display(yaml_panel, panel)
-    _label_native_promql_value_metric(yaml_panel, title=title, legend_format=legend_format)
+    _label_placeholder_value_metric(yaml_panel, title=title, legend_format=legend_format)
     _apply_series_override_axes(yaml_panel, panel, [])
 
     notes = list(panel_notes) + ["Native PROMQL: original PromQL reused via ES|QL PROMQL command"]
@@ -3783,6 +3813,11 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                             yaml_panel, panel, _override_warnings
                         )
                         enrich_yaml_panel_display(yaml_panel, panel)
+                        _label_placeholder_value_metric(
+                            yaml_panel,
+                            title=title,
+                            legend_format=_panel_static_legend_label(panel),
+                        )
                         _score = 1.0 if _status == "migrated" else 0.7
                         _override_notes = list(panel_notes)
                         if _status == "migrated":
@@ -4382,6 +4417,9 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         yaml_panel,
         panel,
         metric_labels=metric_labels or None,
+    )
+    _label_placeholder_value_metric(
+        yaml_panel, title=title, legend_format=static_legend_label or ""
     )
     _apply_series_override_axes(yaml_panel, panel, primary.warnings)
     if yaml_panel.get("esql", {}).get("query"):

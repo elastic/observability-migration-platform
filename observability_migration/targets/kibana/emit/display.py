@@ -334,7 +334,14 @@ def humanize_metric_label(field_name: str, legend_format: str | None = None) -> 
         return None
     text = re.sub(r"_+", " ", field_name).strip()
     text = re.sub(r"\s{2,}", " ", text)
-    if not text or text.lower() in ("series", "value", "metric", "time bucket"):
+    # "computed value" is the ES|QL translator's own synthetic scalar-expression
+    # column name (``computed_value``, the ``by()``-less binary-expression
+    # counterpart to native PROMQL's ``value``) -- humanizing it into "Computed
+    # Value" is exactly the misleading placeholder-as-title leak issue #351
+    # covers, just re-capitalized rather than literal. Both placeholder names
+    # rely on the panel-title/legend fallback in
+    # ``_label_placeholder_value_metric`` instead.
+    if not text or text.lower() in ("series", "value", "computed value", "metric", "time bucket"):
         return None
     parts = text.split()
     label = " ".join(p if p.isupper() else p.capitalize() for p in parts)

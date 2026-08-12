@@ -15,6 +15,7 @@ from observability_migration.adapters.source.grafana.panels import (
     _apply_panel_layout_overrides_recursively,
     _materialize_curated_query_override,
     _omit_absent_optional_metrics_from_curated_query,
+    _panel_static_legend_label,
     _retarget_esql_param_controls_to_panel_bindings,
     _strip_optional_metric_token_from_curated_esql,
     translate_dashboard,
@@ -490,6 +491,69 @@ def test_1860_cpu_busy_curated_override_avoids_boundary_bucket_last():
     assert "WHERE computed_value IS NOT NULL" in query
     assert "TBUCKET(20," in query
     assert "STATS computed_value = LAST(computed_value, time_bucket)" not in query
+
+
+def test_1860_disk_space_used_basic_labels_composite_value_metric():
+    """Curated composite-series overrides must label their ``value`` column (#351).
+
+    The "Disk Space Used Basic" override fuses ``node_filesystem_avail_bytes``
+    and ``node_filesystem_size_bytes`` into one ``value`` column broken down
+    by ``series_group`` (mountpoint). With no ``label`` set, Lens falls back
+    to the raw column name ("value") as the y-axis title; the panel title is
+    the same fallback the single-target native-PROMQL path already uses.
+    """
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "timeseries",
+        "title": "Disk Space Used Basic",
+        "fieldConfig": {"defaults": {"unit": "percent"}},
+        "targets": [{"expr": "node_filesystem_avail_bytes", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    metrics = yaml_panel["esql"]["metrics"]
+    assert [m.get("field") for m in metrics] == ["value"]
+    assert metrics[0].get("label") == "Disk Space Used Basic"
+
+
+def test_1860_curated_composite_value_metric_prefers_static_legend_label():
+    """Curated overrides keep the single-target static-legend precedence."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    panel = {
+        "type": "timeseries",
+        "title": "Disk Space Used Basic",
+        "fieldConfig": {"defaults": {"unit": "percent"}},
+        "targets": [
+            {
+                "expr": "node_filesystem_avail_bytes",
+                "refId": "A",
+                "legendFormat": "Disk Used",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+
+    assert result.status == "migrated"
+    assert yaml_panel["esql"]["metrics"][0].get("label") == "Disk Used"
+
+
+def test_panel_static_legend_label_rejects_mixed_static_and_dynamic_legends():
+    panel = {
+        "targets": [
+            {"legendFormat": "Disk Used"},
+            {"legendFormat": "{{ mountpoint }}"},
+        ]
+    }
+
+    assert _panel_static_legend_label(panel) == ""
 
 
 def test_find_14091_by_gnet_id():
