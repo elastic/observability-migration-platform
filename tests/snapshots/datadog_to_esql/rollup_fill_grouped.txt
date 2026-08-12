@@ -8,5 +8,5 @@ warning: fill(zero) only applies to null values in returned rows; empty buckets 
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name
+| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name
 | SORT time_bucket

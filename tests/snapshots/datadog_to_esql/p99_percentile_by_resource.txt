@@ -5,5 +5,5 @@ kibana_type: xy
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = PERCENTILE(trace_http_request_duration, 99) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), resource_name
+| STATS value = PERCENTILE(trace_http_request_duration, 99) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), resource_name
 | SORT time_bucket

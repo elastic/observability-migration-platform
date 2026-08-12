@@ -2055,7 +2055,7 @@ class TestTranslation(unittest.TestCase):
         plan.backend = "esql"
         result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
-        self.assertIn("| STATS _bucket_value = SUM(mongodb_chunks_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
+        self.assertIn("| STATS _bucket_value = SUM(mongodb_chunks_total) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket)", result.esql_query)
 
     def test_query_table_last_aggregator_reduces_after_grouped_buckets(self):
@@ -2079,7 +2079,7 @@ class TestTranslation(unittest.TestCase):
         plan.backend = "esql"
         result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name", result.esql_query)
+        self.assertIn("BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket) BY replset_name", result.esql_query)
 
     def test_query_value_percentile_request_aggregator_reduces_over_time(self):
@@ -2109,7 +2109,7 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
         self.assertIn(
-            "| STATS _bucket_value = PERCENTILE(cockroachdb_sql_service_latency, 99) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)",
+            "| STATS _bucket_value = PERCENTILE(cockroachdb_sql_service_latency, 99) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)",
             result.esql_query,
         )
         self.assertIn("| STATS value = PERCENTILE(_bucket_value, 99)", result.esql_query)
