@@ -141,24 +141,24 @@ semantic contract, not just a display knob.
 
 | Path | Bucket | Rate window |
 |---|---|---|
-| Grafana TS XY (`panels.py` `_NATIVE_ESQL_ADAPTIVE_TBUCKET`) | `TBUCKET(100, ?_tstart, ?_tend)` | windowless `RATE`/`IRATE` |
-| Grafana `FROM` (`rules.py` `from_bucket`) | `BUCKET(@timestamp, 50, ?_tstart, ?_tend)` | — |
+| Grafana TS XY (`panels.py` `_NATIVE_ESQL_ADAPTIVE_TBUCKET`) | `TBUCKET(75, ?_tstart, ?_tend)` (20 when rate-safe) | windowless `RATE`/`IRATE` |
+| Grafana `FROM` (`panels.py` adaptive override of `from_bucket`) | `BUCKET(@timestamp, 75, ?_tstart, ?_tend)` (20 when rate-safe) | — |
 | Grafana scalar panels (safe reducers) | `TBUCKET(1, ?_tstart, ?_tend)` | avoided for range functions (`_panel_uses_range_function`) |
 | Native `PROMQL` emission path | `buckets=50` | `$__rate_interval` kept genuinely adaptive/windowless |
-| Datadog `FROM` (`translate.py` `TIME_BUCKET_EXPR`) | `BUCKET(@timestamp, 50, ?_tstart, ?_tend)` | — |
-| Datadog `TS` rate path | `TBUCKET(5 minute)` fixed | `RATE(field, 5 minute)` (window kept, unlike Grafana) |
+| Datadog `FROM` (`translate.py` `TIME_BUCKET_EXPR`) | `BUCKET(@timestamp, 75, ?_tstart, ?_tend)` (20 when rate-safe) | — |
+| Datadog `TS` rate path | `TBUCKET(20, ?_tstart, ?_tend)` adaptive | windowless `RATE(field)` / `INCREASE(field)` |
 | Curated packs (node-exporter-1860, redis-763) | hand-tuned `TBUCKET(20)` / `TBUCKET(2 minute)` | manual, discovered per-dashboard by audit |
 
-Two structural problems fall out of this table on their own, independent of
-the scrape-interval bug:
+Two structural problems originally fell out of this table (both now resolved —
+Grafana via this document's rollout; Datadog via
+[`datadog-esql-time-bucketing-adaptivity.md`](./datadog-esql-time-bucketing-adaptivity.md)):
 
-- **`FROM`(50) and `TS`(100) disagree on the "same" adaptive default** with no
-  shared constant — `rules.py:142` vs `panels.py:1255`. Nothing keeps them in
-  sync; Kibana's own precedent (75) is neither.
-- **Datadog's `TS` rate path never adapts to the dashboard range** (fixed `5
-  minute`) while the `FROM` path does (`BUCKET(...,50,…)`) — the two Datadog
-  paths are inconsistent with each other in the opposite direction from
-  Grafana's inconsistency.
+- **`FROM`(50) and `TS`(100) used to disagree** on the "same" adaptive default
+  with no shared constant. Both Grafana paths now share `_ADAPTIVE_CHART_BUCKETS
+  = 75` / `_ADAPTIVE_RATE_BUCKETS = 20`.
+- **Datadog's `TS` rate path never adapted to the dashboard range** (fixed `5
+  minute`) while the `FROM` path did (`BUCKET(...,50,…)`). Both Datadog paths
+  now use the same adaptive 75/20 split; the `TS` rate path is windowless.
 
 ---
 
@@ -232,12 +232,11 @@ behavior change for existing dashboard renders.
   new discovery machinery and a fallback-when-offline story. Tracked as
   follow-up; N=20 is deliberately conservative enough to not need it for the
   common case.
-- **Datadog `TS` rate path adaptivity.** Its fixed `TBUCKET(5 minute)` has the
-  opposite problem from Grafana (never tightens on short ranges, never widens
-  on long ones) but Datadog's own rollup semantics are already
-  server-side-aggregated before we see them, so the failure mode is less
-  acute. Revisit once a Datadog curated pack needs it, rather than
-  speculatively generalizing now.
+- **Datadog `TS` rate path adaptivity.** Originally out of scope here; now
+  resolved in
+  [`datadog-esql-time-bucketing-adaptivity.md`](./datadog-esql-time-bucketing-adaptivity.md)
+  (adaptive windowless `TBUCKET(20, ?_tstart, ?_tend)` + unified `FROM`-path
+  75/20 split).
 - **Per-dashboard/per-panel configurability.** No new `pack.yaml` knob is
   proposed; N=75/20 become the new generic defaults, and existing curated
   `panel_query_overrides` (which hardcode their own `TBUCKET(...)`) are
@@ -303,16 +302,14 @@ behavior change for existing dashboard renders.
    history. Curated `panel_query_override` strings may still include a
    hand-written `@timestamp` guard when they are meant to be replayed directly,
    but the dashboard-native output does not require one for correctness.
-3. **Is Datadog `TS`-rate adaptivity in scope now?** No — stayed out of scope
-   per §4.4, filed as a follow-up rather than ported opportunistically. The
-   Grafana-side range-function-detection pattern is reusable, but Datadog's
-   `TS` path has its own separate fixed-window constant
-   (`translate.py`/`TIME_BUCKET_EXPR`-adjacent) and deserves its own
-   live-verified default rather than inheriting Grafana's numbers by analogy.
+3. **Is Datadog `TS`-rate adaptivity in scope now?** Originally no — left out
+   of scope per §4.4 rather than ported opportunistically, because Datadog's
+   `TS` path deserved its own live-verified default rather than inheriting
+   Grafana's numbers by analogy.
    **Resolved in `docs/design/datadog-esql-time-bucketing-adaptivity.md`**:
-   independently live-verified `N=20` is also the right Datadog default (not
-   inherited by analogy), and unified both Datadog paths (`FROM` 50→75/20,
-   `TS` fixed `5 minute` → adaptive windowless) on the same pattern.
+   independently live-verified `N=20` is also the right Datadog default, and
+   both Datadog paths are now unified (`FROM` 50→75/20, `TS` fixed `5 minute`
+   → adaptive windowless) on the same pattern.
 
 ## 7. As-built summary
 

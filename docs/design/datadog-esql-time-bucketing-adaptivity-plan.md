@@ -1,5 +1,12 @@
 # Datadog ES|QL Time-Bucketing Adaptivity Implementation Plan
 
+> **Status:** implemented. Prefer
+> [`datadog-esql-time-bucketing-adaptivity.md`](./datadog-esql-time-bucketing-adaptivity.md)
+> §3.2 "As implemented" for the shipped `rate_safe` predicate (it includes the
+> post-review `spec.emits_rate` and `_formula_needs_bucket_span` signals that
+> some code blocks below omit). Task checkboxes below are historical and were
+> not updated after execution.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Unify Datadog's `FROM`-path ES|QL bucket default (`BUCKET(@timestamp,
@@ -643,9 +650,11 @@ reordering the existing code):
 ```
 
 In `_try_translate_formula_reducer` (the `count_nonzero`/`count_not_null`
-single-formula path — never rate-related, always the flat default), pass
-`rate_safe=False` explicitly at its `_metric_dimension_exprs` call to make
-the intent explicit rather than relying on the parameter default:
+single-formula path), pass `rate_safe=False` explicitly at its
+`_metric_dimension_exprs` call. This keeps the flat default even when the
+referenced query emits rate math (e.g. via `.as_rate()` or a metric-map
+`transform: to_rate` override) — a known gap documented in the design doc
+§3.2, out of scope for this plan:
 
 ```python
     dim_exprs, _ = _metric_dimension_exprs(

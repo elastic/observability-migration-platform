@@ -163,7 +163,9 @@ the count-only formula helpers (`_try_translate_formula_reducer`,
 `_try_translate_count_formula_pipeline`) still always pass `rate_safe=False`
 regardless of whether the referenced query emits rate math (e.g. via
 `.as_rate()` or a metric-map `transform: to_rate` override); this is a known
-pre-existing gap, out of scope for this change.
+pre-existing gap, out of scope for this change. Note that those helpers
+previously emitted the old flat 50-bucket default and now emit 75 — so the
+gap is slightly widened (finer buckets) rather than left unchanged.
 
 ### 3.3 Convert the `TS` path to adaptive, windowless bucketing
 
