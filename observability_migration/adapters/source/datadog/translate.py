@@ -448,6 +448,7 @@ def _translate_single_metric(
         return _build_change_widget_esql(wq, widget, plan, field_map, result)
 
     spec = _build_metric_query_spec(wq, field_map, result)
+    rate_safe = bool(wq.metric_query and (wq.metric_query.as_rate or _needs_rate(wq.metric_query)))
     top_config = _extract_top_function_config(wq.metric_query)
     is_timeseries = plan.kibana_type == "xy"
     is_heatmap = plan.kibana_type == "heatmap"
@@ -483,6 +484,7 @@ def _translate_single_metric(
             sort_order="DESC",
             limit=100,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
     if is_heatmap and not spec.group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
@@ -501,7 +503,7 @@ def _translate_single_metric(
 
     if is_timeseries or is_heatmap:
         if is_timeseries and top_config.limit is not None:
-            group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+            group_clause = f"time_bucket = {_time_bucket_expr(rate_safe)}"
             if spec.group_fields:
                 group_clause += ", " + ", ".join(spec.group_fields)
             rank_expr = _series_reducer_expr(top_config.reducer or "avg", "value")
@@ -536,6 +538,7 @@ def _translate_single_metric(
                 spec.es_metric,
                 spec.group_fields,
                 agg_expr=spec.agg_expr,
+                rate_safe=rate_safe,
             )
             _append_unique_warning(
                 result,
@@ -546,6 +549,7 @@ def _translate_single_metric(
             return query
         return _build_timeseries_esql(
             spec.index, spec.where_str, spec.agg_expr, spec.group_fields,
+            rate_safe=rate_safe,
         )
 
     if is_toplist:
@@ -559,6 +563,7 @@ def _translate_single_metric(
             sort_order=top_config.sort_order,
             limit=limit,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
 
     if is_table or is_partition:
@@ -571,9 +576,10 @@ def _translate_single_metric(
             sort_order="DESC",
             limit=100,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
 
-    return _build_scalar_esql(spec.index, spec.where_str, spec.agg_expr, reducer=reducer)
+    return _build_scalar_esql(spec.index, spec.where_str, spec.agg_expr, reducer=reducer, rate_safe=rate_safe)
 
 
 def _build_change_widget_esql(
@@ -2223,8 +2229,9 @@ def _build_timeseries_esql(
     where: str,
     agg_expr: str,
     group_fields: list[str],
+    rate_safe: bool = False,
 ) -> str:
-    time_bucket = TIME_BUCKET_EXPR
+    time_bucket = _time_bucket_expr(rate_safe)
     group_clause = f"time_bucket = {time_bucket}"
     if group_fields:
         group_clause += ", " + ", ".join(group_fields)
@@ -2243,6 +2250,7 @@ def _build_distribution_percentile_esql(
     metric_field: str,
     group_fields: list[str],
     agg_expr: str = "",
+    rate_safe: bool = False,
 ) -> str:
     """Approximate a Datadog distribution widget as percentile envelopes.
 
@@ -2252,7 +2260,7 @@ def _build_distribution_percentile_esql(
     percentile envelope — both are genuinely useful series on the chart.
     """
     field = (metric_field or "").strip() or "value"
-    time_bucket = TIME_BUCKET_EXPR
+    time_bucket = _time_bucket_expr(rate_safe)
     group_clause = f"time_bucket = {time_bucket}"
     if group_fields:
         group_clause += ", " + ", ".join(group_fields)
@@ -2295,6 +2303,7 @@ def _build_toplist_esql(
     agg_expr: str,
     group_fields: list[str],
     limit: int,
+    rate_safe: bool = False,
 ) -> str:
     return _build_categorical_esql(
         index,
@@ -2304,6 +2313,7 @@ def _build_toplist_esql(
         sort_field="value",
         sort_order="DESC",
         limit=limit,
+        rate_safe=rate_safe,
     )
 
 
@@ -2312,6 +2322,7 @@ def _build_table_esql(
     where: str,
     agg_expr: str,
     group_fields: list[str],
+    rate_safe: bool = False,
 ) -> str:
     return _build_categorical_esql(
         index,
@@ -2321,6 +2332,7 @@ def _build_table_esql(
         sort_field="value",
         sort_order="DESC",
         limit=100,
+        rate_safe=rate_safe,
     )
 
 
@@ -2329,12 +2341,13 @@ def _build_scalar_esql(
     where: str,
     agg_expr: str,
     reducer: str | None = None,
+    rate_safe: bool = False,
 ) -> str:
     if reducer:
         lines = [
             f"FROM {index}",
             f"| WHERE {where}",
-            f"| STATS _bucket_value = {agg_expr} BY time_bucket = {TIME_BUCKET_EXPR}",
+            f"| STATS _bucket_value = {agg_expr} BY time_bucket = {_time_bucket_expr(rate_safe)}",
         ]
         lines.append(f"| STATS value = {_series_reducer_expr(reducer, '_bucket_value')}")
         return "\n".join(lines)
@@ -2354,13 +2367,14 @@ def _build_categorical_esql(
     sort_order: str,
     limit: int | None,
     reducer: str | None = None,
+    rate_safe: bool = False,
 ) -> str:
     lines = [
         f"FROM {index}",
         f"| WHERE {where}",
     ]
     if reducer:
-        group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+        group_clause = f"time_bucket = {_time_bucket_expr(rate_safe)}"
         if group_fields:
             group_clause += ", " + ", ".join(group_fields)
         lines.append(f"| STATS _bucket_value = {agg_expr} BY {group_clause}")

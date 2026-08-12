@@ -31,3 +31,59 @@ class TestTimeBucketExprHelper(unittest.TestCase):
             translate._time_bucket_expr(False),
             translate.TIME_BUCKET_EXPR,
         )
+
+
+from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+from observability_migration.adapters.source.datadog.planner import plan_widget
+from observability_migration.adapters.source.datadog.query_parser import parse_metric_query
+from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetQuery
+from observability_migration.adapters.source.datadog.translate import translate_widget
+
+
+class TestSingleQueryFromPathBucketSplit(unittest.TestCase):
+    def _widget(
+        self,
+        query: str,
+        widget_type: str = "timeseries",
+        *,
+        aggregator: str = "",
+    ) -> NormalizedWidget:
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+            aggregator=aggregator,
+        )
+        return NormalizedWidget(id="1", widget_type=widget_type, title="w", queries=[wq])
+
+    def test_plain_gauge_timeseries_uses_75_bucket(self):
+        widget = self._widget("avg:system.cpu.user{*}")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 20", result.esql_query)
+
+    def test_as_rate_timeseries_uses_20_bucket(self):
+        widget = self._widget("sum:http.requests{*}.as_rate()")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
+
+    def test_as_rate_query_value_uses_20_bucket(self):
+        # Grouped query_value collapses to a ranked table via
+        # _build_categorical_esql(reducer=...) -- still must stay rate-safe.
+        widget = self._widget("sum:http.requests{*} by {host}.as_rate()", widget_type="query_value")
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+
+    def test_plain_gauge_toplist_uses_75_bucket(self):
+        # Toplist widgets with a request reducer bucket over time before ranking.
+        widget = self._widget(
+            "avg:system.cpu.user{*} by {host}",
+            widget_type="toplist",
+            aggregator="last",
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
