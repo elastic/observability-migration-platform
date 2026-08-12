@@ -142,11 +142,25 @@ def _widget_uses_rate_function(widget: NormalizedWidget) -> bool:
     return False
 ```
 
-`TIME_BUCKET_EXPR` becomes a call, `_time_bucket_expr(widget)`, returning the
-75- or 20-bucket form based on this check, threaded through every `FROM`-path
-call site that currently references the module-level `TIME_BUCKET_EXPR`
-constant (~10 sites in `translate.py`, including the `_rate_approx_expr`
-FIRST/LAST fallback, which always qualifies as rate-needing by construction).
+`TIME_BUCKET_EXPR` becomes a call, `_time_bucket_expr(rate_safe: bool)`,
+returning the 75- or 20-bucket form based on this check, threaded through
+every `FROM`-path call site that currently references the module-level
+`TIME_BUCKET_EXPR` constant (including the `_rate_approx_expr` FIRST/LAST
+fallback, which always qualifies as rate-needing by construction).
+
+**As implemented:** rather than a single shared `_widget_uses_rate_function(widget)`
+threaded everywhere, `rate_safe` is computed locally at each of the two
+FROM-path entry points, since they have different natural signals available:
+`_translate_single_metric` computes it once from its single query
+(`wq.metric_query.as_rate or _needs_rate(wq.metric_query)`), while
+`_translate_formula_metric_widget` computes it from `used_specs`' own
+as_rate/`_needs_rate` OR any formula's derivative-function refs (the
+equivalent of `_formula_calls_derivative_fn` above, expressed via the
+existing `_collect_derivative_query_refs` helper). Both feed the same
+`_time_bucket_expr(rate_safe)` helper and constants described above; the
+count-only formula helpers (`_try_translate_formula_reducer`,
+`_try_translate_count_formula_pipeline`) pass `rate_safe=False` explicitly,
+since count formulas are never rate-related.
 
 ### 3.3 Convert the `TS` path to adaptive, windowless bucketing
 
@@ -180,10 +194,11 @@ regardless of which source adapter emitted the query.
 ## 4. Rollout plan
 
 1. **Engine change** — add `_ADAPTIVE_CHART_BUCKETS`/`_ADAPTIVE_RATE_BUCKETS`
-   to `translate.py`; add `_widget_uses_rate_function` and thread
-   `_time_bucket_expr(widget)` through every `FROM`-path `TIME_BUCKET_EXPR`
-   call site; convert the `TS`-path `by_clause`/`RATE`/`INCREASE` emission to
-   the adaptive windowless form.
+   and the `_time_bucket_expr(rate_safe: bool)` helper to `translate.py`;
+   thread a locally-computed `rate_safe` through every `FROM`-path
+   `TIME_BUCKET_EXPR` call site (see "As implemented" in §3.2); convert the
+   `TS`-path `by_clause`/`RATE`/`INCREASE` emission to the adaptive
+   windowless form.
 2. **Tests** — regenerate the ~30 `tests/snapshots/datadog_to_esql/*.txt`
    fixtures that hardcode `BUCKET(@timestamp, 50, ...)`; update
    `test_datadog_migrate.py`'s `test_rate_formula_uses_ts_rate_when_metric_is_counter_typed`
