@@ -57,11 +57,13 @@ query:
     node_cpu_scaling_frequency_hertz: gauge
     node_cpu_scaling_frequency_max_hertz: gauge
     node_cpu_scaling_frequency_min_hertz: gauge
+    node_interrupts_total: counter
 
   live_optional_metrics:
     - node_memory_HardwareCorrupted_bytes
     - node_netstat_TcpExt_TCPRcvQDrop
     - node_netstat_Tcp_MaxConn
+    - node_interrupts_total
 
   label_candidates:
     instance:
@@ -128,7 +130,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL
-        | STATS mem_available = MAX(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})), mem_total = MAX(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS mem_available = MAX(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})), mem_total = MAX(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(mem_total > 0, ((1 - (mem_available / mem_total)) * 100), NULL)
         | STATS computed_value = LAST(computed_value, time_bucket)
         | KEEP computed_value
@@ -140,7 +142,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_memory_SwapTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapFree_bytes:gauge}} IS NOT NULL
-        | STATS swap_total = MAX(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), swap_free = MAX(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS swap_total = MAX(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), swap_free = MAX(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(swap_total > 0, (((swap_total - swap_free) / swap_total) * 100), NULL)
         | STATS computed_value = LAST(computed_value, time_bucket)
         | KEEP computed_value
@@ -152,7 +154,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_time_seconds:gauge}} IS NOT NULL OR {{metric:node_boot_time_seconds:gauge}} IS NOT NULL
-        | STATS node_time_seconds = MAX(LAST_OVER_TIME({{metric:node_time_seconds:gauge}})), node_boot_time_seconds = MAX(LAST_OVER_TIME({{metric:node_boot_time_seconds:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS node_time_seconds = MAX(LAST_OVER_TIME({{metric:node_time_seconds:gauge}})), node_boot_time_seconds = MAX(LAST_OVER_TIME({{metric:node_boot_time_seconds:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = node_time_seconds - node_boot_time_seconds
         | STATS computed_value = LAST(computed_value, time_bucket)
         | KEEP computed_value
@@ -163,7 +165,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:process_virtual_memory_bytes:gauge}} IS NOT NULL OR {{metric:process_resident_memory_bytes:gauge}} IS NOT NULL OR {{metric:process_virtual_memory_max_bytes:gauge}} IS NOT NULL
-        | STATS Processes_virtual_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_bytes:gauge}})), Resident_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_resident_memory_bytes:gauge}})), Maximum_amount_of_virtual_memory_available_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | STATS Processes_virtual_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_bytes:gauge}})), Resident_memory_size_in_bytes = AVG(LAST_OVER_TIME({{metric:process_resident_memory_bytes:gauge}})), Maximum_amount_of_virtual_memory_available_in_bytes = AVG(LAST_OVER_TIME({{metric:process_virtual_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
         | EVAL series_group = CONCAT(COALESCE(TO_STRING(`{{label:instance}}`), ""), " / ", COALESCE(TO_STRING(`{{label:job}}`), ""))
         | SORT time_bucket ASC
       status_override: migrated
@@ -173,7 +175,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_load1:gauge}} IS NOT NULL OR {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS node_load1 = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS node_load1 = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(cpu_cores > 0, ((node_load1 * 100) / cpu_cores), NULL)
         | STATS computed_value = LAST(computed_value, time_bucket)
         | KEEP computed_value
@@ -187,7 +189,7 @@ panel:
         | WHERE (labels.mountpoint == "/" OR labels.mountpoint == "/oldroot")
         | WHERE (labels.fstype != "rootfs" OR (labels.fstype IS NULL AND "" != "rootfs"))
         | WHERE {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
-        | STATS avail = MAX(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), size = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS avail = MAX(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), size = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(size > 0, (100 - ((avail * 100) / size)), NULL)
         | STATS computed_value = LAST(computed_value, time_bucket)
         | KEEP computed_value
@@ -201,7 +203,7 @@ panel:
         | WHERE (labels.mountpoint == "/" OR labels.mountpoint == "/oldroot")
         | WHERE (labels.fstype != "rootfs" OR (labels.fstype IS NULL AND "" != "rootfs"))
         | WHERE {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
-        | STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)
         | KEEP node_filesystem_size_bytes
       status_override: migrated
@@ -223,7 +225,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_netstat_TcpExt_ListenOverflows:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_ListenDrops:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPSynRetrans:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_RetransSegs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_InErrs:counter}} IS NOT NULL OR {{metric:node_netstat_Tcp_OutRsts:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPRcvQDrop:counter}} IS NOT NULL OR {{metric:node_netstat_TcpExt_TCPOFOQueue:counter}} IS NOT NULL
-        | STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE({{metric:node_netstat_TcpExt_ListenOverflows:counter}})), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE({{metric:node_netstat_TcpExt_ListenDrops:counter}})), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE({{metric:node_netstat_TcpExt_TCPSynRetrans:counter}})), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE({{metric:node_netstat_Tcp_RetransSegs:counter}})), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE({{metric:node_netstat_Tcp_InErrs:counter}})), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE({{metric:node_netstat_Tcp_OutRsts:counter}})), TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit = AVG(IRATE({{metric:node_netstat_TcpExt_TCPRcvQDrop:counter}})), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE({{metric:node_netstat_TcpExt_TCPOFOQueue:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
+        | STATS ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed = AVG(IRATE({{metric:node_netstat_TcpExt_ListenOverflows:counter}})), ListenDrops_SYNs_to_LISTEN_sockets_ignored = AVG(IRATE({{metric:node_netstat_TcpExt_ListenDrops:counter}})), TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits = AVG(IRATE({{metric:node_netstat_TcpExt_TCPSynRetrans:counter}})), RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted = AVG(IRATE({{metric:node_netstat_Tcp_RetransSegs:counter}})), InErrs_Segments_received_in_error_e_g_bad_TCP_checksums = AVG(IRATE({{metric:node_netstat_Tcp_InErrs:counter}})), OutRsts_Segments_sent_with_RST_flag = AVG(IRATE({{metric:node_netstat_Tcp_OutRsts:counter}})), TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit = AVG(IRATE({{metric:node_netstat_TcpExt_TCPRcvQDrop:counter}})), TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it = AVG(IRATE({{metric:node_netstat_TcpExt_TCPOFOQueue:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:instance}}, {{label:job}}
         | KEEP time_bucket, `{{label:instance}}`, `{{label:job}}`, ListenOverflows_Times_the_listen_queue_of_a_socket_overflowed, ListenDrops_SYNs_to_LISTEN_sockets_ignored, TCPSynRetrans_SYN_SYN_ACK_retransmits_to_break_down_retransmissions_in_SYN_fast_timeout_retransmits, RetransSegs_Segments_retransmitted_that_is_the_number_of_TCP_segments_transmitted_containing_one_or_more_previously_transmitted, InErrs_Segments_received_in_error_e_g_bad_TCP_checksums, OutRsts_Segments_sent_with_RST_flag, TCPRcvQDrop_Packets_meant_to_be_queued_in_rcv_queue_but_dropped_because_socket_rcvbuf_limit_hit, TCPOFOQueue_TCP_layer_receives_an_out_of_order_packet_and_has_enough_memory_to_queue_it
         | SORT time_bucket ASC
       status_override: migrated
@@ -281,7 +283,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Cached_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Buffers_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SReclaimable_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemFree_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_SwapFree_bytes:gauge}} IS NOT NULL
-        | STATS RAM_Total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), Cached = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), Buffers = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), SReclaimable = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), RAM_Free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), SwapTotal = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), SwapFree = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS RAM_Total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), Cached = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), Buffers = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), SReclaimable = AVG(LAST_OVER_TIME({{metric:node_memory_SReclaimable_bytes:gauge}})), RAM_Free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), SwapTotal = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), SwapFree = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL `RAM Used` = ((RAM_Total - RAM_Free) - ((Cached + Buffers) + SReclaimable))
         | EVAL `RAM Cache + Buffer` = ((Cached + Buffers) + SReclaimable)
         | EVAL `SWAP Used` = (SwapTotal - SwapFree)
@@ -313,7 +315,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_disk_io_time_weighted_seconds_total:counter}} IS NOT NULL
-        | STATS value = AVG(IRATE({{metric:node_disk_io_time_weighted_seconds_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = AVG(IRATE({{metric:node_disk_io_time_weighted_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -324,7 +326,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_disk_io_now:gauge}} IS NOT NULL
-        | STATS value = MAX(LAST_OVER_TIME({{metric:node_disk_io_now:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_disk_io_now:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -346,7 +348,7 @@ panel:
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE (NOT (labels.device RLIKE "rootfs") OR (labels.device IS NULL AND NOT ("" RLIKE "rootfs")))
         | WHERE {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL
-        | STATS size_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})), avail_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint
+        | STATS size_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})), avail_bytes = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.mountpoint
         | EVAL used_bytes = (size_bytes - avail_bytes)
         | KEEP time_bucket, labels.mountpoint, used_bytes
         | SORT time_bucket ASC
@@ -358,7 +360,7 @@ panel:
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE (NOT (labels.device RLIKE "rootfs") OR (labels.device IS NULL AND NOT ("" RLIKE "rootfs")))
         | WHERE {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
-        | STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.mountpoint
+        | STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.mountpoint
         | EVAL value = (100 - ((node_filesystem_avail_bytes_device_rootfs * 100) / node_filesystem_size_bytes_device_rootfs))
         | EVAL series_group = COALESCE(TO_STRING(`labels.mountpoint`), "")
         | KEEP time_bucket, series_group, value
@@ -373,7 +375,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_cpu_scaling_frequency_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_max_hertz:gauge}} IS NOT NULL OR {{metric:node_cpu_scaling_frequency_min_hertz:gauge}} IS NOT NULL
-        | STATS CPU = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_hertz:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_max_hertz:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_min_hertz:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), labels.cpu
+        | STATS CPU = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_hertz:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_max_hertz:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:node_cpu_scaling_frequency_min_hertz:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.cpu
         | EVAL cpu_label = CONCAT("CPU ", COALESCE(TO_STRING(labels.cpu), ""))
         | EVAL __labels = CASE(labels.cpu == "0", MV_APPEND(MV_APPEND(cpu_label, "Max"), "Min"), cpu_label)
         | EVAL __values = CASE(labels.cpu == "0", MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(Max), "")), COALESCE(TO_STRING(Min), "")), COALESCE(TO_STRING(CPU), ""))
@@ -383,13 +385,32 @@ panel:
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
       status_override: migrated
+    - title_match: "Interrupts Detail"
+      # Grafana legend is ``{{ type }} - {{ info }}``, but prometheus_native
+      # ingest for this collector exposes ``labels.interrupt`` (+ ``labels.cpu``)
+      # instead. The generic native-PROMQL path GROKs type/info from
+      # ``_timeseries`` and collapses every series to legend ``" - "``. Prefer
+      # TS IRATE grouped by the labels that actually exist.
+      # TBUCKET(20) (~45s on 15m) keeps enough samples for IRATE; TBUCKET(100)
+      # (~9s) is below scrape interval and blanks the chart while legends still
+      # render from null series keys.
+      esql_query: |
+        TS metrics-*
+        | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
+        | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
+        | WHERE {{metric:node_interrupts_total:counter}} IS NOT NULL
+        | STATS value = AVG(IRATE({{metric:node_interrupts_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.interrupt, labels.cpu
+        | EVAL series_group = CONCAT(COALESCE(TO_STRING(labels.interrupt), ""), " - CPU ", COALESCE(TO_STRING(labels.cpu), ""))
+        | KEEP time_bucket, series_group, value
+        | SORT time_bucket ASC
+      status_override: migrated
     - title_match: "Network Traffic Multicast"
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_receive_multicast_total:counter}} IS NOT NULL
-        | STATS value = AVG(IRATE({{metric:node_network_receive_multicast_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = AVG(IRATE({{metric:node_network_receive_multicast_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -400,7 +421,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_receive_frame_total:counter}} IS NOT NULL
-        | STATS value = AVG(IRATE({{metric:node_network_receive_frame_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = AVG(IRATE({{metric:node_network_receive_frame_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -411,7 +432,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_transmit_carrier_total:counter}} IS NOT NULL
-        | STATS value = AVG(IRATE({{metric:node_network_transmit_carrier_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = AVG(IRATE({{metric:node_network_transmit_carrier_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -422,7 +443,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_transmit_colls_total:counter}} IS NOT NULL
-        | STATS value = AVG(IRATE({{metric:node_network_transmit_colls_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = AVG(IRATE({{metric:node_network_transmit_colls_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
         | EVAL value = -1 * value
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
@@ -434,7 +455,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_arp_entries:gauge}} IS NOT NULL
-        | STATS value = MAX(LAST_OVER_TIME({{metric:node_arp_entries:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_arp_entries:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -445,7 +466,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_mtu_bytes:gauge}} IS NOT NULL
-        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_mtu_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_mtu_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -456,7 +477,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_speed_bytes:gauge}} IS NOT NULL
-        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_speed_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_speed_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -467,7 +488,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_transmit_queue_length:gauge}} IS NOT NULL
-        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_transmit_queue_length:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS value = MAX(LAST_OVER_TIME({{metric:node_network_transmit_queue_length:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL series_group = COALESCE(TO_STRING(`{{label:device}}`), "")
         | KEEP time_bucket, series_group, value
         | SORT time_bucket ASC
@@ -478,7 +499,7 @@ panel:
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
         | WHERE {{metric:node_network_up:gauge}} IS NOT NULL OR {{metric:node_network_carrier:gauge}} IS NOT NULL
-        | STATS operational_state_up = MAX(LAST_OVER_TIME(CASE(({{label:operstate}} == "up") and ({{metric:node_network_up:gauge}} IS NOT NULL), {{metric:node_network_up:gauge}}, NULL))), physical_link_state = MAX(LAST_OVER_TIME(CASE(({{metric:node_network_carrier:gauge}} IS NOT NULL), {{metric:node_network_carrier:gauge}}, NULL))) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), {{label:device}}
+        | STATS operational_state_up = MAX(LAST_OVER_TIME(CASE(({{label:operstate}} == "up") and ({{metric:node_network_up:gauge}} IS NOT NULL), {{metric:node_network_up:gauge}}, NULL))), physical_link_state = MAX(LAST_OVER_TIME(CASE(({{metric:node_network_carrier:gauge}} IS NOT NULL), {{metric:node_network_carrier:gauge}}, NULL))) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
         | EVAL __labels = MV_APPEND("Operational state UP", "Physical link state"), __values = MV_APPEND(COALESCE(TO_STRING(operational_state_up), ""), COALESCE(TO_STRING(physical_link_state), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs

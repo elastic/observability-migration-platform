@@ -5275,7 +5275,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("AVG(LAST_OVER_TIME(node_systemd_units))", query)
         self.assertIn("| WHERE node_systemd_units IS NOT NULL", query)
         # Issue #8 / #316: proven TSDS gauge takes the TS path with adaptive TBUCKET.
-        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), state", query)
+        self.assertIn("BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), state", query)
         self.assertNotIn("=  BY state", query)
         self.assertTrue(any("Collapsed 2 same-metric targets into BY state" in r for r in result.reasons))
         self.assertFalse(any("No explicit aggregation" in r for r in result.reasons))
@@ -17247,7 +17247,7 @@ class NativePromqlTests(unittest.TestCase):
         self.assertNotIn("PROMQL index=", query)
         # Both targets are gauges and now assume TSDS -> TS/TBUCKET. The test's intent is
         # group-label resolution: ``device`` is broken out, ``interface`` is not.
-        self.assertIn("BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), device", query)
+        self.assertIn("BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), device", query)
         self.assertNotIn(", interface", query)
         # Legend-derived aliases appear directly in the STATS term (no separate EVAL
         # needed when the metric is a plain aggregate with no formula).

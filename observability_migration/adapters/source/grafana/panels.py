@@ -1249,14 +1249,40 @@ _NATIVE_PROMQL_ADAPTIVE_BUCKETS = 50
 _NATIVE_PROMQL_ADAPTIVE_SELECTOR = (
     f"start=?_tstart end=?_tend buckets={_NATIVE_PROMQL_ADAPTIVE_BUCKETS}"
 )
-# Adaptive ES|QL TS calendar buckets (issue #316) — count form needs the range
-# args; verified on ES 9.5. Count 100 matches the issue acceptance criteria
-# (FROM path still uses 50 via ``from_bucket``).
-_NATIVE_ESQL_ADAPTIVE_TBUCKET = "time_bucket = TBUCKET(100, ?_tstart, ?_tend)"
+# Adaptive ES|QL TS/FROM calendar buckets (issue #316), unified to match Kibana
+# Lens's own auto-resolution target (``AUTO_TARGET_NUMBER_OF_BUCKETS`` = 75 in
+# ``@kbn/expression-XY``/Lens histogram utils) so a migrated dashboard doesn't
+# render at a coarser or finer default resolution than a native Lens chart over
+# the same range would. Count form needs the range args; verified on ES 9.5.
+_ADAPTIVE_CHART_BUCKETS = 75
+# Panels whose target applies a windowed range function (rate/irate/increase/
+# delta/deriv/*_over_time) need a *coarser* bucket floor than plain gauge
+# charts: RATE/IRATE only look at the last two samples in a bucket, so once a
+# bucket narrows below the source scrape interval it can contain 0-1 samples
+# and the function returns null for the whole series. Confirmed live on ES
+# 9.5.0-SNAPSHOT: a 15m dashboard range with a 10s Prometheus scrape interval
+# and the old default TBUCKET(100, ...) picks 10s buckets and IRATE is null on
+# every row; TBUCKET(20, ...) picks 60s buckets (6x the scrape interval) and
+# IRATE is non-null throughout. This is what fixed Node Exporter Full's
+# "Interrupts Detail" panel by curated override; making it the generic default
+# for every range-function panel means most dashboards no longer need that
+# override at all (docs/design/esql-time-bucketing-strategy.md).
+_ADAPTIVE_RATE_BUCKETS = 20
+_NATIVE_ESQL_ADAPTIVE_TBUCKET = f"time_bucket = TBUCKET({_ADAPTIVE_CHART_BUCKETS}, ?_tstart, ?_tend)"
+_NATIVE_ESQL_ADAPTIVE_RATE_TBUCKET = f"time_bucket = TBUCKET({_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
+_NATIVE_FROM_ADAPTIVE_BUCKET = (
+    f"time_bucket = BUCKET(@timestamp, {_ADAPTIVE_CHART_BUCKETS}, ?_tstart, ?_tend)"
+)
+_NATIVE_FROM_ADAPTIVE_RATE_BUCKET = (
+    f"time_bucket = BUCKET(@timestamp, {_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
+)
 # Scalar panels (stat/gauge/bargauge/piechart) collapse to one row anyway, so
-# generating 100 intermediate buckets is wasteful. One bucket gives the same
-# scalar result, avoids the "MAX of per-bucket averages" semantic skew for
-# AVG-outer aggregations, and is 100x cheaper for the STATS step.
+# generating dozens of intermediate buckets is wasteful. One bucket gives the
+# same scalar result, avoids the "MAX of per-bucket averages" semantic skew for
+# AVG-outer aggregations, and is far cheaper for the STATS step. (Scalar panels
+# whose target uses a range function are excluded from this — see
+# ``_panel_uses_range_function`` — and fall through to the rate-safe buckets
+# above instead, because a range function genuinely needs resolution.)
 _SCALAR_ESQL_TBUCKET = "time_bucket = TBUCKET(1, ?_tstart, ?_tend)"
 _SCALAR_FROM_BUCKET = "time_bucket = BUCKET(@timestamp, 1, ?_tstart, ?_tend)"
 _SCALAR_PANEL_TYPES = frozenset({"stat", "singlestat", "gauge", "bargauge", "piechart"})
@@ -1321,7 +1347,7 @@ _ONE_BUCKET_SAFE_REDUCE_CALCS = frozenset({
 def _reduce_calc_survives_one_bucket(reduce_calc: str) -> bool:
     """Whether collapsing to a single whole-range bucket preserves the reducer.
 
-    The scalar-panel bucket optimisation replaces adaptive ``TBUCKET(100, ...)``
+    The scalar-panel bucket optimisation replaces adaptive ``TBUCKET(75, ...)``
     with ``TBUCKET(1, ...)``. That is sound for an order-independent reducer, but
     it silently redefines a ``lastNotNull`` panel: with one bucket spanning the
     dashboard window, ``AVG(field)`` is the RANGE MEAN, not the current value.
@@ -1335,18 +1361,25 @@ def _reduce_calc_survives_one_bucket(reduce_calc: str) -> bool:
 def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
     """Overlay per-panel bucket sizing onto a rule pack copy (issue #316).
 
-    Dashboard panels use adaptive ``TBUCKET(100, ?_tstart, ?_tend)`` by default
-    so zooming changes resolution. Scalar panels (stat/gauge/bargauge/piechart)
-    use ``TBUCKET(1, ...)`` — they collapse to one row anyway, so 100 intermediate
-    buckets are wasteful and skew AVG-outer queries toward the peak bucket. An
-    explicit Grafana panel ``interval`` becomes a fixed ``TBUCKET(<duration>)``.
+    Dashboard panels use adaptive ``TBUCKET(75, ?_tstart, ?_tend)`` by default
+    (matching Kibana Lens's own auto-resolution target) so zooming changes
+    resolution. Panels whose target applies a windowed range function
+    (rate/irate/increase/delta/deriv/*_over_time) instead get the coarser
+    ``TBUCKET(20, ...)`` floor, because RATE/IRATE only look at the last two
+    samples per bucket and go null once a bucket narrows below the source
+    scrape interval. Scalar panels (stat/gauge/bargauge/piechart) that do NOT
+    use a range function use ``TBUCKET(1, ...)`` — they collapse to one row
+    anyway, so dozens of intermediate buckets are wasteful and skew AVG-outer
+    queries toward the peak bucket. An explicit Grafana panel ``interval``
+    becomes a fixed ``TBUCKET(<duration>)`` and wins over all of the above.
     Direct ``translate_promql_to_esql`` callers keep ``rule_pack.ts_bucket``
     unchanged.
     """
     panel_type = str((panel or {}).get("type") or "").lower()
+    uses_range_function = _panel_uses_range_function(panel)
     is_scalar = (
         panel_type in _SCALAR_PANEL_TYPES
-        and not _panel_uses_range_function(panel)
+        and not uses_range_function
         and _reduce_calc_survives_one_bucket(_panel_reduce_calc(panel))
     )
     interval = _grafana_panel_fixed_interval(panel)
@@ -1362,9 +1395,15 @@ def _rule_pack_for_panel(rule_pack: RulePackConfig, panel) -> RulePackConfig:
             new_bucket = f"time_bucket = TBUCKET({esql_dur})"
     elif rule_pack.ts_bucket == "time_bucket = TBUCKET(5 minute)":
         # Adaptive auto resolution for dashboard panels (issue #316).
-        new_bucket = _SCALAR_ESQL_TBUCKET if is_scalar else _NATIVE_ESQL_ADAPTIVE_TBUCKET
         if is_scalar:
+            new_bucket = _SCALAR_ESQL_TBUCKET
             new_from_bucket = _SCALAR_FROM_BUCKET
+        elif uses_range_function:
+            new_bucket = _NATIVE_ESQL_ADAPTIVE_RATE_TBUCKET
+            new_from_bucket = _NATIVE_FROM_ADAPTIVE_RATE_BUCKET
+        else:
+            new_bucket = _NATIVE_ESQL_ADAPTIVE_TBUCKET
+            new_from_bucket = _NATIVE_FROM_ADAPTIVE_BUCKET
     if new_bucket is None or new_bucket == rule_pack.ts_bucket:
         return rule_pack
     kwargs = {"ts_bucket": new_bucket}

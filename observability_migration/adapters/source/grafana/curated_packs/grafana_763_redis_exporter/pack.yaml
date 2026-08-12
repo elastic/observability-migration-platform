@@ -90,7 +90,7 @@ panel:
         TS metrics-*
         | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
         | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
-        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL value = (used / max) * 100.0
         | STATS value = LAST(value, time_bucket)
         | KEEP value

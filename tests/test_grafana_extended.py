@@ -199,7 +199,7 @@ class TestGrafanaPackaging(unittest.TestCase):
         yaml_panel, pr = _translate_panel(_make_panel(1, "avg(node_load1)"), rule_pack=rp)
         esql = yaml_panel["esql"]["query"]
 
-        self.assertIn("BUCKET(@timestamp, 50, ?_tstart, ?_tend)", esql)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", esql)
         self.assertNotIn("| WHERE @timestamp >= ?_tstart AND @timestamp < ?_tend", esql)
         self.assertEqual(esql, pr.esql_query)
         self.assertEqual(esql, pr.query_ir["target_query"])
@@ -211,7 +211,7 @@ class TestGrafanaPackaging(unittest.TestCase):
         yaml_panel, pr = _translate_panel(_make_panel(1, "avg(node_load1)"), rule_pack=rp)
         esql = yaml_panel["esql"]["query"]
 
-        self.assertIn("BUCKET(@timestamp, 50, ?_tstart, ?_tend)", esql)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", esql)
         self.assertNotIn("| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend", esql)
         self.assertEqual(esql, pr.esql_query)
         self.assertEqual(esql, pr.query_ir["target_query"])
@@ -3379,7 +3379,7 @@ class TestSummaryPanelCorrectness(unittest.TestCase):
         # express, since AVG over one bucket is the RANGE MEAN rather than the
         # current value ("Sys Load" read 3.48 against Grafana's 6.2). It keeps
         # the resolution and collapses with LAST instead.
-        self.assertIn("BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)", result.esql_query)
+        self.assertIn("BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
         # time_bucket is excluded from STATS/KEEP so _ensure_bucket_sort does
         # not append a redundant trailing sort on the already-scalar result.
         self.assertIn(

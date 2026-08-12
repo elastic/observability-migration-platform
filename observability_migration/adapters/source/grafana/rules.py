@@ -137,7 +137,9 @@ class RulePackConfig:
     from_time_filter: str = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
     # Legacy frozen default kept for direct ``translate_promql_to_esql`` callers /
     # offline unit fixtures. Dashboard panel translation overlays the adaptive
-    # ``TBUCKET(100, ?_tstart, ?_tend)`` form via ``_rule_pack_for_panel`` (issue #316).
+    # ``TBUCKET(75|20, ?_tstart, ?_tend)`` / ``BUCKET(@timestamp, 75|20, ...)``
+    # forms via ``_rule_pack_for_panel`` (issue #316; rate panels use 20 —
+    # docs/design/esql-time-bucketing-strategy.md).
     ts_bucket: str = "time_bucket = TBUCKET(5 minute)"
     from_bucket: str = "time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
     logs_index: str = "logs-*"

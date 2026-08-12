@@ -73,20 +73,25 @@ panel:
         TS metrics-*
         | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
         | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
-        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL value = (used / max) * 100.0
         | STATS value = LAST(value, time_bucket)
         | KEEP value
       status_override: migrated
     # Network I/O is a simple two-counter panel: input and output are display
     # aliases, not real labels, so the curated query keeps them as two value
-    # columns rather than a phantom breakdown field.
+    # columns rather than a phantom breakdown field. TBUCKET(20) (not the
+    # general adaptive default) keeps buckets wide enough for RATE to have two
+    # samples per bucket — TBUCKET(100) can narrow below the source scrape
+    # interval and leave RATE null (same class of bug as node-exporter-full's
+    # "Interrupts Detail", see docs/design/esql-time-bucketing-strategy.md).
     - title_match: "Network I/O"
       esql_query: |
         TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?instance == "" OR ({{control:instance}} RLIKE ?instance OR ({{control:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
-        | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+        | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | KEEP time_bucket, input, output
         | SORT time_bucket ASC
       status_override: migrated
