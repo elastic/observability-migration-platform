@@ -1755,8 +1755,8 @@ class TestTranslation(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), profile)
         self.assertIn("TS metrics-*", result.esql_query)
-        self.assertIn("RATE(parity_counter, 5 minute)", result.esql_query)
-        self.assertIn("TBUCKET(5 minute)", result.esql_query)
+        self.assertIn("RATE(parity_counter)", result.esql_query)
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", result.esql_query)
         # FIRST/LAST fallback should NOT appear when we go the TS path.
         self.assertNotIn("FIRST(parity_counter", result.esql_query)
 
@@ -1785,7 +1785,8 @@ class TestTranslation(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), profile)
         self.assertIn("TS metrics-*", result.esql_query)
-        self.assertIn("INCREASE(parity_counter, 5 minute)", result.esql_query)
+        self.assertIn("INCREASE(parity_counter)", result.esql_query)
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", result.esql_query)
 
     def test_plain_sum_over_counter_typed_metric_wraps_to_double(self):
         # A plain (non-rate) sum:/avg: request against a TSDS counter-typed

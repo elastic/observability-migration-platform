@@ -815,16 +815,15 @@ def _translate_formula_metric_widget(
         # ES|QL native TS aggregation:
         # rate / monotonic counter rate / increase per bucket.
         es_agg = "RATE" if ts_fn_name == "rate" else "INCREASE"
-        window = "5 minute"
         spec = ts_rate_spec
         alias = _safe_alias(formulas[0].alias or formulas[0].raw or f"{ts_fn_name}_{spec.alias}")
-        by_clause = f"time_bucket = TBUCKET({window})"
+        by_clause = f"time_bucket = TBUCKET({_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
         if spec.group_fields:
             by_clause += ", " + ", ".join(spec.group_fields)
         ts_lines = [
             f"TS {spec.index}",
             f"| WHERE {spec.where_str}",
-            f"| STATS {alias} = {es_agg}({spec.es_metric}, {window}) BY {by_clause}",
+            f"| STATS {alias} = {es_agg}({spec.es_metric}) BY {by_clause}",
             "| KEEP time_bucket, " + ", ".join(spec.group_fields + [alias])
             if spec.group_fields
             else f"| KEEP time_bucket, {alias}",
@@ -834,7 +833,7 @@ def _translate_formula_metric_widget(
             _append_unique_warning(
                 result,
                 f"{ts_fn_name}() translated via ES|QL TS|QL "
-                f"{es_agg}({spec.es_metric}, {window}) — requires the target "
+                f"{es_agg}({spec.es_metric}) — requires the target "
                 f"field to be a counter in a time_series index",
             )
         return "\n".join(ts_lines)

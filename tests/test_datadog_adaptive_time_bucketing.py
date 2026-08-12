@@ -132,3 +132,44 @@ class TestFormulaFromPathBucketSplit(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+
+
+from copy import deepcopy
+
+from observability_migration.core.verification.field_capabilities import FieldCapability
+
+
+class TestTsRatePathAdaptiveWindowless(unittest.TestCase):
+    def _counter_profile(self, es_field: str, metric_type: str = "counter_long"):
+        profile = deepcopy(OTEL_PROFILE)
+        profile.field_caps[es_field] = FieldCapability(
+            name=es_field, type=metric_type, time_series_metric_kind="counter",
+        )
+        return profile
+
+    def test_ts_rate_uses_adaptive_20_bucket_no_window(self):
+        profile = self._counter_profile("parity_counter")
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="rate(query1)")
+        wf.expression = parse_formula("rate(query1)")
+        widget = NormalizedWidget(id="1", widget_type="timeseries", title="w", queries=[wq], formulas=[wf])
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertIn("RATE(parity_counter)", result.esql_query)
+        self.assertNotIn("RATE(parity_counter, 5 minute)", result.esql_query)
+        self.assertNotIn("TBUCKET(5 minute)", result.esql_query)
+
+    def test_ts_increase_uses_adaptive_20_bucket_no_window(self):
+        profile = self._counter_profile("parity_counter", "counter_double")
+        query = "sum:parity.counter{host:h1}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(name="query1", data_source="metrics", raw_query=query, metric_query=mq, query_type="metric")
+        wf = WidgetFormula(raw="diff(query1)")
+        wf.expression = parse_formula("diff(query1)")
+        widget = NormalizedWidget(id="1", widget_type="timeseries", title="w", queries=[wq], formulas=[wf])
+        result = translate_widget(widget, plan_widget(widget), profile)
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertIn("INCREASE(parity_counter)", result.esql_query)
+        self.assertNotIn("INCREASE(parity_counter, 5 minute)", result.esql_query)
