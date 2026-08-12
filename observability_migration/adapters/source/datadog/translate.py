@@ -81,14 +81,13 @@ def _time_bucket_expr(rate_safe: bool) -> str:
     ``rate_safe=True`` selects the coarser 20-bucket floor; see the module
     constants above for why. Callers compute ``rate_safe`` from whatever
     rate/derivative signal is available in their own scope (a single query's
-    ``as_rate``/``_needs_rate``, or a formula's derivative-function refs) --
-    there is no single shared "is this widget a rate widget" flag because the
-    two FROM-path entry points (`_translate_single_metric`,
-    `_translate_formula_metric_widget`) have different natural signals.
+    ``as_rate``/``_needs_rate``/metric-map-emitted rate, or a formula's
+    bucket-span/derivative signals) -- there is no single shared "is this
+    widget a rate widget" flag because the two FROM-path entry points
+    (`_translate_single_metric`, `_translate_formula_metric_widget`) have
+    different natural signals.
     """
     return _RATE_SAFE_TIME_BUCKET_EXPR if rate_safe else TIME_BUCKET_EXPR
-DEFAULT_RATE_WINDOW = "5m"
-DEFAULT_RATE_WINDOW_SECONDS = 300.0
 _CHANGE_WIDGET_COMPARE_TO_SECONDS = {
     "hour_before": 3600,
     "day_before": 86400,
@@ -189,6 +188,7 @@ class _MetricQuerySpec:
     tag_where_str: str = ""  # WHERE clauses excluding TIME_FILTER, used as per-agg
                               # filter when sibling specs have heterogeneous filters
     is_counter: bool = False  # target field is TSDS counter-typed — enables TS|QL RATE()
+    emits_rate: bool = False  # emitted agg_expr computes rate/delta math, including metric_map to_rate
 
 
 @dataclass
@@ -448,7 +448,10 @@ def _translate_single_metric(
         return _build_change_widget_esql(wq, widget, plan, field_map, result)
 
     spec = _build_metric_query_spec(wq, field_map, result)
-    rate_safe = bool(wq.metric_query and (wq.metric_query.as_rate or _needs_rate(wq.metric_query)))
+    rate_safe = bool(
+        spec.emits_rate
+        or (wq.metric_query and (wq.metric_query.as_rate or _needs_rate(wq.metric_query)))
+    )
     top_config = _extract_top_function_config(wq.metric_query)
     is_timeseries = plan.kibana_type == "xy"
     is_heatmap = plan.kibana_type == "heatmap"
@@ -768,31 +771,36 @@ def _translate_formula_metric_widget(
         or reducer is not None
         or bool(output_reducers)
     )
-    rate_safe = any(
-        spec.mq.as_rate or _needs_rate(spec.mq) for spec in used_specs
-    ) or any(
-        _collect_derivative_query_refs(formula.ast) for formula in formulas
-    )
-    dim_exprs, dim_aliases = _metric_dimension_exprs(
-        used_specs[0].group_fields,
-        include_time_bucket=include_time_bucket,
-        rate_safe=rate_safe,
-    )
     needs_bucket_span = any(_formula_needs_bucket_span(formula.ast) for formula in formulas)
 
     derivative_refs: set[str] = set()
     for formula in formulas:
         derivative_refs |= _collect_derivative_query_refs(formula.ast)
 
+    rate_safe = (
+        any(
+            spec.emits_rate or spec.mq.as_rate or _needs_rate(spec.mq)
+            for spec in used_specs
+        )
+        or needs_bucket_span
+        or bool(derivative_refs)
+    )
+    dim_exprs, dim_aliases = _metric_dimension_exprs(
+        used_specs[0].group_fields,
+        include_time_bucket=include_time_bucket,
+        rate_safe=rate_safe,
+    )
+
     heterogeneous = _specs_have_heterogeneous_filters(used_specs)
 
     # ----------------------------------------------------------------
     # TS|QL path: when the formula reduces to rate()/diff() of a single
-    # counter-typed metric reference, emit `TS index | STATS RATE(field,
-    # window)` — the native ES|QL time-series aggregation. Grafana uses
-    # the same pattern for PromQL rate(). Falls back to the FROM +
-    # FIRST/LAST path below when the metric is a gauge or when the
-    # formula is more complex than a direct counter rate/diff.
+    # counter-typed metric reference, emit `TS index | STATS RATE(field)
+    # BY TBUCKET(N, ?_tstart, ?_tend)` — the native ES|QL time-series
+    # aggregation. Grafana uses the same pattern for PromQL rate().
+    # Falls back to the FROM + FIRST/LAST path below when the metric is
+    # a gauge or when the formula is more complex than a direct counter
+    # rate/diff.
     # ----------------------------------------------------------------
     ts_rate_spec: _MetricQuerySpec | None = None
     ts_fn_name: str = ""
@@ -1221,6 +1229,7 @@ def _build_metric_query_spec(
         es_metric=es_metric,
         tag_where_str=tag_where,
         is_counter=is_counter_metric_field(metric_cap),
+        emits_rate=bool(use_rate_override),
     )
 
 

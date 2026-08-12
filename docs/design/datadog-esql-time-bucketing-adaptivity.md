@@ -152,13 +152,14 @@ fallback, which always qualifies as rate-needing by construction).
 threaded everywhere, `rate_safe` is computed locally at each of the two
 FROM-path entry points, since they have different natural signals available:
 `_translate_single_metric` computes it once from its single query
-(`wq.metric_query.as_rate or _needs_rate(wq.metric_query)`), while
-`_translate_formula_metric_widget` computes it from `used_specs`' own
-as_rate/`_needs_rate` OR any formula's derivative-function refs (the
-equivalent of `_formula_calls_derivative_fn` above, expressed via the
-existing `_collect_derivative_query_refs` helper). Both feed the same
-`_time_bucket_expr(rate_safe)` helper and constants described above; the
-count-only formula helpers (`_try_translate_formula_reducer`,
+(`spec.emits_rate` plus `wq.metric_query.as_rate or _needs_rate(wq.metric_query)`),
+while `_translate_formula_metric_widget` computes it from three signals:
+per-spec emitted/source rate semantics (`spec.emits_rate`, `as_rate`,
+`_needs_rate`), formula-level `_formula_needs_bucket_span(...)` calls
+(`per_second`/`per_minute`/`per_hour`/`rate`, including nested args), and
+direct derivative refs from `_collect_derivative_query_refs(...)`. Both feed
+the same `_time_bucket_expr(rate_safe)` helper and constants described above;
+the count-only formula helpers (`_try_translate_formula_reducer`,
 `_try_translate_count_formula_pipeline`) pass `rate_safe=False` explicitly,
 since count formulas are never rate-related.
 
@@ -222,7 +223,7 @@ regardless of which source adapter emitted the query.
   remaining `BUCKET(@timestamp, 50, ...)` in generated output.
 - [x] `TS`-path emission uses `TBUCKET(20, ?_tstart, ?_tend)` with windowless
   `RATE`/`INCREASE`; no remaining fixed `5 minute` bucket/window.
-- [x] New unit tests pin the widget-level rate-detection logic; full test
-  suite green with no new empty/null panels in the pinned corpus.
+- [x] New unit tests pin the widget-level rate-detection logic; `make test`,
+  `make lint`, and `make typecheck` are green for the final tree.
 - [x] `docs/sources/datadog.md` and `esql-time-bucketing-strategy.md` updated
   to reflect the as-built behavior.

@@ -47,6 +47,6 @@ panels/sections/controls.
 The migration pipeline now targets the newer dashboard conventions where possible:
 
 - dashboard-time parameters (`?_tstart`, `?_tend`) instead of fixed one-hour windows
-- `BUCKET(@timestamp, 50, ?_tstart, ?_tend)` for adaptive time bucketing
+- `BUCKET(@timestamp, 75, ?_tstart, ?_tend)` for adaptive time bucketing
 - native `gauge` configs instead of forcing gauges into `metric`
 - `dimensions` for table and pie panels, matching the current dashboard guide

@@ -12,11 +12,22 @@ import unittest
 from copy import deepcopy
 
 from observability_migration.adapters.source.datadog import translate
-from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetFormula, WidgetQuery
+from observability_migration.adapters.source.datadog.field_map import (
+    OTEL_PROFILE,
+    FieldMapProfile,
+)
+from observability_migration.adapters.source.datadog.models import (
+    NormalizedWidget,
+    WidgetFormula,
+    WidgetQuery,
+)
 from observability_migration.adapters.source.datadog.planner import plan_widget
-from observability_migration.adapters.source.datadog.query_parser import parse_formula, parse_metric_query
+from observability_migration.adapters.source.datadog.query_parser import (
+    parse_formula,
+    parse_metric_query,
+)
 from observability_migration.adapters.source.datadog.translate import translate_widget
+from observability_migration.core.metric_mapping import normalize_metric_map
 from observability_migration.core.verification.field_capabilities import FieldCapability
 
 
@@ -124,6 +135,24 @@ class TestFormulaFromPathBucketSplit(unittest.TestCase):
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
 
+    def test_nested_default_zero_rate_formula_uses_20_bucket(self):
+        widget = self._formula_widget(
+            [("query1", "avg:mysql.performance.user_time{*}")],
+            "rate(default_zero(query1))",
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
+
+    def test_per_second_formula_uses_20_bucket(self):
+        widget = self._formula_widget(
+            [("query1", "sum:haproxy.backend.response.2xx{*}")],
+            "per_second(query1)",
+        )
+        result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
+
     def test_as_rate_query_used_in_formula_uses_20_bucket(self):
         widget = self._formula_widget(
             [("query1", "sum:http.requests{*}.as_rate()"), ("query2", "sum:http.errors{*}.as_rate()")],
@@ -131,6 +160,46 @@ class TestFormulaFromPathBucketSplit(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+
+
+class TestMetricMapRateOverrideBucketSplit(unittest.TestCase):
+    def _widget(self, query: str) -> NormalizedWidget:
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        return NormalizedWidget(id="1", widget_type="timeseries", title="w", queries=[wq])
+
+    def _rate_override_profile(self) -> FieldMapProfile:
+        profile = deepcopy(OTEL_PROFILE)
+        caps = FieldCapability(
+            name="target.bytes",
+            type="double",
+            time_series_metric_kind="counter",
+        )
+        profile.merge_metric_map(
+            normalize_metric_map(
+            {
+                "source.bytes": {
+                    "target": "target.bytes",
+                    "transform": "to_rate",
+                }
+            }
+            )
+        )
+        profile.field_caps["target.bytes"] = caps
+        profile.metric_field_caps["target.bytes"] = caps
+        return profile
+
+    def test_metric_map_to_rate_single_query_uses_20_bucket(self):
+        widget = self._widget("avg:source.bytes{*}")
+        result = translate_widget(widget, plan_widget(widget), self._rate_override_profile())
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
 
 class TestTsRatePathAdaptiveWindowless(unittest.TestCase):
     def _counter_profile(self, es_field: str, metric_type: str = "counter_long"):

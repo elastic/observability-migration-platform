@@ -205,7 +205,7 @@ sum:apache.net.request_per_s{$host,$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = SUM(apache_net_request_per_s) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS value = SUM(apache_net_request_per_s) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | SORT time_bucket
 ```
 
@@ -245,7 +245,7 @@ top(avg:apache.performance.cpu_load{$host,$scope} by {host}, 10, 'mean', 'desc')
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = AVG(apache_performance_cpu_load) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| STATS _bucket_value = AVG(apache_performance_cpu_load) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), host.name
 | STATS value = AVG(_bucket_value) BY host.name
 | SORT value DESC
 | LIMIT 10
@@ -346,7 +346,7 @@ sum:apache.scoreboard.idle_cleanup{$host,$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query0 = SUM(apache_scoreboard_disabled), query1 = SUM(apache_scoreboard_starting_up), query2 = SUM(apache_scoreboard_reading_request), query3 = SUM(apache_scoreboard_sending_reply), query4 = SUM(apache_scoreboard_keepalive), query5 = SUM(apache_scoreboard_dns_lookup), query6 = SUM(apache_scoreboard_closing_connection), query7 = SUM(apache_scoreboard_logging), query8 = SUM(apache_scoreboard_gracefully_finishing), query9 = SUM(apache_scoreboard_waiting_for_connection), query10 = SUM(apache_scoreboard_idle_cleanup) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query0 = SUM(apache_scoreboard_disabled), query1 = SUM(apache_scoreboard_starting_up), query2 = SUM(apache_scoreboard_reading_request), query3 = SUM(apache_scoreboard_sending_reply), query4 = SUM(apache_scoreboard_keepalive), query5 = SUM(apache_scoreboard_dns_lookup), query6 = SUM(apache_scoreboard_closing_connection), query7 = SUM(apache_scoreboard_logging), query8 = SUM(apache_scoreboard_gracefully_finishing), query9 = SUM(apache_scoreboard_waiting_for_connection), query10 = SUM(apache_scoreboard_idle_cleanup) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query0, query1, query2, query3, query4, query5, query6, query7, query8, query9, query10
 | SORT time_bucket
 ```
@@ -414,7 +414,7 @@ sum:apache.conns_async_keep_alive{$host,$scope}.rollup(max)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query0 = SUM(apache_conns_async_closing), query1 = SUM(apache_conns_async_writing), query2 = SUM(apache_conns_async_keep_alive) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query0 = SUM(apache_conns_async_closing), query1 = SUM(apache_conns_async_writing), query2 = SUM(apache_conns_async_keep_alive) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query0, query1, query2
 | SORT time_bucket
 ```
@@ -496,7 +496,7 @@ sum:apache.conns_total{$host,$scope}.rollup(max)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = SUM(apache_conns_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS value = SUM(apache_conns_total) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | SORT time_bucket
 ```
 
@@ -612,7 +612,7 @@ min:apache.performance.uptime{$host,$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = MIN(apache_performance_uptime) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = MIN(apache_performance_uptime) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -868,7 +868,7 @@ avg:celery.flower.worker.online{$worker, $host, $endpoint} by {worker}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(celery_flower_worker_online) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker
+| STATS query1 = AVG(celery_flower_worker_online) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker
 | EVAL online = query1
 | STATS online = AVG(online) BY worker
 | KEEP worker, online
@@ -910,7 +910,7 @@ sum:celery.flower.events.count{$task,$endpoint} by {worker,task,type}.as_count()
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(celery_flower_events_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker, task, type
+| STATS query1 = SUM(celery_flower_events_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker, task, type
 | STATS query1 = LAST(query1, time_bucket) BY worker, task, type
 | KEEP worker, task, type, query1
 | SORT query1 ASC
@@ -953,7 +953,7 @@ sum:celery.flower.task.prefetch_time.seconds{$task,$endpoint} by {worker,task}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(celery_flower_task_prefetch_time_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker, task
+| STATS query1 = SUM(celery_flower_task_prefetch_time_seconds) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker, task
 | KEEP time_bucket, worker, task, query1
 | SORT time_bucket
 ```
@@ -994,7 +994,7 @@ sum:celery.flower.worker.prefetched_tasks{$task,$endpoint} by {worker,task}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(celery_flower_worker_prefetched_tasks) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker, task
+| STATS query1 = SUM(celery_flower_worker_prefetched_tasks) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker, task
 | EVAL tasks = query1
 | KEEP time_bucket, worker, task, tasks
 | SORT time_bucket
@@ -1036,7 +1036,7 @@ sum:celery.flower.worker.executing_tasks{$task,$endpoint} by {worker}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(celery_flower_worker_executing_tasks) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker
+| STATS query1 = SUM(celery_flower_worker_executing_tasks) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker
 | KEEP time_bucket, worker, query1
 | SORT time_bucket
 ```
@@ -1075,7 +1075,7 @@ sum:celery.flower.events.created{$task,$endpoint} by {worker,task}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(celery_flower_events_created) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), worker, task
+| STATS query1 = SUM(celery_flower_events_created) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker, task
 | KEEP time_bucket, worker, task, query1
 | SORT time_bucket
 ```
@@ -1367,7 +1367,7 @@ sum:consul.catalog.nodes_critical{$consul_service_id, $host, $consul_datacenter}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(consul_catalog_nodes_critical) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
+| STATS query1 = SUM(consul_catalog_nodes_critical) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
 | KEEP time_bucket, consul_service_id, consul_datacenter, host.name, query1
 | SORT time_bucket
 ```
@@ -1408,7 +1408,7 @@ sum:consul.catalog.nodes_up{$host, $consul_datacenter, $consul_service_id} by {c
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(consul_catalog_nodes_up) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
+| STATS query1 = SUM(consul_catalog_nodes_up) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
 | KEEP time_bucket, consul_service_id, consul_datacenter, host.name, query1
 | SORT time_bucket
 ```
@@ -1449,7 +1449,7 @@ sum:consul.catalog.nodes_warning{$consul_service_id,$host, $consul_datacenter} b
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(consul_catalog_nodes_warning) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), consul_service_id, consul_datacenter
+| STATS query1 = SUM(consul_catalog_nodes_warning) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), consul_service_id, consul_datacenter
 | KEEP time_bucket, consul_service_id, consul_datacenter, query1
 | SORT time_bucket
 ```
@@ -1490,7 +1490,7 @@ sum:consul.catalog.nodes_passing{$consul_service_id,$host, $consul_datacenter} b
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(consul_catalog_nodes_passing) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
+| STATS query1 = SUM(consul_catalog_nodes_passing) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), consul_service_id, consul_datacenter, host.name
 | KEEP time_bucket, consul_service_id, consul_datacenter, host.name, query1
 | SORT time_bucket
 ```
@@ -1531,7 +1531,7 @@ sum:consul.catalog.services_warning{$host} by {consul_node_id,consul_datacenter,
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(consul_catalog_services_warning) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), consul_node_id, consul_datacenter, host.name
+| STATS query1 = SUM(consul_catalog_services_warning) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), consul_node_id, consul_datacenter, host.name
 | STATS query1 = SUM(query1) BY consul_node_id, consul_datacenter, host.name
 | KEEP consul_node_id, consul_datacenter, host.name, query1
 | SORT query1 DESC
@@ -1632,7 +1632,7 @@ sum:docker.containers.running{$scope} by {docker_image}.fill(0)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| STATS value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), docker_image
 | SORT time_bucket
 ```
 
@@ -1672,7 +1672,7 @@ top(avg:docker.mem.rss{$scope} by {container_name}, 5, 'max', 'desc')
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), container.name
+| STATS _bucket_value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), container.name
 | STATS value = MAX(_bucket_value) BY container.name
 | SORT value DESC
 | LIMIT 5
@@ -1714,7 +1714,7 @@ top(avg:docker.cpu.user{$scope} by {container_name}, 5, 'max', 'desc')
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), container.name
+| STATS _bucket_value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), container.name
 | STATS value = MAX(_bucket_value) BY container.name
 | SORT value DESC
 | LIMIT 5
@@ -1756,7 +1756,7 @@ avg:docker.mem.rss{$scope} by {container_name}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), container.name
+| STATS value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), container.name
 | SORT time_bucket
 ```
 
@@ -1796,7 +1796,7 @@ sum:docker.containers.running{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -1835,7 +1835,7 @@ sum:docker.containers.stopped{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(docker_containers_stopped) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(docker_containers_stopped) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -1874,7 +1874,7 @@ avg:docker.cpu.user{$scope} by {container_name}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), container.name
+| STATS value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), container.name
 | SORT time_bucket
 ```
 
@@ -1914,7 +1914,7 @@ avg:docker.cpu.user{$scope} by {docker_image}.fill(0)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| STATS value = AVG(docker_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), docker_image
 | SORT time_bucket
 ```
 
@@ -1954,7 +1954,7 @@ avg:docker.mem.rss{$scope} by {docker_image}.fill(0)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| STATS value = AVG(docker_mem_rss) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), docker_image
 | SORT time_bucket
 ```
 
@@ -2057,7 +2057,7 @@ avg:docker.cpu.system{$scope} by {docker_image}.fill(0)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(docker_cpu_system) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| STATS value = AVG(docker_cpu_system) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), docker_image
 | SORT time_bucket
 ```
 
@@ -2116,7 +2116,7 @@ sum:docker.mem.cache{$scope} by {docker_image}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = SUM(docker_mem_cache) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), docker_image
+| STATS value = SUM(docker_mem_cache) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), docker_image
 | SORT time_bucket
 ```
 
@@ -2294,7 +2294,7 @@ sum:haproxy.backend.response.5xx{*,*,$backend} by {haproxy_service}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query3 = SUM(haproxy_backend_response_4xx), query1 = SUM(haproxy_backend_response_3xx), query2 = SUM(haproxy_backend_response_2xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service
+| STATS query3 = SUM(haproxy_backend_response_4xx), query1 = SUM(haproxy_backend_response_3xx), query2 = SUM(haproxy_backend_response_2xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), haproxy_service
 | EVAL value = ((((query3 + query1) + query2) / (((query3 + query1) + query2) + query4)) * 100)
 | STATS value = AVG(value) BY haproxy_service
 | KEEP haproxy_service, value
@@ -2350,7 +2350,7 @@ sum:haproxy.backend.response.5xx{*,*,$backend}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_backend_response_4xx), query3 = SUM(haproxy_backend_response_3xx), query2 = SUM(haproxy_backend_response_2xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(haproxy_backend_response_4xx), query3 = SUM(haproxy_backend_response_3xx), query2 = SUM(haproxy_backend_response_2xx), query4 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = (((query1 + query3) + query2) + query4)
 | STATS value = AVG(value)
 | KEEP value
@@ -2393,7 +2393,7 @@ sum:haproxy.backend.response.5xx{*,*,$backend} by {service}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_backend_response_4xx), query2 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), service.name
+| STATS query1 = SUM(haproxy_backend_response_4xx), query2 = SUM(haproxy_backend_response_5xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), service.name
 | EVAL query1_query2 = (query1 + query2)
 | STATS query1_query2 = AVG(query1_query2) BY service.name
 | KEEP service.name, query1_query2
@@ -2474,7 +2474,7 @@ sum:haproxy.frontend.response.other{*,*,$frontend,$release}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_frontend_response_2xx), query2 = SUM(haproxy_frontend_response_1xx), query3 = SUM(haproxy_frontend_response_3xx), query4 = SUM(haproxy_frontend_response_4xx), query5 = SUM(haproxy_frontend_response_5xx), query6 = SUM(haproxy_frontend_response_other) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(haproxy_frontend_response_2xx), query2 = SUM(haproxy_frontend_response_1xx), query3 = SUM(haproxy_frontend_response_3xx), query4 = SUM(haproxy_frontend_response_4xx), query5 = SUM(haproxy_frontend_response_5xx), query6 = SUM(haproxy_frontend_response_other) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL f_2xx = query1, f_1xx = query2, f_3xx = query3, f_4xx = query4, f_5xx = query5, other = query6
 | KEEP time_bucket, f_2xx, f_1xx, f_3xx, f_4xx, f_5xx, other
 | SORT time_bucket
@@ -2533,7 +2533,7 @@ sum:haproxy.frontend.response.2xx{*,*,$frontend,$release} by {haproxy_service,re
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_frontend_response_2xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service, release
+| STATS query1 = SUM(haproxy_frontend_response_2xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), haproxy_service, release
 | KEEP time_bucket, haproxy_service, release, query1
 | SORT time_bucket
 ```
@@ -2574,7 +2574,7 @@ sum:haproxy.frontend.response.3xx{*,*,$frontend,$release} by {haproxy_service,re
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_frontend_response_3xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service, release
+| STATS query1 = SUM(haproxy_frontend_response_3xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), haproxy_service, release
 | KEEP time_bucket, haproxy_service, release, query1
 | SORT time_bucket
 ```
@@ -2615,7 +2615,7 @@ sum:haproxy.frontend.response.4xx{*,*,$frontend,$release} by {haproxy_service,re
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_frontend_response_4xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service, release
+| STATS query1 = SUM(haproxy_frontend_response_4xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), haproxy_service, release
 | KEEP time_bucket, haproxy_service, release, query1
 | SORT time_bucket
 ```
@@ -2656,7 +2656,7 @@ sum:haproxy.frontend.response.5xx{*,*,$frontend,$release} by {haproxy_service,re
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(haproxy_frontend_response_5xx) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), haproxy_service, release
+| STATS query1 = SUM(haproxy_frontend_response_5xx) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), haproxy_service, release
 | KEEP time_bucket, haproxy_service, release, query1
 | SORT time_bucket
 ```
@@ -2910,7 +2910,7 @@ max:data_streams.kafka.lag_seconds{$topic,$env} by {topic,env}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND ((type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge")) OR (type == "kafka" AND direction == "in" AND (pathway_type == "edge" OR pathway_type == "partial_edge")))
-| STATS query1 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query2 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "in" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query3 = MAX(data_streams_kafka_lag_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), topic, deployment.environment
+| STATS query1 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query2 = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) WHERE type == "kafka" AND direction == "in" AND (pathway_type == "edge" OR pathway_type == "partial_edge"), query3 = MAX(data_streams_kafka_lag_seconds) BY time_bucket = BUCKET(@timestamp, 20, ?_tstart, ?_tend), topic, deployment.environment
 | EVAL messages_in = query1, messages_out = query2, max_kafka_lag = query3
 | STATS messages_in = AVG(messages_in), messages_out = AVG(messages_out), max_kafka_lag = LAST(max_kafka_lag, time_bucket) BY topic, deployment.environment
 | KEEP topic, deployment.environment, messages_in, messages_out, max_kafka_lag
@@ -2973,7 +2973,7 @@ sum:kafka.replication.offline_partitions_count{*}.weighted()
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(kafka_replication_offline_partitions_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(kafka_replication_offline_partitions_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = AVG(value)
 | KEEP value
@@ -3012,7 +3012,7 @@ sum:kafka.replication.under_replicated_partitions{$env}.weighted()
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(kafka_replication_under_replicated_partitions) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(kafka_replication_under_replicated_partitions) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = AVG(value)
 | KEEP value
@@ -3055,7 +3055,7 @@ max:kafka.replication.isr_shrinks.rate{$env}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = MAX(kafka_replication_isr_expands_rate), query2 = MAX(kafka_replication_isr_shrinks_rate) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = MAX(kafka_replication_isr_expands_rate), query2 = MAX(kafka_replication_isr_shrinks_rate) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = (query1 - query2)
 | STATS value = AVG(value)
 | KEEP value
@@ -3094,7 +3094,7 @@ avg:kafka.request.fetch_follower.time.avg{$env}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(kafka_request_fetch_follower_time_avg) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(kafka_request_fetch_follower_time_avg) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = AVG(value)
 | KEEP value
@@ -3133,7 +3133,7 @@ avg:kafka.request.fetch_consumer.time.avg{$env}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(kafka_request_fetch_consumer_time_avg) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(kafka_request_fetch_consumer_time_avg) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = AVG(value)
 | KEEP value
@@ -3172,7 +3172,7 @@ avg:kafka.request.produce.time.avg{$env}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(kafka_request_produce_time_avg) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(kafka_request_produce_time_avg) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = AVG(value)
 | KEEP value
@@ -3454,7 +3454,7 @@ sum:kubernetes_state.node.count{$scope,$label,$node,$service,$namespace,$cluster
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(kubernetes_state_node_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(kubernetes_state_node_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -3573,7 +3573,7 @@ sum:kubernetes_state.service.count{$scope,$label,$node,$service,$namespace,$clus
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(kubernetes_state_service_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(kubernetes_state_service_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -3652,7 +3652,7 @@ sum:kubernetes.pods.running{$scope,$label,$node,$service,$deployment,$statefulse
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(kubernetes_pods_running) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(kubernetes_pods_running) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -3691,7 +3691,7 @@ sum:kubernetes.containers.running{$scope,$label,$node,$service,$deployment,$stat
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(kubernetes_containers_running) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(kubernetes_containers_running) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -3951,7 +3951,7 @@ avg:mongodb.uptime{$scope,$replset_name}.rollup(avg, 60)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(mongodb_uptime) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(mongodb_uptime) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = LAST(value, time_bucket)
 | KEEP value
@@ -4011,7 +4011,7 @@ sum:mongodb.replset.health{sharding_cluster_role:shardsvr}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND sharding_cluster_role == "shardsvr"
-| STATS query2 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query2 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query2
 | STATS value = MAX(value)
 | KEEP value
@@ -4050,7 +4050,7 @@ sum:mongodb.replset.health{sharding_cluster_role:shardsvr,replset_state:primary}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND sharding_cluster_role == "shardsvr" AND replset_state == "primary"
-| STATS query1 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = MAX(value)
 | KEEP value
@@ -4089,7 +4089,7 @@ sum:mongodb.replset.health{sharding_cluster_role:shardsvr,replset_state:secondar
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND sharding_cluster_role == "shardsvr" AND replset_state == "secondary"
-| STATS query1 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = MAX(value)
 | KEEP value
@@ -4128,7 +4128,7 @@ sum:mongodb.replset.health{sharding_cluster_role:configsvr}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND sharding_cluster_role == "configsvr"
-| STATS query2 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query2 = SUM(mongodb_replset_health) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query2
 | STATS value = MAX(value)
 | KEEP value
@@ -4190,7 +4190,7 @@ avg:mongodb.oplog.usedsizemb{$scope,$replset_name}.fill(zero)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query4 = AVG(mongodb_oplog_logsizemb), query6 = AVG(mongodb_oplog_usedsizemb) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query4 = AVG(mongodb_oplog_logsizemb), query6 = AVG(mongodb_oplog_usedsizemb) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL oplog_log_size = query4, oplog_used_size = query6
 | KEEP time_bucket, oplog_log_size, oplog_used_size
 | SORT time_bucket
@@ -4232,7 +4232,7 @@ max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}.fill(zero
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name
+| STATS value = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name
 | SORT time_bucket
 ```
 
@@ -4291,7 +4291,7 @@ max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), replset_name
+| STATS query1 = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name
 | STATS query1 = LAST(query1, time_bucket) BY replset_name
 | KEEP replset_name, query1
 | SORT query1 DESC
@@ -4378,7 +4378,7 @@ sum:mysql.net.max_connections{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(mysql_net_connections), query1_2 = SUM(mysql_net_max_connections) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mysql_net_connections), query1_2 = SUM(mysql_net_max_connections) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2
 | SORT time_bucket
 ```
@@ -4423,7 +4423,7 @@ avg:mysql.innodb.data_writes{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(mysql_innodb_data_reads), query1_2 = AVG(mysql_innodb_data_writes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mysql_innodb_data_reads), query1_2 = AVG(mysql_innodb_data_writes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2
 | SORT time_bucket
 ```
@@ -4464,7 +4464,7 @@ sum:mysql.innodb.os_log_fsyncs{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(mysql_innodb_os_log_fsyncs) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mysql_innodb_os_log_fsyncs) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -4505,7 +4505,7 @@ sum:mysql.performance.slow_queries{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(mysql_performance_slow_queries) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mysql_performance_slow_queries) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -4546,7 +4546,7 @@ sum:mysql.performance.table_locks_waited{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(mysql_performance_table_locks_waited), query1_first = FIRST(mysql_performance_table_locks_waited, @timestamp) WHERE mysql_performance_table_locks_waited IS NOT NULL, query1_last = LAST(mysql_performance_table_locks_waited, @timestamp) WHERE mysql_performance_table_locks_waited IS NOT NULL, bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1 BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(mysql_performance_table_locks_waited), query1_first = FIRST(mysql_performance_table_locks_waited, @timestamp) WHERE mysql_performance_table_locks_waited IS NOT NULL, query1_last = LAST(mysql_performance_table_locks_waited, @timestamp) WHERE mysql_performance_table_locks_waited IS NOT NULL, bucket_span_seconds = DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1 BY time_bucket = BUCKET(@timestamp, 20, ?_tstart, ?_tend)
 | EVAL rate_query1 = (query1_last - query1_first) / bucket_span_seconds
 | KEEP time_bucket, rate_query1
 | SORT time_bucket
@@ -4588,7 +4588,7 @@ mysql.performance.user_time{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(mysql_performance_user_time) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(mysql_performance_user_time) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -4637,7 +4637,7 @@ system.load.15{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_load_1), query1_2 = AVG(system_load_5), query1_3 = AVG(system_load_15) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_load_1), query1_2 = AVG(system_load_5), query1_3 = AVG(system_load_15) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2, query1_3
 | SORT time_bucket
 ```
@@ -4698,7 +4698,7 @@ system.cpu.guest{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_cpu_idle), query2 = AVG(system_cpu_system), query3 = AVG(system_cpu_iowait), query4 = AVG(system_cpu_user), query5 = AVG(system_cpu_stolen), query6 = AVG(system_cpu_guest) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_cpu_idle), query2 = AVG(system_cpu_system), query3 = AVG(system_cpu_iowait), query4 = AVG(system_cpu_user), query5 = AVG(system_cpu_stolen), query6 = AVG(system_cpu_guest) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query2, query3, query4, query5, query6
 | SORT time_bucket
 ```
@@ -4739,7 +4739,7 @@ max:system.cpu.iowait{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = MAX(system_cpu_iowait) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = MAX(system_cpu_iowait) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -4784,7 +4784,7 @@ sum:system.mem.total{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(system_mem_usable), query2 = SUM(system_mem_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(system_mem_usable), query2 = SUM(system_mem_total) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL query2_query1 = (query2 - query1)
 | KEEP time_bucket, query1, query2_query1
 | SORT time_bucket
@@ -4830,7 +4830,7 @@ sum:system.net.bytes_sent{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(system_net_bytes_rcvd), query1_2 = SUM(system_net_bytes_sent) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(system_net_bytes_rcvd), query1_2 = SUM(system_net_bytes_sent) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2
 | SORT time_bucket
 ```
@@ -4995,7 +4995,7 @@ sum:nginx.net.conn_dropped_per_s{*}.as_count()
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(nginx_net_conn_dropped_per_s) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(nginx_net_conn_dropped_per_s) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = MAX(_bucket_value)
 ```
 
@@ -5293,7 +5293,7 @@ avg:postgresql.rows_updated{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(postgresql_rows_fetched), query1_2 = AVG(postgresql_rows_returned), query1_3 = AVG(postgresql_rows_inserted), query1_4 = AVG(postgresql_rows_updated) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(postgresql_rows_fetched), query1_2 = AVG(postgresql_rows_returned), query1_3 = AVG(postgresql_rows_inserted), query1_4 = AVG(postgresql_rows_updated) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2, query1_3, query1_4
 | SORT time_bucket
 ```
@@ -5334,7 +5334,7 @@ avg:postgresql.connections{$scope} by {db}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(postgresql_connections) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), db
+| STATS query1 = AVG(postgresql_connections) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), db
 | KEEP time_bucket, db, query1
 | SORT time_bucket
 ```
@@ -5383,7 +5383,7 @@ postgresql.rows_updated{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(postgresql_rows_inserted), query2 = AVG(postgresql_rows_deleted), query3 = AVG(postgresql_rows_updated) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(postgresql_rows_inserted), query2 = AVG(postgresql_rows_deleted), query3 = AVG(postgresql_rows_updated) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query2, query3
 | SORT time_bucket
 ```
@@ -5424,7 +5424,7 @@ avg:system.io.util{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_io_util) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_io_util) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -5473,7 +5473,7 @@ system.load.15{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_load_1), query1_2 = AVG(system_load_5), query1_3 = AVG(system_load_15) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_load_1), query1_2 = AVG(system_load_5), query1_3 = AVG(system_load_15) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2, query1_3
 | SORT time_bucket
 ```
@@ -5534,7 +5534,7 @@ system.cpu.guest{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_cpu_idle), query2 = AVG(system_cpu_system), query3 = AVG(system_cpu_iowait), query4 = AVG(system_cpu_user), query5 = AVG(system_cpu_stolen), query6 = AVG(system_cpu_guest) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_cpu_idle), query2 = AVG(system_cpu_system), query3 = AVG(system_cpu_iowait), query4 = AVG(system_cpu_user), query5 = AVG(system_cpu_stolen), query6 = AVG(system_cpu_guest) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query2, query3, query4, query5, query6
 | SORT time_bucket
 ```
@@ -5575,7 +5575,7 @@ max:system.cpu.iowait{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = MAX(system_cpu_iowait) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = MAX(system_cpu_iowait) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1
 | SORT time_bucket
 ```
@@ -5620,7 +5620,7 @@ sum:system.mem.total{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(system_mem_usable), query2 = SUM(system_mem_total) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(system_mem_usable), query2 = SUM(system_mem_total) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL query2_query1 = (query2 - query1)
 | KEEP time_bucket, query1, query2_query1
 | SORT time_bucket
@@ -5666,7 +5666,7 @@ sum:system.net.bytes_sent{$scope}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(system_net_bytes_rcvd), query1_2 = SUM(system_net_bytes_sent) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(system_net_bytes_rcvd), query1_2 = SUM(system_net_bytes_sent) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | KEEP time_bucket, query1, query1_2
 | SORT time_bucket
 ```
@@ -5958,7 +5958,7 @@ sum:rabbitmq.queues{$node_name} by {rabbitmq_node}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(rabbitmq_queues_created_count), query2 = SUM(rabbitmq_queues_deleted_count), query3 = SUM(rabbitmq_queues_declared_count), query4 = SUM(rabbitmq_queues) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS query1 = SUM(rabbitmq_queues_created_count), query2 = SUM(rabbitmq_queues_deleted_count), query3 = SUM(rabbitmq_queues_declared_count), query4 = SUM(rabbitmq_queues) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | EVAL query1_query2_query3_query4 = (((query1 + query2) + query3) + query4)
 | STATS query1_query2_query3_query4 = SUM(query1_query2_query3_query4) BY rabbitmq_node
 | KEEP rabbitmq_node, query1_query2_query3_query4
@@ -6006,7 +6006,7 @@ avg:rabbitmq.resident_memory_limit_bytes{$node_name} by {rabbitmq_node}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(rabbitmq_process_resident_memory_bytes), query2 = AVG(rabbitmq_resident_memory_limit_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS query1 = AVG(rabbitmq_process_resident_memory_bytes), query2 = AVG(rabbitmq_resident_memory_limit_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | EVAL query1_query2_100 = ((query1 / query2) * 100)
 | KEEP time_bucket, rabbitmq_node, query1_query2_100
 | SORT time_bucket
@@ -6046,7 +6046,7 @@ avg:rabbitmq.global.consumers{$node_name} by {rabbitmq_node}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(rabbitmq_global_consumers) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS query1 = AVG(rabbitmq_global_consumers) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | KEEP time_bucket, rabbitmq_node, query1
 | SORT time_bucket
 ```
@@ -6089,7 +6089,7 @@ avg:rabbitmq.connections.closed.count{$node_name} by {rabbitmq_node}.as_count()
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(rabbitmq_connections_opened_count), query2 = AVG(rabbitmq_connections_closed_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS query1 = AVG(rabbitmq_connections_opened_count), query2 = AVG(rabbitmq_connections_closed_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | EVAL query1_query2 = (query1 - query2)
 | KEEP time_bucket, rabbitmq_node, query1_query2
 | SORT time_bucket
@@ -6150,7 +6150,7 @@ avg:rabbitmq.disk_space.available_bytes{$node_name} by {rabbitmq_node}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(rabbitmq_disk_space_available_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS query1 = AVG(rabbitmq_disk_space_available_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | KEEP time_bucket, rabbitmq_node, query1
 | SORT time_bucket
 ```
@@ -6344,7 +6344,7 @@ avg:redis.stats.keyspace_misses{$scope,$host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(redis_stats_keyspace_hits), query2 = AVG(redis_stats_keyspace_misses) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(redis_stats_keyspace_hits), query2 = AVG(redis_stats_keyspace_misses) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = ((query1 / (query1 + query2)) * 100)
 | STATS value = AVG(value)
 | KEEP value
@@ -6385,7 +6385,7 @@ sum:redis.clients.blocked{$scope,$host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(redis_clients_blocked) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(redis_clients_blocked) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = MAX(_bucket_value)
 ```
 
@@ -6424,7 +6424,7 @@ sum:redis.keys{$scope,$host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(redis_keys) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(redis_keys) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = MAX(_bucket_value)
 ```
 
@@ -6463,7 +6463,7 @@ sum:redis.rdb.changes_since_last{$scope,$host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(redis_rdb_changes_since_last) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(redis_rdb_changes_since_last) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -6502,7 +6502,7 @@ sum:redis.replication.master_link_down_since_seconds{$scope,$host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = SUM(redis_replication_master_link_down_since_seconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS _bucket_value = SUM(redis_replication_master_link_down_since_seconds) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | STATS value = AVG(_bucket_value)
 ```
 
@@ -6579,7 +6579,7 @@ avg:redis.info.latency_ms{$scope,$host} by {host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query2 = AVG(redis_info_latency_ms) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| STATS query2 = AVG(redis_info_latency_ms) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), host.name
 | EVAL latency_of_the_redis_info_command = query2
 | KEEP time_bucket, host.name, latency_of_the_redis_info_command
 | SORT time_bucket
@@ -6640,7 +6640,7 @@ sum:redis.slowlog.micros.95percentile{$scope,$host} by {name,command}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(redis_slowlog_micros_95percentile) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), name, command
+| STATS query1 = SUM(redis_slowlog_micros_95percentile) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), name, command
 | EVAL top_query1_1000_10_mean_desc = (query1 / 1000)
 | KEEP time_bucket, name, command, top_query1_1000_10_mean_desc
 | STATS _rank = AVG(top_query1_1000_10_mean_desc) BY name, command
@@ -6684,7 +6684,7 @@ sum:redis.slowlog.micros.count{$host,$scope} by {command,name}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = SUM(redis_slowlog_micros_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), command, name
+| STATS query1 = SUM(redis_slowlog_micros_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), command, name
 | STATS query1 = AVG(query1) BY command, name
 | KEEP command, name, query1
 | SORT query1 DESC
@@ -6783,7 +6783,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance
+| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
 | SORT time_bucket
 ```
 
@@ -6821,7 +6821,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS _bucket_value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance
+| STATS _bucket_value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
 | STATS value = LAST(_bucket_value, time_bucket) BY instance
 | SORT value DESC
 | LIMIT 100
@@ -7019,7 +7019,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance
+| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
 | SORT time_bucket
 ```
 
@@ -7057,7 +7057,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS avg = AVG(redis_memory_used_bytes), p50 = PERCENTILE(redis_memory_used_bytes, 50), p90 = PERCENTILE(redis_memory_used_bytes, 90), p99 = PERCENTILE(redis_memory_used_bytes, 99) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance
+| STATS avg = AVG(redis_memory_used_bytes), p50 = PERCENTILE(redis_memory_used_bytes, 50), p90 = PERCENTILE(redis_memory_used_bytes, 90), p99 = PERCENTILE(redis_memory_used_bytes, 99) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
 | SORT time_bucket
 ```
 
@@ -7257,7 +7257,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance
+| STATS value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
 | SORT time_bucket
 ```
 
@@ -7402,7 +7402,7 @@ avg:system.cpu.user{$host} by {host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), host.name
 | KEEP time_bucket, host.name, query1
 | SORT time_bucket
 ```
@@ -7441,7 +7441,7 @@ avg:system.mem.usable{env:$env} by {host}.rollup(avg, 60)
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_mem_usable) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| STATS query1 = AVG(system_mem_usable) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), host.name
 | KEEP time_bucket, host.name, query1
 | SORT time_bucket
 ```
@@ -7482,7 +7482,7 @@ avg:system.cpu.user{*}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = LAST(value, time_bucket)
 | KEEP value
@@ -7565,7 +7565,7 @@ avg:system.disk.write_time{*} by {host}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS query1 = AVG(system_disk_read_time), query2 = AVG(system_disk_write_time) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), host.name
+| STATS query1 = AVG(system_disk_read_time), query2 = AVG(system_disk_write_time) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), host.name
 | EVAL total_i_o = (query1 + query2)
 | KEEP time_bucket, host.name, total_i_o
 | SORT time_bucket
@@ -7624,7 +7624,7 @@ service:web status:error
 ```
 FROM logs-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == "web" AND log.level == "error"
-| STATS count = COUNT(*) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS count = COUNT(*) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | SORT time_bucket
 ```
 
@@ -7701,7 +7701,7 @@ avg:trace.flask.request.duration{service:web} by {resource_name}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND service.name == "web"
-| STATS query1 = AVG(trace_flask_request_duration) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), resource_name
+| STATS query1 = AVG(trace_flask_request_duration) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), resource_name
 | KEEP time_bucket, resource_name, query1
 | SORT time_bucket
 ```
@@ -7759,7 +7759,7 @@ sum:system.net.bytes_rcvd{host:web01,!env:staging}
 ```
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND host.name == "web01" AND deployment.environment != "staging"
-| STATS query1 = SUM(system_net_bytes_rcvd) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS query1 = SUM(system_net_bytes_rcvd) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
 | STATS value = LAST(value, time_bucket)
 | KEEP value
@@ -7844,4 +7844,4 @@ Every panel marked `not_feasible` in the trace run (5 total):
 
 ---
 
-*Last generated: 2026-08-04 18:38 UTC*
+*Last generated: 2026-08-12 13:42 UTC*
