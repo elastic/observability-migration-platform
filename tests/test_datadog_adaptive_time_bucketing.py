@@ -201,6 +201,26 @@ class TestMetricMapRateOverrideBucketSplit(unittest.TestCase):
         self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
         self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
 
+    def test_formula_path_picks_up_metric_map_emits_rate(self):
+        query = "avg:source.bytes{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            query_type="metric",
+        )
+        wf = WidgetFormula(raw="query1 * 2")
+        wf.expression = parse_formula("query1 * 2")
+        widget = NormalizedWidget(
+            id="1", widget_type="timeseries", title="w", queries=[wq], formulas=[wf],
+        )
+        result = translate_widget(widget, plan_widget(widget), self._rate_override_profile())
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
+        self.assertNotIn("BUCKET(@timestamp, 75", result.esql_query)
+
+
 class TestTsRatePathAdaptiveWindowless(unittest.TestCase):
     def _counter_profile(self, es_field: str, metric_type: str = "counter_long"):
         profile = deepcopy(OTEL_PROFILE)

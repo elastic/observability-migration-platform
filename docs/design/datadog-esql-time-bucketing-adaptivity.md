@@ -160,8 +160,10 @@ per-spec emitted/source rate semantics (`spec.emits_rate`, `as_rate`,
 direct derivative refs from `_collect_derivative_query_refs(...)`. Both feed
 the same `_time_bucket_expr(rate_safe)` helper and constants described above;
 the count-only formula helpers (`_try_translate_formula_reducer`,
-`_try_translate_count_formula_pipeline`) pass `rate_safe=False` explicitly,
-since count formulas are never rate-related.
+`_try_translate_count_formula_pipeline`) still always pass `rate_safe=False`
+regardless of whether the referenced query emits rate math (e.g. via
+`.as_rate()` or a metric-map `transform: to_rate` override); this is a known
+pre-existing gap, out of scope for this change.
 
 ### 3.3 Convert the `TS` path to adaptive, windowless bucketing
 
