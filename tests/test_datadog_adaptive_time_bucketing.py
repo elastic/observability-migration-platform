@@ -9,8 +9,15 @@ See docs/design/datadog-esql-time-bucketing-adaptivity.md.
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 
 from observability_migration.adapters.source.datadog import translate
+from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
+from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetFormula, WidgetQuery
+from observability_migration.adapters.source.datadog.planner import plan_widget
+from observability_migration.adapters.source.datadog.query_parser import parse_formula, parse_metric_query
+from observability_migration.adapters.source.datadog.translate import translate_widget
+from observability_migration.core.verification.field_capabilities import FieldCapability
 
 
 class TestTimeBucketExprHelper(unittest.TestCase):
@@ -31,14 +38,6 @@ class TestTimeBucketExprHelper(unittest.TestCase):
             translate._time_bucket_expr(False),
             translate.TIME_BUCKET_EXPR,
         )
-
-
-from observability_migration.adapters.source.datadog.field_map import OTEL_PROFILE
-from observability_migration.adapters.source.datadog.models import NormalizedWidget, WidgetFormula, WidgetQuery
-from observability_migration.adapters.source.datadog.planner import plan_widget
-from observability_migration.adapters.source.datadog.query_parser import parse_formula, parse_metric_query
-from observability_migration.adapters.source.datadog.translate import translate_widget
-
 
 class TestSingleQueryFromPathBucketSplit(unittest.TestCase):
     def _widget(
@@ -132,12 +131,6 @@ class TestFormulaFromPathBucketSplit(unittest.TestCase):
         )
         result = translate_widget(widget, plan_widget(widget), OTEL_PROFILE)
         self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", result.esql_query)
-
-
-from copy import deepcopy
-
-from observability_migration.core.verification.field_capabilities import FieldCapability
-
 
 class TestTsRatePathAdaptiveWindowless(unittest.TestCase):
     def _counter_profile(self, es_field: str, metric_type: str = "counter_long"):

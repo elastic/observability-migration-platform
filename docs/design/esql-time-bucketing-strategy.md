@@ -309,6 +309,10 @@ behavior change for existing dashboard renders.
    `TS` path has its own separate fixed-window constant
    (`translate.py`/`TIME_BUCKET_EXPR`-adjacent) and deserves its own
    live-verified default rather than inheriting Grafana's numbers by analogy.
+   **Resolved in `docs/design/datadog-esql-time-bucketing-adaptivity.md`**:
+   independently live-verified `N=20` is also the right Datadog default (not
+   inherited by analogy), and unified both Datadog paths (`FROM` 50→75/20,
+   `TS` fixed `5 minute` → adaptive windowless) on the same pattern.
 
 ## 7. As-built summary
 
@@ -361,7 +365,8 @@ behavior change for existing dashboard renders.
   non-dashboard checks are still bounded.
 - [x] New unit tests pin the N-selection logic; full test suite (`make test`
   equivalent) is green with no new empty/error panels.
-- [ ] This document's §4.4 scope-out items (live scrape discovery, Datadog
-  `TS`-rate adaptivity, per-pack configurability) are filed as separate
-  follow-up issues rather than silently dropped — not yet filed as of this
-  writing.
+- [x] This document's §4.4 scope-out items are tracked rather than silently
+  dropped: Datadog `TS`-rate adaptivity is resolved in
+  `docs/design/datadog-esql-time-bucketing-adaptivity.md`. Live scrape/flush
+  discovery and per-pack configurability remain open, shared follow-ups
+  (not yet filed as separate issues as of this writing).
