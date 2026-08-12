@@ -20,6 +20,7 @@ import re
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -3330,6 +3331,148 @@ class TestMultiTargetFusion(unittest.TestCase):
         has_drop = any("only 1" in r.lower() or "drop" in r.lower()
                        for r in result.reasons)
         self.assertTrue(has_drop, f"Should warn about dropped targets: {result.reasons}")
+
+    def test_different_metrics_merged_with_live_resolver_no_false_positive(self):
+        """Regression guard for issue #352's detector: a clean multi-target
+        fusion where every target's metric genuinely lands in the final
+        query must NOT be flagged, even with live field-caps discovery
+        available (``test_different_metrics_merged`` above only exercises
+        the no-discovery/offline resolver path)."""
+        rule_pack = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rule_pack)
+        resolver._field_cache = {
+            "foo_total": {"double": {"type": "double"}},
+            "bar_total": {"double": {"type": "double"}},
+        }
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+
+        panel = _make_panel(1)
+        panel["targets"] = [
+            {"expr": "rate(foo_total[5m])", "refId": "A"},
+            {"expr": "rate(bar_total[5m])", "refId": "B"},
+        ]
+        _, result = _translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+        self.assertIn("foo_total", result.esql_query)
+        self.assertIn("bar_total", result.esql_query)
+        self.assertFalse(
+            any("Dropped from migrated query" in r for r in result.reasons),
+            f"Unexpected false-positive dropped-metric warning: {result.reasons}",
+        )
+
+    def test_metric_silently_dropped_from_fused_query_is_disclosed(self):
+        """Issue #352: a target counted as migrated (its ref_id lands in
+        ``fused_series``) whose metric the translator itself never emits into
+        the final query must be disclosed, not silently reported clean.
+
+        The real-world trigger required a specific live target schema the
+        reporter observed manually; this exercises the same code path
+        directly by making the multi-target query builder drop one target's
+        field from its own output, the exact shape of gap the detector must
+        catch regardless of which upstream code path causes it.
+        """
+        rule_pack = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rule_pack)
+        resolver._field_cache = {
+            "foo_total": {"double": {"type": "double"}},
+            "bar_total": {"double": {"type": "double"}},
+        }
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+
+        panel = _make_panel(1)
+        panel["targets"] = [
+            {"expr": "rate(foo_total[5m])", "refId": "A"},
+            {"expr": "rate(bar_total[5m])", "refId": "B"},
+        ]
+
+        real_builder = panels._build_multi_target_series_query
+
+        def _drop_bar_from_emitted_query(translations):
+            merged = real_builder(translations)
+            if merged and "bar_total" in merged.get("query", ""):
+                merged = dict(merged)
+                merged["query"] = (
+                    merged["query"]
+                    .replace(", B = RATE(bar_total)", "")
+                    .replace("bar_total", "foo_total")
+                )
+            return merged
+
+        with patch.object(
+            panels,
+            "_build_multi_target_series_query",
+            side_effect=_drop_bar_from_emitted_query,
+        ):
+            _, result = _translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertTrue(
+            any(
+                "Dropped from migrated query" in r and "bar_total" in r
+                for r in result.reasons
+            ),
+            f"Expected a disclosed dropped-metric warning, got: {result.reasons}",
+        )
+
+
+# =========================================================================
+# Dropped-metric detection helper (issues #349, #352)
+# =========================================================================
+
+class TestSourceMetricsAbsentFromQuery(unittest.TestCase):
+    """Direct unit tests for ``_source_metrics_absent_from_query``, the
+    shared helper behind both the curated-pack (#349) and general (#352)
+    dropped-source-metric disclosures."""
+
+    def _resolver_with_fields(self, *field_names):
+        rule_pack = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rule_pack)
+        resolver._field_cache = {name: {"double": {"type": "double"}} for name in field_names}
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        return resolver
+
+    def test_detects_metric_missing_from_query_text(self):
+        resolver = self._resolver_with_fields("foo_total", "bar_total")
+        missing = panels._source_metrics_absent_from_query(
+            ["rate(foo_total[5m])", "rate(bar_total[5m])"],
+            "TS metrics-* | STATS a = RATE(foo_total)",
+            resolver,
+        )
+        self.assertEqual(missing, ["bar_total"])
+
+    def test_no_gap_when_every_metric_present(self):
+        resolver = self._resolver_with_fields("foo_total", "bar_total")
+        missing = panels._source_metrics_absent_from_query(
+            ["rate(foo_total[5m])", "rate(bar_total[5m])"],
+            "TS metrics-* | STATS a = RATE(foo_total), b = RATE(bar_total)",
+            resolver,
+        )
+        self.assertEqual(missing, [])
+
+    def test_requires_successful_live_discovery(self):
+        """Without live field-caps discovery, a bare metric-name substring
+        match is unreliable (curated overrides may legitimately reference a
+        materialized field name that bears no textual resemblance to the raw
+        PromQL metric), so the helper must no-op rather than guess."""
+        rule_pack = rules.RulePackConfig()
+        resolver = schema.SchemaResolver(rule_pack)
+        # No discovery attempted: resolver exists but is not authoritative.
+        missing = panels._source_metrics_absent_from_query(
+            ["rate(foo_total[5m])"],
+            "TS metrics-* | STATS a = MAX(LAST_OVER_TIME(some_other_field))",
+            resolver,
+        )
+        self.assertEqual(missing, [])
+
+    def test_no_op_without_resolver(self):
+        missing = panels._source_metrics_absent_from_query(
+            ["rate(foo_total[5m])"],
+            "TS metrics-* | STATS a = MAX(LAST_OVER_TIME(some_other_field))",
+            None,
+        )
+        self.assertEqual(missing, [])
 
 
 # =========================================================================

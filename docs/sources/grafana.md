@@ -111,7 +111,15 @@ behavior, and final Kibana geometry. Query fixes land through
 `panel.query_overrides`; scope-only or misleading variable controls can be
 suppressed or rewritten through curated-pack plugins; layout fixes land through
 `panel.layout_overrides` after the standard Kibana layout transform and before
-final overlap cleanup.
+final overlap cleanup. `query_overrides.status_override` is a ceiling, not an
+unconditional assignment: if the panel's own targets reference a source metric
+the hand-written override never emits, the panel downgrades to
+`migrated_with_warnings` (confidence capped at `0.6`) with an explicit "Target
+telemetry missing from curated override" reason, the same disclosure the
+non-pack path uses for a metric that never made it into an otherwise-migrated
+fused query ("Dropped from migrated query"). Both checks require live
+field-caps discovery (`--es-url`) to resolve the metric's actual field name;
+without it they no-op rather than guess.
 
 The console pipeline is **5 stages**, not 7: `[1/5] Extracting dashboards`,
 `[2/5] Translating dashboards`, `[3/5] Verification-packet ES|QL validation`,

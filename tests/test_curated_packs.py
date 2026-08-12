@@ -232,6 +232,213 @@ def test_curated_rate_overrides_do_not_use_sub_scrape_adaptive_tbucket_100():
     assert offenders == []
 
 
+# ---------------------------------------------------------------------------
+# Curated override dropped-source-metric disclosure (issue #349)
+# ---------------------------------------------------------------------------
+
+def test_curated_override_downgrades_when_source_metric_dropped():
+    """``status_override: migrated`` must act as a ceiling, not an
+    unconditional assignment: if the panel's own targets reference a metric
+    the hand-written override never emits, the panel must downgrade to
+    ``migrated_with_warnings`` and name the dropped metric, matching the
+    tool's own behavior for non-pack panels ("Target telemetry missing")."""
+    rule_pack = RulePackConfig(
+        panel_query_overrides=[
+            {
+                "title_match": "Two Series",
+                "esql_query": (
+                    "TS metrics-*\n"
+                    "| WHERE {{metric:foo_total:counter}} IS NOT NULL\n"
+                    "| STATS value = MAX(LAST_OVER_TIME({{metric:foo_total:counter}}))\n"
+                    "| KEEP value"
+                ),
+                "status_override": "migrated",
+            }
+        ]
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "foo_total": {"double": {"type": "double"}},
+        "bar_total": {"double": {"type": "double"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "gauge",
+        "title": "Two Series",
+        "targets": [
+            {"expr": "foo_total", "refId": "A"},
+            {"expr": "bar_total", "refId": "B"},
+        ],
+    }
+
+    _yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert result.confidence <= 0.6
+    assert any(
+        "bar_total" in reason and "curated override" in reason
+        for reason in result.reasons
+    ), result.reasons
+
+
+def test_curated_override_status_ceiling_not_downgraded_when_no_gap():
+    """Sanity companion: when the override legitimately covers every source
+    metric, ``status_override: migrated`` must NOT be downgraded."""
+    rule_pack = RulePackConfig(
+        panel_query_overrides=[
+            {
+                "title_match": "One Series",
+                "esql_query": (
+                    "TS metrics-*\n"
+                    "| WHERE {{metric:foo_total:counter}} IS NOT NULL\n"
+                    "| STATS value = MAX(LAST_OVER_TIME({{metric:foo_total:counter}}))\n"
+                    "| KEEP value"
+                ),
+                "status_override": "migrated",
+            }
+        ]
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {"foo_total": {"double": {"type": "double"}}}
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "gauge",
+        "title": "One Series",
+        "targets": [{"expr": "foo_total", "refId": "A"}],
+    }
+
+    _yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert result.status == "migrated"
+    assert result.confidence == 1.0
+    assert result.reasons == []
+
+
+def test_curated_override_ignores_hidden_target_when_checking_dropped_metrics():
+    """A ``hide: true`` target is a disabled/legacy alternate query Grafana
+    itself never renders (e.g. Node Exporter Full's real "RAM Used" panel
+    keeps an old MemFree-based formula hidden behind a visible
+    MemAvailable-based one for older node_exporter compatibility). The
+    dropped-metric check must only compare against targets a user actually
+    sees, or every such compatibility fallback falsely downgrades an
+    otherwise-clean curated override."""
+    rule_pack = RulePackConfig(
+        panel_query_overrides=[
+            {
+                "title_match": "RAM Used",
+                "esql_query": (
+                    "TS metrics-*\n"
+                    "| WHERE {{metric:mem_available:gauge}} IS NOT NULL\n"
+                    "| STATS value = MAX(LAST_OVER_TIME({{metric:mem_available:gauge}}))\n"
+                    "| KEEP value"
+                ),
+                "status_override": "migrated",
+            }
+        ]
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "mem_free": {"double": {"type": "double"}},
+        "mem_available": {"double": {"type": "double"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "gauge",
+        "title": "RAM Used",
+        "targets": [
+            {"expr": "mem_free", "refId": "A", "hide": True},
+            {"expr": "mem_available", "refId": "B"},
+        ],
+    }
+
+    _yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert result.status == "migrated"
+    assert result.confidence == 1.0
+    assert result.reasons == []
+
+
+def test_1860_pressure_panel_includes_irq_series():
+    """node_pressure_irq_stalled_seconds_total (issue #349) must be part of
+    the curated Pressure override, not silently dropped."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "node_pressure_cpu_waiting_seconds_total": {"double": {"type": "double"}},
+        "node_pressure_memory_waiting_seconds_total": {"double": {"type": "double"}},
+        "node_pressure_io_waiting_seconds_total": {"double": {"type": "double"}},
+        "node_pressure_irq_stalled_seconds_total": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+        "job": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "bargauge",
+        "title": "Pressure",
+        "targets": [
+            {"expr": "irate(node_pressure_cpu_waiting_seconds_total[$__rate_interval])", "refId": "A"},
+            {"expr": "irate(node_pressure_memory_waiting_seconds_total[$__rate_interval])", "refId": "B"},
+            {"expr": "irate(node_pressure_io_waiting_seconds_total[$__rate_interval])", "refId": "C"},
+            {"expr": "irate(node_pressure_irq_stalled_seconds_total[$__rate_interval])", "refId": "D"},
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert result.status == "migrated", f"got {result.status}: {result.reasons}"
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "node_pressure_irq_stalled_seconds_total" in query
+    assert '"Irq"' in query
+
+
+def test_1860_cpu_panel_includes_guest_series():
+    """node_cpu_guest_seconds_total (issue #349) must be part of the curated
+    CPU override, not silently dropped."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "node_cpu_seconds_total": {"double": {"type": "double"}},
+        "node_cpu_guest_seconds_total": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+        "job": {"keyword": {"type": "keyword"}},
+        "cpu": {"keyword": {"type": "keyword"}},
+        "mode": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    targets = [
+        {
+            "expr": f'avg(irate(node_cpu_seconds_total{{mode="{mode}"}}[$__rate_interval])) by (mode) * 100',
+            "refId": chr(65 + i),
+        }
+        for i, mode in enumerate(
+            ["system", "user", "nice", "iowait", "irq", "softirq", "steal", "idle"]
+        )
+    ]
+    targets.append(
+        {"expr": "avg(irate(node_cpu_guest_seconds_total[$__rate_interval])) * 100", "refId": "I"}
+    )
+    panel = {"type": "timeseries", "title": "CPU", "targets": targets}
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert result.status == "migrated", f"got {result.status}: {result.reasons}"
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "node_cpu_guest_seconds_total" in query
+    assert "Guest -" in query
+
+
 def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
     """Interrupts Detail must legend by interrupt/cpu, not empty type/info GROK."""
     dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}

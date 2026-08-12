@@ -3807,6 +3807,32 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         # uploaded without ``metric.max``, so Kibana auto-fit
                         # the dial to ~0-2% instead of the Grafana 0-100 domain.
                         _emitted_query = _native_panel.get("query", _curated_query)
+                        # A curated override is hand-written and can omit a
+                        # source metric the pack author never accounted for
+                        # (issue #349). ``status_override`` must act as a
+                        # ceiling on status/confidence, not an unconditional
+                        # assignment, so a detected gap still surfaces -- the
+                        # same discipline the general (non-pack) path applies
+                        # for "Target telemetry missing" (issue #352).
+                        _source_target_exprs = [
+                            str(_t.get("expr") or "")
+                            for _t in panel.get("targets", []) or []
+                            if isinstance(_t, dict)
+                            and _t.get("expr")
+                            and not _t.get("hide")
+                        ]
+                        _dropped_curated_metrics = _source_metrics_absent_from_query(
+                            _source_target_exprs, _emitted_query, resolver
+                        )
+                        if _dropped_curated_metrics:
+                            _append_unique(
+                                _override_warnings,
+                                "Target telemetry missing from curated override: "
+                                + ", ".join(_dropped_curated_metrics),
+                            )
+                            if _status == "migrated":
+                                _status = "migrated_with_warnings"
+                            _score = min(_score, 0.6)
                         _panel_result = PanelResult(
                             title, panel_type, _override_type, _status, _score,
                             reasons=_override_warnings,
@@ -4412,6 +4438,40 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         rule_pack,
     ):
         _append_unique(primary.warnings, recording_rule_note)
+    # Only check targets that were actually counted as migrated
+    # (``fused_series``): targets dropped for a live-missing metric or an
+    # incompatible grouping are already explained by the warnings above, so
+    # re-checking them here would double-report the same gap under a
+    # different reason (issue #352). This instead catches a target that WAS
+    # judged mergeable yet whose metric silently never made it into the
+    # final STATS/EVAL -- available but dropped by the translator, not a
+    # target-schema gap.
+    _migrated_target_exprs = [
+        str(_series.metadata.get("target_source_expr") or _series.promql_expr or "")
+        for _series in (fused_series or [primary])
+    ]
+    # A cross-index panel (issue #352 regression risk) splits fused targets
+    # across multiple Lens layers, each with its own ES|QL query
+    # (``primary.metadata["cross_index_layers"]``); ``primary.esql_query`` is
+    # only the first layer's query. Checking against that alone would falsely
+    # flag every target whose metric only appears in a later layer.
+    _cross_index_layers = primary.metadata.get("cross_index_layers") or []
+    _all_layer_queries = "\n".join(
+        [primary.esql_query or ""]
+        + [
+            str(_layer.get("query") or "")
+            for _layer in _cross_index_layers
+            if isinstance(_layer, dict)
+        ]
+    )
+    _dropped_source_metrics = _source_metrics_absent_from_query(
+        _migrated_target_exprs, _all_layer_queries, resolver
+    )
+    if _dropped_source_metrics:
+        _append_unique(
+            primary.warnings,
+            "Dropped from migrated query: " + ", ".join(_dropped_source_metrics),
+        )
     panel_confidence = 0.85 if not primary.warnings else 0.6
     status = "migrated" if not primary.warnings else "migrated_with_warnings"
 
@@ -5663,6 +5723,51 @@ def _live_missing_metrics_for_expr(expr, resolver):
         if any(status is None for status in statuses):
             continue
         _append_unique(missing, metric)
+    return missing
+
+
+def _source_metrics_absent_from_query(source_exprs, query_text, resolver):
+    """Prometheus metrics referenced by *source_exprs* that never appear in the
+    final emitted *query_text*.
+
+    Complements ``_live_missing_metrics_for_expr``, which flags a metric that
+    is absent from the *target's schema* (a data gap). This instead flags a
+    metric the translator itself dropped while building the final query, even
+    though the metric is queryable -- e.g. a target folded into a multi-target
+    fusion whose column never made it into the emitted STATS/EVAL (issue
+    #352), or a curated ``query_overrides`` entry that omits a source metric
+    the pack author never accounted for (issue #349). Callers are responsible
+    for only passing exprs/metrics not already explained by another check
+    (live-missing metrics, incompatible-target drops) to avoid double
+    reporting the same gap under two different reasons.
+
+    Requires live field-caps discovery to have actually run (same gate as
+    ``_live_missing_metrics_for_expr``): without a real target schema to
+    resolve field names against, a bare metric-name substring match against
+    the emitted query text is unreliable and would false-positive on curated
+    overrides/tests that legitimately rename or synthesize fields.
+    """
+    if not resolver:
+        return []
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return []
+    source_metrics: set[str] = set()
+    for expr in source_exprs or []:
+        source_metrics |= _metrics_in_expr(str(expr or ""))
+    if not source_metrics or not query_text:
+        return []
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    missing: list[str] = []
+    for metric in sorted(source_metrics):
+        candidates = {metric}
+        if callable(resolve_metric):
+            for prefer in ("gauge", "counter"):
+                resolved = resolve_metric(metric, prefer=prefer)
+                if resolved:
+                    candidates.add(resolved)
+        if not any(candidate and candidate in query_text for candidate in candidates):
+            _append_unique(missing, metric)
     return missing
 
 
