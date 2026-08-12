@@ -53,8 +53,40 @@ DD_AGG_TO_ESQL: dict[str, str] = {
     "p99": "PERCENTILE(%, 99)",
 }
 
-TIME_BUCKET_EXPR = "BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+# Chart-resolution default: matches Grafana's panels.py constant of the same
+# name and the underlying Kibana Lens AUTO_TARGET_NUMBER_OF_BUCKETS
+# precedent. No cadence sensitivity -- safe for any order-independent
+# reducer (avg/sum/min/max/percentile/count).
+_ADAPTIVE_CHART_BUCKETS = 75
+# Rate-safe floor for any query/formula whose aggregation needs >=2 samples
+# per bucket (RATE/IRATE-style, or the FIRST/LAST bucket-endpoint fallback in
+# _rate_approx_expr): too fine a bucket relative to the source's real sample
+# cadence silently produces null (TS|QL RATE/INCREASE) or wrong (LAST==FIRST)
+# values. Live-verified independently for Datadog's own cadence profile in
+# docs/design/datadog-esql-time-bucketing-adaptivity.md -- not inherited from
+# Grafana's panels.py constant of the same value by unverified analogy.
+_ADAPTIVE_RATE_BUCKETS = 20
+# ``TIME_BUCKET_EXPR`` keeps its historical name -- most call sites (logs,
+# plain count/table/percentile widgets) reference it directly and must keep
+# the flat chart-resolution default. Only the call sites whose query/formula
+# needs rate safety (see ``_time_bucket_expr``) switch to the coarser form.
+TIME_BUCKET_EXPR = f"BUCKET(@timestamp, {_ADAPTIVE_CHART_BUCKETS}, ?_tstart, ?_tend)"
+_RATE_SAFE_TIME_BUCKET_EXPR = f"BUCKET(@timestamp, {_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
 TIME_FILTER = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
+
+
+def _time_bucket_expr(rate_safe: bool) -> str:
+    """Return the FROM-path time-bucket expression for this query's needs.
+
+    ``rate_safe=True`` selects the coarser 20-bucket floor; see the module
+    constants above for why. Callers compute ``rate_safe`` from whatever
+    rate/derivative signal is available in their own scope (a single query's
+    ``as_rate``/``_needs_rate``, or a formula's derivative-function refs) --
+    there is no single shared "is this widget a rate widget" flag because the
+    two FROM-path entry points (`_translate_single_metric`,
+    `_translate_formula_metric_widget`) have different natural signals.
+    """
+    return _RATE_SAFE_TIME_BUCKET_EXPR if rate_safe else TIME_BUCKET_EXPR
 DEFAULT_RATE_WINDOW = "5m"
 DEFAULT_RATE_WINDOW_SECONDS = 300.0
 _CHANGE_WIDGET_COMPARE_TO_SECONDS = {
