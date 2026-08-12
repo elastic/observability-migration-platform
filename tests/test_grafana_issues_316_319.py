@@ -118,7 +118,11 @@ class TestIssue316EsqlAdaptiveTbucket(unittest.TestCase):
         self.assertIsNotNone(yaml_panel)
         query = yaml_panel["esql"]["query"]
         self.assertTrue(query.startswith("TS "), query)
-        self.assertIn("TBUCKET(100, ?_tstart, ?_tend)", query)
+        # A range function (rate/irate/increase/...) uses the rate-safe bucket
+        # floor (20), not the general adaptive default (75): RATE/IRATE only
+        # look at the last two samples per bucket, so a bucket count that
+        # narrows below the source scrape interval returns null.
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", query)
         self.assertNotIn("TBUCKET(5 minute)", query)
 
     def test_esql_xy_uses_panel_interval_tbucket(self):
@@ -132,6 +136,38 @@ class TestIssue316EsqlAdaptiveTbucket(unittest.TestCase):
         )
         query = yaml_panel["esql"]["query"]
         self.assertIn("TBUCKET(1 hour)", query)
+
+    def test_esql_non_range_gauge_panel_uses_75_bucket_default(self):
+        """A plain (non-range-function) gauge panel gets the general adaptive
+        default (75, matching Kibana Lens's own auto-resolution target), not
+        the rate-safe floor -- it has no RATE/IRATE to starve, so the finer
+        default resolution is safe."""
+        yaml_panel, _ = _translate(
+            _make_panel("node_load1", legend=""),
+            native_promql=False,
+        )
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("TBUCKET(75, ?_tstart, ?_tend)", query)
+
+    def test_rule_pack_for_panel_mirrors_rate_safe_bucket_onto_from_path(self):
+        """``_rule_pack_for_panel`` overlays the rate-safe FROM-path bucket
+        (``BUCKET(@timestamp, 20, ...)``) alongside the TS-path one, so a
+        gauge panel that falls back to FROM (unproven TSDS) still gets a
+        rate-safe floor if its target uses a range function."""
+        rp = rules.RulePackConfig()
+        panel = _make_panel("avg_over_time(custom_app_gauge[5m])", legend="")
+        updated = panels._rule_pack_for_panel(rp, panel)
+        self.assertIn("TBUCKET(20, ?_tstart, ?_tend)", updated.ts_bucket)
+        self.assertIn("BUCKET(@timestamp, 20, ?_tstart, ?_tend)", updated.from_bucket)
+
+    def test_rule_pack_for_panel_mirrors_75_default_onto_from_path(self):
+        """A plain gauge panel (no range function) gets the general 75 default
+        mirrored onto the FROM-path bucket too."""
+        rp = rules.RulePackConfig()
+        panel = _make_panel("node_load1", legend="")
+        updated = panels._rule_pack_for_panel(rp, panel)
+        self.assertIn("TBUCKET(75, ?_tstart, ?_tend)", updated.ts_bucket)
+        self.assertIn("BUCKET(@timestamp, 75, ?_tstart, ?_tend)", updated.from_bucket)
 
 
 class TestIssue319PromqlLabelMatcherParams(unittest.TestCase):

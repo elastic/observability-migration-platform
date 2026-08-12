@@ -199,9 +199,106 @@ def test_resolve_pack_1860_merges_metric_kinds_and_query_override():
     assert "Memory Basic" in override_titles
     assert "Network Traffic Basic" in override_titles
     assert "Disk Space Used Basic" in override_titles
+    assert "Interrupts Detail" in override_titles
     layout_titles = {override.get("title_match") for override in resolved.panel_layout_overrides}
     assert "CPU / Memory / Net / Disk" in layout_titles
     assert "Network Traffic" in layout_titles
+
+
+def test_curated_rate_overrides_do_not_use_sub_scrape_adaptive_tbucket_100():
+    """Curated RATE/IRATE overrides must not reintroduce the blank-chart bucket.
+
+    TBUCKET(100, ?_tstart, ?_tend) can choose buckets at or below scrape
+    cadence on short dashboard ranges, leaving RATE/IRATE with fewer than two
+    samples per bucket. This invariant covers the pack-level cleanup in
+    addition to the panel-specific Interrupts Detail assertion below.
+    """
+    dashboards = [
+        {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]},
+        {"gnetId": 763, "title": "Redis...", "tags": []},
+        {"gnetId": 11835, "title": "Redis...", "tags": []},
+    ]
+
+    offenders = []
+    for dashboard in dashboards:
+        resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+        for override in resolved.panel_query_overrides:
+            query = str(override.get("esql_query") or "")
+            if "RATE(" not in query and "IRATE(" not in query and "INCREASE(" not in query:
+                continue
+            if "TBUCKET(100" in query or "BUCKET(@timestamp, 100" in query:
+                offenders.append(f"{dashboard['gnetId']}:{override.get('title_match')}")
+
+    assert offenders == []
+
+
+def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
+    """Interrupts Detail must legend by interrupt/cpu, not empty type/info GROK."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    panel = {
+        "type": "timeseries",
+        "title": "Interrupts Detail",
+        "targets": [
+            {
+                "expr": 'irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval])',
+                "legendFormat": "{{ type }} - {{ info }}",
+                "refId": "A",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved)
+
+    assert result.status == "migrated", (
+        f"Expected migrated via curated override, got {result.status}: {result.reasons}"
+    )
+    assert yaml_panel is not None and "esql" in yaml_panel, "Expected ES|QL panel spec"
+    query = yaml_panel["esql"].get("query", "")
+    assert "IRATE(" in query
+    assert "TBUCKET(20" in query
+    assert "TBUCKET(100" not in query
+    assert "labels.interrupt" in query
+    assert "labels.cpu" in query
+    assert 'CONCAT(COALESCE(TO_STRING(labels.interrupt)' in query or (
+        "labels.interrupt" in query and "CPU" in query
+    )
+    assert '"type"' not in query
+    assert '"info"' not in query
+    assert "GROK" not in query
+
+
+def test_1860_interrupts_detail_degrades_to_markdown_when_metric_absent_live():
+    """node_interrupts_total is the only metric in the override; if field-caps
+    prove it absent, the panel must degrade to a missing-telemetry markdown
+    instead of silently shipping an ES|QL query that can never match."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert "node_interrupts_total" in resolved.live_optional_metrics
+
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {"labels.instance": {"keyword": {"type": "keyword"}}}
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "Interrupts Detail",
+        "targets": [
+            {
+                "expr": 'irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval])',
+                "legendFormat": "{{ type }} - {{ info }}",
+                "refId": "A",
+            }
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert "markdown" in (yaml_panel or {})
+    assert "node_interrupts_total" in yaml_panel["markdown"]["content"]
+    assert result.status == "migrated_with_warnings"
 
 
 def test_resolve_pack_18406_merges_metric_kinds():
