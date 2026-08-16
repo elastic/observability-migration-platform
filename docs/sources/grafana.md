@@ -449,6 +449,44 @@ selected.
   gap. Controls have no `PanelResult`-style per-item tracking of their own, so
   `control_warnings` is dashboard-scoped rather than per-control.
 
+### Interval, Custom, And Other Non-Query Variables (Issue #356)
+
+Grafana `interval` variables (a dropdown of durations, e.g. `20s,1m,5m`) have
+no Kibana control equivalent and are intentionally skipped by
+`interval_variable_rule` — Kibana's time picker controls the *displayed*
+range, which is the variable's most common use. `custom` variables (a static
+comma-separated value list) are also skipped by default; if one is referenced
+as `$var`/`?var` inside a panel query, `_ensure_param_controls` (issue #131)
+synthesizes a binding control after translation, but a `custom` variable never
+referenced that way has nothing to bind.
+
+Neither skip is safe when the variable is doing more than that. Dashboard
+9852's `RateInterval` is the sharp counter-example: 16 targets use it as the
+**rate window** (`rate(node_disk_written_bytes_total[$RateInterval])`), which
+has nothing to do with the time picker — Grafana keeps the rate window fixed
+at, e.g., `1m` regardless of the displayed range so the line stays smooth. A
+duration variable used this way, or any other variable type that ends up with
+no control *and* no `?var` binding, is not equivalent to "handled by the time
+picker" — it silently hands control of the window to whatever the migrated
+query's `TBUCKET` heuristic picks, which does not track the source value and
+can differ from it in either direction.
+
+`translate_dashboard` therefore runs one disclosure pass after every control
+has been synthesized (variable translation, `_ensure_param_controls`,
+late-bound group controls, `?var` retargeting): for every templating-list
+variable whose name never ended up as a control's `variable_name`, it checks
+whether any panel's *original* PromQL `expr` still references `$var` /
+`${var}` — if so, it appends a `control_warnings` entry naming the variable,
+so the loss is printed under `CONTROL WARNINGS` and recorded in the JSON
+report / migration manifest / preflight report, matching every other control
+degradation on this page. `interval` variables get a specific message calling
+out the rate-window bucket-heuristic substitution; every other type gets a
+generic "referenced but dropped" message. A variable that is genuinely unused
+by every panel is never warned about — there is nothing lost to disclose. This
+is disclosure only: the variable is not migrated into a working control (that
+would require parameterizing the ES|QL duration literal, which is unverified
+and out of scope for this fix).
+
 ### Variable Label Filters (`metric{label="$var"}` → `?var`)
 
 When a dashboard's templating list defines named variables used in PromQL label

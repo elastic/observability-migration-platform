@@ -1332,6 +1332,16 @@ def test_mv_contains_params_are_recognised_as_bindable():
     assert po._mv_contains_param_names(esql) == {"instance"}
 
 
+def test_mv_contains_params_are_recognised_when_wrapped_in_to_string():
+    """issue #353: ?param is wrapped in TO_STRING(...) so MV_CONTAINS
+    type-checks regardless of how Kibana infers the bound parameter type."""
+    esql = (
+        '| WHERE MV_CONTAINS(TO_STRING(?instance), ".*") '
+        "OR MV_CONTAINS(TO_STRING(?instance), labels.instance)"
+    )
+    assert po._mv_contains_param_names(esql) == {"instance"}
+
+
 def test_source_metric_names_are_qualified_to_es_field_paths():
     """Native PROMQL addresses real field paths, not bare Prometheus names.
 

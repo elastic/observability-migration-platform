@@ -154,6 +154,32 @@ def test_ui_flags_a_metric_panel_with_no_metric():
 
 
 # --------------------------------------------------------------------------- #
+# multi-value parameter detection (issue #353)
+# --------------------------------------------------------------------------- #
+def test_is_multi_value_param_recognises_bare_mv_contains():
+    query = 'FROM metrics-* | WHERE MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, instance)'
+    assert qa._is_multi_value_param("instance", query) is True
+
+
+def test_is_multi_value_param_recognises_to_string_wrapped_mv_contains():
+    """Real translator output now wraps the parameter in ``TO_STRING(...)``
+    (issue #353's type-safety guardrail). Missing this shape here would
+    silently bind a multi-select parameter as a scalar string instead of a
+    list, breaking the QA harness's own query execution for every
+    multi-select-controlled panel."""
+    query = (
+        'FROM metrics-* | WHERE MV_CONTAINS(TO_STRING(?instance), ".*") '
+        "OR MV_CONTAINS(TO_STRING(?instance), instance)"
+    )
+    assert qa._is_multi_value_param("instance", query) is True
+
+
+def test_is_multi_value_param_false_for_a_scalar_binding():
+    query = "FROM metrics-* | WHERE instance == ?instance"
+    assert qa._is_multi_value_param("instance", query) is False
+
+
+# --------------------------------------------------------------------------- #
 # payload traversal
 # --------------------------------------------------------------------------- #
 def test_panel_queries_reads_layers_not_just_the_direct_source():

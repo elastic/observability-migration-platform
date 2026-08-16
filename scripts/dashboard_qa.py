@@ -51,6 +51,18 @@ _AUDIT_SUFFIX = "-qa-tmp"
 _PARAM = re.compile(r"(?<!\?)\?(?!\?)([a-zA-Z_]\w*)")
 
 
+def _is_multi_value_param(name: str, query: str) -> bool:
+    """Whether ``?name`` is bound through an ``MV_CONTAINS`` multi-select
+    guardrail, so it must be sent as a list rather than a scalar.
+
+    Matches both ``MV_CONTAINS(?name`` and the type-safe
+    ``MV_CONTAINS(TO_STRING(?name)`` form (issue #353) -- a multi-select
+    control's parameter is still an array either way, ``TO_STRING`` just
+    wraps it for ES|QL's benefit.
+    """
+    return bool(re.search(rf"MV_CONTAINS\(\s*(?:TO_STRING\(\s*)?\?{re.escape(name)}\b", query))
+
+
 # --------------------------------------------------------------------------- #
 # payload helpers
 # --------------------------------------------------------------------------- #
@@ -235,7 +247,7 @@ def run_query(es_url: str, query: str, tstart: str, tend: str, api_key: str):
     for name in sorted(set(_PARAM.findall(query))):
         if name in ("_tstart", "_tend"):
             continue
-        params.append({name: [".*"] if f"MV_CONTAINS(?{name}" in query else ".*"})
+        params.append({name: [".*"] if _is_multi_value_param(name, query) else ".*"})
     try:
         doc = _es(es_url, {"query": query, "params": params}, api_key)
     except urllib.error.HTTPError as exc:
@@ -412,7 +424,7 @@ def _our_last_bucket_series(es_url, query, tstart, tend, api_key):
     for name in sorted(set(_PARAM.findall(query))):
         if name in ("_tstart", "_tend"):
             continue
-        params.append({name: [".*"] if f"MV_CONTAINS(?{name}" in query else ".*"})
+        params.append({name: [".*"] if _is_multi_value_param(name, query) else ".*"})
     doc = _es(es_url, {"query": query, "params": params}, api_key)
     columns = [c["name"] for c in doc.get("columns", [])]
     rows = doc.get("values") or []
@@ -607,7 +619,7 @@ def run_query_values(es_url: str, query: str, tstart: str, tend: str, api_key: s
     for name in sorted(set(_PARAM.findall(query))):
         if name in ("_tstart", "_tend"):
             continue
-        params.append({name: [".*"] if f"MV_CONTAINS(?{name}" in query else ".*"})
+        params.append({name: [".*"] if _is_multi_value_param(name, query) else ".*"})
     doc = _es(es_url, {"query": query, "params": params}, api_key)
     columns = [c["name"] for c in doc.get("columns", [])]
     # `_gauge_min`/`_gauge_max` are panel display config, not data: including

@@ -8420,8 +8420,11 @@ class TranslatorRegressionTests(unittest.TestCase):
         # the field against the literal string ".*".
         compact = " ".join(rendered.split())
         self.assertIn("MV_COUNT(?host) == 0", compact)
-        self.assertIn('MV_CONTAINS(?host, ".*")', compact)
-        self.assertIn("MV_CONTAINS(?host, host)", compact)
+        # ``TO_STRING(...)`` wraps the parameter so MV_CONTAINS type-checks
+        # regardless of whether Kibana infers ``?host`` as numeric or
+        # keyword (issue #353).
+        self.assertIn('MV_CONTAINS(TO_STRING(?host), ".*")', compact)
+        self.assertIn("MV_CONTAINS(TO_STRING(?host), host)", compact)
         self.assertNotIn("== ?host", compact)
         controls = doc["dashboards"][0].get("controls", [])
         binding = next(c for c in controls if c.get("variable_name") == "host")
@@ -8609,7 +8612,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("PROMQL", rendered)
         # multi=True -> MV_CONTAINS binding (see the equality-all test above);
         # the ".*" disjunct keeps the first-load select-everything behaviour.
-        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
+        # ``TO_STRING(...)`` wraps the parameter (issue #353).
+        self.assertIn('MV_CONTAINS(TO_STRING(?host), ".*")', rendered)
         self.assertNotIn("host=~?host", rendered)
 
     def test_dashboard_native_equality_matcher_falls_to_esql_without_label_matcher_params(self):
@@ -8663,7 +8667,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn("PROMQL", rendered)
         # multi=True -> MV_CONTAINS binding (see the equality-all test above);
         # the ".*" disjunct keeps the first-load select-everything behaviour.
-        self.assertIn('MV_CONTAINS(?host, ".*")', rendered)
+        # ``TO_STRING(...)`` wraps the parameter (issue #353).
+        self.assertIn('MV_CONTAINS(TO_STRING(?host), ".*")', rendered)
         self.assertNotIn("== ?host", rendered)
 
     def test_dashboard_equality_matcher_on_concrete_var_keeps_exact_match(self):
@@ -14583,6 +14588,258 @@ class TextboxVariableTests(unittest.TestCase):
         ]
         controls = migrate.translate_variables(variables, "metrics-*", rule_pack=self.rule_pack)
         self.assertEqual(len(controls), 0)
+
+
+class DroppedReferencedVariableDisclosureTests(unittest.TestCase):
+    """Regression tests for issue #356: a template variable that is used by
+    a panel's source PromQL but ends up with no Kibana control (or ES|QL
+    parameter binding) must surface a control warning naming it, instead of
+    disappearing without a trace. ``interval`` variables used as a rate/range
+    window (dashboard 9852's ``RateInterval``) are the sharpest case, since
+    losing them silently hands control of the rate window to the migrated
+    query's bucket-width heuristic."""
+
+    def setUp(self):
+        self.rule_pack = migrate.RulePackConfig()
+
+    def test_interval_variable_used_as_rate_window_is_disclosed_when_dropped(self):
+        dashboard = {
+            "title": "Disk Graphs",
+            "uid": "disk-graphs",
+            "templating": {
+                "list": [
+                    {"name": "RateInterval", "type": "interval", "query": "20s,1m,5m"},
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Disk Written Bytes",
+                    "type": "graph",
+                    "targets": [
+                        {
+                            "refId": "A",
+                            "expr": "rate(node_disk_written_bytes_total[$RateInterval])",
+                        }
+                    ],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+        )
+        warnings_text = " ".join(result.control_warnings)
+        self.assertIn("RateInterval", warnings_text)
+        self.assertIn("rate", warnings_text.lower())
+        self.assertIn("bucket", warnings_text.lower())
+
+    def test_interval_variable_never_referenced_by_a_panel_is_not_disclosed(self):
+        """A declared-but-unused interval variable has nothing to lose --
+        warning about it would be noise, not disclosure."""
+        dashboard = {
+            "title": "Unused Interval",
+            "uid": "unused-interval",
+            "templating": {
+                "list": [
+                    {"name": "RateInterval", "type": "interval", "query": "20s,1m,5m"},
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": "sum(cpu)"}],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+        )
+        self.assertNotIn(
+            "RateInterval",
+            " ".join(result.control_warnings),
+            "no warning should be raised for a variable no panel actually uses",
+        )
+
+    def test_custom_variable_used_as_duration_is_disclosed_when_dropped(self):
+        """Generalises beyond ``interval``: any variable type that is
+        referenced by a panel but never becomes a control or a bound ``?var``
+        parameter is disclosed, e.g. a ``custom`` variable used as a
+        range-vector duration (not a scalar slot, so issue #157's dropdown
+        substitution does not apply, and it is not a label matcher either)."""
+        dashboard = {
+            "title": "Custom Window",
+            "uid": "custom-window",
+            "templating": {
+                "list": [
+                    {"name": "Resolution", "type": "custom", "query": "1m,5m,15m"},
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Disk",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": "rate(disk_bytes[$Resolution])"}],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+        )
+        warnings_text = " ".join(result.control_warnings)
+        self.assertIn("Resolution", warnings_text)
+        self.assertIn("custom", warnings_text.lower())
+
+    def test_custom_variable_bound_as_label_filter_param_is_not_disclosed(self):
+        """A ``custom`` variable that DOES end up bound (here, as an ES|QL
+        named parameter on a label matcher via ``_ensure_param_controls``)
+        must not be flagged as dropped -- it has a working control."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="test", confidence="assumed"
+        )
+        resolver = migrate.SchemaResolver(self.rule_pack)
+        dashboard = {
+            "title": "Custom Label Filter",
+            "uid": "custom-label-filter",
+            "templating": {
+                "list": [
+                    {"name": "env", "type": "custom", "query": "prod,staging,dev"},
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{environment="$env"})'}],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+            resolver=resolver,
+        )
+        self.assertNotIn("env", " ".join(result.control_warnings))
+
+    def test_query_variable_with_existing_specific_warning_is_not_double_disclosed(self):
+        """A ``query`` variable that already gets its own specific
+        ``control_warnings`` entry (here, Grafana's ``query_result()`` helper,
+        which has no Kibana populate-query equivalent) must not also collect
+        this pass's generic message -- one clear warning, not two competing
+        explanations for the same drop."""
+        dashboard = {
+            "title": "Query result helper",
+            "uid": "query-result-helper",
+            "templating": {
+                "list": [
+                    {"name": "topn", "type": "query", "query": "query_result(topk(5, foo))"},
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "CPU",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'sum(cpu{host="$topn"})'}],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+        )
+        matching = [w for w in result.control_warnings if "topn" in w]
+        self.assertEqual(
+            len(matching),
+            1,
+            f"expected exactly one warning naming 'topn', got: {matching}",
+        )
+        self.assertIn("query_result()", matching[0])
+
+    def test_variable_bound_to_a_classic_options_control_is_not_disclosed(self):
+        """A ``query`` variable that resolves to a classic (non-ESQL)
+        ``options`` control -- built directly by ``query_variable_rule``
+        without ``ESQL_NAMED_PARAM_BINDING``/``PROMQL_LABEL_MATCHER_PARAMS``
+        -- must not be flagged as dropped. That control dict never carries a
+        top-level ``variable_name`` key (only ``_source_variable_name``,
+        attached afterwards in ``translate_variables``), so the disclosure
+        pass's ``bound_names`` lookup must check both keys, mirroring
+        ``_covered_control_variable_refs``."""
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, ESQL_NAMED_PARAM_BINDING, supported=False, source="test", confidence="assumed"
+        )
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=False, source="test", confidence="assumed"
+        )
+        dashboard = {
+            "title": "Classic options control",
+            "uid": "classic-options-control",
+            "templating": {
+                "list": [
+                    {
+                        "name": "host",
+                        "type": "query",
+                        "query": "label_values(up, instance)",
+                        "current": {"text": "All", "value": "$__all"},
+                        "options": [],
+                        "multi": False,
+                        "includeAll": True,
+                    },
+                ]
+            },
+            "panels": [
+                {
+                    "id": 1,
+                    "title": "Up",
+                    "type": "graph",
+                    "targets": [{"refId": "A", "expr": 'up{instance=~"$host"}'}],
+                }
+            ],
+        }
+        result = migrate.translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=self.rule_pack,
+        )
+        doc = result.dashboard_ir.to_yaml_dict()
+        controls = doc.get("controls") or []
+        self.assertEqual(
+            [c.get("type") for c in controls], ["options"],
+            f"expected a classic options control, got: {controls}",
+        )
+        self.assertNotIn(
+            "host",
+            " ".join(result.control_warnings),
+            "a variable with a working classic control must not be disclosed as dropped",
+        )
 
 
 class ChainedVariableControlFidelityTests(unittest.TestCase):

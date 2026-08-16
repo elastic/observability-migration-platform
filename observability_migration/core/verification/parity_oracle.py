@@ -1180,7 +1180,12 @@ def _exact_control_param_names(esql: str) -> set[str]:
 
 
 
-_MV_CONTAINS_PARAM_RE = re.compile(r"MV_CONTAINS\s*\(\s*\?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_MV_CONTAINS_PARAM_RE = re.compile(
+    # ``?var`` may be wrapped in ``TO_STRING(...)`` (issue #353's multi-select
+    # guardrail type-fix); match with or without that wrapper.
+    r"MV_CONTAINS\s*\(\s*(?:TO_STRING\s*\(\s*)?\?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 
 
 def _mv_contains_param_names(esql: str) -> set[str]:

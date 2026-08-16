@@ -448,8 +448,11 @@ def test_redis_memory_ratio_uses_ts_source():
     assert "LAST_OVER_TIME(redis_memory_used_bytes)" in query, query
     assert "LAST_OVER_TIME(redis_memory_max_bytes)" in query, query
     assert "STATS value = LAST(value, time_bucket)" in query, query
-    assert "MV_CONTAINS(?instance" in query, f"should preserve multi-select binding: {query}"
-    assert 'MV_CONTAINS(?instance, ".*")' in query, query
+    # ``?instance`` is wrapped in ``TO_STRING(...)`` (issue #353) so the
+    # guardrail still type-checks if Kibana ever infers ``?instance`` as a
+    # non-keyword array.
+    assert "MV_CONTAINS(TO_STRING(?instance)" in query, f"should preserve multi-select binding: {query}"
+    assert 'MV_CONTAINS(TO_STRING(?instance), ".*")' in query, query
     assert result.status == "migrated", f"status_override should set migrated, got: {result.status}"
     # Dial domain 0-100 must survive sync: emitted query carries ``_gauge_*``
     # and ``panel_result.esql_query`` must match so validate does not strip them.
@@ -1280,6 +1283,45 @@ def test_esql_param_control_keeps_original_when_panel_bindings_disagree():
     rewritten = _retarget_esql_param_controls_to_panel_bindings(controls, panels)
     assert rewritten[0]["query"] == controls[0]["query"]
     assert rewritten[0]["_resolved_field_name"] == "labels.instance"
+
+
+def test_esql_param_control_retargets_when_panel_binds_via_to_string_wrapped_mv_contains():
+    """issue #353: the field-binding scanner must still recognize
+    ``MV_CONTAINS(TO_STRING(?var), field)`` (the type-safe multi-select
+    guardrail shape), not just the bare ``MV_CONTAINS(?var, field)`` form."""
+    controls = [
+        {
+            "type": "esql",
+            "label": "instance",
+            "variable_name": "instance",
+            "variable_type": "multi_values",
+            "query": (
+                "FROM metrics-* | WHERE redis_up IS NOT NULL AND `labels.instance` IS NOT NULL "
+                '| STATS count = COUNT(*) BY `labels.instance` | EVAL options = MV_APPEND(".*", `labels.instance`) '
+                '| MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options '
+                '| RENAME options AS `labels.instance` | SORT `labels.instance` ASC | LIMIT 1000'
+            ),
+            "_resolved_field_name": "labels.instance",
+        }
+    ]
+    panels = [
+        {
+            "esql": {
+                "query": (
+                    "TS metrics-* | WHERE (MV_COUNT(?instance) == 0 OR "
+                    'MV_CONTAINS(TO_STRING(?instance), ".*") OR '
+                    "MV_CONTAINS(TO_STRING(?instance), instance)) "
+                    "| WHERE redis_up IS NOT NULL | STATS value = COUNT(*)"
+                )
+            }
+        }
+    ]
+
+    rewritten = _retarget_esql_param_controls_to_panel_bindings(controls, panels)
+    query = rewritten[0]["query"]
+    assert "`labels.instance`" not in query
+    assert "BY instance" in query
+    assert rewritten[0]["_resolved_field_name"] == "instance"
 
 
 def test_11835_memory_usage_panel_uses_curated_override():

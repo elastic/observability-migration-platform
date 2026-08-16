@@ -481,7 +481,10 @@ def test_k8s_cluster_and_job_query_bindings(k8s_artifacts: Path) -> None:
     # ``job`` is multi=True in the source dashboard, so it binds through
     # MV_CONTAINS and the control stays multi-select. A scalar RLIKE position
     # could only ever hold one value and would force single-select.
-    assert "MV_CONTAINS(?job" in job_query
+    # ``TO_STRING(...)`` wraps the parameter so MV_CONTAINS type-checks
+    # regardless of whether Kibana infers ``?job`` as numeric or keyword
+    # (issue #353).
+    assert "MV_CONTAINS(TO_STRING(?job)" in job_query
     assert "RLIKE ?job" not in job_query
     assert "cluster" in cluster_query
     assert "job" in job_query
