@@ -9,7 +9,10 @@
 
 schema_version: 1
 gnet_id: 11835
-gnet_revision: 4
+# gnet_revision 4 (previously pinned here and in registry.yaml) does not
+# exist on grafana.com; re-pinned to revision 1, the only real revision
+# (issue #350). See registry.yaml's entry for this pack for the full caveat.
+gnet_revision: 1
 dashboard_title: "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)"
 
 panels:

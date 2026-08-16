@@ -50,6 +50,74 @@ def test_registry_entry_has_required_fields():
         assert "dashboard_sha256" in entry
 
 
+def test_registry_gnet_ids_are_unique():
+    """Duplicate ``gnet_id``s would make exact-match pack lookup ambiguous."""
+    entries = load_curated_registry()
+    gnet_ids = [entry["gnet_id"] for entry in entries]
+    assert len(set(gnet_ids)) == len(gnet_ids), f"duplicate gnet_id in registry: {gnet_ids}"
+
+
+def test_registry_pack_names_and_paths_are_unique():
+    entries = load_curated_registry()
+    names = [entry["name"] for entry in entries]
+    paths = [entry["path"] for entry in entries]
+    assert len(set(names)) == len(names), f"duplicate pack name in registry: {names}"
+    assert len(set(paths)) == len(paths), f"duplicate pack path in registry: {paths}"
+
+
+def test_registry_provenance_pin_fields_are_well_formed():
+    """Issue #350: ``gnet_revision``/``dashboard_sha256`` are maintainer-verified
+    provenance pins (see registry.yaml's header comment and
+    ``scripts/verify_curated_pack_pins.py``). Guard their *shape* offline;
+    verifying they still match grafana.com needs network and is a separate,
+    explicit maintainer command."""
+    entries = load_curated_registry()
+    for entry in entries:
+        gnet_id = entry["gnet_id"]
+        revision = entry["gnet_revision"]
+        digest = entry["dashboard_sha256"]
+        assert isinstance(gnet_id, int) and gnet_id > 0, f"bad gnet_id: {entry}"
+        assert isinstance(revision, int) and revision >= 1, f"bad gnet_revision: {entry}"
+        assert isinstance(digest, str) and len(digest) == 64, f"dashboard_sha256 must be 64 hex chars: {entry}"
+        assert all(c in "0123456789abcdef" for c in digest), f"dashboard_sha256 must be lowercase hex: {entry}"
+
+
+def test_registry_dashboard_sha256_values_are_unique():
+    """Each pack pins a distinct dashboard revision; an accidental copy-paste
+    of another entry's hash would silently defeat the provenance check."""
+    entries = load_curated_registry()
+    digests = [entry["dashboard_sha256"] for entry in entries]
+    assert len(set(digests)) == len(digests), "duplicate dashboard_sha256 across registry entries"
+
+
+def test_fidelity_manifest_gnet_revision_matches_registry():
+    """Issue #350: ``fidelity_manifest.yaml`` duplicates ``gnet_id``/``gnet_revision``
+    as free-standing documentation alongside the registry's copy. Nothing in the
+    codebase reads this duplicate at runtime, so a registry re-pin (like this
+    issue's own 11835 fix) can silently leave it stale -- guard the two copies
+    stay in sync instead of relying on a maintainer to remember both."""
+    import yaml
+
+    from observability_migration.adapters.source.grafana import (
+        curated_packs as _curated_packs_pkg,
+    )
+
+    packs_dir = Path(_curated_packs_pkg.__file__).parent
+    entries = load_curated_registry()
+    for entry in entries:
+        manifest_path = packs_dir / str(entry["path"]) / "fidelity_manifest.yaml"
+        assert manifest_path.exists(), f"missing fidelity_manifest.yaml for {entry['path']}"
+        manifest = yaml.safe_load(manifest_path.read_text()) or {}
+        assert manifest.get("gnet_id") == entry["gnet_id"], (
+            f"{entry['path']}/fidelity_manifest.yaml gnet_id "
+            f"({manifest.get('gnet_id')}) != registry.yaml ({entry['gnet_id']})"
+        )
+        assert manifest.get("gnet_revision") == entry["gnet_revision"], (
+            f"{entry['path']}/fidelity_manifest.yaml gnet_revision "
+            f"({manifest.get('gnet_revision')}) != registry.yaml ({entry['gnet_revision']})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # find_curated_pack — by gnetId
 # ---------------------------------------------------------------------------

@@ -124,6 +124,17 @@ without it they no-op rather than guess. Metrics listed in the pack's
 hand-written override so the rest of the panel can still render; those
 omissions are not reported as pack gaps.
 
+Each pack is registered in `curated_packs/registry.yaml` with a
+`gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
+recording the exact grafana.com revision the pack authors read, re-checkable
+with `scripts/verify_curated_pack_pins.py`
+(`docs/contributing/dev-commands.md`). These are not enforced against operator
+dashboards at migration time: a pristine grafana.com download differs
+structurally from any real Grafana-instance import/export, so that comparison
+would mismatch on every real migration. A pack silently missing dashboard
+content is instead caught per-panel by the dropped-source-metric disclosure
+described above.
+
 The console pipeline is **5 stages**, not 7: `[1/5] Extracting dashboards`,
 `[2/5] Translating dashboards`, `[3/5] Verification-packet ES|QL validation`,
 `[4/5] Writing native Dashboard-as-Code review artifacts`, `[5/5] Generating

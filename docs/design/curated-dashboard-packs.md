@@ -382,28 +382,43 @@ packs:
     path: grafana_12776_redis
 ```
 
-### At migration time — drift detection
+### At migration time — no revision comparison (issue #350)
 
-When `resolve_pack_for_dashboard` loads a curated pack:
-1. It compares the incoming dashboard JSON's revision (if present in `_grafana_meta` or dashboard JSON) against `gnet_revision`.
-2. If they match → apply the pack normally, no warning.
-3. If the incoming revision is newer → emit a structured warning:
-   ```
-   WARNING: Curated pack grafana_12776_redis was validated against revision 6;
-   this dashboard is revision 9. The pack will still be applied — metric_kinds
-   and label_candidates remain valid across minor revisions — but new or changed
-   panels may not benefit from fidelity overrides. Run `obs-migrate curated-pack check`
-   to see what changed.
-   ```
-4. The pack is still applied — most of it (metric_kinds, label_candidates, layout for existing panels) remains correct across minor revisions. Only net-new panels fall back to the general pipeline.
+`resolve_pack_for_dashboard` matches a curated pack purely by `gnetId` (with a
+title/tags fallback) and applies it unconditionally — it never reads or
+compares the incoming dashboard JSON's revision against the registry's
+`gnet_revision`, and emits no drift warning. This is intentional, not an
+oversight: an operator's real Grafana-instance export is structurally
+different from a pristine `grafana.com` download at the *same* revision
+(mutated `id`/`uid`/`version`/panel-`id`/etc.), so any such comparison would
+mismatch on effectively every real migration and would not be a meaningful
+signal either way.
+
+`gnet_revision` and `dashboard_sha256` are instead **maintainer-verified
+provenance pins** — they record which exact `grafana.com` revision a pack's
+author read when writing its `pack.yaml` overrides, re-checkable offline
+against a fresh `grafana.com` download with
+`python scripts/verify_curated_pack_pins.py` (network required; not part of
+`make test` — see `docs/contributing/dev-commands.md`). The actual risk this
+guards against — a pack silently missing dashboard content because the
+upstream dashboard changed since the pack was authored — is caught at
+migration time by a different, per-panel mechanism: the translator compares
+each panel's source PromQL metrics against what survives into the final
+emitted query and downgrades status/confidence with a warning when one is
+dropped (`docs/sources/grafana.md`), independent of whether the revision pin
+is current.
 
 ### Pack update workflow
 
 When a significant new revision of a community dashboard is published:
-1. `obs-migrate curated-pack diff --gnet-id 12776` — shows which panels changed vs. the pinned revision.
+1. Download the new revision and diff it by hand against the pinned one (no
+   dedicated CLI command exists for this — `curl` the
+   `grafana.com/api/dashboards/{id}/revisions/{revision}/download` endpoint
+   for both revisions and compare).
 2. Author updates the `fidelity_manifest.yaml` for changed/added panels.
 3. Update `pack.yaml` / `plugin.py` if new metrics or panel types appear.
-4. Update `gnet_revision` and `dashboard_sha256` in `registry.yaml`.
+4. Update `gnet_revision` and `dashboard_sha256` in `registry.yaml`, then
+   confirm with `python scripts/verify_curated_pack_pins.py --gnet-id <id>`.
 5. Re-run the full gate stack.
 
 ### What never breaks across revisions

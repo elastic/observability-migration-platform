@@ -9,6 +9,24 @@
 #   1. Exact gnetId match (preferred — reliable even when title differs)
 #   2. title_hint + tags_hint fallback (for dashboards where gnetId was stripped on import)
 #
+# `gnet_revision` and `dashboard_sha256` are maintainer-verified provenance
+# pins, not a migration-time enforcement mechanism: they record which exact
+# grafana.com revision the pack authors read when writing `pack.yaml`, so a
+# maintainer can re-verify a pack still matches its stated source (or
+# deliberately re-pin it) as the upstream dashboard evolves. `dashboard_sha256`
+# is the SHA-256 of the *canonical* (sort_keys, compact-separator) JSON
+# re-serialization of that revision's `grafana.com` download — see
+# `canonical_sha256` in scripts/verify_curated_pack_pins.py, the same pattern
+# `scripts/fetch_community_corpus.py` uses for the benchmark corpus pins.
+# Verify with `python scripts/verify_curated_pack_pins.py` (network required;
+# not part of `make test` — see docs/contributing/dev-commands.md). These pins
+# are NOT checked against operator dashboards at migration time: a pristine
+# grafana.com download differs structurally from any Grafana-instance
+# import/export (mutated id/uid/version/... fields), so that comparison would
+# mismatch on every real migration. A pack silently missing dashboard content
+# is instead caught per-panel by the dropped-source-metric detection in
+# panels.py (see docs/sources/grafana.md).
+#
 # To add a new pack: follow the Curation Playbook in docs/design/curated-dashboard-packs-plan.md.
 
 packs:
@@ -18,7 +36,7 @@ packs:
     tags_hint: ["redis", "prometheus"]
     path: grafana_763_redis_exporter
     gnet_revision: 6
-    dashboard_sha256: "dcee8585ef010e7569dab8c776e48e3a6ee5ebe9c03a1510891488b714faeb44"
+    dashboard_sha256: "8c34e52a08effbfa559b3c395fafea94750f072398d622a5329b3db6901b07b1"
     description: "Redis open-source (oliver006/redis_exporter) — counter/gauge classification, label map, layout"
 
   - gnet_id: 1860
@@ -27,7 +45,7 @@ packs:
     tags_hint: ["prometheus"]
     path: grafana_1860_node_exporter_full
     gnet_revision: 37
-    dashboard_sha256: "d4313569a6a74471de08e3160c674e4b5c015f1385f385170232734f9124ea63"
+    dashboard_sha256: "2d8c3321510e49bb0dec9cc0d0f7270136ad0b29579e14d27e1e8819464c7670"
     description: "Node Exporter Full — suffix-less counter typing plus a curated process-memory repair for Kibana"
 
   - gnet_id: 18405
@@ -36,7 +54,7 @@ packs:
     tags_hint: []
     path: grafana_18405_redis_enterprise
     gnet_revision: 1
-    dashboard_sha256: "b5c96cbc62efe9d76ea43d9214a896aacab8e5de4b31d71b957328c262b1946d"
+    dashboard_sha256: "f341b5b1f3596eec5a902c6e921528a4a2c9300ec21c3b8bc045edee2fbbda46"
     description: "Redis Enterprise cluster monitoring (bdb_* Prometheus metrics) — stat panels, cluster/db variables"
 
   - gnet_id: 18406
@@ -45,7 +63,7 @@ packs:
     tags_hint: ["RLEC"]
     path: grafana_18406_redis_cloud
     gnet_revision: 2
-    dashboard_sha256: "b5f9f8b76ade994accd6cecd9a9c32f22e5e8ae46aa889a53bc9723db28a0ec9"
+    dashboard_sha256: "88c161611f6805cf0b4516864cec10015f523704f69ac781ca04f2e0da09e13c"
     description: "Redis Cloud subscription monitoring (bdb_* Prometheus metrics) — stat panels, cluster/bdb variables"
 
   - gnet_id: 14091
@@ -54,7 +72,7 @@ packs:
     tags_hint: []
     path: grafana_14091_redis_exporter_quickstart
     gnet_revision: 1
-    dashboard_sha256: "ad46c7c61701f7c5ce55bae9daa56fecde0afa30980d2603b5919370e11a5f85"
+    dashboard_sha256: "4e92754d0aaec2466bbcd37cf92b7ca551eb5e52a9368b55edd207acf4e1e86d"
     description: "Grafana Labs Redis Exporter Quickstart — hit-ratio plugin, renamed fragmentation metric, label map"
 
   - gnet_id: 11835
@@ -62,6 +80,12 @@ packs:
     title_hint: "Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)"
     tags_hint: ["redis", "prometheus"]
     path: grafana_11835_redis_exporter_helm
-    gnet_revision: 4
-    dashboard_sha256: "bd67264fd0d73f633a67b3b8f9d4e5f2e527c569e0e946e8f511168922b18b96"
+    # NOTE (issue #350): the previously pinned gnet_revision 4 does not exist
+    # on grafana.com — the dashboard has only ever had revision 1 (verified
+    # via GET /api/dashboards/11835/revisions). Re-pinned to the only real
+    # revision. This cannot be independently confirmed to be the exact
+    # content the pack authors originally read; re-review pack.yaml's
+    # overrides against this revision if any mismatch surfaces.
+    gnet_revision: 1
+    dashboard_sha256: "9ad90c516c051b5592296a587f217994a9e8d6aee3e4c78ec990075c1d3e3d45"
     description: "Redis helm stable/redis-ha (oliver006/redis_exporter) — counter/gauge classification, label map"
