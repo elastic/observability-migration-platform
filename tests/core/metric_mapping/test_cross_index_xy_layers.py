@@ -152,6 +152,66 @@ class CrossIndexXyLayerTests(unittest.TestCase):
             " ".join(str(r) for r in (result.reasons or [])),
         )
 
+    def test_same_metric_bare_grouped_pair_still_splits_inside_a_cross_index_layer(self) -> None:
+        """Issue #355's bare/grouped aggregation-scope split must still apply
+        *within* a single index partition even when an unrelated target on a
+        different index also shares the panel (cross-index fusion runs
+        first and must not swallow the same-metric pair into one unsplit
+        per-index union)."""
+        metric_map = {
+            "source_metric_a": {
+                "target": "target.field.a",
+                "target_index": "metrics-a-*",
+            },
+            "source_metric_b": {
+                "target": "target.field.b",
+                "target_index": "metrics-b-*",
+            },
+        }
+        rule_pack, resolver = self._setup(
+            metric_map,
+            ["target.field.a", "target.field.b"],
+        )
+        panel = {
+            "id": 3,
+            "type": "timeseries",
+            "title": "Cross Stream Split",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {"expr": "sum(source_metric_a) by (cpu)", "refId": "A", "legendFormat": "CPU {{cpu}}"},
+                {"expr": "avg(source_metric_a)", "refId": "B", "legendFormat": "Avg"},
+                {"expr": "sum(source_metric_b)", "refId": "C", "legendFormat": "Total B"},
+            ],
+        }
+
+        yaml_panel, result = translate_panel(
+            panel,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"}, result.reasons)
+        esql = yaml_panel.get("esql") or {}
+        layers = esql.get("layers") or []
+        # Three streams of work: the main grouped-by-cpu layer (metrics-a-*),
+        # a separate "Avg" summary layer sharing metrics-a-* (not unioned
+        # into the per-cpu grouping), and the unrelated metrics-b-* layer.
+        self.assertEqual(len(layers), 2, esql)
+        primary_query = str(esql.get("query") or "")
+        self.assertIn("metrics-a-*", primary_query)
+        self.assertIn("BY time_bucket = TBUCKET", primary_query)
+        self.assertIn("cpu", primary_query)
+        layer_queries = [str(layer.get("query") or "") for layer in layers]
+        avg_layer = next((q for q in layer_queries if "Avg = AVG" in q), None)
+        self.assertIsNotNone(avg_layer, layer_queries)
+        self.assertIn("metrics-a-*", avg_layer)
+        # The Avg summary layer must not also carry the per-cpu grouping.
+        self.assertRegex(avg_layer, r"BY time_bucket = TBUCKET\([^)]*\)\n")
+        total_layer = next((q for q in layer_queries if "metrics-b-*" in q), None)
+        self.assertIsNotNone(total_layer, layer_queries)
+
 
 if __name__ == "__main__":
     unittest.main()

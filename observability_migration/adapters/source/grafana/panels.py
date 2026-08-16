@@ -88,8 +88,10 @@ from .promql import (
     _is_counter_fallback,
     _matcher_to_esql,
     _parse_fragment,
+    _safe_alias,
     _split_top_level_csv,
     _summary_mode_from_metadata,
+    _union_group_fields,
     _unique_safe_alias,
     grafana_template_var_name,
     substitute_grafana_range_macros,
@@ -3570,6 +3572,215 @@ def fallback_line_panel_rule(context):
     return f"fell back to {emitted_type} panel"
 
 
+def _clear_disagreeing_fused_legend_template(primary, fused_series):
+    """Issue #354: never label every fused series with one target's legend.
+
+    ``primary.metadata["legend_format_template"]`` is always the *first*
+    target's literal ``legendFormat`` string. That is harmless for a
+    single-metric panel, but when several *different-metric* targets are
+    fused into one multi-series XY query (``multi_series_metric_fields``),
+    applying target 0's template to every fused series (via
+    ``_apply_composite_legend_to_xy_panel``'s ``CONCAT``) prefixes every
+    series -- including the ones for metrics 1..N -- with metric 0's static
+    legend text, e.g. every "Disk IO" series reading "Weighted IO time ..."
+    even the ``Write time``/``Read time`` ones.
+
+    Only *disagreement* matters: when every fused target shares the same
+    template (the common single-metric, multi-label case), the composite
+    legend is still correct and untouched. When templates disagree, clearing
+    the template here makes the downstream ``xy_panel_rule`` skip the
+    composite-legend path entirely, falling back to "the STATS column name
+    carries the metric identity" -- already proven correct by the dashboard's
+    own "Memory" panel, whose differing per-target prefixes never trigger the
+    composite path because each has only one label placeholder.
+    """
+    if len(fused_series) < 2:
+        return
+    template = primary.metadata.get("legend_format_template")
+    if not template:
+        return
+    if any(other.metadata.get("legend_format_template") != template for other in fused_series[1:]):
+        primary.metadata["legend_format_template"] = None
+
+
+def _split_fused_series_by_bare_aggregation_scope(fused_series):
+    """Issue #355: separate a bare (no ``by()``) PromQL aggregation over the
+    SAME metric as a grouped sibling target, so it is not union-grouped.
+
+    ``min(x)`` / ``avg(x)`` / ``max(x)`` / ``sum(x)`` with no ``by()`` (and,
+    equally, a target that simply has no grouping identity of its own)
+    collapses across every series by definition -- Grafana always draws it
+    as one line, not one per group. Each *individual* translation already
+    carries its own correct standalone ``output_group_fields`` (from
+    translating that target alone, before fusion); a target whose own
+    grouping is empty has none. Fusing it into a shared ``STATS ... BY
+    <union of every target's groups>`` computes it *inside* each group
+    instead of *across* all of them (turning "Min"/"Avg"/"Max" into
+    per-group duplicates of the raw series).
+
+    Returns ``(grouped, matching_bare, unrelated_bare)`` when at least one
+    ungrouped target shares its metric field with at least one grouped
+    target. ``unrelated_bare`` holds any OTHER bare target whose metric
+    differs from every grouped target's -- e.g. the "QoS"/"Total"-style
+    broadcast case (a bare aggregate over a *different* metric shown
+    alongside a per-category breakdown, where "Total" is not an aggregate of
+    the breakdown's own series). Those stay on today's union path (fused
+    together with ``grouped`` by the caller) rather than disabling the split
+    entirely for the targets that *do* share a metric.
+    """
+    if len(fused_series) < 2:
+        return None
+
+    def _own_dims(translation):
+        return [f for f in (translation.output_group_fields or []) if f != "time_bucket"]
+
+    def _metric_key(translation):
+        return translation.output_metric_field or translation.metric_name or ""
+
+    grouped = [t for t in fused_series if _own_dims(t)]
+    bare = [t for t in fused_series if not _own_dims(t)]
+    if not grouped or not bare:
+        return None
+    grouped_metrics = {_metric_key(t) for t in grouped if _metric_key(t)}
+    if not grouped_metrics:
+        return None
+    matching_bare = [t for t in bare if _metric_key(t) in grouped_metrics]
+    unrelated_bare = [t for t in bare if _metric_key(t) not in grouped_metrics]
+    if not matching_bare:
+        return None
+    return grouped, matching_bare, unrelated_bare
+
+
+def _label_singleton_bare_layer(layer, target):
+    """A lone bare-aggregation target's own standalone translation names its
+    output column after the raw metric field -- there is no legend text to
+    disambiguate one series from itself, unlike a multi-bare-target group
+    (Min/Avg/Max), which already aliases each column to its own target's
+    legend text. Rename the same way here so a static Grafana legend (e.g.
+    ``legendFormat: "Min"``) is not silently dropped when the bare side of
+    the #355 split happens to contain exactly one target.
+
+    Only renames when the query has the exact expected ``| STATS <field> =
+    ...`` shape (once, unambiguously); otherwise leaves the layer untouched
+    rather than risk corrupting an unusual query.
+    """
+    alias = target.metadata.get("static_legend_label")
+    field = target.output_metric_field
+    if not alias or not field:
+        return layer
+    safe_alias = _safe_alias(alias)
+    if not safe_alias or safe_alias == field:
+        return layer
+    pattern = re.compile(rf"(\|\s*STATS\s+){re.escape(field)}(\s*=)")
+    query = layer.get("query") or ""
+    if len(pattern.findall(query)) != 1:
+        return layer
+    layer = dict(layer)
+    layer["query"] = pattern.sub(rf"\1{safe_alias}\2", query, count=1)
+    layer["metric_fields"] = [safe_alias if f == field else f for f in layer.get("metric_fields") or []]
+    layer["metric_label_hints"] = dict(layer.get("metric_label_hints") or {})
+    layer["metric_label_hints"][safe_alias] = alias
+    return layer
+
+
+def _apply_bare_aggregation_scope_split(primary, fused_series):
+    """Render a bare/grouped aggregation-scope split (issue #355) as two
+    ES|QL layers, reusing the same multi-layer XY shape already proven for
+    cross-index fusion (``xy_panel_rule``'s ``cross_index_layers``).
+
+    Mutates *primary* in place and returns ``True`` when the split applies
+    and both halves build cleanly; returns ``False`` (primary untouched)
+    otherwise, so the caller falls back to today's single merged-query union.
+    """
+    split = _split_fused_series_by_bare_aggregation_scope(fused_series)
+    if split is None:
+        return False
+    grouped, bare, unrelated_bare = split
+    # Any bare target aggregating an unrelated metric keeps today's union
+    # behavior alongside the grouped targets -- it never had a shared
+    # per-series computation to split out of in the first place.
+    grouped_layer = _fuse_same_index_series(grouped + unrelated_bare)
+    if grouped_layer is None:
+        return False
+    bare_layer = _fuse_same_index_series(bare)
+    if bare_layer is None:
+        return False
+    if len(bare) == 1:
+        bare_layer = _label_singleton_bare_layer(bare_layer, bare[0])
+    layers = [grouped_layer, bare_layer]
+    primary.esql_query = layers[0]["query"]
+    primary.source_type = layers[0]["source_type"]
+    primary.metadata["cross_index_layers"] = layers
+    primary.metadata["multi_series_metric_fields"] = list(layers[0].get("metric_fields") or [])
+    primary.metadata["multi_series_metric_labels"] = dict(layers[0].get("metric_label_hints") or {})
+    primary.output_metric_field = (
+        (layers[0].get("metric_fields") or [None])[0] or primary.output_metric_field
+    )
+    primary.output_group_fields = list(
+        layers[0].get("group_fields") or primary.output_group_fields or []
+    )
+    # ``primary`` (fused_series[0]) may itself be one of the *bare* targets
+    # promoted out of this role -- its own static legend (e.g. "Avg") must
+    # not leak onto the grouped layer's main metric label once primary now
+    # represents that layer's identity instead of its own.
+    primary.metadata["static_legend_label"] = (
+        grouped[0].metadata.get("static_legend_label") if len(grouped) == 1 else None
+    )
+    collapsed = []
+    for layer in layers:
+        collapsed.extend(layer.get("targets") or [])
+        for warning in layer.get("warnings") or []:
+            _append_unique(primary.warnings, warning)
+    primary.metadata["collapsed_targets"] = collapsed
+    bare_names = ", ".join(
+        str(t.metadata.get("series_alias") or t.output_metric_field or t.metric_name or "?")
+        for t in bare
+    )
+    _append_unique(
+        primary.warnings,
+        f"Computed {bare_names} in a separate summary layer aggregated across every "
+        "series, instead of grouping it with the per-series layer: the source PromQL "
+        "aggregates without a `by()` clause, which Grafana always draws as one line "
+        "across every series rather than one line per group"
+    )
+    return True
+
+
+def _mismatched_grouping_union_warning(all_specs, plans):
+    """Issue #355 (unrelated-metric case): name the changed semantics instead of
+    only describing the mechanism, when a bare aggregation spec (no ``by()``)
+    is unioned onto a grouped sibling's ``BY`` fields -- e.g. a fleet-wide
+    "Total" broadcast alongside a per-category breakdown
+    (``tests/test_grafana_qos_union_by.py``). ``_apply_bare_aggregation_scope_split``
+    already splits the *same-metric* case (the disk-graphs Min/Avg/Max bug)
+    into separate layers before this ever runs; this fallback only fires for
+    the unrelated-metric case the issue explicitly says must keep the union.
+    """
+    base = "Unioned BY fields across multi-target series with mismatched grouping"
+    union_dims = [f.rsplit("labels.", 1)[-1] for f in _union_group_fields(all_specs)]
+    bare_aliases = []
+    for translation, plan in plans:
+        if any(spec.group_fields for spec in plan.specs):
+            continue
+        alias = (
+            translation.metadata.get("series_alias")
+            or translation.output_metric_field
+            or translation.metric_name
+            or (plan.specs[0].final_alias if plan.specs else "")
+        )
+        if alias:
+            bare_aliases.append(str(alias))
+    if not union_dims or not bare_aliases:
+        return base
+    names = ", ".join(dict.fromkeys(bare_aliases))
+    dims = ", ".join(dict.fromkeys(union_dims))
+    plural = len(set(bare_aliases)) > 1
+    return (
+        f"{base}: {names} {'are' if plural else 'is'} computed per {dims}, not across "
+        f"{dims}, because the panel mixes grouped and ungrouped targets"
+    )
+
+
 def metrics_query_index(datasource_index=None, esql_index=None) -> str:
     """Return the index/stream every *metrics query* must read.
 
@@ -4188,12 +4399,29 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         fused_series.append(et)
         primary = fused_series[0]
         fused_extra = fused_series[1:]
+        _clear_disagreeing_fused_legend_template(primary, fused_series)
         if len(fused_series) > 1:
             index_groups = _partition_translations_by_index(fused_series)
             distinct_indexes = [idx for idx, _ in index_groups if idx]
             if len(distinct_indexes) > 1:
                 cross_layers = []
                 for _index, group in index_groups:
+                    # A same-metric bare/grouped pair (issue #355) can land
+                    # in the same per-index partition as an unrelated
+                    # cross-index target; split it the same way a
+                    # single-index fusion would, instead of union-grouping
+                    # it just because a *different* index also has a layer.
+                    same_metric_split = _split_fused_series_by_bare_aggregation_scope(group)
+                    if same_metric_split is not None:
+                        sub_grouped, sub_bare, sub_unrelated = same_metric_split
+                        grouped_layer = _fuse_same_index_series(sub_grouped + sub_unrelated)
+                        bare_layer = _fuse_same_index_series(sub_bare)
+                        if len(sub_bare) == 1 and bare_layer is not None:
+                            bare_layer = _label_singleton_bare_layer(bare_layer, sub_bare[0])
+                        if grouped_layer is not None and bare_layer is not None:
+                            cross_layers.append(grouped_layer)
+                            cross_layers.append(bare_layer)
+                            continue
                     layer = _fuse_same_index_series(group)
                     if layer is None:
                         continue
@@ -4254,6 +4482,10 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                                 w for w in primary.warnings
                                 if w not in _STALE_AFTER_COLOCATED_FUSION
                             ]
+            elif _apply_bare_aggregation_scope_split(primary, fused_series):
+                # Issue #355: rendered as its own two-layer split above;
+                # nothing left over to also overlay as an "extra" translation.
+                fused_extra = []
             else:
                 merged_query = _build_multi_target_series_query(fused_series)
                 _colocated_fusion = merged_query is not None
@@ -5226,9 +5458,7 @@ def _build_multi_target_series_query(translations):
 
     parts, output_group_fields, _ = shared
     if len({tuple(spec.group_fields or []) for spec in all_specs}) > 1:
-        warnings.append(
-            "Unioned BY fields across multi-target series with mismatched grouping"
-        )
+        warnings.append(_mismatched_grouping_union_warning(all_specs, plans))
     metric_fields = []
     metric_label_hints: dict[str, str] = {}
     target_provenance: list[dict[str, str]] = []

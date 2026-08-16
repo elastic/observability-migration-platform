@@ -43,3 +43,9 @@ def test_qos_union_by_fuses_grouped_and_ungrouped():
     assert "EVAL Total" in query or "Total =" in query or "kube_pod_info" in query
     assert "Unioned BY fields" in joined
     assert "KEEP" in query and "QoS" in query and "Total" in query
+    # Issue #355: the union-fallback wording (kept for this unrelated-metric
+    # "broadcast" shape) must name the changed semantics, not just the
+    # mechanism -- "Total" stops being a fleet-wide total and becomes a
+    # per-``qos_class`` duplicate of the breakdown once it shares a ``BY``.
+    assert "Total is computed per qos_class, not across qos_class" in joined, joined
+    assert "because the panel mixes grouped and ungrouped targets" in joined, joined
