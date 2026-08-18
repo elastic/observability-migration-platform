@@ -124,7 +124,7 @@ needs:
   ES `es_group_cols`.
 
 For values to compare strictly across bucket-size differences (DD ~60s,
-ES|QL `BUCKET(@timestamp, 50, ...)` ~72s), use `constant(value)` from
+ES|QL `BUCKET(@timestamp, 75, ...)` ~48s), use `constant(value)` from
 `seeder.py` and prefer `avg`/`max`/`min` aggregations over `sum`.
 
 ## Known approximations

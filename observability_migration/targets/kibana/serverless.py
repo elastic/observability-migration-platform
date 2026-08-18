@@ -281,6 +281,41 @@ def delete_data_view(
     return response.status_code == 204
 
 
+def refresh_data_view_fields(
+    kibana_url: str,
+    data_view: dict[str, Any],
+    *,
+    api_key: str = "",
+    space_id: str = "",
+    timeout: int = 30,
+    verify: bool | str = True,
+) -> dict[str, Any]:
+    """Load live field caps for a data view so options-list controls can resolve names.
+
+    Kibana's GET ``/api/data_views/data_view/{id}`` hydrates fields from
+    Elasticsearch even when the saved object stores ``fields: []`` (that array
+    is the *scripted*-field map, not a mapped-field cache). POST-ing the GET
+    payload back would call ``replaceAllScriptedFields`` and is therefore not
+    used. A GET that fails is swallowed so upload still succeeds.
+    """
+    view_id = str(data_view.get("id") or "")
+    if not view_id:
+        return data_view
+    try:
+        full = get_data_view(
+            kibana_url,
+            view_id,
+            api_key=api_key,
+            space_id=space_id,
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception as exc:  # soft-fail; upload can still succeed
+        logger.warning("Could not load data view %s for field refresh: %s", view_id, exc)
+        return data_view
+    return full or data_view
+
+
 def ensure_data_view(
     kibana_url: str,
     *,
@@ -294,7 +329,9 @@ def ensure_data_view(
 ) -> dict[str, Any]:
     """Create a data view if one with the same title doesn't exist.
 
-    Returns the existing or newly created data view.
+    Returns the existing or newly created data view after a GET that hydrates
+    live field caps (the saved object's ``fields: []`` is the scripted-field
+    map, not a mapped-field cache).
     """
     existing = list_data_views(
         kibana_url, api_key=api_key, space_id=space_id, timeout=timeout, verify=verify,
@@ -302,15 +339,30 @@ def ensure_data_view(
     for dv in existing:
         if dv.get("title") == title:
             logger.info("Data view '%s' already exists (id=%s)", title, dv.get("id"))
-            return dv
+            return refresh_data_view_fields(
+                kibana_url,
+                dv,
+                api_key=api_key,
+                space_id=space_id,
+                timeout=timeout,
+                verify=verify,
+            )
     logger.info("Creating data view '%s'", title)
     view_id = "" if any(token in title for token in ("*", "?")) else title
-    return create_data_view(
+    created = create_data_view(
         kibana_url,
         title=title,
         name=name or title,
         view_id=view_id,
         time_field=time_field,
+        api_key=api_key,
+        space_id=space_id,
+        timeout=timeout,
+        verify=verify,
+    )
+    return refresh_data_view_fields(
+        kibana_url,
+        created,
         api_key=api_key,
         space_id=space_id,
         timeout=timeout,
@@ -422,5 +474,6 @@ __all__ = [
     "import_saved_objects",
     "list_dashboards",
     "list_data_views",
+    "refresh_data_view_fields",
     "set_default_data_view",
 ]

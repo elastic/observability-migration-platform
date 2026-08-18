@@ -8,7 +8,7 @@ warning: default_zero() only coalesces returned rows; missing series or empty bu
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND type == "kafka" AND direction == "out" AND (pathway_type == "edge" OR pathway_type == "partial_edge")
-| STATS upstream_services_throughput = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), topic, deployment.environment
+| STATS upstream_services_throughput = COUNT(*) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) BY time_bucket = BUCKET(@timestamp, 20, ?_tstart, ?_tend), topic, deployment.environment
 | EVAL default_zero_upstream_services_throughput = COALESCE(upstream_services_throughput, 0)
 | KEEP time_bucket, topic, deployment.environment, default_zero_upstream_services_throughput
 | SORT time_bucket

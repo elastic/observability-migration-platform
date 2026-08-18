@@ -1315,6 +1315,14 @@ def _extract_metrics(query: str) -> dict[str, str]:
         if field_name not in derived_aliases and field_name not in by_fields:
             metrics.setdefault(field_name, "gauge")
 
+    # Numeric value filters (``WHERE metric >= 0``) from Datadog
+    # ``count(v: v>=0):metric{...}`` never appear in aggregation args — only in
+    # a numeric comparison. Without harvesting them here they are mis-seeded as
+    # keyword dimensions and Kibana rejects ``keyword >= integer``.
+    for field_name in _extract_numeric_value_filter_fields(query):
+        if field_name not in derived_aliases and field_name not in by_fields:
+            metrics.setdefault(field_name, "gauge")
+
     # Drop derived ES|QL columns: anything assigned by ``EVAL <name> = ...`` is a
     # computed/legend alias (e.g. ``EVAL CPU = node_pressure_cpu_..._A``), not a
     # source index field, even when a later ``STATS CPU = MAX(CPU)`` re-aggregates
@@ -1326,6 +1334,12 @@ def _extract_metrics(query: str) -> dict[str, str]:
 
 
 _IS_NOT_NULL_RE = re.compile(rf"({_IDENT_RE})\s+IS\s+NOT\s+NULL\b", re.IGNORECASE)
+# Value filters only (``metric >= 0``). Equality is omitted so unquoted
+# ``host == 1`` stays a dimension rather than being harvested as a gauge.
+_NUMERIC_VALUE_FILTER_RE = re.compile(
+    rf"({_IDENT_RE})\s*(?:>=|<=|>|<)\s*-?\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
 _NEGATION_PAREN_TOKENS_RE = re.compile(r"\bNOT\b|\(|\)", re.IGNORECASE)
 
 
@@ -1343,6 +1357,23 @@ def _extract_is_not_null_fields(query: str) -> set[str]:
     fields: set[str] = set()
     scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query)
     for match in _IS_NOT_NULL_RE.finditer(scan):
+        field_name = _normalize_field(match.group(1))
+        if field_name and not _should_skip_field(field_name):
+            fields.add(field_name)
+    return fields
+
+
+def _extract_numeric_value_filter_fields(query: str) -> set[str]:
+    """Fields compared to a numeric literal in WHERE (value filters).
+
+    Datadog ``count(v: v>=0):metric`` becomes ``WHERE metric >= 0`` with a
+    ``COUNT(*)`` aggregation — the metric never appears as an aggregation
+    argument, so the normal metric scan misses it. Quoted spans are blanked so
+    a number inside a string literal cannot invent a phantom field.
+    """
+    fields: set[str] = set()
+    scan = re.sub(r'"[^"]*"', lambda m: " " * len(m.group(0)), query)
+    for match in _NUMERIC_VALUE_FILTER_RE.finditer(scan):
         field_name = _normalize_field(match.group(1))
         if field_name and not _should_skip_field(field_name):
             fields.add(field_name)

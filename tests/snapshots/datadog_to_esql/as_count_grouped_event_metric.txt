@@ -6,5 +6,5 @@ warning: as_count interval semantics are approximated in ES|QL
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = SUM(rabbitmq_queues_created_count) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), rabbitmq_node
+| STATS value = SUM(rabbitmq_queues_created_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), rabbitmq_node
 | SORT time_bucket

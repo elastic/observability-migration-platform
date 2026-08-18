@@ -53,10 +53,41 @@ DD_AGG_TO_ESQL: dict[str, str] = {
     "p99": "PERCENTILE(%, 99)",
 }
 
-TIME_BUCKET_EXPR = "BUCKET(@timestamp, 50, ?_tstart, ?_tend)"
+# Chart-resolution default: matches Grafana's panels.py constant of the same
+# name and the underlying Kibana Lens AUTO_TARGET_NUMBER_OF_BUCKETS
+# precedent. No cadence sensitivity -- safe for any order-independent
+# reducer (avg/sum/min/max/percentile/count).
+_ADAPTIVE_CHART_BUCKETS = 75
+# Rate-safe floor for any query/formula whose aggregation needs >=2 samples
+# per bucket (RATE/IRATE-style, or the FIRST/LAST bucket-endpoint fallback in
+# _rate_approx_expr): too fine a bucket relative to the source's real sample
+# cadence silently produces null (TS|QL RATE/INCREASE) or wrong (LAST==FIRST)
+# values. Live-verified independently for Datadog's own cadence profile in
+# docs/design/datadog-esql-time-bucketing-adaptivity.md -- not inherited from
+# Grafana's panels.py constant of the same value by unverified analogy.
+_ADAPTIVE_RATE_BUCKETS = 20
+# ``TIME_BUCKET_EXPR`` keeps its historical name -- most call sites (logs,
+# plain count/table/percentile widgets) reference it directly and must keep
+# the flat chart-resolution default. Only the call sites whose query/formula
+# needs rate safety (see ``_time_bucket_expr``) switch to the coarser form.
+TIME_BUCKET_EXPR = f"BUCKET(@timestamp, {_ADAPTIVE_CHART_BUCKETS}, ?_tstart, ?_tend)"
+_RATE_SAFE_TIME_BUCKET_EXPR = f"BUCKET(@timestamp, {_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
 TIME_FILTER = "@timestamp >= ?_tstart AND @timestamp <= ?_tend"
-DEFAULT_RATE_WINDOW = "5m"
-DEFAULT_RATE_WINDOW_SECONDS = 300.0
+
+
+def _time_bucket_expr(rate_safe: bool) -> str:
+    """Return the FROM-path time-bucket expression for this query's needs.
+
+    ``rate_safe=True`` selects the coarser 20-bucket floor; see the module
+    constants above for why. Callers compute ``rate_safe`` from whatever
+    rate/derivative signal is available in their own scope (a single query's
+    ``as_rate``/``_needs_rate``/metric-map-emitted rate, or a formula's
+    bucket-span/derivative signals) -- there is no single shared "is this
+    widget a rate widget" flag because the two FROM-path entry points
+    (`_translate_single_metric`, `_translate_formula_metric_widget`) have
+    different natural signals.
+    """
+    return _RATE_SAFE_TIME_BUCKET_EXPR if rate_safe else TIME_BUCKET_EXPR
 _CHANGE_WIDGET_COMPARE_TO_SECONDS = {
     "hour_before": 3600,
     "day_before": 86400,
@@ -157,6 +188,7 @@ class _MetricQuerySpec:
     tag_where_str: str = ""  # WHERE clauses excluding TIME_FILTER, used as per-agg
                               # filter when sibling specs have heterogeneous filters
     is_counter: bool = False  # target field is TSDS counter-typed — enables TS|QL RATE()
+    emits_rate: bool = False  # emitted agg_expr computes rate/delta math, including metric_map to_rate
 
 
 @dataclass
@@ -416,6 +448,10 @@ def _translate_single_metric(
         return _build_change_widget_esql(wq, widget, plan, field_map, result)
 
     spec = _build_metric_query_spec(wq, field_map, result)
+    rate_safe = bool(
+        spec.emits_rate
+        or (wq.metric_query and (wq.metric_query.as_rate or _needs_rate(wq.metric_query)))
+    )
     top_config = _extract_top_function_config(wq.metric_query)
     is_timeseries = plan.kibana_type == "xy"
     is_heatmap = plan.kibana_type == "heatmap"
@@ -451,6 +487,7 @@ def _translate_single_metric(
             sort_order="DESC",
             limit=100,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
     if is_heatmap and not spec.group_fields:
         raise ValueError("heatmap requires at least one grouping dimension")
@@ -469,7 +506,7 @@ def _translate_single_metric(
 
     if is_timeseries or is_heatmap:
         if is_timeseries and top_config.limit is not None:
-            group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+            group_clause = f"time_bucket = {_time_bucket_expr(rate_safe)}"
             if spec.group_fields:
                 group_clause += ", " + ", ".join(spec.group_fields)
             rank_expr = _series_reducer_expr(top_config.reducer or "avg", "value")
@@ -504,6 +541,7 @@ def _translate_single_metric(
                 spec.es_metric,
                 spec.group_fields,
                 agg_expr=spec.agg_expr,
+                rate_safe=rate_safe,
             )
             _append_unique_warning(
                 result,
@@ -514,6 +552,7 @@ def _translate_single_metric(
             return query
         return _build_timeseries_esql(
             spec.index, spec.where_str, spec.agg_expr, spec.group_fields,
+            rate_safe=rate_safe,
         )
 
     if is_toplist:
@@ -527,6 +566,7 @@ def _translate_single_metric(
             sort_order=top_config.sort_order,
             limit=limit,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
 
     if is_table or is_partition:
@@ -539,9 +579,10 @@ def _translate_single_metric(
             sort_order="DESC",
             limit=100,
             reducer=reducer,
+            rate_safe=rate_safe,
         )
 
-    return _build_scalar_esql(spec.index, spec.where_str, spec.agg_expr, reducer=reducer)
+    return _build_scalar_esql(spec.index, spec.where_str, spec.agg_expr, reducer=reducer, rate_safe=rate_safe)
 
 
 def _build_change_widget_esql(
@@ -730,25 +771,36 @@ def _translate_formula_metric_widget(
         or reducer is not None
         or bool(output_reducers)
     )
-    dim_exprs, dim_aliases = _metric_dimension_exprs(
-        used_specs[0].group_fields,
-        include_time_bucket=include_time_bucket,
-    )
     needs_bucket_span = any(_formula_needs_bucket_span(formula.ast) for formula in formulas)
 
     derivative_refs: set[str] = set()
     for formula in formulas:
         derivative_refs |= _collect_derivative_query_refs(formula.ast)
 
+    rate_safe = (
+        any(
+            spec.emits_rate or spec.mq.as_rate or _needs_rate(spec.mq)
+            for spec in used_specs
+        )
+        or needs_bucket_span
+        or bool(derivative_refs)
+    )
+    dim_exprs, dim_aliases = _metric_dimension_exprs(
+        used_specs[0].group_fields,
+        include_time_bucket=include_time_bucket,
+        rate_safe=rate_safe,
+    )
+
     heterogeneous = _specs_have_heterogeneous_filters(used_specs)
 
     # ----------------------------------------------------------------
     # TS|QL path: when the formula reduces to rate()/diff() of a single
-    # counter-typed metric reference, emit `TS index | STATS RATE(field,
-    # window)` — the native ES|QL time-series aggregation. Grafana uses
-    # the same pattern for PromQL rate(). Falls back to the FROM +
-    # FIRST/LAST path below when the metric is a gauge or when the
-    # formula is more complex than a direct counter rate/diff.
+    # counter-typed metric reference, emit `TS index | STATS RATE(field)
+    # BY TBUCKET(N, ?_tstart, ?_tend)` — the native ES|QL time-series
+    # aggregation. Grafana uses the same pattern for PromQL rate().
+    # Falls back to the FROM + FIRST/LAST path below when the metric is
+    # a gauge or when the formula is more complex than a direct counter
+    # rate/diff.
     # ----------------------------------------------------------------
     ts_rate_spec: _MetricQuerySpec | None = None
     ts_fn_name: str = ""
@@ -771,16 +823,15 @@ def _translate_formula_metric_widget(
         # ES|QL native TS aggregation:
         # rate / monotonic counter rate / increase per bucket.
         es_agg = "RATE" if ts_fn_name == "rate" else "INCREASE"
-        window = "5 minute"
         spec = ts_rate_spec
         alias = _safe_alias(formulas[0].alias or formulas[0].raw or f"{ts_fn_name}_{spec.alias}")
-        by_clause = f"time_bucket = TBUCKET({window})"
+        by_clause = f"time_bucket = TBUCKET({_ADAPTIVE_RATE_BUCKETS}, ?_tstart, ?_tend)"
         if spec.group_fields:
             by_clause += ", " + ", ".join(spec.group_fields)
         ts_lines = [
             f"TS {spec.index}",
             f"| WHERE {spec.where_str}",
-            f"| STATS {alias} = {es_agg}({spec.es_metric}, {window}) BY {by_clause}",
+            f"| STATS {alias} = {es_agg}({spec.es_metric}) BY {by_clause}",
             "| KEEP time_bucket, " + ", ".join(spec.group_fields + [alias])
             if spec.group_fields
             else f"| KEEP time_bucket, {alias}",
@@ -790,7 +841,7 @@ def _translate_formula_metric_widget(
             _append_unique_warning(
                 result,
                 f"{ts_fn_name}() translated via ES|QL TS|QL "
-                f"{es_agg}({spec.es_metric}, {window}) — requires the target "
+                f"{es_agg}({spec.es_metric}) — requires the target "
                 f"field to be a counter in a time_series index",
             )
         return "\n".join(ts_lines)
@@ -867,25 +918,23 @@ def _translate_formula_metric_widget(
 
     if output_reducers:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
-        reduced_parts = [
-            f"{field} = {_series_reducer_expr(output_reducers[field], field)}"
-            for field in output_fields
-        ]
-        if group_aliases:
-            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
-        else:
-            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        _append_multi_field_series_reducer_stats(
+            lines,
+            reducer=None,
+            output_reducers=output_reducers,
+            output_fields=output_fields,
+            group_aliases=group_aliases,
+        )
         keep_fields = group_aliases + output_fields
     elif reducer:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
-        reduced_parts = [
-            f"{field} = {_series_reducer_expr(reducer, field)}"
-            for field in output_fields
-        ]
-        if group_aliases:
-            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
-        else:
-            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        _append_multi_field_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            output_reducers=None,
+            output_fields=output_fields,
+            group_aliases=group_aliases,
+        )
         keep_fields = group_aliases + output_fields
     else:
         keep_fields = dim_aliases + output_fields
@@ -1178,6 +1227,7 @@ def _build_metric_query_spec(
         es_metric=es_metric,
         tag_where_str=tag_where,
         is_counter=is_counter_metric_field(metric_cap),
+        emits_rate=bool(use_rate_override),
     )
 
 
@@ -1236,6 +1286,7 @@ def _try_translate_formula_reducer(
     dim_exprs, _ = _metric_dimension_exprs(
         spec.group_fields,
         include_time_bucket=plan.kibana_type in ("xy", "heatmap"),
+        rate_safe=False,
     )
     first_stage = (
         f"| STATS {spec.alias} = {spec.agg_expr} BY {', '.join(dim_exprs)}"
@@ -1293,6 +1344,7 @@ def _try_translate_count_formula_pipeline(
     dim_exprs, _dim_aliases = _metric_dimension_exprs(
         spec.group_fields,
         include_time_bucket=include_time_bucket,
+        rate_safe=False,
     )
     lines = [
         f"FROM {spec.index}",
@@ -1501,11 +1553,12 @@ def _specs_have_heterogeneous_filters(specs: list[_MetricQuerySpec]) -> bool:
 def _metric_dimension_exprs(
     group_fields: list[str],
     include_time_bucket: bool,
+    rate_safe: bool = False,
 ) -> tuple[list[str], list[str]]:
     exprs: list[str] = []
     aliases: list[str] = []
     if include_time_bucket:
-        exprs.append(f"time_bucket = {TIME_BUCKET_EXPR}")
+        exprs.append(f"time_bucket = {_time_bucket_expr(rate_safe)}")
         aliases.append("time_bucket")
     exprs.extend(group_fields)
     aliases.extend(group_fields)
@@ -2191,8 +2244,9 @@ def _build_timeseries_esql(
     where: str,
     agg_expr: str,
     group_fields: list[str],
+    rate_safe: bool = False,
 ) -> str:
-    time_bucket = TIME_BUCKET_EXPR
+    time_bucket = _time_bucket_expr(rate_safe)
     group_clause = f"time_bucket = {time_bucket}"
     if group_fields:
         group_clause += ", " + ", ".join(group_fields)
@@ -2211,6 +2265,7 @@ def _build_distribution_percentile_esql(
     metric_field: str,
     group_fields: list[str],
     agg_expr: str = "",
+    rate_safe: bool = False,
 ) -> str:
     """Approximate a Datadog distribution widget as percentile envelopes.
 
@@ -2220,7 +2275,7 @@ def _build_distribution_percentile_esql(
     percentile envelope — both are genuinely useful series on the chart.
     """
     field = (metric_field or "").strip() or "value"
-    time_bucket = TIME_BUCKET_EXPR
+    time_bucket = _time_bucket_expr(rate_safe)
     group_clause = f"time_bucket = {time_bucket}"
     if group_fields:
         group_clause += ", " + ", ".join(group_fields)
@@ -2263,6 +2318,7 @@ def _build_toplist_esql(
     agg_expr: str,
     group_fields: list[str],
     limit: int,
+    rate_safe: bool = False,
 ) -> str:
     return _build_categorical_esql(
         index,
@@ -2272,6 +2328,7 @@ def _build_toplist_esql(
         sort_field="value",
         sort_order="DESC",
         limit=limit,
+        rate_safe=rate_safe,
     )
 
 
@@ -2280,6 +2337,7 @@ def _build_table_esql(
     where: str,
     agg_expr: str,
     group_fields: list[str],
+    rate_safe: bool = False,
 ) -> str:
     return _build_categorical_esql(
         index,
@@ -2289,6 +2347,7 @@ def _build_table_esql(
         sort_field="value",
         sort_order="DESC",
         limit=100,
+        rate_safe=rate_safe,
     )
 
 
@@ -2297,14 +2356,20 @@ def _build_scalar_esql(
     where: str,
     agg_expr: str,
     reducer: str | None = None,
+    rate_safe: bool = False,
 ) -> str:
     if reducer:
         lines = [
             f"FROM {index}",
             f"| WHERE {where}",
-            f"| STATS _bucket_value = {agg_expr} BY time_bucket = {TIME_BUCKET_EXPR}",
+            f"| STATS _bucket_value = {agg_expr} BY time_bucket = {_time_bucket_expr(rate_safe)}",
         ]
-        lines.append(f"| STATS value = {_series_reducer_expr(reducer, '_bucket_value')}")
+        _append_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            field="_bucket_value",
+            output_alias="value",
+        )
         return "\n".join(lines)
     return (
         f"FROM {index}\n"
@@ -2322,21 +2387,24 @@ def _build_categorical_esql(
     sort_order: str,
     limit: int | None,
     reducer: str | None = None,
+    rate_safe: bool = False,
 ) -> str:
     lines = [
         f"FROM {index}",
         f"| WHERE {where}",
     ]
     if reducer:
-        group_clause = f"time_bucket = {TIME_BUCKET_EXPR}"
+        group_clause = f"time_bucket = {_time_bucket_expr(rate_safe)}"
         if group_fields:
             group_clause += ", " + ", ".join(group_fields)
         lines.append(f"| STATS _bucket_value = {agg_expr} BY {group_clause}")
-        reduce_expr = _series_reducer_expr(reducer, "_bucket_value")
-        if group_fields:
-            lines.append(f"| STATS value = {reduce_expr} BY {', '.join(group_fields)}")
-        else:
-            lines.append(f"| STATS value = {reduce_expr}")
+        _append_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            field="_bucket_value",
+            output_alias="value",
+            group_fields=group_fields,
+        )
     elif group_fields:
         lines.append(f"| STATS value = {agg_expr} BY {', '.join(group_fields)}")
     else:
@@ -2515,6 +2583,67 @@ def _series_reducer_expr(reducer: str, field: str) -> str:
         "max": f"MAX({field_ident})",
         "last": f"LAST({field_ident}, time_bucket)",
     }[reducer]
+
+
+def _append_series_reducer_stats(
+    lines: list[str],
+    *,
+    reducer: str,
+    field: str,
+    output_alias: str,
+    group_fields: list[str] | None = None,
+) -> None:
+    """Append a time-series reduce STATS, dropping empty trailing BUCKET rows for LAST.
+
+    ``BUCKET(@timestamp, N, ?_tstart, ?_tend)`` emits null-valued rows for
+    buckets past the last observed sample. ``LAST(value, time_bucket)`` then
+    picks that trailing null and scalar panels render as N/A. Filter nulls
+    before LAST; other reducers already ignore null inputs.
+    """
+    if reducer == "last":
+        lines.append(f"| WHERE {_esql_identifier(field)} IS NOT NULL")
+    reduce_expr = _series_reducer_expr(reducer, field)
+    if group_fields:
+        lines.append(
+            f"| STATS {output_alias} = {reduce_expr} BY {', '.join(group_fields)}"
+        )
+    else:
+        lines.append(f"| STATS {output_alias} = {reduce_expr}")
+
+
+def _append_multi_field_series_reducer_stats(
+    lines: list[str],
+    *,
+    reducer: str | None,
+    output_reducers: dict[str, str] | None,
+    output_fields: list[str],
+    group_aliases: list[str],
+) -> None:
+    """Formula-path counterpart of :func:`_append_series_reducer_stats`."""
+    per_field = dict(output_reducers or {})
+    if reducer:
+        for field in output_fields:
+            per_field.setdefault(field, reducer)
+    last_fields = [f for f in output_fields if per_field.get(f) == "last"]
+    # Only drop trailing empty BUCKET rows when every reduced field is LAST.
+    # A shared WHERE on mixed LAST+AVG/SUM would also drop sparse-LAST rows
+    # from AVG/SUM and change those series.
+    if last_fields and all(per_field.get(f) == "last" for f in output_fields if f in per_field):
+        lines.append(
+            "| WHERE "
+            + " AND ".join(f"{_esql_identifier(f)} IS NOT NULL" for f in last_fields)
+        )
+    reduced_parts = [
+        f"{field} = {_series_reducer_expr(per_field[field], field)}"
+        for field in output_fields
+        if field in per_field
+    ]
+    if not reduced_parts:
+        return
+    if group_aliases:
+        lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
+    else:
+        lines.append(f"| STATS {', '.join(reduced_parts)}")
 
 
 def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> str:

@@ -558,8 +558,8 @@ The translator handles Datadog formulas at three layers:
 
 - **Pointwise functions** (`abs`, `ceil`, `floor`, `round`, `default_zero`, `exclude_null`, `per_second`, `per_minute`, `per_hour`) map directly to ES|QL expressions in the `EVAL` stage.
 - **Derivative functions** (`rate`, `diff`, `monotonic_diff`) take one of two paths depending on the target field's live `_field_caps`:
-  - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric, 5 minute) BY TBUCKET(5 minute)` (or `INCREASE(...)` for `diff`/`monotonic_diff`). This is the native ES|QL time-series aggregation — same pattern the Grafana adapter uses for PromQL `rate()`. Mirrors Datadog counter-rate semantics directly.
-  - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
+  - **TS|QL path (preferred, counter-typed targets)**: when `time_series_metric_kind == "counter"` or `type ∈ {counter_long, counter_integer, counter_double}`, the translator emits `TS index | STATS rate_alias = RATE(metric) BY TBUCKET(20, ?_tstart, ?_tend)` (or `INCREASE(...)` for `diff`/`monotonic_diff`) — an adaptive, windowless bucket that grows/shrinks with the dashboard time range, same pattern the Grafana adapter uses for PromQL `rate()`/`irate()`. `20` is a live-verified rate-safe floor (see `docs/design/datadog-esql-time-bucketing-adaptivity.md`), not a fixed `5 minute` window. Mirrors Datadog counter-rate semantics directly.
+  - **FROM + FIRST/LAST path (fallback, gauges)**: when no counter capability is detected, the `STATS` clause emits `FIRST(metric, @timestamp)` and `LAST(metric, @timestamp)` alongside the standard aggregation, and `EVAL` computes `(last − first) / bucket_span_seconds` for `rate()` or `(last − first)` for `diff()`. The `time_bucket` grouping for this path also uses the rate-safe 20-bucket floor (rather than the generic 75-bucket chart-resolution default) whenever the query or formula needs rate safety, for the same reason — too fine a bucket can make `FIRST`/`LAST` land in the same row, silently reading a wrong (not null) rate. A per-aggregation `WHERE metric IS NOT NULL` guard skips rows where the target column is null (needed when multiple metrics share the index).
 - **Multi-query formulas with different filters** (e.g. `count:x{direction:in} / count:x{direction:out}`) translate via per-aggregation `WHERE` clauses inside `STATS`: each query's tag filters are attached to its own aggregation expression. The outer `WHERE` becomes the `TIME_FILTER` plus an `OR` of the spec filters. Different groupings are still surfaced as `requires_manual` because the resolution between divergent group sets is semantically ambiguous.
 - **Direct-reference table formulas with different request reducers** apply
   each reducer independently (for example `AVG` for message-rate columns and
@@ -570,7 +570,18 @@ The translator handles Datadog formulas at three layers:
   `count(v: v>=0):metric{scope} by {service}` retain the numeric predicate as
   an ES|QL metric filter before `COUNT(*)`. Function-chain behavior such as
   `.as_rate()` and `.rollup(10)` then follows the existing warned rate/rollup
-  approximation path instead of forcing manual review.
+  approximation path instead of forcing manual review. The filtered metric
+  stays a numeric gauge in the telemetry contract (not a keyword dimension),
+  so seed/mapping keep `metric >= 0` valid against Elasticsearch.
+- **Request-aggregator `last` on query_value / tables** reduces after a
+  `BUCKET(@timestamp, …)` stage with an explicit
+  `| WHERE <bucket_value> IS NOT NULL` before `LAST(...)`. Adaptive buckets
+  emit trailing empty rows for the open time window; without the null guard,
+  `LAST` would pick those empties and scalar panels would render as N/A.
+  The null guard is emitted only when every reduced field on that request is
+  `LAST`. Mixed `LAST`+`AVG`/`SUM` tables (for example Kafka Topic Health)
+  skip the shared `WHERE` so sparse-`LAST` rows are not dropped from the
+  other aggregations.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 
 ### Parity Harness

@@ -6,5 +6,5 @@ warning: rate semantics approximated with delta over observed bucket span; when 
 ---
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-| STATS value = (MAX(TO_DOUBLE(http_requests)) - MIN(TO_DOUBLE(http_requests))) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend)
+| STATS value = (MAX(TO_DOUBLE(http_requests)) - MIN(TO_DOUBLE(http_requests))) / (DATE_DIFF("seconds", MIN(@timestamp), MAX(@timestamp)) + 1) BY time_bucket = BUCKET(@timestamp, 20, ?_tstart, ?_tend)
 | SORT time_bucket
