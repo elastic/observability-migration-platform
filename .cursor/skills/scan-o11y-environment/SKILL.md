@@ -72,6 +72,7 @@ All paths are under `<output-dir>/dashboards/` unless noted. Field names below a
 | Per-dashboard inventory (Grafana only: links, variables, annotations, rows, panels, folder) | `migration_manifest.json` | `dashboards[].inventory` (`links`, `annotations`, `variables`, `rows`, `panels`, `folder_title`) — **Datadog has no `inventory` block** |
 | Datasource distribution (Grafana, needs `--preflight`) | `preflight_report.json` | `datasource_audit.datasource_types`, `datasource_audit.datasource_details` |
 | Datasources that **cannot** migrate | `preflight_report.json` | `datasource_audit.non_migratable`, `datasource_audit.non_migratable_panels` |
+| Unresolved Grafana datasource **template variables** (e.g. `$datasource` / `${DS_*}`) | `preflight_report.json` | `datasource_audit.unresolved_datasource_variables` — treat as blockers; `non_migratable: []` is **not** a clean bill when this list is populated |
 | Datadog preflight issues (optional `--preflight`) | `migration_report.json` | per-dashboard `preflight.issues` / summary `preflight_blocks` / `preflight_warnings` |
 | Run scope (which asset families ran) | `<output-dir>/run_summary.json` | top-level summary |
 
@@ -83,6 +84,7 @@ Non-migratable datasources flagged today include InfluxDB, MySQL/Postgres/MSSQL,
 - **Dashboard tags are not summarized** in these artifacts today — only folder grouping (`folder_title`, Grafana inventory) is indexed. If the user asks for a tag breakdown, say it is not currently produced (selection via `--select-tag` still works at run time).
 - **Datadog field names differ from Grafana** — use `datadog_widget_type` (not `grafana_type`) and prefer `migration_manifest.json` `summary.dashboards` for a cross-source count.
 - The Grafana **datasource audit** is gated behind `--preflight` and writes `preflight_report.json`. Datadog has no equivalent datasource-audit file; use the manifest/report (and optional Datadog `--preflight` issues).
+- **Template-variable datasources:** if a panel's datasource is `$datasource` (or similar) rather than a literal type, older audits missed InfluxDB/SQL entirely. Current preflight resolves `templating.list` (`type: datasource`, `query` is the type filter). Always read `unresolved_datasource_variables` — an empty `non_migratable` list with unresolved vars is a blind spot, not a pass.
 
 ## Do NOT
 

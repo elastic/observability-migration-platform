@@ -51,7 +51,7 @@ obs-migrate verify \
 
 | Source / cluster | Mode | Verdicts | What it proves |
 |---|---|---|---|
-| PromQL / Grafana on a cluster with native PROMQL | Numeric (`mode=native_oracle`) | `STRICT_PASS` (≤1% max relative error), `FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, `ERROR` | Translated ES|QL buckets match Elasticsearch's native `PROMQL(<source query>)` oracle over the same index and time window. Multi-target panels verify one row per target (`target` = refId); mirrorable stat reductions (window `MAX` / latest-bucket `LAST`) compare as scalars |
+| PromQL / Grafana on a cluster with native PROMQL | Numeric (`mode=native_oracle`) | `STRICT_PASS` (≤1% max relative error), `FUZZY_PASS` (≤5%), `SHAPE_PASS` (5% < error ≤ 25%), `FAIL` (no overlap, or relative error above 25%), `SKIP`, `ERROR` | Translated ES|QL buckets match Elasticsearch's native `PROMQL(<source query>)` oracle over the same index and time window. Multi-target panels verify one row per target (`target` = refId); mirrorable stat reductions (window `MAX` / latest-bucket `LAST`) compare as scalars. **Never trust `SHAPE_PASS` by name — read `max_relative_error`.** |
 | Panels whose packets carry live source-vs-target verdicts (`obs-migrate migrate --source datadog --source-execution --validate`) | Live source (`mode=live_source`) | `SOURCE_PASS`, `SOURCE_DRIFT`, `SOURCE_FAIL` (fails the run), `ERROR` (target broken) | The source API's own numbers vs the target ES|QL over the same window — only meaningful when both ingest the same telemetry. Without matching data you commonly see `SOURCE_DRIFT` (does **not** alone fail the run) |
 | Datadog panels without live comparison, non-PromQL panels, or clusters without native PROMQL | Structural (`mode=structural`) | `STRUCTURAL` | Semantic gate only — **not numerically verified**; the command checked shape/metadata, not bucket-by-bucket numbers |
 
@@ -92,7 +92,7 @@ The command writes **`comparison_report.json`** (machine-readable) and a sibling
 - **`1`** — at least one panel parity check returned `FAIL` (or a live source comparison returned `SOURCE_FAIL`).
 - **`0`** — otherwise (including runs where every row is `STRUCTURAL`, `SOURCE_DRIFT`, `SKIP`, or non-`FAIL` numeric verdicts).
 
-Besides **`FAIL`** / **`SOURCE_FAIL`** (which set exit `1`), verdicts **`ERROR`**, **`SKIP`**, **`SHAPE_PASS`**, and **`SOURCE_DRIFT`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` / target telemetry before trusting an all-green exit code.
+Besides **`FAIL`** / **`SOURCE_FAIL`** (which set exit `1`), verdicts **`ERROR`**, **`SKIP`**, **`SHAPE_PASS`**, and **`SOURCE_DRIFT`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` / target telemetry before trusting an all-green exit code. **`SHAPE_PASS` is bounded at 25% relative error; above that the row is `FAIL`.** Still read `max_relative_error` on every `SHAPE_PASS` row — a 20% miss is a pass-shaped name, not numeric proof.
 
 Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the user expected to be numerically verified to the **`explain-migration-gaps`** skill for rebuild guidance. Note that **`STRUCTURAL`** can also hide panels that migrated with **accepted approximations** (`migrated_with_warnings` / Datadog `warning`) — structural shape ≠ semantic fidelity; use `explain-migration-gaps` when the user expected numeric proof. For a shareable headline scorecard (not per-panel parity), use **`report-migration-coverage`**.
 
@@ -108,6 +108,7 @@ Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the 
 ## Honest limits / Do NOT
 
 - **Exit `0` with all-`STRUCTURAL` rows is NOT numeric proof** — you only confirmed structural compatibility, not that numbers match. Datadog without `--source-execution` typically lands here.
+- **`SHAPE_PASS` is not numeric proof.** It means labels overlap and relative error is between 5% and 25%. Read `max_relative_error`. Above 25% the row is `FAIL`.
 - **A `FAIL` / `SOURCE_DRIFT` may be a data-window or step mismatch**, not a translation bug — re-run with `--window-minutes` and `--step-seconds` aligned to the dashboard (and consider `seed-sample-data`) before declaring a translation defect.
 - **Do not claim Datadog panels were numerically verified via the PROMQL oracle** — without live source packets they degrade to `STRUCTURAL`; with `--source-execution --validate` they use `SOURCE_*` verdicts instead.
 - **Do not write to the source** — compare is read-only on the target cluster; it does not prove the uploaded Kibana dashboard renders in the UI (empty panels may still be missing telemetry).

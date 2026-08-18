@@ -225,7 +225,7 @@ success.
 
 | Piece | Module / test | What it proves |
 |---|---|---|
-| Offline gate | `observability_migration/core/verification/alert_offline_gate.py` | Enablement safety (`enabled=False`), non-empty query when `payload_status=emitted`, required payload fields, empty action placeholders, nested ES\|QL structural oracle; `manual_required` / `parse_degraded` must not emit success-shaped payloads |
+| Offline gate | `observability_migration/core/verification/alert_offline_gate.py` | Enablement safety (`enabled=False`), non-empty query when `payload_status=emitted`, required payload fields, empty `actions` as a `config_gap` (notifies nobody if enabled), nested ES\|QL structural oracle; `manual_required` / `parse_degraded` must not emit success-shaped payloads |
 | Unit + mutation | `tests/test_alert_offline_gate.py` | Each rule has a positive/negative case |
 | Fixture corpus gate | `tests/test_alert_fixture_offline_gate.py` | `examples/alerting/grafana/**` + `examples/alerting/monitors/datadog_monitors.json` have zero `real_bug` findings |
 

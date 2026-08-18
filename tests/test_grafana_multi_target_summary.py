@@ -105,3 +105,41 @@ def test_windows_drop_suffix_only_when_all_dropped_are_windows():
         assert "dropped targets are Windows-specific)" not in joined or (
             "of the dropped targets are Windows-specific" in joined
         )
+
+
+def test_stat_status_grid_honors_legend_grouping():
+    """Grafana stat panels draw one tile per series (a status grid).
+
+    ``up`` + ``legendFormat: {{job}}`` is the common Target-health shape: nine
+    jobs become nine tiles. Collapsing that to a single MAX()/LAST() scalar
+    with status=migrated and zero reasons is a silent semantic loss.
+    """
+    yaml_panel, result = _translate_stat(
+        [
+            {
+                "refId": "A",
+                "expr": "up",
+                "legendFormat": "{{job}}",
+            }
+        ]
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or result.esql_query or ""
+    assert " BY " in query, query
+    assert "job" in query.lower() or "service.name" in query, query
+    assert result.status == "migrated_with_warnings"
+    assert result.reasons, "status-grid collapse must be operator-visible"
+
+
+def test_ungrouped_stat_up_warns_when_series_collapse():
+    """Bare ``up`` still fans out to one Grafana tile per scrape target."""
+    _yaml_panel, result = _translate_stat(
+        [
+            {
+                "refId": "A",
+                "expr": "up",
+            }
+        ]
+    )
+    assert result.status == "migrated_with_warnings"
+    joined = " ".join(result.reasons or []).lower()
+    assert "collapse" in joined or "drop" in joined, result.reasons

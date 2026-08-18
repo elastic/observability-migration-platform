@@ -89,7 +89,7 @@ Primary artifact: `readiness_out/dashboards/preflight_report.json`.
 | Overall evidence/trust | `evidence_level` |
 | Clean vs. rework buckets | `summary.readiness`: `ready` (clean) · `needs_metrics_mapping` / `needs_log_fielding` (mapping rework) · `manual_only` (redesign) |
 | Quality gates | `summary.semantic_gates`: `green` / `yellow` / `red` |
-| Hard stops | `blockers` (Red-gated panels, missing required fields, non-migratable datasources, RED cluster health, missing metrics) |
+| Hard stops | `blockers` (Red-gated panels, missing required fields, non-migratable datasources, **unresolved datasource template variables**, RED cluster health, missing metrics) |
 | Prep work (not blocking) | `actions` (field mapping needed, unconfirmed counters, missing labels, high-complexity dashboards, YELLOW cluster). Grafana `profile_mismatch` on `required_target_contract.json` is operator visibility — check planned vs detected layout there; it is not a separate preflight blocker. |
 | One-paragraph readout | `customer_action_summary` |
 
@@ -98,7 +98,7 @@ Per-panel drill-down: `readiness_out/dashboards/migration_manifest.json` → `pa
 
 ## How to judge confidence (tell the user)
 
-High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional. Yellow/Red gates, `metrics_missing`, or `datasource_audit.non_migratable_panels` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully). Preflight does **not** prove Lens UI render; for that, use render audit / `validate-side-by-side` after a try-one upload (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
+High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers` empty, Green dominating semantic gates. Treat `static_analysis` as directional — a files-mode run without `--es-url` (or with `--es-url ""`) never executes ES|QL, so a 100% green score there is not live proof. Yellow/Red gates, `metrics_missing`, `datasource_audit.non_migratable_panels`, or `datasource_audit.unresolved_datasource_variables` represent real manual effort — the tool surfaces these gaps rather than hiding them (degrade-gracefully). `non_migratable: []` is **not** a clean bill when unresolved template-variable datasources remain. Preflight does **not** prove Lens UI render; for that, use render audit / `validate-side-by-side` after a try-one upload (`https://github.com/elastic/observability-migration-platform/blob/main/docs/testing.md`).
 
 ## Do NOT
 
@@ -106,6 +106,7 @@ High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers
 - Do **not** invent Grafana `evidence_level` / `preflight_report.json` semantics for Datadog.
 - Do **not** imply `$PROMETHEUS_URL`/`$LOKI_URL` (or other) env vars exist for the source-validation flags; pass literal URLs.
 - Do **not** present `static_analysis` results as a guarantee panels will render against live data.
+- Do **not** treat `datasource_audit.non_migratable: []` as a clean datasource bill — also read `unresolved_datasource_variables`. A panel whose datasource is `$datasource` rather than a literal type can hide InfluxDB/SQL until that list is empty.
 - Do **not** restate inventory counts as "readiness" — that is `scan-o11y-environment`.
 - Do **not** claim `obs-migrate migrate` accepts `--prometheus-url` / `--loki-url` — use `grafana-migrate` for those.
 

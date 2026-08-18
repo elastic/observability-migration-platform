@@ -490,5 +490,47 @@ class TestGrafanaCliPreflight(unittest.TestCase):
         )
 
 
+class DatasourceAuditVariableTests(unittest.TestCase):
+    def test_template_variable_influx_is_non_migratable(self):
+        panel = SimpleNamespace(
+            datasource_type="",
+            datasource_name="${datasource}",
+            datasource_uid="${datasource}",
+        )
+        result = SimpleNamespace(
+            dashboard_title="Influx dash",
+            panel_results=[panel],
+            inventory={
+                "datasource_variables": [
+                    {"name": "datasource", "type": "influxdb"},
+                ],
+            },
+        )
+
+        audit = preflight.build_datasource_audit([result])
+
+        self.assertTrue(audit["non_migratable"])
+        self.assertEqual(audit["non_migratable"][0]["type"], "influxdb")
+        self.assertGreater(audit["non_migratable_panels"], 0)
+
+    def test_unresolved_datasource_variable_is_not_a_clean_bill(self):
+        panel = SimpleNamespace(
+            datasource_type="",
+            datasource_name="${DS_INFLUX}",
+            datasource_uid="${DS_INFLUX}",
+        )
+        result = SimpleNamespace(
+            dashboard_title="Mystery dash",
+            panel_results=[panel],
+            inventory={},
+        )
+
+        audit = preflight.build_datasource_audit([result])
+
+        self.assertEqual(audit["non_migratable"], [])
+        self.assertTrue(audit["unresolved_datasource_variables"])
+        self.assertGreater(audit["unresolved_datasource_panels"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -693,7 +693,11 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         preferred_group_labels.extend(style_labels)
     legend_labels = _extract_legend_labels(target.get("legendFormat", ""))
     legend_contributed = False
-    if not summary_mode or panel_type == "bargauge":
+    # Grafana stat/gauge/bargauge panels draw one tile (or bar) per series.
+    # Dropping legend placeholders here collapsed status grids such as
+    # Target health (``up`` + ``{{job}}``) into a single MAX()/LAST() scalar
+    # with status=migrated and zero reasons.
+    if not summary_mode or panel_type in {"bargauge", "stat", "singlestat", "gauge"}:
         for lbl in legend_labels:
             if lbl not in preferred_group_labels:
                 preferred_group_labels.append(lbl)
@@ -717,9 +721,9 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
     # from the dashboard-wide per-metric label map (other panels' by()/filters, template
     # variables). Tagged "dashboard_inferred" so the inference is auditable.
     #
-    # Skip single-value panels (stat/gauge/bargauge/piechart -> summary_mode): they
-    # intentionally render one current value, so adding an inferred breakdown would change
-    # the panel's type/intent. Their own explicit legend/by() labels still apply above.
+    # Skip inferred dashboard-wide labels on summary panels: those are a guess.
+    # Explicit legend/by() labels still apply above — Grafana stat/gauge tiles
+    # are one-per-series, not a single scalar.
     #
     # Also skip panels whose own expression already carries an explicit by()/without()
     # clause: that grouping is authoritative and the translator honors it directly, so

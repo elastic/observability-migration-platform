@@ -158,7 +158,9 @@ class Comparison:
             return "STRICT_PASS"
         if self.max_relative_error <= 0.05:
             return "FUZZY_PASS"
-        return "SHAPE_PASS" if self.common_series else "FAIL"
+        if self.max_relative_error <= 0.25:
+            return "SHAPE_PASS" if self.common_series else "FAIL"
+        return "FAIL"
 
 
 def _request(endpoint: str, key: str, body: dict) -> dict:

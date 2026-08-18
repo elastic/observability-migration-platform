@@ -4257,6 +4257,12 @@ def _build_measure_spec(
             bucket_expr = rule_pack.ts_bucket
             metric_field = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
             stats_expr = f"MAX(LAST_OVER_TIME({metric_field}))"
+            # XY charts still split by TSID; summary panels collapse to one
+            # scalar unless a grouping label survives. Say so when they don't.
+            if summary_mode:
+                warning = gauge_default_agg_warning(group_fields, frag.metric, "MAX")
+                if warning:
+                    warnings.append(warning)
         elif can_use_ts_aggregated_gauge:
             source = "TS"
             time_filter = rule_pack.ts_time_filter

@@ -41,7 +41,16 @@ def _emitted_payload(**overrides):
 def test_emitted_payload_passes():
     findings = check_alert_mapping(_emitted_payload())
     assert gate_bugs(findings) == []
-    assert any(f.disposition == AlertGateDisposition.ok for f in findings)
+    assert any(f.rule_id == AlertGateRuleId.EMPTY_ACTIONS for f in findings)
+    assert any(f.disposition == AlertGateDisposition.config_gap for f in findings)
+
+
+def test_empty_actions_are_config_gap_not_success():
+    findings = check_alert_mapping(_emitted_payload())
+    empty = [f for f in findings if f.rule_id == AlertGateRuleId.EMPTY_ACTIONS]
+    assert empty
+    assert empty[0].disposition == AlertGateDisposition.config_gap
+    assert "notify" in empty[0].message.lower() or "action" in empty[0].message.lower()
 
 
 def test_enabled_true_is_real_bug():

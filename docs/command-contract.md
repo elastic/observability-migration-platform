@@ -285,7 +285,7 @@ Datadog.
 | `--validate` | Grafana, Datadog | Run verification-packet ES\|QL validation against Elasticsearch after translation | Requires `--es-url`. Distinct from the lighter native-`PROMQL` parse check that already runs when `--es-url` is set and PROMQL panels exist. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
 | `--ensure-data-views` | Grafana, Datadog dashboards | Create the Kibana data views referenced by migrated controls before upload | Forwarded to the source adapter. Upload already ensures referenced patterns automatically; use this flag when you want the ensure step without relying only on the upload path. Prefer `obs-migrate cluster ensure-data-views` for an explicit cluster-only ensure. |
-| `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). A requested creation that does not happen **fails the run** rather than warning and exiting `0` — see [Creating Kibana alert rules from a single command](#creating-kibana-alert-rules-from-a-single-command) for the exit codes. |
+| `--create-alert-rules` | Grafana, Datadog | Create emitted Kibana alerting rules immediately after the alert mapping step | Requires alert-capable asset selection (`--assets alerts` or `--assets all`), `--kibana-url`, and `--kibana-api-key`. Rules are created **disabled** and tagged `obs-migration`; draft (review-required) rules also get `obs-migration-review`. Emitted payloads have **empty `actions`** and are tagged `obs-migration-no-actions` — Grafana notification policies are not mapped onto Kibana connectors, so enabling a rule as-is evaluates and **notifies nobody**. Re-running the flag skips rules that already exist under the same `[migrated]` name + `obs-migration` tag (`already_exists`) instead of duplicating them. Writes `alert_rule_upload_results.json` (Grafana) or `monitor_rule_upload_results.json` (Datadog). A requested creation that does not happen **fails the run** rather than warning and exiting `0` — see [Creating Kibana alert rules from a single command](#creating-kibana-alert-rules-from-a-single-command) for the exit codes. |
 | `--no-draft-alert-rules` | Grafana, Datadog | With `--create-alert-rules`, skip draft rules and create only fully-automated translations | Draft rules are created by default. Use this to restrict creation to translations the engine is confident about. |
 | `--fetch-alerts` | Grafana, Datadog | Deprecated compatibility alias | See [Audited Asset Flag Matrix](#audited-asset-flag-matrix) |
 | `--env-file` | Datadog | Load Datadog credentials for API extraction and verification | Unified Datadog-only forwarding surface |
@@ -331,7 +331,10 @@ for your exported JSON directories. For a zero-setup offline trial, run
 `obs-migrate list-samples` and pass the printed `input_dir` to `--input-dir`.
 
 ```bash
-# Grafana dashboards only (files). Without --es-url / --kibana-url the run
+# Grafana dashboards only (files). Without --es-url the run is static
+# translation only: panel statuses and semantic gates are offline, and
+# --validate cannot run. A 100% green files-mode score does not prove
+# queries execute against Elasticsearch. Without --kibana-url the run
 # still prefers native PROMQL (including control-bound $var matchers); panels
 # that cannot stay native fall through to ES|QL. Pass --kibana-url to confirm
 # the target: Kibana 9.5+ keeps native control binding, Kibana < 9.5 forces
@@ -1004,6 +1007,18 @@ validate rule payloads; they do not create rules in Kibana. Pass
 rules immediately after the mapping step. Rules are created disabled by default
 and tagged `obs-migration`.
 
+Emitted Kibana rules have **empty `actions`**. Grafana routes notifications
+through label-based notification policies; Kibana attaches actions (connectors)
+directly to the rule, and this migration does not map one onto the other.
+Created rules are also tagged `obs-migration-no-actions`. **Do not enable a
+migrated rule until a connector is attached** — otherwise it evaluates, goes
+into alert state, and pages no one. That gap is recorded on the mapping
+`losses` and printed as a stderr warning when rules are created.
+
+Re-running `--create-alert-rules` is idempotent for already-created migrated
+rules: a rule with the same `[migrated]` name and `obs-migration` tag is
+skipped (`reason: already_exists`) instead of duplicated.
+
 - Grafana writes `<output-dir>/alerts/alert_rule_upload_results.json`
 - Datadog writes `<output-dir>/alerts/monitor_rule_upload_results.json`
 
@@ -1571,7 +1586,10 @@ For **PromQL / Grafana panels** on a cluster with native PROMQL support, the
 command runs the panel's translated ES|QL and Elasticsearch's native
 `PROMQL(<source query>)` command over the **same** index pattern and time window,
 then diffs per bucket. Verdicts are `STRICT_PASS` (≤1% relative error),
-`FUZZY_PASS` (≤5%), `SHAPE_PASS`, `FAIL`, `SKIP`, or `ERROR`.
+`FUZZY_PASS` (≤5%), `SHAPE_PASS` (5% < error ≤ 25%), `FAIL` (no series overlap,
+or relative error above 25%), `SKIP`, or `ERROR`. **Do not treat `SHAPE_PASS`
+as numeric proof** — read `max_relative_error` on the row. Exit code `0`
+includes `SHAPE_PASS`; only `FAIL` / `SOURCE_FAIL` / `ERROR` fail the run.
 
 For **Datadog panels**, non-PromQL panels, or clusters without native PROMQL,
 the command degrades to a `STRUCTURAL` row (semantic gate only) — clearly labeled

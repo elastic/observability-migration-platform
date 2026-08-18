@@ -137,7 +137,7 @@ class PanelComparison:
             return "STRICT_PASS"
         if self.max_relative_error <= 0.05:
             return "FUZZY_PASS"
-        if self.common_series_count > 0:
+        if self.common_series_count > 0 and self.max_relative_error <= 0.25:
             return "SHAPE_PASS"
         return "FAIL"
 

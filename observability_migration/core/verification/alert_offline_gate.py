@@ -35,6 +35,7 @@ class AlertGateRuleId(str, Enum):
     ENABLED_TRUE = "ENABLED_TRUE"
     EMPTY_EMITTED_QUERY = "EMPTY_EMITTED_QUERY"
     MISSING_REQUIRED_FIELDS = "MISSING_REQUIRED_FIELDS"
+    EMPTY_ACTIONS = "EMPTY_ACTIONS"
     EMITTED_WITH_BLOCKED_STATUS = "EMITTED_WITH_BLOCKED_STATUS"
     MANUAL_COUNTED_AS_SUCCESS = "MANUAL_COUNTED_AS_SUCCESS"
     PARSE_DEGRADED_EMITTED = "PARSE_DEGRADED_EMITTED"
@@ -173,7 +174,16 @@ def check_alert_mapping(
         missing.append("params")
     if "actions" not in payload:
         missing.append("actions")
-    elif payload.get("actions") not in ([], None):
+    elif payload.get("actions") in ([], None):
+        findings.append(
+            AlertGateFinding(
+                rule_id=AlertGateRuleId.EMPTY_ACTIONS,
+                disposition=AlertGateDisposition.config_gap,
+                message="payload.actions is empty; enabling this rule will notify nobody",
+                evidence=evidence_base,
+            )
+        )
+    else:
         # Connectors are placeholders today; non-empty actions without review is a
         # config gap unless they are intentionally empty. Non-list is a bug.
         if not isinstance(payload.get("actions"), list):

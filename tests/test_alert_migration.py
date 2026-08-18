@@ -2590,6 +2590,28 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertEqual(result["automation_tier"], "manual_required")
         self.assertFalse(result["valid"])
         self.assertEqual(result["rule_payload"], {})
+        reason = (result.get("payload_status_reason") or "").lower()
+        self.assertIn("logql", reason)
+        self.assertIn("dashboard", reason)
+
+    def test_emitted_grafana_rule_records_empty_actions_gap(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["rule_payload"]["actions"], [])
+        self.assertIn("obs-migration-no-actions", result["rule_payload"]["tags"])
+        self.assertTrue(
+            any(
+                "notify nobody" in str(loss).lower()
+                or "empty actions" in str(loss).lower()
+                or "notification policies" in str(loss).lower()
+                for loss in result["losses"]
+            ),
+            result["losses"],
+        )
 
     def test_grafana_unified_review_gates_identify_no_data_only_blocker(self):
         ir = build_alerting_ir_from_grafana_unified(
@@ -3338,7 +3360,10 @@ class TestGrafanaAlertComparisonArtifact(unittest.TestCase):
         row = comparison["alerts"][0]
         self.assertEqual(row["target"]["automation_tier"], "manual_required")
         self.assertTrue(row["blocked_reasons"])
-        self.assertTrue(any("No source-faithful target query" in reason for reason in row["blocked_reasons"]))
+        self.assertTrue(
+            any("logql" in reason.lower() for reason in row["blocked_reasons"]),
+            row["blocked_reasons"],
+        )
 
     def test_build_alert_comparison_results_includes_review_gates(self):
         from observability_migration.adapters.source.grafana.alerts import build_alert_comparison_results
@@ -5577,6 +5602,56 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertTrue(result["preflight_unreachable"])
         self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
         self.assertEqual(result["skipped"][0]["reason"], "preflight_unreachable")
+
+    def test_create_rules_from_payloads_skips_existing_migrated_name(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(*_args, **_kwargs):
+            raise AssertionError("must not duplicate an existing migrated rule")
+
+        def _fake_list(*_args, **_kwargs):
+            return {
+                "data": [
+                    {
+                        "id": "existing-1",
+                        "name": "[migrated] CPU high",
+                        "enabled": False,
+                        "tags": ["obs-migration"],
+                    }
+                ],
+                "total": 1,
+            }
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(result["skipped"][0]["reason"], "already_exists")
+        self.assertEqual(result["skipped"][0]["existing_id"], "existing-1")
 
     def test_audit_migrated_rules_optionally_disables_enabled_rules(self):
         from observability_migration.targets.kibana.alerting import audit_migrated_rules

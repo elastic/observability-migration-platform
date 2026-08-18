@@ -264,10 +264,21 @@ def build_dashboard_inventory(dashboard: dict[str, Any]) -> dict[str, Any]:
     annotation_list = annotations.get("list", []) if isinstance(annotations, dict) else []
     templating = dashboard.get("templating") or {}
     variables = templating.get("list", []) if isinstance(templating, dict) else []
+    datasource_variables: list[dict[str, str]] = []
+    for var in variables or []:
+        if not isinstance(var, dict):
+            continue
+        if str(var.get("type") or "").strip().lower() != "datasource":
+            continue
+        datasource_variables.append({
+            "name": str(var.get("name") or "").strip(),
+            "type": str(var.get("query") or "").strip().lower(),
+        })
     return {
         "links": len(dashboard.get("links", []) or []),
         "annotations": len(annotation_list or []),
         "variables": len(variables or []),
+        "datasource_variables": datasource_variables,
         "rows": len(dashboard.get("rows", []) or []),
         "panels": len(dashboard.get("panels", []) or []),
         "folder_title": str((dashboard.get("_grafana_meta") or {}).get("folderTitle") or ""),

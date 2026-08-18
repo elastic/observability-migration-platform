@@ -618,6 +618,7 @@ def create_rules_from_payloads(
     verify: bool | str = True,
     create_rule_fn: Any | None = None,
     ensure_data_view_fn: Any | None = None,
+    list_rules_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Create Kibana alerting rules from a batch of emitted rule payloads.
 
@@ -667,6 +668,20 @@ def create_rules_from_payloads(
     tiers = creatable_tiers if creatable_tiers is not None else DEFAULT_CREATABLE_TIERS
     preflight_unreachable = _preflight_unreachable(preflight)
     items = _normalize_rule_items(rule_items)
+    existing_by_name: dict[str, dict[str, Any]] = {}
+    for rule in collect_migrated_rules(
+        _list_all_rules(
+            kibana_url,
+            api_key=api_key,
+            space_id=space_id,
+            timeout=timeout,
+            verify=verify,
+            list_rules_fn=list_rules_fn,
+        )
+    ):
+        name = str(rule.get("name") or "")
+        if name and name not in existing_by_name:
+            existing_by_name[name] = rule
 
     preflight_snapshot = {
         "rule_types_count": (preflight or {}).get("rule_types_count"),
@@ -738,6 +753,18 @@ def create_rules_from_payloads(
             rule_name = f"{name_prefix}{rule_name_source}"
         else:
             rule_name = rule_name_source
+        existing = existing_by_name.get(rule_name)
+        if existing:
+            summary["skipped"].append(
+                {
+                    "alert_id": item["alert_id"],
+                    "name": item["name"],
+                    "kind": item["kind"],
+                    "reason": "already_exists",
+                    "existing_id": str(existing.get("id") or ""),
+                }
+            )
+            continue
         existing_tags = [str(t) for t in (payload.get("tags") or []) if str(t)]
         tags = list(existing_tags)
         if marker_tag and marker_tag not in tags:
@@ -804,14 +831,36 @@ def create_rules_from_payloads(
                 "rule_type_id": rule_type_id,
                 "enabled": bool(response.get("enabled", False)),
                 "kind": item["kind"],
+                "actions_empty": not bool(payload.get("actions")),
             }
         )
+        existing_by_name[rule_name] = {
+            "id": str(response.get("id", "") or ""),
+            "name": rule_name,
+            "tags": tags,
+        }
 
     summary["summary"] = {
         "created": len(summary["created"]),
         "failed": len(summary["failed"]),
         "skipped": len(summary["skipped"]),
     }
+    already_exists = sum(1 for row in summary["skipped"] if row.get("reason") == "already_exists")
+    empty_actions_created = sum(1 for row in summary["created"] if row.get("actions_empty"))
+    if already_exists:
+        print(
+            f"WARNING: skipped {already_exists} Kibana alerting rule(s) that already "
+            f"exist (tagged {marker_tag}); re-running --create-alert-rules does not "
+            "duplicate them.",
+            file=sys.stderr,
+        )
+    if empty_actions_created:
+        print(
+            f"WARNING: {empty_actions_created} created rule(s) have empty actions; "
+            "Grafana notification policies are not mapped onto Kibana connectors. "
+            "Enabling them evaluates and notifies nobody.",
+            file=sys.stderr,
+        )
     return summary
 
 

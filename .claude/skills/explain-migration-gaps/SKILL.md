@@ -35,6 +35,8 @@ Skip panels whose status is clean (`migrated` on Grafana, `ok` on Datadog). When
 
 > **Exception — clean panels that fail numeric parity:** a panel can be clean here yet still `FAIL` / `SOURCE_FAIL` / unexpected `SOURCE_DRIFT` from `obs-migrate compare`. If `validate-side-by-side` routed you here for a clean (`migrated` / `ok`) panel, do **not** skip it — use the **Parity failures (from validate-side-by-side)** section below.
 
+> **Exception — Grafana `stat`/`gauge` status grids:** a dashboard can report 19/19 ✓ with `semantic_gate: Green` and still collapse a multi-target Grafana stat (e.g. Target health) into one `MAX()`/`LAST()` scalar. Explicit `legendFormat` placeholders such as `{{job}}` are now kept as grouping, and ungrouped `up` migrates with a warning. If the user points at a status grid that is still one number in Kibana, do **not** skip it because status is `migrated` — compare source tiles vs the emitted query.
+
 ## Inputs (artifact table)
 
 | What you want | File | Field(s) |
@@ -69,6 +71,7 @@ Treat these as **explained warnings**, not automatic rebuild work. Canonical det
 | `histogram_quantile` + `PERCENTILE` / "assumed exponential_histogram" | Translates standard `sum(... by (le))` shapes; unknown field type assumes exponential_histogram and warns | Approximate (t-digest). Pin mapping / re-run with `--es-url` field caps for classic histograms (`TO_TDIGEST`). Prefer ES ≥ 9.5 native `histogram_quantile` when available. Still `not_feasible` for bare `*_bucket` without `sum by (le)` or known-wrong types (e.g. `aggregate_metric_double`). |
 | `sum(increase\|rate(m_sum)/increase\|rate(m_count))` / "ratio of aggregates" | Rewrites histogram-mean idiom to `sum(m_sum)/sum(m_count)` | Weighted differently than per-series Prometheus means; unrelated `sum(A/B)` stays `not_feasible`. |
 | Multi-target fusion / "summary table" / "Unioned BY" / CASE-scoped filters | Fuses compatible XY and summary panels; QoS nested BY unions; Express-style status counters CASE-inline | Platform is single ES\|QL layer — incompatible targets (e.g. Windows vs Linux) keep the largest group and warn. |
+| Stat/gauge status grid / `{{job}}` / ungrouped `up` | Grafana stat/gauge tiles are one-per-series. `legendFormat` placeholders become grouping so Target-health panels do not silently collapse to one `MAX()`/`LAST()`; ungrouped `up` that Grafana still fans out migrates **with a warning** | Compare source tiles vs Kibana. A 19/19 ✓ with zero reasons should no longer hide this; if you still see one scalar for a multi-target Grafana stat, rebuild as a grouped metric or table. |
 | Label-matcher `$var` → `?var` / late-bound `by ($var)` → `??var` | Named-param binding when dashboard templating + live `esql_named_param_binding` probe succeed | Offline single-panel runs may drop `$var` matchers; enable with full dashboard templating and `--es-url`. |
 | Native PROMQL downgraded to ES\|QL | `--translation-mode auto` + `--es-url` probe found no native `PROMQL` support | Warnings may come from the ES\|QL fallback path, not a panel redesign need. |
 

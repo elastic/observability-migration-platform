@@ -28,6 +28,12 @@ class VerdictTests(unittest.TestCase):
         c = po.Comparison(expr="x", esql="TS ...", common_series=1, compared_points=5, max_relative_error=0.2)
         self.assertEqual(c.verdict(), "SHAPE_PASS")
 
+    def test_large_relative_error_is_fail_not_shape_pass(self):
+        # SHAPE_PASS used to have no upper bound, so 36-90% error still
+        # "passed". Anything beyond the shape ceiling is a numeric FAIL.
+        c = po.Comparison(expr="x", esql="TS ...", common_series=1, compared_points=5, max_relative_error=0.9)
+        self.assertEqual(c.verdict(), "FAIL")
+
     def test_translated_error_is_error(self):
         c = po.Comparison(expr="x", esql="TS ...", translated_error="boom")
         self.assertEqual(c.verdict(), "ERROR")
@@ -886,7 +892,7 @@ class ExecutionTests(unittest.TestCase):
             start_iso="2026-01-01T00:00:00Z", end_iso="2026-01-01T00:30:00Z")
         self.assertEqual(result.compared_points, 1)
         self.assertGreater(result.max_relative_error, 0.5)
-        self.assertEqual(result.verdict(), "SHAPE_PASS")
+        self.assertEqual(result.verdict(), "FAIL")
 
     def test_unsupported_stat_shape_still_skips(self):
         # COUNT-style reductions cannot be mirrored faithfully; the honest
