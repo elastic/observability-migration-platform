@@ -310,7 +310,7 @@ def refresh_data_view_fields(
             timeout=timeout,
             verify=verify,
         )
-    except Exception as exc:  # noqa: BLE001 - soft-fail; upload can still succeed
+    except Exception as exc:  # soft-fail; upload can still succeed
         logger.warning("Could not load data view %s for field refresh: %s", view_id, exc)
         return data_view
     return full or data_view
