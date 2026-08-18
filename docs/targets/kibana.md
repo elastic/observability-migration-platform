@@ -409,7 +409,7 @@ Data view management has full CRUD:
 - **Dashboard listing**: Uses `_export` with `type: ["dashboard"]` (auto-fallback from `_find`).
 - **Individual dashboard fetch**: Falls back to `_export` with `objects: [{type: "dashboard", id: "..."}]`.
 - **Dashboard deletion**: Re-imports with empty content and `[DELETED]` title prefix. The object remains but is harmless. Full removal requires the Kibana UI.
-- **Data views**: Use `--ensure-data-views` on the dedicated source CLIs or `obs-migrate cluster ensure-data-views` for shared target management.
+- **Data views**: Use `--ensure-data-views` on the dedicated source CLIs or `obs-migrate cluster ensure-data-views` for shared target management. Ensure also GETs each data view after create/lookup so Kibana hydrates live field caps (the saved object's `fields: []` is the scripted-field map, not a mapped-field cache). Options-list controls need those hydrated fields to resolve `field_name`; an unhydrated view can show `Could not locate field` / `An error occurred` in the control chrome until field caps are loaded.
 
 ### CLI Surfaces
 

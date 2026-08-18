@@ -8,5 +8,6 @@ FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = (query1 * 100)
+| WHERE value IS NOT NULL
 | STATS value = LAST(value, time_bucket)
 | KEEP value

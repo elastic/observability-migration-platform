@@ -2056,7 +2056,38 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
         self.assertIn("| STATS _bucket_value = SUM(mongodb_chunks_total) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)", result.esql_query)
+        # Trailing empty BUCKET rows are null; LAST must skip them or scalars
+        # render as N/A even when earlier buckets have data.
+        self.assertIn("| WHERE _bucket_value IS NOT NULL", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket)", result.esql_query)
+        self.assertLess(
+            result.esql_query.index("| WHERE _bucket_value IS NOT NULL"),
+            result.esql_query.index("| STATS value = LAST(_bucket_value, time_bucket)"),
+        )
+
+    def test_query_value_avg_aggregator_does_not_null_guard_before_reduce(self):
+        query = "avg:mongodb.chunks.total{*}"
+        mq = parse_metric_query(query)
+        wq = WidgetQuery(
+            name="query1",
+            data_source="metrics",
+            raw_query=query,
+            metric_query=mq,
+            aggregator="avg",
+            query_type="metric",
+        )
+        widget = NormalizedWidget(
+            id="1",
+            widget_type="query_value",
+            title="Chunks avg",
+            queries=[wq],
+        )
+        plan = plan_widget(widget)
+        plan.backend = "esql"
+        result = translate_widget(widget, plan, OTEL_PROFILE)
+        self.assertEqual(result.status, "ok")
+        self.assertIn("| STATS value = AVG(_bucket_value)", result.esql_query)
+        self.assertNotIn("| WHERE _bucket_value IS NOT NULL", result.esql_query)
 
     def test_query_table_last_aggregator_reduces_after_grouped_buckets(self):
         query = "max:mongodb.replset.optime_lag{*} by {replset_name}"
@@ -2080,6 +2111,7 @@ class TestTranslation(unittest.TestCase):
         result = translate_widget(widget, plan, OTEL_PROFILE)
         self.assertEqual(result.status, "ok")
         self.assertIn("BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name", result.esql_query)
+        self.assertIn("| WHERE _bucket_value IS NOT NULL", result.esql_query)
         self.assertIn("| STATS value = LAST(_bucket_value, time_bucket) BY replset_name", result.esql_query)
 
     def test_query_value_percentile_request_aggregator_reduces_over_time(self):
@@ -2183,6 +2215,15 @@ class TestTranslation(unittest.TestCase):
             "different request aggregators",
             " ".join(result.warnings),
         )
+        # Mixed LAST+AVG must not share a LAST null-guard: filtering
+        # max_kafka_lag IS NOT NULL would also drop sparse-lag rows from AVG.
+        self.assertNotIn("WHERE max_kafka_lag IS NOT NULL", result.esql_query)
+        last_idx = result.esql_query.find("max_kafka_lag = LAST(max_kafka_lag, time_bucket)")
+        avg_idx = result.esql_query.find("messages_in = AVG(messages_in)")
+        self.assertGreater(last_idx, -1)
+        self.assertGreater(avg_idx, -1)
+        between = result.esql_query[min(avg_idx, last_idx) : max(avg_idx, last_idx)]
+        self.assertNotIn("IS NOT NULL", between)
 
     def test_hostmap_with_grouping_degrades_to_data_preserving_table(self):
         from observability_migration.adapters.source.datadog.normalize import (

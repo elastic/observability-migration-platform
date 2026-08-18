@@ -570,7 +570,18 @@ The translator handles Datadog formulas at three layers:
   `count(v: v>=0):metric{scope} by {service}` retain the numeric predicate as
   an ES|QL metric filter before `COUNT(*)`. Function-chain behavior such as
   `.as_rate()` and `.rollup(10)` then follows the existing warned rate/rollup
-  approximation path instead of forcing manual review.
+  approximation path instead of forcing manual review. The filtered metric
+  stays a numeric gauge in the telemetry contract (not a keyword dimension),
+  so seed/mapping keep `metric >= 0` valid against Elasticsearch.
+- **Request-aggregator `last` on query_value / tables** reduces after a
+  `BUCKET(@timestamp, …)` stage with an explicit
+  `| WHERE <bucket_value> IS NOT NULL` before `LAST(...)`. Adaptive buckets
+  emit trailing empty rows for the open time window; without the null guard,
+  `LAST` would pick those empties and scalar panels would render as N/A.
+  The null guard is emitted only when every reduced field on that request is
+  `LAST`. Mixed `LAST`+`AVG`/`SUM` tables (for example Kafka Topic Health)
+  skip the shared `WHERE` so sparse-`LAST` rows are not dropped from the
+  other aggregations.
 - **`top(query, N, agg, order)`** parses (the formula tokenizer accepts string-literal arguments) and unwraps to the query reference with a warning that top-N filtering relies on panel-level sort/limit.
 
 ### Parity Harness

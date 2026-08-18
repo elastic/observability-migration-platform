@@ -857,6 +857,126 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertIn("pod", fields)
         self.assertEqual(fields["pod"]["role"], "dimension")
 
+    def test_contract_seeds_numeric_value_filter_field_as_metric(self):
+        # Datadog ``count(v: v>=0):metric{...}`` translates to
+        # ``WHERE metric >= 0 | STATS COUNT(*)`` — the metric is never in an
+        # aggregation arg, only in a numeric value filter. Treating it as a
+        # keyword dimension makes seed map it keyword and Kibana fails with
+        # ``keyword >= integer``. Keep it a numeric gauge metric.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| WHERE direction == \"out\" "
+                                                "AND data_streams_latency >= 0\n"
+                                                "| STATS value = COUNT(*) "
+                                                "BY time_bucket = BUCKET("
+                                                "@timestamp, 20, ?_tstart, ?_tend), "
+                                                "service.name"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertIn("data_streams_latency", fields)
+        self.assertEqual(fields["data_streams_latency"]["role"], "metric")
+        self.assertEqual(fields["data_streams_latency"]["type_family"], "numeric")
+        self.assertEqual(fields["data_streams_latency"]["metric_kind"], "gauge")
+        self.assertEqual(fields["direction"]["role"], "dimension")
+        self.assertEqual(fields["service.name"]["role"], "dimension")
+
+    def test_contract_unquoted_numeric_equality_stays_dimension(self):
+        # ``host == 1`` is a tag/dimension predicate, not a Datadog value
+        # filter. Harvesting ``==`` as a metric would lock host as a gauge and
+        # seed it numeric. Keep equality out of the value-filter scan.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| WHERE host == 1\n"
+                                                "| STATS value = COUNT(*) BY host"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertEqual(fields["host"]["role"], "dimension")
+        self.assertNotEqual(fields["host"].get("type_family"), "numeric")
+
+    def test_contract_does_not_harvest_limit_or_bucket_count_as_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "dashboards"
+            ir_dir = ir_fixture_dir(artifact_dir)
+            (ir_dir / "dash.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboards": [
+                            {
+                                "panels": [
+                                    {
+                                        "esql": {
+                                            "query": (
+                                                "FROM metrics-*\n"
+                                                "| STATS value = AVG(redis_memory_used) "
+                                                "BY time_bucket = BUCKET("
+                                                "@timestamp, 20, ?_tstart, ?_tend)\n"
+                                                "| LIMIT 10"
+                                            )
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            contract = build_telemetry_contract(artifact_dir)
+
+        fields = contract["streams"]["metrics-*"]["fields"]
+        self.assertNotIn("LIMIT", fields)
+        self.assertNotIn("BUCKET", fields)
+        self.assertNotIn("20", fields)
+        self.assertNotIn("10", fields)
+        self.assertEqual(fields["redis_memory_used"]["role"], "metric")
+
     def test_contract_does_not_seed_post_stats_null_guard_aliases(self):
         # Datadog formula queries null-guard aggregation aliases after ``STATS``.
         # Those aliases are derived columns, not source telemetry fields; seeding

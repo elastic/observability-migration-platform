@@ -918,25 +918,23 @@ def _translate_formula_metric_widget(
 
     if output_reducers:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
-        reduced_parts = [
-            f"{field} = {_series_reducer_expr(output_reducers[field], field)}"
-            for field in output_fields
-        ]
-        if group_aliases:
-            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
-        else:
-            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        _append_multi_field_series_reducer_stats(
+            lines,
+            reducer=None,
+            output_reducers=output_reducers,
+            output_fields=output_fields,
+            group_aliases=group_aliases,
+        )
         keep_fields = group_aliases + output_fields
     elif reducer:
         group_aliases = [alias for alias in dim_aliases if alias != "time_bucket"]
-        reduced_parts = [
-            f"{field} = {_series_reducer_expr(reducer, field)}"
-            for field in output_fields
-        ]
-        if group_aliases:
-            lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
-        else:
-            lines.append(f"| STATS {', '.join(reduced_parts)}")
+        _append_multi_field_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            output_reducers=None,
+            output_fields=output_fields,
+            group_aliases=group_aliases,
+        )
         keep_fields = group_aliases + output_fields
     else:
         keep_fields = dim_aliases + output_fields
@@ -2366,7 +2364,12 @@ def _build_scalar_esql(
             f"| WHERE {where}",
             f"| STATS _bucket_value = {agg_expr} BY time_bucket = {_time_bucket_expr(rate_safe)}",
         ]
-        lines.append(f"| STATS value = {_series_reducer_expr(reducer, '_bucket_value')}")
+        _append_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            field="_bucket_value",
+            output_alias="value",
+        )
         return "\n".join(lines)
     return (
         f"FROM {index}\n"
@@ -2395,11 +2398,13 @@ def _build_categorical_esql(
         if group_fields:
             group_clause += ", " + ", ".join(group_fields)
         lines.append(f"| STATS _bucket_value = {agg_expr} BY {group_clause}")
-        reduce_expr = _series_reducer_expr(reducer, "_bucket_value")
-        if group_fields:
-            lines.append(f"| STATS value = {reduce_expr} BY {', '.join(group_fields)}")
-        else:
-            lines.append(f"| STATS value = {reduce_expr}")
+        _append_series_reducer_stats(
+            lines,
+            reducer=reducer,
+            field="_bucket_value",
+            output_alias="value",
+            group_fields=group_fields,
+        )
     elif group_fields:
         lines.append(f"| STATS value = {agg_expr} BY {', '.join(group_fields)}")
     else:
@@ -2578,6 +2583,67 @@ def _series_reducer_expr(reducer: str, field: str) -> str:
         "max": f"MAX({field_ident})",
         "last": f"LAST({field_ident}, time_bucket)",
     }[reducer]
+
+
+def _append_series_reducer_stats(
+    lines: list[str],
+    *,
+    reducer: str,
+    field: str,
+    output_alias: str,
+    group_fields: list[str] | None = None,
+) -> None:
+    """Append a time-series reduce STATS, dropping empty trailing BUCKET rows for LAST.
+
+    ``BUCKET(@timestamp, N, ?_tstart, ?_tend)`` emits null-valued rows for
+    buckets past the last observed sample. ``LAST(value, time_bucket)`` then
+    picks that trailing null and scalar panels render as N/A. Filter nulls
+    before LAST; other reducers already ignore null inputs.
+    """
+    if reducer == "last":
+        lines.append(f"| WHERE {_esql_identifier(field)} IS NOT NULL")
+    reduce_expr = _series_reducer_expr(reducer, field)
+    if group_fields:
+        lines.append(
+            f"| STATS {output_alias} = {reduce_expr} BY {', '.join(group_fields)}"
+        )
+    else:
+        lines.append(f"| STATS {output_alias} = {reduce_expr}")
+
+
+def _append_multi_field_series_reducer_stats(
+    lines: list[str],
+    *,
+    reducer: str | None,
+    output_reducers: dict[str, str] | None,
+    output_fields: list[str],
+    group_aliases: list[str],
+) -> None:
+    """Formula-path counterpart of :func:`_append_series_reducer_stats`."""
+    per_field = dict(output_reducers or {})
+    if reducer:
+        for field in output_fields:
+            per_field.setdefault(field, reducer)
+    last_fields = [f for f in output_fields if per_field.get(f) == "last"]
+    # Only drop trailing empty BUCKET rows when every reduced field is LAST.
+    # A shared WHERE on mixed LAST+AVG/SUM would also drop sparse-LAST rows
+    # from AVG/SUM and change those series.
+    if last_fields and all(per_field.get(f) == "last" for f in output_fields if f in per_field):
+        lines.append(
+            "| WHERE "
+            + " AND ".join(f"{_esql_identifier(f)} IS NOT NULL" for f in last_fields)
+        )
+    reduced_parts = [
+        f"{field} = {_series_reducer_expr(per_field[field], field)}"
+        for field in output_fields
+        if field in per_field
+    ]
+    if not reduced_parts:
+        return
+    if group_aliases:
+        lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
+    else:
+        lines.append(f"| STATS {', '.join(reduced_parts)}")
 
 
 def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> str:

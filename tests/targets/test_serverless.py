@@ -136,30 +136,40 @@ class TestCreateDataView(unittest.TestCase):
 
 
 class TestEnsureDataView(unittest.TestCase):
+    @patch("observability_migration.targets.kibana.serverless.refresh_data_view_fields")
     @patch("observability_migration.targets.kibana.serverless.create_data_view")
     @patch("observability_migration.targets.kibana.serverless.list_data_views")
-    def test_returns_existing_without_creating(self, mock_list, mock_create):
+    def test_returns_existing_without_creating(self, mock_list, mock_create, mock_refresh):
         mock_list.return_value = [{"id": "existing", "title": "metrics-*"}]
+        mock_refresh.side_effect = lambda _url, dv, **_kw: dv
 
         result = ensure_data_view("https://kb.test", title="metrics-*")
         self.assertEqual(result["id"], "existing")
         mock_create.assert_not_called()
+        mock_refresh.assert_called_once()
 
+    @patch("observability_migration.targets.kibana.serverless.refresh_data_view_fields")
     @patch("observability_migration.targets.kibana.serverless.create_data_view")
     @patch("observability_migration.targets.kibana.serverless.list_data_views")
-    def test_creates_when_not_found(self, mock_list, mock_create):
+    def test_creates_when_not_found(self, mock_list, mock_create, mock_refresh):
         mock_list.return_value = [{"id": "other", "title": "logs-*"}]
         mock_create.return_value = {"id": "new", "title": "metrics-*"}
+        mock_refresh.side_effect = lambda _url, dv, **_kw: dv
 
         result = ensure_data_view("https://kb.test", title="metrics-*")
         self.assertEqual(result["id"], "new")
         mock_create.assert_called_once()
+        mock_refresh.assert_called_once()
 
+    @patch("observability_migration.targets.kibana.serverless.refresh_data_view_fields")
     @patch("observability_migration.targets.kibana.serverless.create_data_view")
     @patch("observability_migration.targets.kibana.serverless.list_data_views")
-    def test_wildcard_title_lets_kibana_generate_data_view_id(self, mock_list, mock_create):
+    def test_wildcard_title_lets_kibana_generate_data_view_id(
+        self, mock_list, mock_create, mock_refresh
+    ):
         mock_list.return_value = []
         mock_create.return_value = {"id": "generated-id", "title": "metrics-*"}
+        mock_refresh.side_effect = lambda _url, dv, **_kw: dv
 
         result = ensure_data_view("https://kb.test", title="metrics-*")
 
@@ -175,6 +185,43 @@ class TestEnsureDataView(unittest.TestCase):
             timeout=30,
             verify=True,
         )
+
+    @patch("observability_migration.targets.kibana.serverless.get_data_view")
+    def test_refresh_data_view_fields_returns_hydrated_view(self, mock_get):
+        from observability_migration.targets.kibana.serverless import refresh_data_view_fields
+
+        mock_get.return_value = {
+            "id": "dv-1",
+            "title": "metrics-*",
+            "fields": {"host.name": {"name": "host.name", "type": "string"}},
+        }
+
+        result = refresh_data_view_fields(
+            "https://kb.test",
+            {"id": "dv-1", "title": "metrics-*"},
+        )
+
+        self.assertEqual(result["id"], "dv-1")
+        self.assertIn("host.name", result["fields"])
+        mock_get.assert_called_once()
+
+    @patch("observability_migration.targets.kibana.serverless.get_data_view")
+    def test_refresh_data_view_fields_soft_fails_on_get_error(self, mock_get):
+        from observability_migration.targets.kibana.serverless import refresh_data_view_fields
+
+        mock_get.side_effect = RuntimeError("kibana down")
+        original = {"id": "dv-1", "title": "metrics-*"}
+
+        result = refresh_data_view_fields("https://kb.test", original)
+
+        self.assertIs(result, original)
+
+    def test_refresh_data_view_fields_skips_missing_id(self):
+        from observability_migration.targets.kibana.serverless import refresh_data_view_fields
+
+        original = {"title": "metrics-*"}
+        result = refresh_data_view_fields("https://kb.test", original)
+        self.assertIs(result, original)
 
 
 class TestDetectServerless(unittest.TestCase):

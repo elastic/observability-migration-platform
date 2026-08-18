@@ -6,4 +6,5 @@ kibana_type: metric
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND deployment.environment == "prod" AND host.name NOT LIKE "canary%"
 | STATS _bucket_value = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
+| WHERE _bucket_value IS NOT NULL
 | STATS value = LAST(_bucket_value, time_bucket)
