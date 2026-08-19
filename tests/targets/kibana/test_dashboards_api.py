@@ -562,8 +562,13 @@ def test_xy_shows_y_axis_title_for_labeled_breakdown_value_metric():
     assert cfg["axis"]["y"]["title"] == {"text": "Disk Space Used Basic", "visible": True}
 
 
-def test_xy_placeholder_label_takes_precedence_over_inferred_format_title():
-    """A meaningful placeholder label must win over a generic unit title."""
+def test_xy_inferred_unit_title_wins_over_placeholder_label():
+    """A uniform unit title is a better axis name than repeating the panel title.
+
+    Issue #351 asked for the Grafana axis title *or unit*. Composite CPU panels
+    already format ticks as percent; stamping the panel name on the axis just
+    duplicates the chrome.
+    """
     cfg = _map({
         "type": "line",
         "query": "FROM metrics-*",
@@ -577,8 +582,26 @@ def test_xy_placeholder_label_takes_precedence_over_inferred_format_title():
             }
         ],
     })["config"]
+    assert cfg["axis"]["y"]["title"] == {"text": "%", "visible": True}
+
+
+def test_xy_placeholder_label_used_when_no_unit_title_can_be_inferred():
+    """``number`` + suffix is not a unit type, so the placeholder label names the axis."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [
+            {
+                "field": "value",
+                "label": "Network Traffic Basic",
+                "format": {"type": "bits", "suffix": "/s"},
+            }
+        ],
+    })["config"]
     assert cfg["axis"]["y"]["title"] == {
-        "text": "CPU Idle Percentage",
+        "text": "Network Traffic Basic",
         "visible": True,
     }
 
@@ -651,6 +674,62 @@ def test_xy_right_axis_placeholder_does_not_title_left_axis():
     assert "y" not in cfg["axis"]
 
 
+def test_xy_placeholder_label_reads_layer_metrics():
+    """Cross-data-stream XY keeps metrics and breakdowns on layers."""
+    axis = api._xy_axis_from_cfg({
+        "type": "line",
+        "layers": [
+            {
+                "breakdown": {"field": "series_group"},
+                "metrics": [
+                    {
+                        "field": "value",
+                        "label": "Disk Space Used Basic",
+                        "format": {"type": "number", "suffix": "%"},
+                    }
+                ],
+            }
+        ],
+    })
+    assert axis is not None
+    assert axis["y"]["title"] == {"text": "Disk Space Used Basic", "visible": True}
+
+
+def test_xy_inferred_unit_title_reads_layer_metrics():
+    axis = api._xy_axis_from_cfg({
+        "type": "line",
+        "breakdown": {"field": "series_group"},
+        "layers": [
+            {
+                "metrics": [
+                    {
+                        "field": "value",
+                        "label": "CPU Basic",
+                        "format": {"type": "percent"},
+                    }
+                ]
+            }
+        ],
+    })
+    assert axis is not None
+    assert axis["y"]["title"] == {"text": "%", "visible": True}
+
+
+def test_xy_opaque_grafana_percentage_label_yields_inferred_unit_title():
+    """Grafana ``axisLabel: percentage`` is an opaque unit id, not a real title."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [
+            {"field": "value", "label": "CPU", "format": {"type": "percent"}}
+        ],
+        "appearance": {"y_left_axis": {"title": "percentage"}},
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"text": "%", "visible": True}
+
+
 def test_xy_hidden_y_axis_title_for_breakdown_computed_value_metric():
     """``computed_value`` (the general ES|QL translator's placeholder) is covered too."""
     cfg = _map({
@@ -674,6 +753,11 @@ def test_api_axis_title_suppresses_opaque_shorthand_text():
         "visible": True,
     }
     assert api._yaml_axis_title("aqu-sz") is None
+    assert api._yaml_axis_title("percentage") is None
+    assert api._yaml_axis_title("counter") == {
+        "text": "counter",
+        "visible": True,
+    }
 
 
 def test_api_axis_title_keeps_legitimate_kebab_and_snake_text():

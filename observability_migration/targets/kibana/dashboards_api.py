@@ -873,12 +873,26 @@ def _ensure_temporal_x_scale(
     return out
 
 
+def _xy_config_has_breakdown(cfg: dict[str, Any]) -> bool:
+    """True when the XY config (or any layer) declares a breakdown dimension."""
+    if cfg.get("breakdown") or cfg.get("breakdowns"):
+        return True
+    layers = cfg.get("layers")
+    if isinstance(layers, list):
+        for layer in layers:
+            if isinstance(layer, dict) and (layer.get("breakdown") or layer.get("breakdowns")):
+                return True
+    return False
+
+
 def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Return the XY axis config, falling back to format-inferred Y title."""
     axis = _api_xy_axis(_cfg_axis_source(cfg))
     if axis and (axis.get("y") or {}).get("title"):
         return axis
-    metrics = cfg.get("metrics") if isinstance(cfg.get("metrics"), list) else []
+    # Include ``layers[*].metrics`` so cross-data-stream XY panels get the same
+    # left-axis title decision as a top-level ``metrics`` list.
+    metrics = _xy_metrics(cfg)
     left = [
         m for m in metrics
         if (
@@ -886,51 +900,36 @@ def _xy_axis_from_cfg(cfg: dict[str, Any]) -> dict[str, Any] | None:
             and str(m.get("axis") or "") not in _RIGHT_AXIS_VALUES
         )
     ]
+
+    def _with_y_title(title: dict[str, Any]) -> dict[str, Any]:
+        if axis:
+            merged = dict(axis)
+            merged["y"] = {**merged.get("y", {}), **title}
+            return merged
+        return {"y": title}
+
+    inferred = _infer_y_axis_title(metrics)
+    if inferred:
+        # A uniform unit title ("%"/ "Bytes") is more useful as an axis name
+        # than repeating the panel title on a composite ``value`` series.
+        return _with_y_title({"title": {"text": inferred, "visible": True}})
     if len(left) == 1 and _xy_single_metric_uses_placeholder_name(cfg, left[0]):
         placeholder_label = str(left[0].get("label") or "").strip()
         if placeholder_label:
-            # The caller-derived label names the composite series more
-            # specifically than a generic unit title such as "%" or "Bytes".
-            shown: dict[str, Any] = {
-                "title": {"text": placeholder_label, "visible": True}
-            }
-            if axis:
-                merged_shown = dict(axis)
-                merged_shown["y"] = {**merged_shown.get("y", {}), **shown}
-                return merged_shown
-            return {"y": shown}
-    inferred = _infer_y_axis_title(metrics)
-    if not inferred:
-        # No unit-derived title available. With two or more left-axis series
-        # Kibana falls back to the FIRST series' name, which mislabels the whole
-        # axis ("not expiring" on a chart plotting not-expiring AND expiring;
-        # "hits" on hits AND misses). Grafana showed no axis title at all here
-        # (axisLabel is empty), so hide it rather than let Kibana invent a
-        # wrong one. A single series keeps the default, where the column name
-        # does describe the axis.
-        if len(left) >= 2:
-            # ``visible: false`` alone hides the title; a companion ``text: ""``
-            # names nothing and Kibana does not store it (see _api_axis_title).
-            hidden: dict[str, Any] = {"title": {"visible": False}}
-            if axis:
-                merged_hidden = dict(axis)
-                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
-                return merged_hidden
-            return {"y": hidden}
-        if len(left) == 1 and _xy_single_metric_uses_placeholder_name(cfg, left[0]):
-            hidden = {"title": {"visible": False}}
-            if axis:
-                merged_hidden = dict(axis)
-                merged_hidden["y"] = {**merged_hidden.get("y", {}), **hidden}
-                return merged_hidden
-            return {"y": hidden}
-        return axis
-    y_title: dict[str, Any] = {"title": {"text": inferred, "visible": True}}
-    if axis:
-        merged = dict(axis)
-        merged["y"] = {**merged.get("y", {}), **y_title}
-        return merged
-    return {"y": y_title}
+            return _with_y_title({"title": {"text": placeholder_label, "visible": True}})
+        return _with_y_title({"title": {"visible": False}})
+    # No unit-derived title available. With two or more left-axis series
+    # Kibana falls back to the FIRST series' name, which mislabels the whole
+    # axis ("not expiring" on a chart plotting not-expiring AND expiring;
+    # "hits" on hits AND misses). Grafana showed no axis title at all here
+    # (axisLabel is empty), so hide it rather than let Kibana invent a
+    # wrong one. A single series keeps the default, where the column name
+    # does describe the axis.
+    if len(left) >= 2:
+        # ``visible: false`` alone hides the title; a companion ``text: ""``
+        # names nothing and Kibana does not store it (see _api_axis_title).
+        return _with_y_title({"title": {"visible": False}})
+    return axis
 
 
 def _xy_single_metric_uses_placeholder_name(cfg: dict[str, Any], metric: Any) -> bool:
@@ -943,9 +942,7 @@ def _xy_single_metric_uses_placeholder_name(cfg: dict[str, Any], metric: Any) ->
     """
     if not isinstance(metric, dict):
         return False
-    breakdown = cfg.get("breakdown")
-    breakdowns = cfg.get("breakdowns")
-    if not breakdown and not breakdowns:
+    if not _xy_config_has_breakdown(cfg):
         return False
     field_name = str(metric.get("field") or metric.get("column") or "").strip()
     return field_name in {"value", "computed_value"}

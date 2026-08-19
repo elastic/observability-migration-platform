@@ -13,6 +13,7 @@ from observability_migration.adapters.source.grafana.curated_packs import (
 )
 from observability_migration.adapters.source.grafana.panels import (
     _apply_panel_layout_overrides_recursively,
+    _label_placeholder_value_metric,
     _materialize_curated_query_override,
     _omit_absent_optional_metrics_from_curated_query,
     _panel_static_legend_label,
@@ -554,6 +555,25 @@ def test_panel_static_legend_label_rejects_mixed_static_and_dynamic_legends():
     }
 
     assert _panel_static_legend_label(panel) == ""
+
+
+def test_placeholder_label_falls_back_to_title_when_visible_legends_disagree():
+    """Fused series cannot pick one target's legend when visible legends differ."""
+    yaml_panel = {"esql": {"metrics": [{"field": "value"}]}}
+    _label_placeholder_value_metric(
+        yaml_panel,
+        title="Network Traffic Basic",
+        legend_format=_panel_static_legend_label(
+            {
+                "targets": [
+                    {"legendFormat": "recv {{device}}"},
+                    {"legendFormat": "trans {{device}}"},
+                ]
+            }
+        ),
+    )
+
+    assert yaml_panel["esql"]["metrics"][0]["label"] == "Network Traffic Basic"
 
 
 def test_find_14091_by_gnet_id():

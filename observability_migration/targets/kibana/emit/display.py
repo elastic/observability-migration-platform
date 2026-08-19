@@ -13,6 +13,11 @@ from typing import Any
 
 _OPAQUE_AXIS_TITLE_ALIASES = {
     "aqu-sz",
+    # Community dashboards often copy Grafana's percent unit id into axisLabel.
+    # "%"/inferred unit titles are better; "counter" is left alone because
+    # hiding it lets Lens name the whole axis after the first series.
+    "percentage",
+    "percent",
 }
 
 GRAFANA_UNIT_TO_YAML: dict[str, dict[str, Any]] = {
@@ -224,7 +229,7 @@ def sanitize_axis_title_text(label: str, *, unit: str = "") -> str:
     text = str(label or "").strip()
     if not text:
         return ""
-    if text in _OPAQUE_AXIS_TITLE_ALIASES:
+    if text.casefold() in _OPAQUE_AXIS_TITLE_ALIASES:
         return ""
     return text
 

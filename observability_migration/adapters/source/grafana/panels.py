@@ -4419,7 +4419,12 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         metric_labels=metric_labels or None,
     )
     _label_placeholder_value_metric(
-        yaml_panel, title=title, legend_format=static_legend_label or ""
+        yaml_panel,
+        title=title,
+        # Same rule as curated overrides: only an unambiguous static legend
+        # shared by every visible target is safe on a fused series. Mixed
+        # legends fall back to the panel title rather than the primary target.
+        legend_format=_panel_static_legend_label(panel) or static_legend_label or "",
     )
     _apply_series_override_axes(yaml_panel, panel, primary.warnings)
     if yaml_panel.get("esql", {}).get("query"):

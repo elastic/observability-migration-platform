@@ -13077,6 +13077,17 @@ class TestDisplayMetadata(unittest.TestCase):
         }
         self.assertIsNone(extract_axis_config(panel))
 
+    def test_extract_axis_label_suppresses_grafana_unit_id_aliases(self):
+        from observability_migration.targets.kibana.emit.display import extract_axis_config
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"axisLabel": "percentage"},
+                }
+            }
+        }
+        self.assertIsNone(extract_axis_config(panel))
+
     def test_extract_axis_log_scale_modern(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         panel = {"fieldConfig": {"defaults": {"custom": {"scaleDistribution": {"type": "log"}}}}}
