@@ -88,7 +88,7 @@ panel:
     - title_match: "Memory Usage"
       esql_query: |
         TS metrics-*
-        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_memory_used_bytes:gauge}} IS NOT NULL OR {{metric:redis_memory_max_bytes:gauge}} IS NOT NULL
         | STATS used = AVG(LAST_OVER_TIME({{metric:redis_memory_used_bytes:gauge}})), max = AVG(LAST_OVER_TIME({{metric:redis_memory_max_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL value = (used / max) * 100.0
@@ -104,7 +104,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_net_input_bytes_total:counter}} IS NOT NULL OR {{metric:redis_net_output_bytes_total:counter}} IS NOT NULL
         | STATS input = SUM(RATE({{metric:redis_net_input_bytes_total:counter}})), output = SUM(RATE({{metric:redis_net_output_bytes_total:counter}})) BY time_bucket = TBUCKET(2 minute)
         | KEEP time_bucket, input, output
@@ -114,7 +114,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_keyspace_hits_total:counter}} IS NOT NULL OR {{metric:redis_keyspace_misses_total:counter}} IS NOT NULL
         | STATS hits = AVG(IRATE({{metric:redis_keyspace_hits_total:counter}})), misses = AVG(IRATE({{metric:redis_keyspace_misses_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.instance
         | KEEP time_bucket, `labels.instance`, hits, misses
@@ -124,7 +124,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL OR {{metric:redis_commands_total:counter}} IS NOT NULL
         | STATS dur = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})), cnt = SUM(IRATE({{metric:redis_commands_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
         | EVAL computed_value = (dur / cnt)
@@ -135,7 +135,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (MV_CONTAINS(?instance, ".*") OR MV_CONTAINS(?instance, {{control:instance}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL
         | STATS redis_commands_duration_seconds_total = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
         | KEEP time_bucket, `labels.cmd`, redis_commands_duration_seconds_total

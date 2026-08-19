@@ -8684,8 +8684,10 @@ def _query_param_names(query):
 
 _ESQL_FIELD_CONTROL_RE = re.compile(r"\?\?(?P<name>[A-Za-z][A-Za-z0-9_]*)")
 _ESQL_VALUE_PARAM_FIELD_PATTERNS = (
+    # ``?var`` may be wrapped in ``TO_STRING(...)`` (issue #353's multi-select
+    # guardrail type-fix); match with or without that wrapper.
     lambda name: re.compile(
-        rf"MV_CONTAINS\(\s*\?{re.escape(name)}\s*,\s*(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_.]*)\s*\)"
+        rf"MV_CONTAINS\(\s*(?:TO_STRING\(\s*)?\?{re.escape(name)}\s*\)?\s*,\s*(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_.]*)\s*\)"
     ),
     lambda name: re.compile(
         rf"(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_.]*)\s+(?:RLIKE|LIKE|==|!=|>=|<=|>|<)\s+\?{re.escape(name)}\b"
@@ -9179,6 +9181,115 @@ L4_REPEAT_EXPANSION_CAP = 8
 
 
 _VARIABLE_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _variable_names_referenced_in_panels(panels) -> set[str]:
+    """Grafana variable names referenced by any panel target's raw PromQL.
+
+    Scans ``$var`` / ``${var}`` / ``${var:fmt}`` tokens in each target's
+    ``expr`` *before* any translation-time rewrite, so it reflects what the
+    source dashboard actually used the variable for -- independent of
+    whether the migrated query still carries an equivalent reference. Used
+    by :func:`_disclose_dropped_referenced_variables` (issue #356) to tell a
+    variable that is genuinely unused from one whose loss changes query
+    behavior.
+    """
+    names: set[str] = set()
+    for panel in panels or []:
+        if not isinstance(panel, dict):
+            continue
+        targets = panel.get("targets")
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            expr = target.get("expr")
+            if not isinstance(expr, str) or not expr:
+                continue
+            for match in _VARIABLE_REFERENCE_RE.finditer(expr):
+                name = match.group(1) or match.group(2)
+                if name:
+                    names.add(name)
+    return names
+
+
+def _disclose_dropped_referenced_variables(variables, controls, panels, control_warnings):
+    """Warn when a variable referenced by panel queries never became a
+    control (issue #356).
+
+    ``interval`` variables are the sharpest case: Grafana's own docs and this
+    codebase's ``interval_variable_rule`` frame them as "handled by Kibana's
+    time picker", but a variable used as a rate/range-vector window
+    (``rate(x[$RateInterval])``) has nothing to do with the displayed time
+    range. Dropping it does not just remove a dropdown -- it silently hands
+    control of the rate window to a translator-chosen substitute: ES|QL
+    panels use the TBUCKET bucket-width heuristic, and native PROMQL panels
+    typically inline a fixed range (e.g. ``[5m]``). Neither tracks the
+    Grafana value (AGENTS.md: degrade gracefully, do not hide a semantic
+    gap).
+
+    Generalised to any Grafana variable type that ends up with no bound
+    control, since the same silent loss applies to any of them -- e.g. a
+    ``query`` variable hidden with ``hide: 2`` skips straight past
+    ``query_variable_rule`` with no control and no warning today. Must run
+    after every control-synthesis pass (``_ensure_param_controls``,
+    late-bound group controls, ``?var`` retargeting) so a variable that one
+    of those passes did bind is correctly excluded. Also skips a variable
+    that some earlier pass already named in a ``control_warnings`` entry
+    (for example ``query_variable_rule``'s "could not resolve source field"
+    or ``textbox_variable_rule``'s "no direct Kibana control equivalent") --
+    that is already disclosed, just in more specific language, and a second
+    generic entry would only add noise.
+    """
+    if control_warnings is None:
+        return
+    # A control's owning variable name is ``variable_name`` for ES|QL
+    # parameter-binding controls, but a classic (non-ESQL) options/range
+    # control -- built directly from ``context.control`` in
+    # ``query_variable_rule`` and friends -- never sets that key; it only
+    # gets ``_CONTROL_SOURCE_VARIABLE_NAME`` attached afterwards in
+    # ``translate_variables``. Checking only ``variable_name`` here would
+    # falsely flag every variable that resolved to a working classic control
+    # as "dropped". Mirrors ``_covered_control_variable_refs``'s lookup.
+    bound_names = {
+        name
+        for control in controls or []
+        if isinstance(control, dict)
+        for name in (
+            control.get("variable_name"),
+            control.get(_CONTROL_SOURCE_VARIABLE_NAME),
+        )
+        if name
+    }
+    referenced = _variable_names_referenced_in_panels(panels)
+    for variable in variables or []:
+        if not isinstance(variable, dict):
+            continue
+        name = variable.get("name")
+        if not name or name in bound_names or name not in referenced:
+            continue
+        if any(f"'{name}'" in warning for warning in control_warnings):
+            continue
+        var_type = variable.get("type") or "unknown"
+        if var_type == "interval":
+            control_warnings.append(
+                f"variable '{name}' (type 'interval') is used by panel queries as a "
+                f"rate/range window (e.g. '[${name}]') but was dropped during migration "
+                "-- no Kibana control was emitted, and Kibana's time picker only "
+                "controls the displayed range, not this window. The migrated query no "
+                "longer uses the Grafana interval: ES|QL panels pick a TBUCKET "
+                "bucket-width, and native PROMQL panels typically inline a fixed range "
+                "(e.g. [5m]), either of which can be narrower or wider than the source "
+                "value"
+            )
+        else:
+            control_warnings.append(
+                f"variable '{name}' (type '{var_type}') is referenced by panel queries "
+                "but was dropped during migration -- no Kibana control or query "
+                "parameter was emitted for it, so it no longer has any effect on "
+                "query behavior"
+            )
 
 
 def _resolve_variable_values(variable: dict) -> tuple[list[str], str]:
@@ -10748,6 +10859,9 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         control_warnings=result.control_warnings,
     )
     controls = _retarget_esql_param_controls_to_panel_bindings(controls, flat_panels)
+    _disclose_dropped_referenced_variables(
+        variables, controls, all_panels, result.control_warnings
+    )
     rewritten_panel_results = _rewrite_variable_warnings(
         result.panel_results,
         _covered_control_variable_refs(controls),

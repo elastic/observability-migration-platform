@@ -8,6 +8,7 @@ from __future__ import annotations
 import unittest
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
+from observability_migration.adapters.source.grafana.promql import _mv_contains_filter
 from observability_migration.adapters.source.grafana.runtime_features import (
     KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_LABEL_MATCHER_PARAMS,
@@ -402,6 +403,28 @@ class TestNativePromqlAdaptiveSelectorMustCarryTiming(unittest.TestCase):
         )
 
 
+class TestMvContainsFilterTypeSafety(unittest.TestCase):
+    """Direct unit tests for ``_mv_contains_filter`` (issue #353)."""
+
+    def test_wraps_param_in_to_string(self):
+        expr = _mv_contains_filter("labels.cpu", "cpu")
+        self.assertEqual(
+            expr,
+            '(MV_CONTAINS(TO_STRING(?cpu), ".*") OR MV_CONTAINS(TO_STRING(?cpu), labels.cpu))',
+        )
+
+    def test_negated_still_wraps_param(self):
+        expr = _mv_contains_filter("labels.cpu", "cpu", negate=True)
+        self.assertTrue(expr.startswith("NOT ("))
+        self.assertIn("MV_CONTAINS(TO_STRING(?cpu)", expr)
+
+    def test_allow_empty_match_all_still_wraps_param(self):
+        expr = _mv_contains_filter("labels.cpu", "cpu", allow_empty_match_all=True)
+        self.assertIn("MV_COUNT(?cpu) == 0", expr)
+        self.assertIn('MV_CONTAINS(TO_STRING(?cpu), ".*")', expr)
+        self.assertIn("MV_CONTAINS(TO_STRING(?cpu), labels.cpu)", expr)
+
+
 class TestMultiSelectControlsUseMvContains(unittest.TestCase):
     """A Grafana multi-select variable must stay multi-select in Kibana.
 
@@ -411,7 +434,13 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
     The ``.*`` sentinel preserves Grafana's All option, because the control
     query already offers ``.*`` via MV_APPEND:
 
-        WHERE MV_CONTAINS(?v, ".*") OR MV_CONTAINS(?v, field)
+        WHERE MV_CONTAINS(TO_STRING(?v), ".*") OR MV_CONTAINS(TO_STRING(?v), field)
+
+    ``?v`` is wrapped in ``TO_STRING(...)`` (issue #353) so the comparison
+    still type-checks when Kibana infers the bound control values as an
+    integer array instead of a keyword array (e.g. numeric label values like
+    CPU/core indices). Wrapping is unconditional: ``TO_STRING`` on an
+    already-keyword parameter (``["0", "1"]``) is a no-op.
 
         [".*"]                -> every series (All)
         ["a"]                 -> just a
@@ -464,8 +493,11 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
         doc = self._translate(multi=True)
         query = doc["panels"][0]["esql"]["query"]
         self.assertIn("MV_COUNT(?instance) == 0", query)
-        self.assertIn("MV_CONTAINS(?instance", query)
-        self.assertIn('MV_CONTAINS(?instance, ".*")', query)
+        # issue #353: ?param is wrapped in TO_STRING(...) so MV_CONTAINS
+        # type-checks regardless of whether Kibana infers the bound control
+        # parameter as an integer or a keyword array.
+        self.assertIn("MV_CONTAINS(TO_STRING(?instance)", query)
+        self.assertIn('MV_CONTAINS(TO_STRING(?instance), ".*")', query)
         self.assertNotIn("RLIKE ?instance", query)
 
     def test_multi_select_control_is_not_single_select(self):
@@ -481,3 +513,53 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
         self.assertNotIn("MV_CONTAINS", query)
         control = next(c for c in doc["controls"] if c.get("variable_name") == "instance")
         self.assertFalse(control.get("multiple"))
+
+    def test_numeric_looking_variable_values_still_use_to_string_guard(self):
+        """Issue #353: a variable whose label values are numeric (e.g. CPU/core
+        indices from ``label_values(node_cpu_seconds_total, cpu)``) must still
+        emit a guard that type-checks once Kibana binds ``?var`` as an integer
+        array. The fix is unconditional (always wraps in ``TO_STRING``), so
+        this locks in the emitted shape for the exact numeric-values repro
+        from the issue rather than relying only on the generic multi-select
+        case above.
+        """
+        dashboard = {
+            "title": "numeric multi-select repro",
+            "uid": "ms-numeric-repro",
+            "panels": [{
+                "id": 1, "type": "timeseries", "title": "IO Wait per core",
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+                "datasource": {"type": "prometheus", "uid": "p"},
+                "targets": [{"expr": 'sum(up{cpu=~"$cpu"})', "refId": "A"}],
+            }],
+            "templating": {"list": [{
+                "name": "cpu", "type": "query", "multi": True,
+                "includeAll": True,
+                "definition": "label_values(node_cpu_seconds_total, cpu)",
+                "current": {"text": "0,1", "value": ["0", "1"]},
+                "options": [
+                    {"text": "0", "value": "0"},
+                    {"text": "1", "value": "1"},
+                ],
+            }]},
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig()
+        set_runtime_feature(
+            rule_pack, ESQL_NAMED_PARAM_BINDING,
+            supported=True, source="test", confidence="assumed",
+        )
+        resolver = schema.SchemaResolver(rule_pack)
+        result = panels.translate_dashboard(
+            dashboard, datasource_index="metrics-*",
+            esql_index="metrics-*", rule_pack=rule_pack, resolver=resolver,
+        )
+        doc = result.dashboard_ir.to_yaml_dict()
+        query = doc["panels"][0]["esql"]["query"]
+        self.assertIn('MV_CONTAINS(TO_STRING(?cpu), ".*")', query)
+        self.assertIn("MV_CONTAINS(TO_STRING(?cpu), ", query)
+        self.assertNotIn("MV_CONTAINS(?cpu", query)
