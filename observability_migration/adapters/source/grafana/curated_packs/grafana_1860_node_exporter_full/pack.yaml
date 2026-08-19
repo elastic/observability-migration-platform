@@ -64,6 +64,11 @@ query:
     - node_netstat_TcpExt_TCPRcvQDrop
     - node_netstat_Tcp_MaxConn
     - node_interrupts_total
+    # PSI irq and CPU guest are real source series on newer 1860 revisions, but
+    # referencing them when field-caps prove them absent makes Elasticsearch
+    # reject the whole Pressure / CPU panel (unknown column).
+    - node_pressure_irq_stalled_seconds_total
+    - node_cpu_guest_seconds_total
 
   label_candidates:
     instance:
@@ -98,7 +103,7 @@ panel:
         | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 85
       status_override: migrated
     - title_match: "Pressure"
-      # Compact first-row summary: unpivot the three PSI rates to
+      # Compact first-row summary: unpivot the four PSI rates to
       # label/gauge_value rows and render as Lens metric tiles stacked in
       # one column (panel is only w=6). Use TBUCKET(20) so short windows
       # (15m) still have enough samples per bucket for IRATE.
@@ -109,14 +114,14 @@ panel:
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
-        | WHERE {{metric:node_pressure_cpu_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_memory_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_io_waiting_seconds_total:counter}} IS NOT NULL
-        | STATS CPU = MAX(IRATE({{metric:node_pressure_cpu_waiting_seconds_total:counter}})), Mem = MAX(IRATE({{metric:node_pressure_memory_waiting_seconds_total:counter}})), IO = MAX(IRATE({{metric:node_pressure_io_waiting_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
-        | WHERE CPU IS NOT NULL OR Mem IS NOT NULL OR IO IS NOT NULL
+        | WHERE {{metric:node_pressure_cpu_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_memory_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_io_waiting_seconds_total:counter}} IS NOT NULL OR {{metric:node_pressure_irq_stalled_seconds_total:counter}} IS NOT NULL
+        | STATS CPU = MAX(IRATE({{metric:node_pressure_cpu_waiting_seconds_total:counter}})), Mem = MAX(IRATE({{metric:node_pressure_memory_waiting_seconds_total:counter}})), IO = MAX(IRATE({{metric:node_pressure_io_waiting_seconds_total:counter}})), Irq = MAX(IRATE({{metric:node_pressure_irq_stalled_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | WHERE CPU IS NOT NULL OR Mem IS NOT NULL OR IO IS NOT NULL OR Irq IS NOT NULL
         | SORT time_bucket DESC
         | LIMIT 2
         | SORT time_bucket ASC
         | LIMIT 1
-        | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "I/O"), "Mem"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(IO), "")), COALESCE(TO_STRING(Mem), ""))
+        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("CPU", "I/O"), "Mem"), "Irq"), __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(IO), "")), COALESCE(TO_STRING(Mem), "")), COALESCE(TO_STRING(Irq), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
         | EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), gauge_value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t"))) * 100
@@ -232,19 +237,22 @@ panel:
     - title_match: "CPU"
       # TBUCKET(20) keeps ~45s buckets on a 15m range so IRATE has enough
       # samples; TBUCKET(100) (~9s) gaps the newest points and is heavy.
+      # node_cpu_guest_seconds_total is a distinct exporter metric (not a
+      # `mode` value of node_cpu_seconds_total), so it needs its own OR arm
+      # in both the presence WHERE and the per-cpu rhs CASE guard.
       esql_query: |
         TS metrics-*
         | WHERE (?node == "" OR ({{label:instance}} RLIKE ?node OR ({{label:instance}} IS NULL AND "" RLIKE ?node)))
         | WHERE (?job == "" OR ({{label:job}} RLIKE ?job OR ({{label:job}} IS NULL AND "" RLIKE ?job)))
-        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS system_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == "nice"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == "irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == "softirq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == "steal"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
-        | EVAL System = (system_lhs / system_rhs), User = (user_lhs / user_rhs), Nice = (nice_lhs / nice_rhs), Iowait = (iowait_lhs / iowait_rhs), Irq = (irq_lhs / irq_rhs), Softirq = (softirq_lhs / softirq_rhs), Steal = (steal_lhs / steal_rhs), Idle = (idle_lhs / idle_rhs)
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL OR {{metric:node_cpu_guest_seconds_total:counter}} IS NOT NULL
+        | STATS system_lhs = SUM(CASE((labels.mode == "system"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), system_rhs = COUNT_DISTINCT(labels.cpu), user_lhs = SUM(CASE((labels.mode == "user"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), user_rhs = COUNT_DISTINCT(labels.cpu), nice_lhs = SUM(CASE((labels.mode == "nice"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), nice_rhs = COUNT_DISTINCT(labels.cpu), iowait_lhs = SUM(CASE((labels.mode == "iowait"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), iowait_rhs = COUNT_DISTINCT(labels.cpu), irq_lhs = SUM(CASE((labels.mode == "irq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), irq_rhs = COUNT_DISTINCT(labels.cpu), softirq_lhs = SUM(CASE((labels.mode == "softirq"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), softirq_rhs = COUNT_DISTINCT(labels.cpu), steal_lhs = SUM(CASE((labels.mode == "steal"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), steal_rhs = COUNT_DISTINCT(labels.cpu), idle_lhs = SUM(CASE((labels.mode == "idle"), IRATE({{metric:node_cpu_seconds_total:counter}}), NULL)), idle_rhs = COUNT_DISTINCT(labels.cpu), guest_lhs = SUM(CASE(true, IRATE({{metric:node_cpu_guest_seconds_total:counter}}), NULL)), guest_rhs = COUNT_DISTINCT(CASE({{metric:node_cpu_guest_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL System = (system_lhs / system_rhs), User = (user_lhs / user_rhs), Nice = (nice_lhs / nice_rhs), Iowait = (iowait_lhs / iowait_rhs), Irq = (irq_lhs / irq_rhs), Softirq = (softirq_lhs / softirq_rhs), Steal = (steal_lhs / steal_rhs), Idle = (idle_lhs / idle_rhs), Guest = (guest_lhs / guest_rhs)
         | EVAL __labels_ab = MV_APPEND("System - Processes executing in kernel mode", "User - Normal processes executing in user mode"), __labels_cd = MV_APPEND("Nice - Niced processes executing in user mode", "Iowait - Waiting for I/O to complete")
         | EVAL __labels_ef = MV_APPEND("Irq - Servicing interrupts", "Softirq - Servicing softirqs"), __labels_gh = MV_APPEND("Steal - Time spent in other operating systems when running in a virtualized environment", "Idle - Waiting for something to happen")
-        | EVAL __labels = MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND(__labels_ef, __labels_gh))
+        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND(__labels_ab, __labels_cd), MV_APPEND(__labels_ef, __labels_gh)), "Guest - CPU time spent running a virtual CPU for guest operating systems under the control of the Linux kernel")
         | EVAL __values_ab = MV_APPEND(COALESCE(TO_STRING(System), ""), COALESCE(TO_STRING(User), "")), __values_cd = MV_APPEND(COALESCE(TO_STRING(Nice), ""), COALESCE(TO_STRING(Iowait), ""))
         | EVAL __values_ef = MV_APPEND(COALESCE(TO_STRING(Irq), ""), COALESCE(TO_STRING(Softirq), "")), __values_gh = MV_APPEND(COALESCE(TO_STRING(Steal), ""), COALESCE(TO_STRING(Idle), ""))
-        | EVAL __values = MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(__values_ef, __values_gh))
+        | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(__values_ab, __values_cd), MV_APPEND(__values_ef, __values_gh)), COALESCE(TO_STRING(Guest), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL series_group = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))

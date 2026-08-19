@@ -73,6 +73,16 @@ class CrossIndexXyLayerTests(unittest.TestCase):
             any("distinct data streams" in str(reason) for reason in (result.reasons or [])),
             result.reasons,
         )
+        # Regression guard (issue #352's dropped-metric detector): both
+        # targets' metrics genuinely survive, just split across two Lens
+        # layers with two separate ES|QL queries. The detector must check
+        # every layer's query, not only the first -- otherwise whichever
+        # metric lands in the second layer looks "dropped" even though it's
+        # right there in ``esql.layers``.
+        self.assertFalse(
+            any("Dropped from migrated query" in str(reason) for reason in (result.reasons or [])),
+            result.reasons,
+        )
         esql = yaml_panel.get("esql") or {}
         self.assertEqual(esql.get("type"), "line")
         layers = esql.get("layers") or []
