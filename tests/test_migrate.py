@@ -13138,11 +13138,17 @@ class TestDisplayMetadata(unittest.TestCase):
 
     def test_extract_xy_appearance_omits_line_area_style_for_bar(self):
         from observability_migration.targets.kibana.emit.display import extract_xy_appearance
+        # NOTE: "percentage" is deliberately NOT used here -- it is a reserved
+        # opaque Grafana-unit-id alias (see _OPAQUE_AXIS_TITLE_ALIASES /
+        # test_extract_axis_label_suppresses_grafana_unit_id_aliases) whose
+        # title is intentionally suppressed. This test's own purpose is
+        # unrelated: it only checks that bar charts keep axis config while
+        # dropping line/area-only appearance keys, so use ordinary label text.
         panel = {
             "fieldConfig": {
                 "defaults": {
                     "custom": {
-                        "axisLabel": "percentage",
+                        "axisLabel": "CPU usage",
                         "drawStyle": "bars",
                         "lineInterpolation": "smooth",
                         "fillOpacity": 70,
@@ -13151,7 +13157,7 @@ class TestDisplayMetadata(unittest.TestCase):
             }
         }
         appearance = extract_xy_appearance(panel, chart_type="bar")
-        self.assertEqual(appearance["y_left_axis"]["title"], "percentage")
+        self.assertEqual(appearance["y_left_axis"]["title"], "CPU usage")
         self.assertNotIn("line_style", appearance)
         self.assertNotIn("fill_opacity", appearance)
         area_appearance = extract_xy_appearance(panel, chart_type="area")
