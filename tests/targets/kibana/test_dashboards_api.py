@@ -542,6 +542,206 @@ def test_xy_hidden_y_axis_title_for_single_breakdown_value_metric():
     assert cfg["axis"]["y"]["title"] == {"visible": False}
 
 
+def test_xy_shows_y_axis_title_for_labeled_breakdown_value_metric():
+    """A labeled ``value`` composite metric (issue #351) names the axis instead of hiding it.
+
+    The translator sets ``label`` on a placeholder ``value``/``computed_value``
+    column as a fallback (panel title or static legend) when it fuses multiple
+    targets into one composite series. That label is a real title, unlike the
+    raw column name, so it should surface as the axis title text.
+    """
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [
+            {"field": "value", "label": "Disk Space Used Basic", "format": {"type": "number", "suffix": "%"}}
+        ],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"text": "Disk Space Used Basic", "visible": True}
+
+
+def test_xy_inferred_unit_title_wins_over_placeholder_label():
+    """A uniform unit title is a better axis name than repeating the panel title.
+
+    Issue #351 asked for the Grafana axis title *or unit*. Composite CPU panels
+    already format ticks as percent; stamping the panel name on the axis just
+    duplicates the chrome.
+    """
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [
+            {
+                "field": "computed_value",
+                "label": "CPU Idle Percentage",
+                "format": {"type": "percent"},
+            }
+        ],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"text": "%", "visible": True}
+
+
+def test_xy_placeholder_label_used_when_no_unit_title_can_be_inferred():
+    """``number`` + suffix is not a unit type, so the placeholder label names the axis."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [
+            {
+                "field": "value",
+                "label": "Network Traffic Basic",
+                "format": {"type": "bits", "suffix": "/s"},
+            }
+        ],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {
+        "text": "Network Traffic Basic",
+        "visible": True,
+    }
+
+
+def test_xy_placeholder_label_does_not_override_explicit_axis_title():
+    """An operator-authored Grafana axis title keeps highest precedence."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [
+            {
+                "field": "computed_value",
+                "label": "CPU Idle Percentage",
+                "format": {"type": "percent"},
+            }
+        ],
+        "appearance": {"y_left_axis": {"title": "Operator CPU Axis"}},
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {
+        "text": "Operator CPU Axis",
+        "visible": True,
+    }
+
+
+def test_xy_placeholder_label_does_not_title_multi_metric_axis():
+    """The issue #351 fallback is limited to one left-axis metric."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [
+            {"field": "value", "label": "Composite Value"},
+            {"field": "latency", "label": "Latency"},
+        ],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"visible": False}
+
+
+def test_xy_placeholder_label_does_not_title_non_placeholder_metric():
+    """A normal metric label remains Lens metric metadata, not an axis override."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [{"field": "requests", "label": "Request Rate"}],
+    })["config"]
+    assert "y" not in cfg["axis"]
+
+
+def test_xy_right_axis_placeholder_does_not_title_left_axis():
+    """The supported ``y2`` alias must not enter left-axis title inference."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "instance"},
+        "metrics": [
+            {
+                "field": "value",
+                "label": "Right-side Composite",
+                "format": {"type": "percent"},
+                "axis": "y2",
+            }
+        ],
+    })["config"]
+    assert "y" not in cfg["axis"]
+
+
+def test_xy_placeholder_label_reads_layer_metrics():
+    """Cross-data-stream XY keeps metrics and breakdowns on layers."""
+    axis = api._xy_axis_from_cfg({
+        "type": "line",
+        "layers": [
+            {
+                "breakdown": {"field": "series_group"},
+                "metrics": [
+                    {
+                        "field": "value",
+                        "label": "Disk Space Used Basic",
+                        "format": {"type": "number", "suffix": "%"},
+                    }
+                ],
+            }
+        ],
+    })
+    assert axis is not None
+    assert axis["y"]["title"] == {"text": "Disk Space Used Basic", "visible": True}
+
+
+def test_xy_inferred_unit_title_reads_layer_metrics():
+    axis = api._xy_axis_from_cfg({
+        "type": "line",
+        "breakdown": {"field": "series_group"},
+        "layers": [
+            {
+                "metrics": [
+                    {
+                        "field": "value",
+                        "label": "CPU Basic",
+                        "format": {"type": "percent"},
+                    }
+                ]
+            }
+        ],
+    })
+    assert axis is not None
+    assert axis["y"]["title"] == {"text": "%", "visible": True}
+
+
+def test_xy_opaque_grafana_percentage_label_yields_inferred_unit_title():
+    """Grafana ``axisLabel: percentage`` is an opaque unit id, not a real title."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "series_group"},
+        "metrics": [
+            {"field": "value", "label": "CPU", "format": {"type": "percent"}}
+        ],
+        "appearance": {"y_left_axis": {"title": "percentage"}},
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"text": "%", "visible": True}
+
+
+def test_xy_hidden_y_axis_title_for_breakdown_computed_value_metric():
+    """``computed_value`` (the general ES|QL translator's placeholder) is covered too."""
+    cfg = _map({
+        "type": "line",
+        "query": "FROM metrics-*",
+        "dimension": {"field": "time_bucket"},
+        "breakdown": {"field": "mountpoint"},
+        "metrics": [{"field": "computed_value", "format": {"type": "number", "suffix": "%"}}],
+    })["config"]
+    assert cfg["axis"]["y"]["title"] == {"visible": False}
+
+
 def test_api_axis_title_drops_empty_text():
     assert api._api_axis_title({"text": "", "visible": False}) == {"visible": False}
     assert api._api_axis_title({"text": ""}) is None
@@ -553,6 +753,11 @@ def test_api_axis_title_suppresses_opaque_shorthand_text():
         "visible": True,
     }
     assert api._yaml_axis_title("aqu-sz") is None
+    assert api._yaml_axis_title("percentage") is None
+    assert api._yaml_axis_title("counter") == {
+        "text": "counter",
+        "visible": True,
+    }
 
 
 def test_api_axis_title_keeps_legitimate_kebab_and_snake_text():

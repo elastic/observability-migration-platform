@@ -12188,6 +12188,28 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.reasons,
         )
 
+    def test_computed_value_breakdown_panel_falls_back_to_panel_title_label(self):
+        """A scalar-expression panel (``computed_value``) with a breakdown must
+        get a real y-axis label instead of leaking the synthetic column name
+        (issue #351). With no legendFormat, the panel title is the fallback,
+        mirroring the single-target native-PROMQL path's existing behavior."""
+        panel = {
+            "id": 1,
+            "title": "CPU Idle Percentage",
+            "type": "timeseries",
+            "gridPos": {"w": 24, "h": 8, "x": 0, "y": 0},
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": '100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+                }
+            ],
+        }
+        yaml_panel, _result = self.translate_panel(panel)
+        esql = yaml_panel["esql"]
+        self.assertEqual([m.get("field") for m in esql["metrics"]], ["computed_value"])
+        self.assertEqual(esql["metrics"][0].get("label"), "CPU Idle Percentage")
+
     def test_xy_job_scope_prefers_instance_breakdown_without_composite_warning(self):
         warnings = []
         panel = panels._build_esql_xy_panel(
@@ -13055,6 +13077,17 @@ class TestDisplayMetadata(unittest.TestCase):
         }
         self.assertIsNone(extract_axis_config(panel))
 
+    def test_extract_axis_label_suppresses_grafana_unit_id_aliases(self):
+        from observability_migration.targets.kibana.emit.display import extract_axis_config
+        panel = {
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"axisLabel": "percentage"},
+                }
+            }
+        }
+        self.assertIsNone(extract_axis_config(panel))
+
     def test_extract_axis_log_scale_modern(self):
         from observability_migration.targets.kibana.emit.display import extract_axis_config
         panel = {"fieldConfig": {"defaults": {"custom": {"scaleDistribution": {"type": "log"}}}}}
@@ -13203,6 +13236,17 @@ class TestDisplayMetadata(unittest.TestCase):
     def test_humanize_metric_label_simple_word(self):
         from observability_migration.targets.kibana.emit.display import humanize_metric_label
         self.assertIsNone(humanize_metric_label("active"))
+
+    def test_humanize_metric_label_excludes_computed_value_placeholder(self):
+        """``computed_value`` is a synthetic scalar-expression column name, the
+        general ES|QL translator's counterpart to native PROMQL's ``value``
+        (both listed as placeholders in
+        ``dashboards_api._xy_single_metric_uses_placeholder_name``). Humanizing
+        it into "Computed Value" would leak the same misleading placeholder
+        title issue #351 covers, just re-capitalized rather than literal."""
+        from observability_migration.targets.kibana.emit.display import humanize_metric_label
+        self.assertIsNone(humanize_metric_label("computed_value"))
+        self.assertIsNone(humanize_metric_label("value"))
 
     def test_humanize_metric_label_empty(self):
         from observability_migration.targets.kibana.emit.display import humanize_metric_label
