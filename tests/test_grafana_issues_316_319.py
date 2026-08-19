@@ -439,7 +439,8 @@ class TestMultiSelectControlsUseMvContains(unittest.TestCase):
     ``?v`` is wrapped in ``TO_STRING(...)`` (issue #353) so the comparison
     still type-checks when Kibana infers the bound control values as an
     integer array instead of a keyword array (e.g. numeric label values like
-    CPU/core indices).
+    CPU/core indices). Wrapping is unconditional: ``TO_STRING`` on an
+    already-keyword parameter (``["0", "1"]``) is a no-op.
 
         [".*"]                -> every series (All)
         ["a"]                 -> just a

@@ -8970,9 +8970,11 @@ def _disclose_dropped_referenced_variables(variables, controls, panels, control_
     time picker", but a variable used as a rate/range-vector window
     (``rate(x[$RateInterval])``) has nothing to do with the displayed time
     range. Dropping it does not just remove a dropdown -- it silently hands
-    control of the rate window to the migrated query's bucket-width
-    heuristic, which is not equivalent (AGENTS.md: degrade gracefully, do
-    not hide a semantic gap).
+    control of the rate window to a translator-chosen substitute: ES|QL
+    panels use the TBUCKET bucket-width heuristic, and native PROMQL panels
+    typically inline a fixed range (e.g. ``[5m]``). Neither tracks the
+    Grafana value (AGENTS.md: degrade gracefully, do not hide a semantic
+    gap).
 
     Generalised to any Grafana variable type that ends up with no bound
     control, since the same silent loss applies to any of them -- e.g. a
@@ -9022,9 +9024,11 @@ def _disclose_dropped_referenced_variables(variables, controls, panels, control_
                 f"variable '{name}' (type 'interval') is used by panel queries as a "
                 f"rate/range window (e.g. '[${name}]') but was dropped during migration "
                 "-- no Kibana control was emitted, and Kibana's time picker only "
-                "controls the displayed range, not this window. The migrated query's "
-                "bucket-width heuristic now implicitly determines the window instead, "
-                "which can be narrower or wider than the Grafana original"
+                "controls the displayed range, not this window. The migrated query no "
+                "longer uses the Grafana interval: ES|QL panels pick a TBUCKET "
+                "bucket-width, and native PROMQL panels typically inline a fixed range "
+                "(e.g. [5m]), either of which can be narrower or wider than the source "
+                "value"
             )
         else:
             control_warnings.append(

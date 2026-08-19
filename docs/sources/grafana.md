@@ -467,25 +467,30 @@ has nothing to do with the time picker — Grafana keeps the rate window fixed
 at, e.g., `1m` regardless of the displayed range so the line stays smooth. A
 duration variable used this way, or any other variable type that ends up with
 no control *and* no `?var` binding, is not equivalent to "handled by the time
-picker" — it silently hands control of the window to whatever the migrated
-query's `TBUCKET` heuristic picks, which does not track the source value and
-can differ from it in either direction.
+picker" — it silently hands control of the window to a translator-chosen
+substitute. ES|QL panels pick a `TBUCKET` bucket-width; native PROMQL panels
+typically inline a fixed range (dashboard 9852's disk panels become
+`rate(...[5m])` even when Grafana's current `RateInterval` was `1m`). Neither
+tracks the source value, and either can differ from it in either direction.
 
 `translate_dashboard` therefore runs one disclosure pass after every control
 has been synthesized (variable translation, `_ensure_param_controls`,
 late-bound group controls, `?var` retargeting): for every templating-list
-variable whose name never ended up as a control's `variable_name`, it checks
-whether any panel's *original* PromQL `expr` still references `$var` /
-`${var}` — if so, it appends a `control_warnings` entry naming the variable,
-so the loss is printed under `CONTROL WARNINGS` and recorded in the JSON
-report / migration manifest / preflight report, matching every other control
-degradation on this page. `interval` variables get a specific message calling
-out the rate-window bucket-heuristic substitution; every other type gets a
-generic "referenced but dropped" message. A variable that is genuinely unused
-by every panel is never warned about — there is nothing lost to disclose. This
-is disclosure only: the variable is not migrated into a working control (that
-would require parameterizing the ES|QL duration literal, which is unverified
-and out of scope for this fix).
+variable that is not bound to a control — checking both the ES|QL
+`variable_name` key and the classic options/range `_source_variable_name` key
+(a classic control never sets `variable_name`, so looking at that key alone
+would falsely flag a working dropdown as dropped) — it checks whether any
+panel's *original* PromQL `expr` still references `$var` / `${var}`. If so, it
+appends a `control_warnings` entry naming the variable, so the loss is printed
+under `CONTROL WARNINGS` and recorded in the JSON report / migration manifest
+/ preflight report, matching every other control degradation on this page.
+`interval` variables get a specific message calling out both the ES|QL
+`TBUCKET` substitute and the native PROMQL fixed-range inline; every other
+type gets a generic "referenced but dropped" message. A variable that is
+genuinely unused by every panel is never warned about — there is nothing lost
+to disclose. This is disclosure only: the variable is not migrated into a
+working control (that would require parameterizing the ES|QL duration literal,
+which is unverified and out of scope for this fix).
 
 ### Variable Label Filters (`metric{label="$var"}` → `?var`)
 
@@ -536,14 +541,18 @@ target can **bind ES|QL named parameters** for that migration pass:
 
 The split is therefore *per target capability*, never per individual variable.
 
-**Multi-select.** A variable (ES|QL) control binds its selection into a scalar
-parameter position (`== ?var` / `RLIKE ?var`), which cannot accept a
-multi-value selection, so a Grafana multi-select variable is emitted as a
-single-select control. That loss is reported (not silent) as a
-`control_warnings` entry (`"variable '<name>' was multi-select in Grafana but
-binds a scalar ES|QL parameter in Kibana; emitted a single-select control"`).
-Regular options controls, which do not bind a scalar parameter, keep the source
-`multi` flag.
+**Multi-select.** A Grafana `multi: true` variable stays multi-select in
+Kibana. Scalar `== ?var` / `RLIKE ?var` cannot bind an array, so the matcher is
+emitted as `MV_CONTAINS(TO_STRING(?var), ".*") OR MV_CONTAINS(TO_STRING(?var), field)`
+with `single_select: false`. The `".*"` sentinel preserves Grafana's All option.
+`TO_STRING` (issue #353) keeps that guardrail type-safe: Elasticsearch infers
+the bound parameter's type from the JSON values Kibana sends, so numeric-looking
+options (CPU indices, ports, PIDs) can arrive as an integer array and fail
+compile-time type verification against the keyword sentinel/field. Some Kibana
+builds still send those options as keyword strings (`["0","1"]`); `TO_STRING` on
+an already-keyword value is a no-op, so the wrap is unconditional. Matching is
+exact rather than regex (`RLIKE` rejects a computed pattern). Regular options
+controls, which do not bind an ES|QL parameter, keep the source `multi` flag.
 
 **Value-list filters.** A `label_values(metric{device!="nbd1"}, device)`
 variable restricts its option list to series matching the selector. The

@@ -1748,16 +1748,17 @@ def _mv_contains_filter(label, param_name, negate=False, allow_empty_match_all=F
     computed one, so ``RLIKE MV_CONCAT(?var, "|")`` -- which would have
     rebuilt Grafana's own ``(a|b)`` alternation -- is not expressible.
 
-    ``?param`` is wrapped in ``TO_STRING(...)`` (issue #353): Kibana infers a
-    bound ES|QL parameter's type from the selected option *values*, not from
-    the control's keyword-typed option-list query. A variable whose values
-    happen to look numeric (CPU/core indices, ports, PIDs, status codes) binds
-    ``?param`` as an integer array, and ``MV_CONTAINS`` requires both
-    arguments to share a type, so the ``".*"`` sentinel (keyword) and the
-    keyword label field both fail to type-check against it -- a compile-time
-    verification error, not a runtime one, so it fails the whole query.
-    ``TO_STRING`` on an already-keyword parameter is a no-op, so this is safe
-    regardless of how Kibana ends up inferring the type.
+    ``?param`` is wrapped in ``TO_STRING(...)`` (issue #353): Elasticsearch
+    infers a bound ES|QL parameter's type from the JSON values Kibana sends,
+    not from the control's keyword-typed option-list query. A variable whose
+    values happen to look numeric (CPU/core indices, ports, PIDs, status
+    codes) can bind ``?param`` as an integer array; ``MV_CONTAINS`` requires
+    both arguments to share a type, so the ``".*"`` sentinel (keyword) and
+    the keyword label field both fail to type-check against it -- a
+    compile-time verification error, not a runtime one, so it fails the whole
+    query. Some Kibana versions send those same options as keyword strings
+    (``["0", "1"]``); ``TO_STRING`` on an already-keyword parameter is a
+    no-op, so wrapping unconditionally is safe either way.
     """
     param = f"TO_STRING(?{param_name})"
     clauses = []

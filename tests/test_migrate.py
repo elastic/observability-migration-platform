@@ -14596,8 +14596,9 @@ class DroppedReferencedVariableDisclosureTests(unittest.TestCase):
     parameter binding) must surface a control warning naming it, instead of
     disappearing without a trace. ``interval`` variables used as a rate/range
     window (dashboard 9852's ``RateInterval``) are the sharpest case, since
-    losing them silently hands control of the rate window to the migrated
-    query's bucket-width heuristic."""
+    losing them silently hands control of the rate window to a
+    translator-chosen substitute (ES|QL TBUCKET width, or a fixed native
+    PROMQL range such as ``[5m]``)."""
 
     def setUp(self):
         self.rule_pack = migrate.RulePackConfig()
@@ -14634,7 +14635,9 @@ class DroppedReferencedVariableDisclosureTests(unittest.TestCase):
         warnings_text = " ".join(result.control_warnings)
         self.assertIn("RateInterval", warnings_text)
         self.assertIn("rate", warnings_text.lower())
-        self.assertIn("bucket", warnings_text.lower())
+        self.assertIn("TBUCKET", warnings_text)
+        self.assertIn("[5m]", warnings_text)
+        self.assertIn("PROMQL", warnings_text)
 
     def test_interval_variable_never_referenced_by_a_panel_is_not_disclosed(self):
         """A declared-but-unused interval variable has nothing to lose --
