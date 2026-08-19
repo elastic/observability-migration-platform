@@ -3824,6 +3824,20 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         _dropped_curated_metrics = _source_metrics_absent_from_query(
                             _source_target_exprs, _emitted_query, resolver
                         )
+                        # live_optional_metrics already stripped these because
+                        # field-caps proved them absent. Re-flagging them as a
+                        # pack omission fights that design and yellows panels
+                        # (TCP Errors / TCPRcvQDrop) whose remaining series
+                        # still render.
+                        _optional_omitted = set(
+                            _optional_metric_result.omitted_metrics or []
+                        )
+                        if _optional_omitted:
+                            _dropped_curated_metrics = [
+                                metric
+                                for metric in _dropped_curated_metrics
+                                if metric not in _optional_omitted
+                            ]
                         if _dropped_curated_metrics:
                             _append_unique(
                                 _override_warnings,
@@ -5549,6 +5563,7 @@ class _CuratedOptionalMetricStripResult:
 class _CuratedOptionalMetricOmissionResult:
     query: str
     exhausted_metrics: list[str] = field(default_factory=list)
+    omitted_metrics: list[str] = field(default_factory=list)
 
 
 def _live_optional_metric_is_absent(metric_name: str, resolver) -> bool:
@@ -5572,6 +5587,49 @@ def _split_top_level_boolean_terms(text: str, keyword: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _esql_expr_references_aliases(expression: str, aliases: set[str]) -> bool:
+    """True when *expression* uses any identifier in *aliases* outside quotes."""
+    if not expression or not aliases:
+        return False
+    for match in _ESQL_ALIAS_TOKEN_RE.finditer(expression):
+        token = match.group(0)
+        if token.startswith(("'", '"', "`")):
+            continue
+        if _canonical_esql_alias(token) in aliases:
+            return True
+    return False
+
+
+def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str]) -> bool:
+    """True when an ``MV_APPEND(inner, tail)`` tail is a stripped optional series."""
+    if _esql_expr_references_aliases(tail, removed_aliases):
+        return True
+    stripped = str(tail or "").strip()
+    if len(stripped) >= 2 and stripped[0] in {'"', "'"} and stripped[-1] == stripped[0]:
+        text = stripped[1:-1]
+        for alias in removed_aliases:
+            if text == alias or text.startswith(f"{alias} - "):
+                return True
+    return False
+
+
+def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str]) -> str:
+    """Peel ``MV_APPEND(inner, stripped_series)`` layers left by optional omit."""
+    expr = str(expression or "").strip()
+    while True:
+        upper = expr.upper()
+        if not upper.startswith("MV_APPEND(") or not expr.endswith(")"):
+            return expr
+        body = expr[len("MV_APPEND("):-1]
+        parts = [part.strip() for part in _split_top_level_csv(body) if part.strip()]
+        if len(parts) != 2:
+            return expr
+        inner, tail = parts
+        if not _tail_is_removed_unpivot_piece(tail, removed_aliases):
+            return expr
+        expr = inner.strip()
+
+
 def _strip_optional_metric_token_from_curated_esql_result(
     query: str,
     metric_name: str,
@@ -5591,9 +5649,13 @@ def _strip_optional_metric_token_from_curated_esql_result(
         upper = stripped.upper()
         if upper.startswith("WHERE "):
             predicates = _split_top_level_boolean_terms(stripped[6:].strip(), "OR")
-            kept_predicates = [
-                predicate for predicate in predicates if not token_re.search(predicate)
-            ]
+            kept_predicates = []
+            for predicate in predicates:
+                if token_re.search(predicate):
+                    continue
+                if _esql_expr_references_aliases(predicate, removed_alias_set):
+                    continue
+                kept_predicates.append(predicate)
             if kept_predicates:
                 stripped_stages.append("WHERE " + " OR ".join(kept_predicates))
             continue
@@ -5625,6 +5687,42 @@ def _strip_optional_metric_token_from_curated_esql_result(
             if by_text:
                 rebuilt += f" BY {by_text}"
             stripped_stages.append(rebuilt)
+            continue
+        if upper.startswith("EVAL "):
+            assignments = [
+                part.strip()
+                for part in _split_top_level_csv(stripped[5:].strip())
+                if part.strip()
+            ]
+            changed = True
+            while changed:
+                changed = False
+                kept_assignments: list[str] = []
+                for assignment in assignments:
+                    left, right = _split_top_level_assignment(assignment)
+                    rhs = right if right is not None else assignment
+                    rewritten = _unwrap_removed_unpivot_mv_appends(
+                        rhs, removed_alias_set
+                    )
+                    if rewritten != rhs:
+                        assignment = (
+                            f"{left} = {rewritten}" if left else rewritten
+                        )
+                        rhs = rewritten
+                        changed = True
+                    if token_re.search(rhs) or _esql_expr_references_aliases(
+                        rhs, removed_alias_set
+                    ):
+                        alias = _canonical_esql_alias(left) if left else ""
+                        if alias:
+                            _append_unique(removed_aliases, alias)
+                            removed_alias_set.add(alias)
+                        changed = True
+                        continue
+                    kept_assignments.append(assignment)
+                assignments = kept_assignments
+            if assignments:
+                stripped_stages.append("EVAL " + ", ".join(assignments))
             continue
         if upper.startswith("KEEP ") and removed_aliases:
             keep_parts = [
@@ -5669,18 +5767,25 @@ def _omit_absent_optional_metrics_from_curated_query_result(
         return _CuratedOptionalMetricOmissionResult(query=query)
     out = str(query)
     exhausted_metrics: list[str] = []
+    omitted_metrics: list[str] = []
     for metric_name in metrics:
         if not _live_optional_metric_is_absent(metric_name, resolver):
             continue
         strip_result = _strip_optional_metric_token_from_curated_esql_result(out, metric_name)
+        if strip_result.query != out:
+            _append_unique(omitted_metrics, metric_name)
         if strip_result.exhausted:
             _append_unique(exhausted_metrics, metric_name)
             return _CuratedOptionalMetricOmissionResult(
                 query="",
                 exhausted_metrics=exhausted_metrics,
+                omitted_metrics=omitted_metrics,
             )
         out = strip_result.query
-    return _CuratedOptionalMetricOmissionResult(query=out)
+    return _CuratedOptionalMetricOmissionResult(
+        query=out,
+        omitted_metrics=omitted_metrics,
+    )
 
 
 def _omit_absent_optional_metrics_from_curated_query(query, optional_metrics, resolver):

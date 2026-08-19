@@ -119,7 +119,10 @@ telemetry missing from curated override" reason, the same disclosure the
 non-pack path uses for a metric that never made it into an otherwise-migrated
 fused query ("Dropped from migrated query"). Both checks require live
 field-caps discovery (`--es-url`) to resolve the metric's actual field name;
-without it they no-op rather than guess.
+without it they no-op rather than guess. Metrics listed in the pack's
+`live_optional_metrics` that field-caps proved absent are stripped from the
+hand-written override so the rest of the panel can still render; those
+omissions are not reported as pack gaps.
 
 The console pipeline is **5 stages**, not 7: `[1/5] Extracting dashboards`,
 `[2/5] Translating dashboards`, `[3/5] Verification-packet ES|QL validation`,

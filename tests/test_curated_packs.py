@@ -439,6 +439,122 @@ def test_1860_cpu_panel_includes_guest_series():
     assert "Guest -" in query
 
 
+def test_1860_pressure_omits_irq_when_field_caps_absent():
+    """PSI irq is not on every kernel. Referencing the unknown column makes
+    Elasticsearch reject the whole Pressure panel, so the override must drop
+    it via live_optional_metrics when field-caps prove it absent."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "node_pressure_cpu_waiting_seconds_total": {"double": {"type": "double"}},
+        "node_pressure_memory_waiting_seconds_total": {"double": {"type": "double"}},
+        "node_pressure_io_waiting_seconds_total": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+        "job": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "bargauge",
+        "title": "Pressure",
+        "targets": [
+            {"expr": "irate(node_pressure_cpu_waiting_seconds_total[$__rate_interval])", "refId": "A"},
+            {"expr": "irate(node_pressure_memory_waiting_seconds_total[$__rate_interval])", "refId": "B"},
+            {"expr": "irate(node_pressure_io_waiting_seconds_total[$__rate_interval])", "refId": "C"},
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert result.status == "migrated", f"got {result.status}: {result.reasons}"
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "node_pressure_cpu_waiting_seconds_total" in query
+    assert "irq_stalled" not in query
+    assert not any("curated override" in reason for reason in result.reasons)
+
+
+def test_1860_cpu_omits_guest_when_field_caps_absent():
+    """Guest is a distinct exporter metric. An unknown-column reference in the
+    same STATS as the eight CPU modes would take down the whole CPU panel."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "node_cpu_seconds_total": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+        "job": {"keyword": {"type": "keyword"}},
+        "cpu": {"keyword": {"type": "keyword"}},
+        "mode": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    targets = [
+        {
+            "expr": f'avg(irate(node_cpu_seconds_total{{mode="{mode}"}}[$__rate_interval])) by (mode) * 100',
+            "refId": chr(65 + i),
+        }
+        for i, mode in enumerate(
+            ["system", "user", "nice", "iowait", "irq", "softirq", "steal", "idle"]
+        )
+    ]
+    panel = {"type": "timeseries", "title": "CPU", "targets": targets}
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert result.status == "migrated", f"got {result.status}: {result.reasons}"
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "node_cpu_seconds_total" in query
+    assert "guest" not in query.lower()
+    assert not any("curated override" in reason for reason in result.reasons)
+
+
+def test_curated_override_does_not_flag_stripped_optional_metrics():
+    """A live_optional metric that field-caps proved absent is stripped so the
+    rest of the override can render. That is not a pack omission, so
+    status_override: migrated must not be downgraded with a "missing from
+    curated override" reason (TCP Errors / TCPRcvQDrop)."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.node_netstat_TcpExt_ListenOverflows": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_ListenDrops": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPSynRetrans": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_RetransSegs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_InErrs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_OutRsts": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPOFOQueue": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "TCP Errors",
+        "targets": [
+            {"expr": "irate(node_netstat_TcpExt_ListenOverflows[5m])", "refId": "A"},
+            {"expr": "irate(node_netstat_TcpExt_ListenDrops[5m])", "refId": "B"},
+            {"expr": "irate(node_netstat_TcpExt_TCPSynRetrans[5m])", "refId": "C"},
+            {"expr": "irate(node_netstat_Tcp_RetransSegs[5m])", "refId": "D"},
+            {"expr": "irate(node_netstat_Tcp_InErrs[5m])", "refId": "E"},
+            {"expr": "irate(node_netstat_Tcp_OutRsts[5m])", "refId": "F"},
+            {"expr": "irate(node_netstat_TcpExt_TCPRcvQDrop[5m])", "refId": "G"},
+            {"expr": "irate(node_netstat_TcpExt_TCPOFOQueue[5m])", "refId": "H"},
+        ],
+    }
+
+    _yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert result.status == "migrated", f"got {result.status}: {result.reasons}"
+    assert not any("curated override" in reason for reason in result.reasons), result.reasons
+    assert "TCPRcvQDrop" not in ((_yaml_panel or {}).get("esql") or {}).get("query", "")
+
+
 def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
     """Interrupts Detail must legend by interrupt/cpu, not empty type/info GROK."""
     dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}

@@ -64,6 +64,11 @@ query:
     - node_netstat_TcpExt_TCPRcvQDrop
     - node_netstat_Tcp_MaxConn
     - node_interrupts_total
+    # PSI irq and CPU guest are real source series on newer 1860 revisions, but
+    # referencing them when field-caps prove them absent makes Elasticsearch
+    # reject the whole Pressure / CPU panel (unknown column).
+    - node_pressure_irq_stalled_seconds_total
+    - node_cpu_guest_seconds_total
 
   label_candidates:
     instance:
