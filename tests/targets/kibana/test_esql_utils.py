@@ -110,3 +110,23 @@ def test_extract_esql_shape_eval_is_a_metric_when_stats_intermediates_are_droppe
     assert shape.metric_fields == ["log_buffer", "pool_data"]
     assert shape.time_fields == ["time_bucket"]
 
+
+def test_extract_esql_shape_concat_eval_is_group_not_metric():
+    """Identity EVAL aliases (``series_group = CONCAT(...)``) are the series
+    key, not a Y accessor. Treating them as metrics adds a phantom
+    ``Series Group`` axis on Lens XY panels."""
+    query = (
+        "TS metrics-* "
+        "| STATS process_resident_memory_bytes = MAX(LAST_OVER_TIME("
+        "metrics.process_resident_memory_bytes)) "
+        "BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.instance "
+        '| EVAL series_group = CONCAT(COALESCE(TO_STRING(labels.instance), "")) '
+        "| SORT time_bucket ASC"
+    )
+
+    shape = extract_esql_shape(query)
+
+    assert shape.metric_fields == ["process_resident_memory_bytes"]
+    assert "series_group" in shape.group_fields
+    assert "series_group" not in shape.metric_fields
+

@@ -2601,6 +2601,13 @@ def _translate_panel_native_promql(
     expr = _strip_ignored_promql_label_matchers(
         expr, getattr(rule_pack, "ignored_labels", None)
     )
+    # Native PROMQL is attempted before the ES|QL live-missing loop. An
+    # absent instant gauge would otherwise stay native, score Green, and
+    # either smoke empty or 400 with ``value_$1``/``value_$2`` (issue #158
+    # keeps native on field gaps *after* emit; this gate refuses emit when
+    # field-caps already proved the source metrics are gone).
+    if _live_missing_metrics_for_expr(expr, resolver):
+        return None
     runtime_features = getattr(rule_pack, "runtime_features", {})
     _record_passthrough_native_labels(expr, resolver)
     if (

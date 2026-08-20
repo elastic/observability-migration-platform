@@ -5038,6 +5038,145 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(fmt.get("type"), "bytes")
         self.assertEqual(fmt.get("decimals"), 0)
 
+    def test_native_promql_absent_gauge_is_telemetry_missing_markdown(self):
+        """Bare instant gauges stay native only when field-caps can see the
+        metric. An absent selector must keep the telemetry-missing markdown
+        instead of a green empty PROMQL tile."""
+        panel = {
+            "title": "Version",
+            "type": "singlestat",
+            "targets": [
+                {"refId": "A", "expr": "prometheus_build_info"},
+            ],
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test")
+        set_runtime_feature(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test")
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.up": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
+            }
+        )
+        resolver._discovery_status = "ok"
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        self.assertIn("markdown", yaml_panel)
+        self.assertNotIn("esql", yaml_panel)
+        self.assertEqual(result.kibana_type, "markdown")
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertTrue(
+            any("Target telemetry missing" in reason and "prometheus_build_info" in reason
+                for reason in result.reasons),
+            result.reasons,
+        )
+
+    def test_native_promql_present_gauge_stays_native_when_discovery_ok(self):
+        panel = {
+            "title": "InnoDB Buffer Pool Size",
+            "type": "singlestat",
+            "format": "bytes",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'mysql_global_variables_innodb_buffer_pool_size{instance="$host"}',
+                }
+            ],
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test")
+        set_runtime_feature(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test")
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.mysql_global_variables_innodb_buffer_pool_size": {
+                    "double": {"type": "double", "aggregatable": True, "searchable": True, "time_series_metric": "gauge"},
+                },
+            }
+        )
+        resolver._discovery_status = "ok"
+
+        yaml_panel, _result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("mysql_global_variables_innodb_buffer_pool_size", query)
+
+    def test_native_promql_absent_binary_agg_ratio_is_telemetry_missing_markdown(self):
+        """``sum((delta(A)))/sum((delta(B)))`` on missing metrics must not stay
+        native: Elasticsearch then emits ``value_$1``/``value_$2`` and
+        ``STATS LAST(value)`` 400s."""
+        panel = {
+            "title": "Average query time",
+            "type": "gauge",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": (
+                        "sum((delta(pg_stat_statements_total_time_seconds"
+                        '{instance=~"$Instance"}[5m])))'
+                        "/sum((delta(pg_stat_statements_calls"
+                        '{instance=~"$Instance"}[5m])))'
+                    ),
+                }
+            ],
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test")
+        set_runtime_feature(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test")
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.pg_up": {"double": {"type": "double", "aggregatable": True, "searchable": True}},
+            }
+        )
+        resolver._discovery_status = "ok"
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        self.assertIn("markdown", yaml_panel)
+        query = (yaml_panel.get("esql") or {}).get("query") or ""
+        self.assertNotIn("PROMQL", query)
+        self.assertNotIn("STATS value = LAST(value, step)", query)
+        self.assertTrue(
+            any("Target telemetry missing" in reason for reason in result.reasons),
+            result.reasons,
+        )
+
     def test_native_promql_distinct_metric_ratio_with_macro_stays_native_on_gauge(self):
         """The single-value distinct-metric gate must count metrics from the
         *cleaned* expression, not the raw one. A common Grafana ratio uses a
