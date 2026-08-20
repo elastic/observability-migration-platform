@@ -971,12 +971,11 @@ def _build_esql_panel(
                 for field in keep_fields
             ]
         else:
-            if widget.widget_type == "change" and "value" not in metrics:
+            if widget.widget_type == "change":
                 # A change widget ranks by the computed delta `value` (the SORT
-                # key), which STATS-based inference misses because it is an EVAL
-                # alias. Surface it as the leading metric so the ranked delta —
-                # the whole point of the widget — is actually displayed.
-                metrics = ["value", *metrics]
+                # key). Keep it as the leading metric even when shape inference
+                # already includes the EVAL alias among the STATS columns.
+                metrics = ["value", *[m for m in metrics if m != "value"]]
             if metrics:
                 esql_block["metrics"] = [
                     _metric_config(widget, result, m)

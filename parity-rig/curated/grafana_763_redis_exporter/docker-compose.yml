@@ -238,6 +238,90 @@ services:
       mysql:
         condition: service_healthy
 
+  # Drive real mysqld_exporter series (commands, questions, handlers, InnoDB,
+  # processlist) so Grafana 7362 is not an idle SHOW STATUS scrape.
+  mysql-load:
+    image: mysql:8.0
+    container_name: redis-rig-mysql-load
+    networks:
+      - redis-rig
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mysql_cmd="mysql -h mysql -uroot -prigpass -Drigdb --connect-timeout=5"
+        until $$mysql_cmd -e "SELECT 1" >/dev/null 2>&1; do sleep 2; done
+        $$mysql_cmd -e "
+          CREATE TABLE IF NOT EXISTS rig_load (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            k INT NOT NULL,
+            v VARCHAR(64),
+            KEY k (k)
+          ) ENGINE=InnoDB;
+          CREATE TABLE IF NOT EXISTS rig_scan (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            payload VARCHAR(128)
+          ) ENGINE=InnoDB;
+        "
+        i=0
+        while true; do
+          i=$$((i + 1))
+          $$mysql_cmd -e "
+            START TRANSACTION;
+            INSERT INTO rig_load (k, v) VALUES ($$i, CONCAT('val-', $$i));
+            UPDATE rig_load SET v = CONCAT('upd-', $$i) WHERE k = $$i;
+            SELECT v FROM rig_load WHERE k = $$i;
+            INSERT INTO rig_scan (payload) VALUES (REPEAT('x', 32));
+            SELECT COUNT(*) FROM rig_scan;
+            SELECT payload FROM rig_scan ORDER BY payload LIMIT 20;
+            DELETE FROM rig_load WHERE id < $$((i - 400));
+            COMMIT;
+          " >/dev/null 2>&1
+          $$mysql_cmd -e "SHOW PROCESSLIST; SHOW STATUS LIKE 'Threads%';" >/dev/null 2>&1
+          sleep 0.25
+        done
+
+  # Drive real postgres_exporter series (tup_*, xact_*) so Grafana 9628
+  # insert/update/delete graphs are not an idle scrape of zeros.
+  postgres-load:
+    image: postgres:16-alpine
+    container_name: redis-rig-postgres-load
+    networks:
+      - redis-rig
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - PGPASSWORD=rigpass
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until pg_isready -h postgres -U postgres >/dev/null 2>&1; do sleep 2; done
+        psql -h postgres -U postgres -d rigdb -c "
+          CREATE TABLE IF NOT EXISTS rig_load (
+            id SERIAL PRIMARY KEY,
+            k INT NOT NULL,
+            v VARCHAR(64)
+          );
+        "
+        i=0
+        while true; do
+          i=$$((i + 1))
+          psql -h postgres -U postgres -d rigdb -c "
+            BEGIN;
+            INSERT INTO rig_load (k, v) VALUES ($$i, CONCAT('val-', $$i));
+            UPDATE rig_load SET v = CONCAT('upd-', $$i) WHERE k = $$i;
+            SELECT v FROM rig_load WHERE k = $$i;
+            DELETE FROM rig_load WHERE id < $$((i - 10));
+            COMMIT;
+          " >/dev/null 2>&1
+          sleep 0.25
+        done
+
   postgres:
     image: postgres:16-alpine
     container_name: redis-rig-postgres

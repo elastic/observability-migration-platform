@@ -12,5 +12,5 @@ statuses: {'ok': 9}
 - title='System load'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2', 'query1_3']; breakdowns=[]; primary=; metric=
 - title='CPU usage (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2', 'query3', 'query4', 'query5', 'query6']; breakdowns=[]; primary=; metric=
 - title='I/O wait (%)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
-- title='System memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1']; breakdowns=[]; primary=; metric=
+- title='System memory'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query2_query1']; breakdowns=[]; primary=; metric=
 - title='Network traffic (per sec)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1', 'query1_2']; breakdowns=[]; primary=; metric=

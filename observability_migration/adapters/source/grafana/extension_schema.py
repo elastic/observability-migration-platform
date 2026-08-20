@@ -68,6 +68,10 @@ class PanelQueryOverrideModel(_StrictModel):
     # Optional Lens presentation override when the curated ES|QL shape does
     # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
     kibana_type_override: str | None = None
+    # Drop Grafana ``timeFrom`` so the panel follows the dashboard picker.
+    # Used when a pinned window (e.g. 24h hourly bars) renders empty in Lens
+    # on mixed ``metrics-*`` despite the same query returning rows via ``_query``.
+    drop_time_from: bool = False
 
 
 class PanelPositionOverrideModel(_StrictModel):
@@ -82,6 +86,7 @@ class PanelSizeOverrideModel(_StrictModel):
 
 class PanelLayoutOverrideModel(_StrictModel):
     title_match: str
+    title: str | None = None
     position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
     size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
     collapsed: bool | None = None

@@ -1,0 +1,112 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 9628 (PostgreSQL Database)
+# https://grafana.com/grafana/dashboards/9628-postgresql-database/
+#
+# PERFECT = same information as Grafana on postgres_exporter.
+# APPROXIMATE = documented delta (Helm labels, exporter process metrics,
+# missing postmaster start, Grafana rate() on gauges, cumulative tuple graphs).
+
+schema_version: 1
+gnet_id: 9628
+gnet_revision: 1
+dashboard_title: "PostgreSQL Database"
+
+panels:
+  - title: "Version"
+    fidelity: APPROXIMATE
+    notes: "Grafana singlestat valueName=name shows {{short_version}}; Kibana metric shows 1 broken down by labels.short_version."
+  - title: "Start Time"
+    fidelity: APPROXIMATE
+    notes: "pg_postmaster_start_time_seconds is absent on postgres_exporter v0.15. Pack uses process_start_time_seconds (exporter process) and DATE_DIFF seconds-ago instead of Grafana dateTimeFromNow."
+  - title: "Current fetch data"
+    fidelity: APPROXIMATE
+    notes: "Grafana SUMs the tup_fetched counter as a gauge (lifetime tuples) with format decbytes. Native PROMQL preserves that."
+  - title: "Current insert data"
+    fidelity: APPROXIMATE
+    notes: "Lifetime tup_inserted counter shown as a gauge, matching Grafana."
+  - title: "Current update data"
+    fidelity: APPROXIMATE
+    notes: "Lifetime tup_updated counter shown as a gauge, matching Grafana."
+  - title: "Max Connections"
+    fidelity: PERFECT
+    notes: "Native PROMQL LAST of pg_settings_max_connections."
+  - title: "Average CPU Usage"
+    fidelity: APPROXIMATE
+    notes: "process_cpu_seconds_total is the exporter process, not Postgres. Grafana y-axis format s on rate()*1000 is kept."
+  - title: "Average Memory Usage"
+    fidelity: APPROXIMATE
+    notes: "Grafana rate() on RSS/VMS gauges is invalid in Elasticsearch. Pack plots LAST_OVER_TIME of the gauges (exporter process memory)."
+  - title: "Open File Descriptors"
+    fidelity: PERFECT
+    notes: "Native PROMQL of process_open_fds (exporter process, same as Grafana)."
+  - title: "Shared Buffers"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Effective Cache"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Maintenance Work Mem"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Work Mem"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Max WAL Size"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Random Page Cost"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Seq Page Cost"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Max Worker Processes"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Max Parallel Workers"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Active sessions"
+    fidelity: PERFECT
+    notes: "Native PROMQL of pg_stat_activity_count{state=\"active\"} != 0."
+  - title: "Transactions"
+    fidelity: APPROXIMATE
+    notes: "irate() of commit/rollback counters; Grafana $datname multi-select becomes MV_CONTAINS. Native path may fall back to ES|QL IRATE."
+  - title: "Update data"
+    fidelity: APPROXIMATE
+    notes: "Grafana graphs the cumulative tup_updated counter with != 0 (not a rate). Empty until the database has at least one update."
+  - title: "Fetch data (SELECT)"
+    fidelity: APPROXIMATE
+    notes: "Cumulative tup_fetched != 0, matching Grafana."
+  - title: "Insert data"
+    fidelity: APPROXIMATE
+    notes: "Cumulative tup_inserted != 0, matching Grafana. Empty until the first insert."
+  - title: "Lock tables"
+    fidelity: PERFECT
+    notes: "Native PROMQL of pg_locks_count{mode=~$mode} != 0."
+  - title: "Return data"
+    fidelity: APPROXIMATE
+    notes: "Cumulative tup_returned != 0, matching Grafana."
+  - title: "Idle sessions"
+    fidelity: PERFECT
+    notes: ""
+  - title: "Delete data"
+    fidelity: APPROXIMATE
+    notes: "Cumulative tup_deleted != 0, matching Grafana. Empty until the first delete."
+  - title: "Cache Hit Rate"
+    fidelity: APPROXIMATE
+    notes: "Grafana divides lifetime blks_hit / (blks_read + blks_hit) without rate(). Native PROMQL preserves that lifetime ratio."
+  - title: "Buffers (bgwriter)"
+    fidelity: PERFECT
+    notes: "irate() of pg_stat_bgwriter_buffers_*_total counters."
+  - title: "Conflicts/Deadlocks"
+    fidelity: PERFECT
+    notes: "irate() of conflicts and deadlocks counters."
+  - title: "Temp File (Bytes)"
+    fidelity: PERFECT
+    notes: "irate() of pg_stat_database_temp_bytes."
+  - title: "Checkpoint Stats"
+    fidelity: PERFECT
+    notes: "irate() of checkpoint write/sync time; Grafana legend text is the long HELP string."

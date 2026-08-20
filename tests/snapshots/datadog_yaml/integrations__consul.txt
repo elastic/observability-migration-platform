@@ -19,7 +19,7 @@ statuses: {'ok': 16, 'requires_manual': 4, 'skipped': 5, 'warning': 2}
 - title='Services Warning'; kind=esql; type=pie; dimension=; metrics=['query1']; breakdowns=['consul_node_id', 'consul_datacenter', 'host.name']; primary=; metric=
 - title='Services Critical'; kind=esql; type=datatable; dimension=; metrics=['query1']; breakdowns=['consul_node_id', 'consul_datacenter', 'host.name']; primary=; metric=
 - title='Datadog note 1689828293212788'; kind=markdown
-- title='Leader Last Contact with Followers (in ms)'; kind=esql; type=line; dimension=time_bucket; metrics=['query1_3']; breakdowns=[]; primary=; metric=
+- title='Leader Last Contact with Followers (in ms)'; kind=esql; type=line; dimension=time_bucket; metrics=['max_time', 'average_time', 'query1_3']; breakdowns=[]; primary=; metric=
 - title='Latency of Leader Commit to Disk'; kind=esql; type=line; dimension=time_bucket; metrics=['max_time', 'average_time']; breakdowns=[]; primary=; metric=
 - title='New Leader Events'; kind=markdown
 - title='Consul Raft Commit Time'; kind=esql; type=line; dimension=time_bucket; metrics=['average_time', 'median_time']; breakdowns=[]; primary=; metric=

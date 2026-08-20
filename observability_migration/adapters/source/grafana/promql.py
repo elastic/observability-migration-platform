@@ -5556,6 +5556,15 @@ def _range_fallback_identity(frag) -> tuple | None:
             if inner is None:
                 return None
             return ("binop", op, ("scalar", left_scalar), inner)
+        # ``rate(A)/rate(B) or irate(A)/irate(B)`` — both sides are range
+        # calls, not scalars. Ignore rate-vs-irate so the pair collapses to
+        # one operand before a later cloud-metric ``or`` is considered.
+        if left is not None and right is not None:
+            left_id = _range_fallback_identity(left)
+            right_id = _range_fallback_identity(right)
+            if left_id is None or right_id is None:
+                return None
+            return ("binop", op, left_id, right_id)
         return None
     if frag.family == "topk":
         if not frag.metric:
@@ -5599,7 +5608,9 @@ def _operands_are_same_metric_range_fallback(operands: list) -> bool:
     # (``A{f1} or A{f2}``) — those differ in matchers and already fail the
     # identity check above, but also refuse when every operand is a bare
     # metric with no range shape (cross-metric COALESCE should own that).
-    if not any(getattr(op, "range_func", None) or getattr(op, "range_window", None) for op in operands):
+    if not any(
+        getattr(op, "range_func", None) or getattr(op, "range_window", None) for op in operands
+    ):
         # topk / scaled wrappers store range on the fragment itself for
         # range_agg children; walk one level.
         def _has_range(op) -> bool:
@@ -5664,6 +5675,175 @@ def _same_metric_range_fallback_warning(frag) -> str:
         "dropped the alternate-window fallback; Grafana uses the right "
         "side only when the left lacks samples"
     )
+
+
+_ABSENT_OR_OPERAND_WARNING = (
+    "PromQL 'or': dropped operands whose metrics are absent from the live target"
+)
+
+
+def _collapse_same_metric_range_fallback_groups(operands: list) -> list:
+    """Keep the leftmost operand of each adjacent same-metric range-fallback run.
+
+    Percona/MySQL Overview writes
+    ``sum(rate(node_…)) or sum(irate(node_…)) or sum(rdsosmetrics_…)``.
+    The first pair shares identity (rate vs irate) and should collapse to
+    the left before the cross-metric COALESCE rewrite sees a 4-way chain.
+    """
+    if not operands:
+        return operands
+    out = []
+    i = 0
+    while i < len(operands):
+        ident = _range_fallback_identity(operands[i])
+        j = i + 1
+        if ident is not None:
+            while j < len(operands) and _range_fallback_identity(operands[j]) == ident:
+                j += 1
+            if j > i + 1:
+                out.append(operands[i])
+                i = j
+                continue
+        out.append(operands[i])
+        i += 1
+    return out
+
+
+def _fragment_metric_names(frag, seen=None) -> list[str]:
+    """Source metric names reachable from *frag*, including nested arithmetic."""
+    seen = seen if seen is not None else set()
+    names: list[str] = []
+    if frag is None or id(frag) in seen:
+        return names
+    seen.add(id(frag))
+    metric = str(getattr(frag, "metric", "") or "")
+    if metric and not metric.startswith("label_"):
+        names.append(metric)
+    extra = getattr(frag, "extra", None) or {}
+    for key in ("left_frag", "right_frag", "inner_frag"):
+        names.extend(_fragment_metric_names(extra.get(key), seen))
+    names.extend(_fragment_metric_names(getattr(frag, "binary_rhs", None), seen))
+    return list(dict.fromkeys(names))
+
+
+def _metric_known_absent(resolver, metric_name: str) -> bool:
+    """True only when live field-caps prove *metric_name* is missing.
+
+    Offline / empty caches return False so we do not drop a cloud fallback
+    that we cannot actually disprove (issue #167: keep both metrics).
+    """
+    if resolver is None or not metric_name:
+        return False
+    field_exists = getattr(resolver, "field_exists", None)
+    if not callable(field_exists):
+        return False
+    candidates: list[str] = []
+    resolve = getattr(resolver, "resolve_metric_field", None)
+    if callable(resolve):
+        for prefer in (None, "gauge", "counter"):
+            try:
+                resolved = (
+                    resolve(metric_name)
+                    if prefer is None
+                    else resolve(metric_name, prefer=prefer)
+                )
+            except TypeError:
+                try:
+                    resolved = resolve(metric_name)
+                except Exception:
+                    resolved = None
+            except Exception:
+                resolved = None
+            if resolved:
+                candidates.append(str(resolved))
+    candidates.extend([metric_name, f"metrics.{metric_name}"])
+    unique: list[str] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        if cand and cand not in seen:
+            seen.add(cand)
+            unique.append(cand)
+    statuses = []
+    for cand in unique:
+        try:
+            statuses.append(field_exists(cand))
+        except Exception:
+            statuses.append(None)
+    if any(status is True for status in statuses):
+        return False
+    if any(status is None for status in statuses):
+        return False
+    return bool(statuses)
+
+
+def _operand_known_absent(operand, resolver) -> bool:
+    names = _fragment_metric_names(operand)
+    if not names:
+        return False
+    return all(_metric_known_absent(resolver, name) for name in names)
+
+
+def _reduce_or_operands(frag, resolver) -> tuple[list, list]:
+    """Collapse range-window fallbacks, then drop live-absent OR operands.
+
+    Returns ``(kept, dropped)``. ``kept`` is empty when the chain is malformed.
+    """
+    operands = _flatten_or_operands(frag)
+    if not operands:
+        return [], []
+    collapsed = _collapse_same_metric_range_fallback_groups(operands)
+    kept = []
+    dropped = []
+    for operand in collapsed:
+        if _operand_known_absent(operand, resolver):
+            dropped.append(operand)
+        else:
+            kept.append(operand)
+    return kept, dropped
+
+
+def _expr_for_or_collapse_parse(expr: str, rule_pack=None) -> str:
+    """Make Grafana range macros parseable without rewriting label matchers.
+
+    ``preprocess_grafana_macros`` also turns ``$host`` into ``label_host``, which
+    would break native PROMQL ``?host`` binding if we emitted that form. Only
+    the ``[$interval]`` / ``$__rate_interval`` tokens need a concrete window
+    so the AST parser can see the ``or``.
+    """
+    default_window = (getattr(rule_pack, "default_rate_window", None) if rule_pack else None) or "5m"
+    result = substitute_grafana_range_macros(expr)
+    for pattern in (r"\$__rate_interval", r"\$__interval", r"\$interval"):
+        result = re.sub(pattern, default_window, result)
+    result = re.sub(
+        r"\[\s*\$(?!__)([A-Za-z_][A-Za-z0-9_]*)\s*\]",
+        f"[{default_window}]",
+        result,
+    )
+    return result
+
+
+def collapse_or_for_native_promql(expr, resolver=None, rule_pack=None) -> str:
+    """Drop Grafana same-metric range-fallback ``or`` so native PROMQL can run.
+
+    Elasticsearch's PROMQL command rejects set operators (``or`` / ``and`` /
+    ``unless``). The ES|QL translator already prefers the left
+    ``rate(M[$interval])`` operand of ``rate(...) or irate(...)`` and drops
+    live-absent cloud fallbacks. Apply the same rewrite before the native
+    path so those single-target panels stay PROMQL instead of degrading.
+    """
+    if not expr or not re.search(r"\bor\b", expr, re.IGNORECASE):
+        return expr
+    try:
+        parsed = _parse_fragment(_expr_for_or_collapse_parse(expr, rule_pack))
+    except Exception:
+        return expr
+    left = _left_operand_of_same_metric_range_fallback(parsed)
+    if left is not None and (left.raw_expr or "").strip():
+        return left.raw_expr.strip()
+    kept, _dropped = _reduce_or_operands(parsed, resolver)
+    if len(kept) == 1 and (kept[0].raw_expr or "").strip():
+        return kept[0].raw_expr.strip()
+    return expr
 
 
 def _is_zero_scaled_operand(frag) -> bool:
@@ -5887,6 +6067,8 @@ def _try_rewrite_set_or_cross_metric(
     summary_mode=False,
     preferred_group_labels=None,
     preferred_group_labels_origin=None,
+    allow_direct_ts_gauge=False,
+    allow_tsds_gauge_promotion=False,
 ):
     """Rewrite a cross-metric ``A or B`` as a ``COALESCE(A, B)`` union.
 
@@ -5899,17 +6081,18 @@ def _try_rewrite_set_or_cross_metric(
     the right value fills the groups the left never produced. Longer chains
     ``A or B or C`` collapse to ``COALESCE(A, B, C)`` in source order.
 
-    This keeps **both** metrics instead of silently dropping the right operand
-    (issue #167). When the operands cannot be aligned safely — different
-    grouping dimensions, divergent source commands, or an operand that itself
-    has no honest translation — we return ``None`` so the caller marks the
-    panel for manual review rather than emitting half the data.
+    Same-metric ``rate(M) or irate(M)`` pairs inside a longer chain (Linux
+    node_exporter followed by an RDS/OSMetrics fallback) collapse to the
+    left operand first. Operands whose metrics field-caps prove absent are
+    dropped so a missing cloud series cannot 400 the whole panel.
+
+    This keeps **both** remaining metrics instead of silently dropping the
+    right operand (issue #167). When the operands cannot be aligned safely —
+    different grouping dimensions, divergent source commands, or an operand
+    that itself has no honest translation — we return ``None`` so the caller
+    marks the panel for manual review rather than emitting half the data.
     """
     if (frag.binary_op or "").lower() != "or":
-        return None
-
-    operand_frags = _flatten_or_operands(frag)
-    if not operand_frags or len(operand_frags) < 2:
         return None
 
     # An ``on(...)``/``ignoring(...)`` modifier changes which right-operand
@@ -5918,6 +6101,37 @@ def _try_rewrite_set_or_cross_metric(
     # emitted ES|QL fields and cannot honor that key, so refuse the rewrite
     # (→ manual review) rather than over-report right-operand series.
     if _or_chain_has_vector_matching(frag):
+        return None
+
+    kept, dropped = _reduce_or_operands(frag, resolver)
+    if not kept:
+        return None
+
+    drop_warnings = [_ABSENT_OR_OPERAND_WARNING] if dropped else []
+
+    # After collapsing rate/irate pairs and dropping absent cloud fallbacks,
+    # a single leftover operand is the honest Linux-side translation.
+    if len(kept) == 1:
+        plan = _build_formula_plan(
+            kept[0],
+            resolver,
+            rule_pack,
+            alias_hint=alias_hint,
+            summary_mode=summary_mode,
+            preferred_group_labels=preferred_group_labels,
+            allow_direct_ts_gauge=allow_direct_ts_gauge,
+            preferred_group_labels_origin=preferred_group_labels_origin,
+            allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
+        )
+        if plan is None:
+            return None
+        for warning in drop_warnings:
+            if warning not in plan.warnings:
+                plan.warnings.append(warning)
+        return plan
+
+    operand_frags = kept
+    if len(operand_frags) < 2:
         return None
 
     # Every operand must be translatable on its own. A nested set operator or a
@@ -5965,7 +6179,7 @@ def _try_rewrite_set_or_cross_metric(
     coalesce_args = ", ".join(_esql_identifier(spec.final_alias) for spec in specs)
     expr = f"COALESCE({coalesce_args})"
 
-    warnings = []
+    warnings = list(drop_warnings)
     for spec in specs:
         for w in spec.warnings:
             if w not in warnings:
@@ -6143,6 +6357,8 @@ def _build_formula_plan(
                     summary_mode=summary_mode,
                     preferred_group_labels=preferred_group_labels,
                     preferred_group_labels_origin=preferred_group_labels_origin,
+                    allow_direct_ts_gauge=allow_direct_ts_gauge,
+                    allow_tsds_gauge_promotion=allow_tsds_gauge_promotion,
                 )
                 if cross is not None:
                     return cross
@@ -6649,8 +6865,29 @@ def colocated_binary_agg_plan(frag, resolver, rule_pack):
     """``(value_expr, leaf)`` for a renderable ``agg(A op B)``, else None."""
     if not frag or not frag.outer_agg:
         return None
-    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
-    if inner is None or getattr(inner, "family", "") != "binary_expr":
+    extra = getattr(frag, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    inner = extra.get("inner_frag")
+    if inner is None:
+        return None
+    # ``sum((rate(A)/rate(B)) or (irate(A)/irate(B)) or cloud_metric)`` lands
+    # as unknown+inner OR. Collapse the range-window pair and drop live-absent
+    # cloud fallbacks so the remaining ratio can render as co-located arithmetic.
+    if getattr(inner, "family", "") == "binary_expr" and (inner.binary_op or "").lower() == "or":
+        kept, dropped = _reduce_or_operands(inner, resolver)
+        preferred = None
+        if len(kept) == 1 or (kept and _operands_are_same_metric_range_fallback(kept)):
+            preferred = kept[0]
+        if preferred is None:
+            return None
+        extra["inner_frag"] = preferred
+        inner = preferred
+        if dropped:
+            extra["or_chain_dropped_absent"] = True
+    if getattr(inner, "family", "") != "binary_expr":
+        return None
+    if (inner.binary_op or "").lower() in _SET_OPERATORS:
         return None
     rendered = _render_colocated_arithmetic(inner, resolver, rule_pack)
     if rendered is None:

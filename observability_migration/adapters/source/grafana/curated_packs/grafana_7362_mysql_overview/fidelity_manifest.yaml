@@ -1,0 +1,123 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 7362 (MySQL Overview)
+# https://grafana.com/grafana/dashboards/7362-mysql-overview/
+#
+# PERFECT = same information as Grafana on mysqld_exporter + node_exporter.
+# APPROXIMATE = documented delta (MySQL 8 replacements, $interval, host split).
+
+schema_version: 1
+gnet_id: 7362
+gnet_revision: 5
+dashboard_title: "MySQL Overview"
+
+panels:
+  - title: "MySQL Uptime"
+    fidelity: PERFECT
+    notes: "Native PROMQL LAST of mysql_global_status_uptime. Grafana 5 singlestat format s maps to a duration tile."
+  - title: "Current QPS"
+    fidelity: APPROXIMATE
+    notes: "rate() or irate() prefers rate; Grafana $interval is inlined to TBUCKET. Requires untyped queries pinned as counter."
+  - title: "InnoDB Buffer Pool Size"
+    fidelity: PERFECT
+    notes: "Native PROMQL LAST of innodb_buffer_pool_size. Grafana 5 singlestat format bytes maps to a bytes tile."
+  - title: "Buffer Pool Size of Total RAM"
+    fidelity: APPROXIMATE
+    notes: "Cross-instance ratio when mysqld and node_exporter use different instance labels. TS LAST_OVER_TIME of both gauges over the dashboard picker (FROM over mixed metrics-* timed out as N/A in Lens). Grafana 5 singlestat format percent maps to a % suffix."
+  - title: "MySQL Connections"
+    fidelity: PERFECT
+    notes: ""
+  - title: "MySQL Client Thread Activity"
+    fidelity: APPROXIMATE
+    notes: "max_over_time($interval) or 5m prefers the left window."
+  - title: "MySQL Questions"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Thread Cache"
+    fidelity: APPROXIMATE
+    notes: "threads_created rate requires counter typing."
+  - title: "MySQL Temporary Objects"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Select Types"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Sorts"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Slow Queries"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Aborted Connections"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Table Locks"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Network Traffic"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Network Usage Hourly"
+    fidelity: APPROXIMATE
+    notes: "Grafana pins a 24h panel window with 1h increase() bars. Kibana follows the dashboard time picker (mixed metrics-* Lens 24h override rendered empty despite rows). RATE over TBUCKET(20)."
+  - title: "MySQL Internal Memory Overview"
+    fidelity: APPROXIMATE
+    notes: "Query cache / additional mem pool / TokuDB series are live_optional and omitted on MySQL 8."
+  - title: "Top Command Counters"
+    fidelity: APPROXIMATE
+    notes: "topk(rate or irate) prefers rate; $interval inlined."
+  - title: "Top Command Counters Hourly"
+    fidelity: APPROXIMATE
+    notes: "Grafana 24h/1h increase() bars; Kibana follows the dashboard picker with RATE by labels.command. No hard top-k cut."
+  - title: "MySQL Handlers"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Transaction Handlers"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "Process States"
+    fidelity: PERFECT
+    notes: "Pack maps mysql_info_schema_threads → mysql_info_schema_processlist_threads and groups by labels.state."
+  - title: "Top Process States Hourly"
+    fidelity: APPROXIMATE
+    notes: "Grafana 24h topk(5, avg_over_time[1h]); Kibana follows the dashboard picker with AVG_OVER_TIME by state and no hard top-5 cut."
+  - title: "MySQL Query Cache Memory"
+    fidelity: APPROXIMATE
+    notes: "Query cache removed in MySQL 8. Kibana panel title is InnoDB Buffer Pool Pages; shows InnoDB buffer-pool data/free/dirty pages instead of an empty cache gauge."
+  - title: "MySQL Query Cache Activity"
+    fidelity: APPROXIMATE
+    notes: "Query cache removed in MySQL 8. Kibana panel title is InnoDB Buffer Pool Activity; shows InnoDB buffer-pool hit ratio plus data read/write rates."
+  - title: "MySQL File Openings"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair; $interval inlined."
+  - title: "MySQL Open Files"
+    fidelity: PERFECT
+    notes: ""
+  - title: "MySQL Table Open Cache Status"
+    fidelity: APPROXIMATE
+    notes: "rate/irate pair plus hit-ratio; $interval inlined."
+  - title: "MySQL Open Tables"
+    fidelity: PERFECT
+    notes: ""
+  - title: "MySQL Table Definition Cache"
+    fidelity: APPROXIMATE
+    notes: "opened_table_definitions rate requires counter typing."
+  - title: "I/O Activity"
+    fidelity: APPROXIMATE
+    notes: "Host filter dropped: mysql_up instance does not match node_exporter instance. Shows node_exporter pgpgin/pgpgout."
+  - title: "Memory Distribution"
+    fidelity: APPROXIMATE
+    notes: "Host filter dropped for the same instance split. Uses node_exporter 0.16 *_bytes names."
+  - title: "CPU Usage / Load"
+    fidelity: APPROXIMATE
+    notes: "Grafana per-mode stacked clamp_max(rate or irate)*100 plus Load on a second axis is not_feasible. Kibana shows overall non-idle busy % and load1 as overlay lines, without the mysql host filter. Load 1m is on the right axis without a % suffix."
+  - title: "Disk Latency"
+    fidelity: APPROXIMATE
+    notes: "Linux read/write latency ratio without AWS RDS fallback; host filter dropped."
+  - title: "Network Traffic"
+    fidelity: APPROXIMATE
+    notes: "node_exporter receive/transmit rates without RDS OSMetrics fallback; host filter dropped. Distinct from MySQL Network Traffic."
+  - title: "Swap Activity"
+    fidelity: APPROXIMATE
+    notes: "Host filter dropped; pswpin/pswpout * 4096."

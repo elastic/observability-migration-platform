@@ -3130,6 +3130,95 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("RATE(", esql)
         self.assertNotIn("IRATE(", esql)
 
+    def test_mysql_network_or_chain_drops_absent_cloud_fallback(self):
+        """Percona MySQL Overview: ``sum(rate(node)) or sum(irate(node)) or sum(rds)``.
+
+        When live field-caps prove the RDS/OSMetrics series absent, keep the
+        Linux node_exporter operand instead of emitting COALESCE over an
+        unknown column (which 400s the whole panel into a markdown placeholder).
+        """
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.node_network_receive_bytes_total": {
+                    "double": {
+                        "type": "double",
+                        "time_series_metric": "counter",
+                        "searchable": True,
+                        "aggregatable": True,
+                    }
+                },
+                "labels.device": {"keyword": {"searchable": True, "aggregatable": True}},
+                "labels.instance": {"keyword": {"searchable": True, "aggregatable": True}},
+            }
+        )
+        expr = (
+            'sum(rate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
+            'or sum(irate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
+            'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[5m])) '
+            'or sum(max_over_time(rdsosmetrics_network_rx{instance="$host"}[5m]))'
+        )
+        translated = self.translate(expr, resolver=resolver)
+        self.assertNotEqual(translated.feasibility, "not_feasible", translated.warnings)
+        esql = translated.esql_query or ""
+        self.assertIn("node_network_receive_bytes_total", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("rdsosmetrics_network_rx", esql)
+        self.assertNotIn("IRATE(", esql)
+
+    def test_mysql_network_or_chain_keeps_cloud_fallback_without_field_caps(self):
+        """Offline / no caps: still COALESCE both sides (issue #167)."""
+        expr = (
+            'sum(rate(node_network_receive_bytes_total{device!="lo"}[5m])) '
+            'or sum(max_over_time(rdsosmetrics_network_rx[5m]))'
+        )
+        translated = self.translate(expr)
+        self.assertNotEqual(translated.feasibility, "not_feasible", translated.warnings)
+        esql = translated.esql_query or ""
+        self.assertIn("node_network_receive_bytes_total", esql)
+        self.assertIn("rdsosmetrics_network_rx", esql)
+
+    def test_mysql_disk_latency_or_chain_drops_absent_aws_fallback(self):
+        """Percona Disk Latency: ``sum((rate/rate) or (irate/irate) or aws_rds)``.
+
+        Nested set-or inside sum was not_feasible. With live field-caps that
+        prove the AWS RDS series absent, prefer the Linux disk ratio.
+        """
+        counter = {
+            "double": {
+                "type": "double",
+                "time_series_metric": "counter",
+                "searchable": True,
+                "aggregatable": True,
+            }
+        }
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.node_disk_read_time_seconds_total": counter,
+                "metrics.node_disk_reads_completed_total": counter,
+                "labels.device": {"keyword": {"searchable": True, "aggregatable": True}},
+                "labels.instance": {"keyword": {"searchable": True, "aggregatable": True}},
+            }
+        )
+        expr = (
+            "sum((rate(node_disk_read_time_seconds_total{device!~\"dm-.+\"}[5m]) "
+            "/ rate(node_disk_reads_completed_total{device!~\"dm-.+\"}[5m])) "
+            "or (irate(node_disk_read_time_seconds_total{device!~\"dm-.+\"}[5m]) "
+            "/ irate(node_disk_reads_completed_total{device!~\"dm-.+\"}[5m])) "
+            "or avg_over_time(aws_rds_read_latency_average[5m]))"
+        )
+        translated = self.translate(expr, resolver=resolver)
+        self.assertNotEqual(
+            translated.feasibility,
+            "not_feasible",
+            msg=f"warnings={translated.warnings} query={translated.esql_query}",
+        )
+        esql = translated.esql_query or ""
+        self.assertIn("node_disk_read_time_seconds_total", esql)
+        self.assertIn("node_disk_reads_completed_total", esql)
+        self.assertIn("RATE(", esql)
+        self.assertNotIn("aws_rds_read_latency_average", esql)
+        self.assertNotIn("IRATE(", esql)
+
     def test_load_over_nested_cpu_count_aligns_groupings(self):
         """Docker/node Load panel: ``load / count by(job, instance)(count by(..., cpu)(...))``.
 
@@ -4868,6 +4957,87 @@ class TranslatorRegressionTests(unittest.TestCase):
             joined,
         )
 
+    def test_native_promql_rate_or_irate_graph_collapses_to_left(self):
+        """Grafana MySQL/Percona ``rate(M[$interval]) or irate(M[5m])`` is a
+        same-metric window fallback. Native PROMQL rejects ``or``; collapse to
+        the left operand so the graph stays on the PROMQL path."""
+        expr = (
+            "rate(mysql_global_status_questions{instance=\"$host\"}[$interval]) "
+            "or irate(mysql_global_status_questions{instance=\"$host\"}[5m])"
+        )
+        panel = {
+            "title": "MySQL Questions",
+            "type": "graph",
+            "targets": [{"refId": "A", "expr": expr, "legendFormat": "Questions"}],
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test")
+        set_runtime_feature(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test")
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("mysql_global_status_questions", query)
+        self.assertNotRegex(query, r"\bor\b")
+        self.assertNotIn("irate(", query.lower())
+        joined = " ".join(result.notes) + " ".join(result.reasons)
+        self.assertRegex(joined, r"(?i)same-metric.*or|preferred left")
+
+    def test_native_promql_bare_gauge_singlestat_keeps_bytes_format(self):
+        """Grafana 5 singlestat gauges (Uptime, buffer-pool size) are bare
+        selectors. Keep them native and map panel ``format: bytes`` into Lens."""
+        panel = {
+            "title": "InnoDB Buffer Pool Size",
+            "type": "singlestat",
+            "format": "bytes",
+            "decimals": 0,
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": 'mysql_global_variables_innodb_buffer_pool_size{instance="$host"}',
+                }
+            ],
+        }
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test")
+        set_runtime_feature(rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test")
+
+        yaml_panel, _result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertIn("PROMQL", query)
+        self.assertIn("mysql_global_variables_innodb_buffer_pool_size", query)
+        self.assertIn("| STATS value = LAST(value, step)", query)
+        primary = yaml_panel["esql"].get("primary") or {}
+        fmt = primary.get("format") or {}
+        self.assertEqual(fmt.get("type"), "bytes")
+        self.assertEqual(fmt.get("decimals"), 0)
+
     def test_native_promql_distinct_metric_ratio_with_macro_stays_native_on_gauge(self):
         """The single-value distinct-metric gate must count metrics from the
         *cleaned* expression, not the raw one. A common Grafana ratio uses a
@@ -5633,6 +5803,45 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(metrics_by_field["receive"].get("format"), {"type": "bytes"})
         self.assertEqual(metrics_by_field["transmit"].get("format"), {"type": "bytes", "suffix": "/s"})
         self.assertNotIn("Merged compatible panel targets into a single ES|QL query", result.reasons)
+
+    def test_series_override_right_axis_none_clears_inherited_format(self):
+        """Grafana CPU Usage / Load: left axis is percent, Load 1m is yaxis 2
+        with format none. The overlay must not keep the % suffix."""
+        panel = {
+            "id": 910,
+            "type": "graph",
+            "title": "CPU Usage / Load",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "yaxes": [
+                {"format": "percent", "show": True},
+                {"format": "none", "show": True},
+            ],
+            "seriesOverrides": [{"alias": "Load 1m", "yaxis": 2}],
+            "targets": [
+                {
+                    "expr": "avg(rate(node_cpu_seconds_total{mode!=\"idle\"}[1m])) * 100",
+                    "refId": "A",
+                    "legendFormat": "busy",
+                },
+                {
+                    "expr": "node_load1",
+                    "refId": "C",
+                    "legendFormat": "Load 1m",
+                },
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        metrics_by_field = {
+            metric.get("label") or metric["field"]: metric
+            for metric in yaml_panel["esql"]["metrics"]
+        }
+        load = metrics_by_field["Load 1m"]
+        self.assertEqual(load.get("axis"), "right")
+        self.assertNotEqual((load.get("format") or {}).get("suffix"), "%")
+        self.assertNotIn("format", load)
 
     def test_series_override_stack_false_marks_overlay_metrics(self):
         """kubernetes-mixin CPU/Memory Usage: stack containers but not requests/limits."""
@@ -12981,6 +13190,21 @@ class TestDisplayMetadata(unittest.TestCase):
         from observability_migration.targets.kibana.emit.display import extract_grafana_unit
         self.assertEqual(extract_grafana_unit({}), "")
 
+    def test_extract_unit_from_legacy_singlestat_format(self):
+        from observability_migration.targets.kibana.emit.display import extract_grafana_unit
+        self.assertEqual(extract_grafana_unit({"format": "bytes"}), "bytes")
+        self.assertEqual(extract_grafana_unit({"format": "s"}), "s")
+        self.assertEqual(extract_grafana_unit({"format": "percent"}), "percent")
+        self.assertEqual(extract_grafana_unit({"format": "time_series"}), "")
+
+    def test_extract_unit_prefers_field_config_over_legacy_format(self):
+        from observability_migration.targets.kibana.emit.display import extract_grafana_unit
+        panel = {
+            "format": "bytes",
+            "fieldConfig": {"defaults": {"unit": "percent"}},
+        }
+        self.assertEqual(extract_grafana_unit(panel), "percent")
+
     def test_unit_to_yaml_format_bytes(self):
         from observability_migration.targets.kibana.emit.display import grafana_unit_to_yaml_format
         fmt = grafana_unit_to_yaml_format("bytes")
@@ -17430,10 +17654,18 @@ class NativePromqlTests(unittest.TestCase):
 
     def test_rejects_or_binary_op(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        from observability_migration.adapters.source.grafana.promql import collapse_or_for_native_promql
         self.assertFalse(can_use_native_promql("foo or bar"))
         self.assertFalse(can_use_native_promql(
             "rate(http_requests_total[5m]) or vector(0)"
         ))
+        collapsed = collapse_or_for_native_promql(
+            "rate(mysql_global_status_queries[$interval]) "
+            "or irate(mysql_global_status_queries[5m])"
+        )
+        self.assertNotIn(" or ", collapsed)
+        self.assertIn("rate(mysql_global_status_queries", collapsed)
+        self.assertTrue(can_use_native_promql(collapsed))
 
     def test_rejects_and_binary_op(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
@@ -17649,8 +17881,16 @@ class NativePromqlTests(unittest.TestCase):
         yaml_panel, _result = self.translate_panel(panel)
         self.assertEqual(yaml_panel["esql"]["type"], "gauge")
 
-    def test_stat_panel_with_multi_series_skips_native_promql(self):
+    def test_stat_panel_bare_selector_stays_native_promql(self):
+        """Grafana 5 singlestat gauges (``up``, MySQL uptime) are bare
+        selectors. Keep them on native PROMQL and collapse with LAST."""
         panel = self._make_panel("up", panel_type="stat")
+        _, result = self.translate_panel(panel)
+        self.assertEqual(result.query_ir.get("family"), "native_promql")
+        self.assertIn("PROMQL index=", result.esql_query or "")
+
+    def test_stat_panel_with_grouped_series_skips_native_promql(self):
+        panel = self._make_panel("sum by (job) (up)", panel_type="stat")
         _, result = self.translate_panel(panel)
         self.assertNotEqual(result.query_ir.get("family"), "native_promql")
         self.assertNotIn("PROMQL index=", result.esql_query or "")
@@ -17687,6 +17927,36 @@ class NativePromqlTests(unittest.TestCase):
             result.query_ir.get("clean_expression"),
             'node_filesystem_avail_bytes{instance="node-1"}',
         )
+
+    def test_ignored_labels_are_stripped_from_native_promql_matchers(self):
+        """Helm ``release`` filters must not become ``?release`` on native PROMQL.
+
+        Mixed ``metrics-*`` often has a kernel ``release`` field. A synthesized
+        control bound to that field empties every panel that still filters on
+        the Prometheus ``release`` label.
+        """
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            KIBANA_PROMQL_CONTROL_PARAMS,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
+        set_runtime_feature(
+            self.rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test"
+        )
+        set_runtime_feature(
+            self.rule_pack, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test"
+        )
+        self.rule_pack.ignored_labels = list(self.rule_pack.ignored_labels) + ["release"]
+        panel = self._make_panel(
+            'pg_settings_max_connections{release="$release", instance="$instance"}',
+            panel_type="stat",
+        )
+        yaml_panel, result = self.translate_panel(panel)
+        query = result.esql_query or (yaml_panel.get("esql") or {}).get("query") or ""
+        self.assertIn("PROMQL", query)
+        self.assertNotIn("release", query)
+        self.assertIn("?instance", query)
 
     def test_query_ir_target_query_is_promql_command(self):
         panel = self._make_panel("rate(foo[5m])")
