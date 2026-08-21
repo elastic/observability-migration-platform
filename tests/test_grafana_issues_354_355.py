@@ -14,10 +14,14 @@ cross-series Min/Avg/Max into per-group duplicates of the raw series.
 
 from __future__ import annotations
 
+import re
 import unittest
 from types import SimpleNamespace
 
 from observability_migration.adapters.source.grafana import panels, rules, schema
+
+_KEYWORD = {"keyword": {"type": "keyword", "searchable": True, "aggregatable": True}}
+_DOUBLE = {"double": {"type": "double", "aggregatable": True}}
 
 
 def _translate(panel):
@@ -29,6 +33,42 @@ def _translate(panel):
         rule_pack=rp,
         resolver=schema.SchemaResolver(rp),
     )
+
+
+def _translate_with_schema(panel, fields):
+    """Translate *panel* against a resolver whose target fields are proven.
+
+    Legend-derived grouping is only kept once ``field_exists`` confirms every
+    resolved field, so a target that declares no ``by()`` of its own can only
+    reach a grouped translation through a resolver like this one. Seeding
+    follows ``tests/test_multi_target_merge_aliases.py``.
+    """
+    rp = rules.RulePackConfig()
+    resolver = schema.SchemaResolver(rp, field_profile="prometheus_native")
+    resolver._discovery_attempted = True
+    resolver._field_cache = dict(fields)
+    resolver._discovered_mappings = {}
+    resolver._schema_profile_cache_id = None
+    return panels.translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rp,
+        resolver=resolver,
+    )
+
+
+def _summary_stats_lines(query):
+    """Every ``| STATS`` line in *query* computing a cross-series summary
+    aggregate (the Min/Avg/Max trio issue #355 is about)."""
+    return [ln for ln in query.splitlines() if ln.startswith("| STATS") and "Min = " in ln]
+
+
+def _grouping_dims(stats_line):
+    """A ``| STATS`` line's grouping dimensions, excluding the time bucket."""
+    by_clause = stats_line.split(" BY ", 1)[1] if " BY " in stats_line else ""
+    by_clause = re.sub(r"time_bucket = TBUCKET\([^)]*\)", "", by_clause)
+    return [part.strip() for part in by_clause.split(",") if part.strip()]
 
 
 class ClearDisagreeingFusedLegendTemplateTests(unittest.TestCase):
@@ -350,6 +390,98 @@ class BareAggregationScopeSplitTests(unittest.TestCase):
         main_metrics = bare_first_native["esql"].get("metrics") or []
         self.assertTrue(main_metrics)
         self.assertNotEqual(main_metrics[0].get("label"), "Avg")
+
+
+class IoWaitSchemaInferredGroupingTests(unittest.TestCase):
+    """Issue #355's panel exactly as dashboard 9852 ships it.
+
+    ``BareAggregationScopeSplitTests`` above declares the per-series grouping
+    with an explicit ``sum(...) by (cpu)``, which reaches the split straight
+    from the parsed ``by()`` clause. The real "IO Wait per core" panel has no
+    ``by()`` at all: its ``instance``/``cpu``/``mode`` grouping is recovered
+    from the ``{{ instance }} CPU {{ cpu }}/{{ mode }}`` legend and only
+    survives once the resolver proves those labels are real target fields.
+    That is a second, schema-dependent route into the split, so a regression
+    that only broke *it* would pass the explicit-``by()`` fixture above.
+    """
+
+    _EXPR = (
+        'rate(node_cpu_seconds_total{cpu=~"$CPU", instance=~"$Node", '
+        'mode="iowait"}[$RateInterval])'
+    )
+    _FIELDS = {
+        "labels.instance": _KEYWORD,
+        "labels.cpu": _KEYWORD,
+        "labels.mode": _KEYWORD,
+        "metrics.node_cpu_seconds_total": _DOUBLE,
+    }
+
+    def _io_wait_panel(self):
+        """Verbatim from grafana.com dashboard 9852 revision 1, panel id 2."""
+        return {
+            "id": 2,
+            "type": "graph",
+            "title": "IO Wait per core",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": self._EXPR,
+                    "legendFormat": "{{ instance }} CPU {{ cpu }}/{{ mode }}",
+                },
+                {"refId": "B", "expr": f"min({self._EXPR})", "legendFormat": "Min"},
+                {"refId": "C", "expr": f"avg({self._EXPR})", "legendFormat": "Avg"},
+                {"refId": "D", "expr": f"max({self._EXPR})", "legendFormat": "Max"},
+            ],
+        }
+
+    def test_schema_inferred_grouping_still_splits_the_bare_aggregations(self):
+        native, result = _translate_with_schema(self._io_wait_panel(), self._FIELDS)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        layers = native["esql"].get("layers") or []
+        self.assertEqual(len(layers), 1, native["esql"])
+        summary_query = layers[0]["query"]
+        self.assertIn("Min = MIN(RATE(metrics.node_cpu_seconds_total))", summary_query)
+        self.assertIn("Avg = AVG(RATE(metrics.node_cpu_seconds_total))", summary_query)
+        self.assertIn("Max = MAX(RATE(metrics.node_cpu_seconds_total))", summary_query)
+        summary_lines = _summary_stats_lines(summary_query)
+        self.assertEqual(len(summary_lines), 1, summary_query)
+        self.assertEqual(_grouping_dims(summary_lines[0]), [])
+
+    def test_grouped_layer_keeps_every_legend_derived_dimension(self):
+        native, _result = _translate_with_schema(self._io_wait_panel(), self._FIELDS)
+        primary_query = native["esql"]["query"]
+        stats = next(line for line in primary_query.splitlines() if line.startswith("| STATS"))
+        for field in ("labels.instance", "labels.cpu", "labels.mode"):
+            self.assertIn(field, stats)
+        # Series identity for the ten per-core lines rides on the composite
+        # breakdown column, not on the summary layer's aggregates.
+        self.assertEqual(native["esql"].get("breakdown"), {"field": "series_group"})
+        self.assertNotIn("Min", primary_query)
+        self.assertNotIn("Avg", primary_query)
+        self.assertNotIn("Max", primary_query)
+
+    def test_warning_names_the_changed_semantics(self):
+        _native, result = _translate_with_schema(self._io_wait_panel(), self._FIELDS)
+        joined = " ".join(result.reasons or [])
+        self.assertIn("Min, Avg, Max", joined)
+        self.assertIn("separate summary layer aggregated across every series", joined)
+
+    def test_summary_aggregates_are_never_grouped_per_series(self):
+        """The #355 bug was Min/Avg/Max landing inside the per-core ``BY``. That
+        must not happen on any translation of this panel, including one whose
+        grouping the resolver cannot prove -- there, no target is grouped at
+        all, so there is nothing for the aggregates to be grouped by either."""
+        for label, (native, _result) in {
+            "proven schema": _translate_with_schema(self._io_wait_panel(), self._FIELDS),
+            "no schema discovery": _translate(self._io_wait_panel()),
+        }.items():
+            esql = native["esql"]
+            queries = [esql["query"], *(layer["query"] for layer in esql.get("layers") or [])]
+            summary_lines = [ln for query in queries for ln in _summary_stats_lines(query)]
+            self.assertTrue(summary_lines, f"{label}: no summary aggregate emitted: {queries}")
+            for line in summary_lines:
+                self.assertEqual(_grouping_dims(line), [], f"{label}: {line}")
 
 
 if __name__ == "__main__":
