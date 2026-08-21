@@ -557,10 +557,10 @@ For the Redis 12776 pack specifically:
 | `parity-rig/curated/grafana_12776_redis/docker-compose.yml` | Docker test stack (ES + Kibana + Grafana + Redis + redis_exporter + Prometheus) |
 | `parity-rig/curated/grafana_12776_redis/grafana_provisioning/` | Grafana dashboard + datasource provisioning |
 | `parity-rig/curated/grafana_12776_redis/prometheus.yml` | Prometheus scrape + remote_write config |
-| `observability_migration/adapters/source/grafana/rules.py` | `resolve_pack_for_dashboard()`, `_load_curated_pack_for()`, drift warning |
+| `observability_migration/adapters/source/grafana/rules.py` | `resolve_pack_for_dashboard()`, `_load_curated_pack_for()` |
 | `observability_migration/adapters/source/grafana/cli.py` | Call `resolve_pack_for_dashboard` per dashboard; `--no-curated-packs` flag |
 | `observability_migration/app/cli.py` | Forward `--no-curated-packs` in unified CLI |
-| `tests/test_curated_packs.py` | Registry lookup, merge correctness, drift detection, no-curated-packs opt-out |
+| `tests/test_curated_packs.py` | Registry lookup, merge correctness, provenance-pin shape, manifest-vs-registry consistency, no-curated-packs opt-out |
 | `tests/curated/test_grafana_12776_redis.py` | Redis pack fixture tests (offline) |
 
 ---
@@ -573,7 +573,7 @@ For the Redis 12776 pack specifically:
 - **User override**: User `--rules-file` always wins over curated pack on key collision.
 - **No panel abandoned**: All panels get best-effort treatment. BEST_EFFORT replaces NOT_FEASIBLE — find the closest Kibana alternative, document the delta.
 - **Layout curation**: Curated packs control Kibana grid layout, not just queries/visuals.
-- **Dashboard version drift**: Packs pin `gnet_revision`; migration warns (not errors) on mismatch and still applies the pack.
+- **Dashboard version drift**: Packs pin `gnet_revision`/`dashboard_sha256` as maintainer-verified provenance only; migration never compares them against the incoming dashboard and emits no drift warning (issue #350 — see "At migration time — no revision comparison" above). A pack that has fallen behind its upstream dashboard is caught per-panel instead, by the dropped-source-metric disclosure.
 
 ---
 
