@@ -106,7 +106,7 @@ High confidence (Grafana) requires **all** of: `evidence_level: full`, `blockers
 - Do **not** invent Grafana `evidence_level` / `preflight_report.json` semantics for Datadog.
 - Do **not** imply `$PROMETHEUS_URL`/`$LOKI_URL` (or other) env vars exist for the source-validation flags; pass literal URLs.
 - Do **not** present `static_analysis` results as a guarantee panels will render against live data.
-- Do **not** treat `datasource_audit.non_migratable: []` as a clean datasource bill — also read `unresolved_datasource_variables`. A panel whose datasource is `$datasource` rather than a literal type can hide InfluxDB/SQL until that list is empty.
+- Do **not** treat `datasource_audit.non_migratable: []` as a clean datasource bill — also read `unresolved_datasource_variables`. A panel whose datasource is `$datasource` rather than a literal type can hide InfluxDB/SQL until that list is empty. A concrete `datasource.type` with a `${DS_*}` uid (Grafana marketplace export) is **not** unresolved.
 - Do **not** restate inventory counts as "readiness" — that is `scan-o11y-environment`.
 - Do **not** claim `obs-migrate migrate` accepts `--prometheus-url` / `--loki-url` — use `grafana-migrate` for those.
 

@@ -33,6 +33,7 @@ class VerdictTests(unittest.TestCase):
         # "passed". Anything beyond the shape ceiling is a numeric FAIL.
         c = po.Comparison(expr="x", esql="TS ...", common_series=1, compared_points=5, max_relative_error=0.9)
         self.assertEqual(c.verdict(), "FAIL")
+        self.assertIn("SHAPE_PASS ceiling", c.fail_reason)
 
     def test_exact_25pct_boundary_is_shape_pass(self):
         c = po.Comparison(expr="x", esql="TS ...", common_series=1, compared_points=5, max_relative_error=0.25)

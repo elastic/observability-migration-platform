@@ -51,6 +51,14 @@ def relative_error_at_or_below_ceiling(
         return True
     return (error - ceiling) <= ulps * math.ulp(max(abs(ceiling), abs(error)))
 
+
+def _shape_pass_ceiling_fail_reason(max_relative_error: float) -> str:
+    return (
+        f"max_relative_error {max_relative_error:.3f} exceeds "
+        f"SHAPE_PASS ceiling {SHAPE_PASS_MAX_RELATIVE_ERROR:.2f}; "
+        "series labels overlap but values diverge"
+    )
+
 # The translator rewrites well-known Prometheus labels to their OTel/ECS field names
 # (e.g. ``job`` -> ``service.name``). Canonicalize the translated side back to the
 # Prometheus names so series keys align with the native PROMQL output (and so the
@@ -142,11 +150,7 @@ class Comparison:
         if relative_error_at_or_below_ceiling(self.max_relative_error):
             return "SHAPE_PASS" if self.common_series else "FAIL"
         if not self.fail_reason:
-            self.fail_reason = (
-                f"max_relative_error {self.max_relative_error:.3f} exceeds "
-                f"SHAPE_PASS ceiling {SHAPE_PASS_MAX_RELATIVE_ERROR:.2f}; "
-                "series labels overlap but values diverge"
-            )
+            self.fail_reason = _shape_pass_ceiling_fail_reason(self.max_relative_error)
         return "FAIL"
 
 
@@ -1715,4 +1719,11 @@ def compare_panel(request, *, source_query: str, translated_query: str, index: s
             )
     elif cmp_.compared_points == 0:
         cmp_.fail_reason = "no overlapping time buckets between native and translated points"
+    elif (
+        cmp_.common_series
+        and cmp_.compared_points
+        and not relative_error_at_or_below_ceiling(cmp_.max_relative_error)
+        and not cmp_.fail_reason
+    ):
+        cmp_.fail_reason = _shape_pass_ceiling_fail_reason(cmp_.max_relative_error)
     return cmp_

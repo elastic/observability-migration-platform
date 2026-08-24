@@ -1,6 +1,7 @@
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -575,6 +576,132 @@ class DatasourceAuditVariableTests(unittest.TestCase):
             any("datasource template variable" in blocker for blocker in report.get("blockers", [])),
             report.get("blockers"),
         )
+
+    def test_prometheus_type_with_templated_uid_is_not_unresolved(self):
+        panel = SimpleNamespace(
+            datasource_type="prometheus",
+            datasource_name="",
+            datasource_uid="${DS_PROM}",
+            status="migrated",
+            grafana_type="stat",
+            verification_packet={},
+            readiness="",
+        )
+        result = SimpleNamespace(
+            dashboard_title="Redis 763",
+            panel_results=[panel],
+            inventory={},
+            total_panels=1,
+        )
+
+        audit = preflight.build_datasource_audit([result])
+
+        self.assertEqual(audit["datasource_types"], {"prometheus": 1})
+        self.assertEqual(audit["unresolved_datasource_panels"], 0)
+        self.assertEqual(audit["unresolved_datasource_variables"], [])
+        self.assertEqual(audit["non_migratable"], [])
+
+        report = preflight.build_preflight_report(
+            [result],
+            validation_summary={},
+            validation_records=[],
+            verification_payload={},
+            schema_contract={
+                "required_indexes": {},
+                "required_fields": {},
+                "counter_expectations": {},
+                "totals": {},
+            },
+            datasource_audit=audit,
+        )
+        self.assertFalse(
+            any("datasource template variable" in blocker for blocker in report.get("blockers", [])),
+            report.get("blockers"),
+        )
+
+    def test_inputs_declared_ds_placeholder_resolves_to_plugin_id(self):
+        inventory = manifest.build_dashboard_inventory({
+            "__inputs": [
+                {
+                    "name": "DS_PROMETHEUS",
+                    "type": "datasource",
+                    "pluginId": "prometheus",
+                },
+            ],
+            "templating": {"list": []},
+            "panels": [],
+        })
+        self.assertEqual(
+            inventory["datasource_variables"],
+            [{"name": "DS_PROMETHEUS", "type": "prometheus"}],
+        )
+
+        panel = SimpleNamespace(
+            datasource_type="",
+            datasource_name="${DS_PROMETHEUS}",
+            datasource_uid="${DS_PROMETHEUS}",
+        )
+        result = SimpleNamespace(
+            dashboard_title="Prometheus All",
+            panel_results=[panel],
+            inventory=inventory,
+        )
+
+        audit = preflight.build_datasource_audit([result])
+
+        self.assertEqual(audit["datasource_types"], {"prometheus": 1})
+        self.assertEqual(audit["unresolved_datasource_panels"], 0)
+        self.assertEqual(audit["non_migratable"], [])
+
+    def test_templating_list_overrides_inputs_for_same_variable_name(self):
+        inventory = manifest.build_dashboard_inventory({
+            "__inputs": [
+                {"name": "datasource", "type": "datasource", "pluginId": "prometheus"},
+            ],
+            "templating": {
+                "list": [
+                    {"name": "datasource", "type": "datasource", "query": "influxdb"},
+                ],
+            },
+            "panels": [],
+        })
+        self.assertEqual(
+            inventory["datasource_variables"],
+            [{"name": "datasource", "type": "influxdb"}],
+        )
+
+    def test_redis_763_marketplace_export_stays_prometheus(self):
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "parity-rig/curated/grafana_763_redis_exporter"
+            / "grafana_provisioning/dashboards/redis_763.json"
+        )
+        dashboard = json.loads(path.read_text())
+        inventory = manifest.build_dashboard_inventory(dashboard)
+        panels = []
+        for panel in dashboard.get("panels") or []:
+            if not isinstance(panel, dict):
+                continue
+            ds = panel.get("datasource")
+            if not isinstance(ds, dict):
+                continue
+            panels.append(
+                SimpleNamespace(
+                    datasource_type=str(ds.get("type") or ""),
+                    datasource_name="",
+                    datasource_uid=str(ds.get("uid") or ""),
+                )
+            )
+        self.assertGreaterEqual(len(panels), 1)
+        result = SimpleNamespace(
+            dashboard_title="Redis",
+            panel_results=panels,
+            inventory=inventory,
+        )
+        audit = preflight.build_datasource_audit([result])
+        self.assertEqual(audit["datasource_types"].get("prometheus"), len(panels))
+        self.assertNotIn("variable_ref", audit["datasource_types"])
+        self.assertEqual(audit["unresolved_datasource_panels"], 0)
 
 
 if __name__ == "__main__":

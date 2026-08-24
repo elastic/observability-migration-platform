@@ -262,14 +262,22 @@ def build_datasource_audit(results: list[Any]) -> dict[str, Any]:
             ds_type_raw = str(getattr(pr, "datasource_type", "") or "")
             ds_name_raw = str(getattr(pr, "datasource_name", "") or "")
             ds_uid_raw = str(getattr(pr, "datasource_uid", "") or "")
-            var_token = next(
-                (
-                    token
-                    for token in (ds_type_raw, ds_name_raw, ds_uid_raw)
-                    if _is_grafana_variable_ref(token)
-                ),
-                "",
+            # A marketplace export of {"type": "prometheus", "uid": "${DS_PROM}"}
+            # already has a concrete type. The uid placeholder is late-bound and
+            # does not change migratability — do not reclassify it as unresolved.
+            type_is_concrete = bool(ds_type_raw.strip()) and not _is_grafana_variable_ref(
+                ds_type_raw
             )
+            var_token = ""
+            if not type_is_concrete:
+                var_token = next(
+                    (
+                        token
+                        for token in (ds_type_raw, ds_name_raw, ds_uid_raw)
+                        if _is_grafana_variable_ref(token)
+                    ),
+                    "",
+                )
             ds_type = ds_type_raw.lower()
             ds_name = ds_name_raw or ds_type
             if var_token:
@@ -1032,18 +1040,11 @@ def build_preflight_report(
             f"({', '.join(sorted(set(non_mig_types))[:5])})"
         )
     unresolved_panels = int(datasource_audit.get("unresolved_datasource_panels", 0) or 0)
-    unresolved_vars = datasource_audit.get("unresolved_datasource_variables") or []
     if unresolved_panels:
         blockers.append(
             f"{unresolved_panels} panels use a datasource template variable that "
             "preflight could not resolve to a concrete type; non_migratable may "
             "be empty even when those panels cannot migrate"
-        )
-    elif unresolved_vars:
-        blockers.append(
-            f"{len(unresolved_vars)} unresolved datasource template variable(s) "
-            "could not be resolved to a concrete type; non_migratable may be "
-            "empty even when those panels cannot migrate"
         )
 
     if unconfirmed_counters:

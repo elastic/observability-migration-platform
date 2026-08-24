@@ -5758,6 +5758,73 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
         self.assertEqual(result["skipped"][0]["reason"], "existing_rules_inventory_failed")
 
+    def test_create_rules_from_payloads_fails_closed_when_listing_is_truncated(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(*_args, **_kwargs):
+            raise AssertionError("must not create when rule listing was truncated")
+
+        def _fake_list(*_args, per_page=100, page=1, **_kwargs):
+            return {
+                "data": [
+                    {
+                        "id": f"rule-{page}",
+                        "name": "[migrated] other",
+                        "tags": ["obs-migration"],
+                    }
+                ],
+                "total": 5000,
+            }
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(result["skipped"][0]["reason"], "existing_rules_inventory_failed")
+
+    def test_list_all_rules_fail_closed_raises_when_max_pages_truncates(self):
+        from observability_migration.targets.kibana.alerting import (
+            RuleInventoryError,
+            _list_all_rules,
+        )
+
+        def _fake_list(*_args, page=1, **_kwargs):
+            return {"data": [{"id": f"rule-{page}", "name": "x", "tags": []}], "total": 5}
+
+        with self.assertRaises(RuleInventoryError) as ctx:
+            _list_all_rules(
+                "http://kibana:5601",
+                list_rules_fn=_fake_list,
+                per_page=1,
+                max_pages=2,
+                fail_closed=True,
+            )
+        self.assertIn("truncated", str(ctx.exception).lower())
+
     def test_audit_migrated_rules_optionally_disables_enabled_rules(self):
         from observability_migration.targets.kibana.alerting import audit_migrated_rules
 

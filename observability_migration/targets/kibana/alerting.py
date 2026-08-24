@@ -958,10 +958,12 @@ def _list_all_rules(
     ``list_rules`` converts HTTP/auth failures to ``{error, data: []}``. When
     ``fail_closed`` is true those errors raise ``RuleInventoryError`` so callers
     that need a complete inventory (alert-rule creation) do not treat a failed
-    GET as an empty space.
+    GET as an empty space. Exhausting ``max_pages`` before ``total`` is reached
+    also raises, so a truncated listing cannot look like a complete inventory.
     """
     lister = list_rules_fn or list_rules
     all_rules: list[dict[str, Any]] = []
+    total_available: int | None = None
     for page in range(1, max_pages + 1):
         payload = lister(
             kibana_url,
@@ -984,9 +986,18 @@ def _list_all_rules(
         if not isinstance(page_rules, list) or not page_rules:
             break
         all_rules.extend(rule for rule in page_rules if isinstance(rule, dict))
-        total = int(payload.get("total", len(all_rules)) or len(all_rules))
-        if len(all_rules) >= total:
+        total_available = int(payload.get("total", len(all_rules)) or len(all_rules))
+        if len(all_rules) >= total_available:
             break
+    if (
+        fail_closed
+        and total_available is not None
+        and len(all_rules) < total_available
+    ):
+        raise RuleInventoryError(
+            f"Kibana rule listing truncated after {max_pages} pages "
+            f"({len(all_rules)} of {total_available} rules)"
+        )
     return all_rules
 
 
