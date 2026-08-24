@@ -435,6 +435,25 @@ bash scripts/run_migration.sh --skip-data
 bash scripts/run_migration.sh --skip-upload
 ```
 
+### Curated Pack Pin Verification
+
+`observability_migration/adapters/source/grafana/curated_packs/registry.yaml`
+pins each curated pack's exact grafana.com `gnet_revision` and canonical-JSON
+`dashboard_sha256` — a maintainer provenance check (issue #350), not a
+migration-time gate. Re-verify after touching a pack or its registry entry, or
+before re-pinning to a newer revision (requires network; mirrors
+`scripts/fetch_community_corpus.py`'s `canonical_sha256` pattern; not part of
+`make test`):
+
+```bash
+.venv/bin/python scripts/verify_curated_pack_pins.py
+.venv/bin/python scripts/verify_curated_pack_pins.py --gnet-id 1860
+```
+
+`tests/test_verify_curated_pack_pins.py` covers the hashing/parsing logic
+offline (mocked download); `tests/test_curated_packs.py` guards the registry's
+shape (required fields, unique ids/names/paths/hashes, hex-digest format).
+
 ### Schema / Lint / Layout
 
 ```bash
