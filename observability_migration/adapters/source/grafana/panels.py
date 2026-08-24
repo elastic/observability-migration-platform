@@ -693,6 +693,11 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         preferred_group_labels.extend(style_labels)
     legend_labels = _extract_legend_labels(target.get("legendFormat", ""))
     legend_contributed = False
+    # Legend placeholders are display aliases on stat/gauge status grids — they
+    # are not complete series identity (``{{job}}`` would merge instances) and
+    # must not widen a scalar outer aggregation. Bargauge still uses a legend
+    # placeholder as its categorical breakdown column. XY panels may hint the
+    # label; ``_drop_legend_labels_if_redundant`` decides whether it is real.
     if not summary_mode or panel_type == "bargauge":
         for lbl in legend_labels:
             if lbl not in preferred_group_labels:
@@ -717,9 +722,8 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
     # from the dashboard-wide per-metric label map (other panels' by()/filters, template
     # variables). Tagged "dashboard_inferred" so the inference is auditable.
     #
-    # Skip single-value panels (stat/gauge/bargauge/piechart -> summary_mode): they
-    # intentionally render one current value, so adding an inferred breakdown would change
-    # the panel's type/intent. Their own explicit legend/by() labels still apply above.
+    # Skip inferred dashboard-wide labels on summary panels: those are a guess.
+    # Explicit PromQL ``by()`` remains authoritative; legend text is not.
     #
     # Also skip panels whose own expression already carries an explicit by()/without()
     # clause: that grouping is authoritative and the translator honors it directly, so

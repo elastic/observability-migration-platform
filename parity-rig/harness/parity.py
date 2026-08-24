@@ -26,6 +26,7 @@ Verdicts:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -55,6 +56,18 @@ OUTPUT_DIR = Path(
 )
 
 ES_HEADERS = {"Authorization": f"ApiKey {ES_KEY}", "Content-Type": "application/json"}
+
+SHAPE_PASS_MAX_RELATIVE_ERROR = 0.25
+_SHAPE_PASS_CEILING_ULPS = 4
+
+
+def _relative_error_at_or_below_ceiling(error: float, ceiling: float = SHAPE_PASS_MAX_RELATIVE_ERROR) -> bool:
+    """True when ``error`` is at or below ``ceiling``, including float ULP overshoot."""
+    if not math.isfinite(error) or error < 0:
+        return False
+    if error <= ceiling:
+        return True
+    return (error - ceiling) <= _SHAPE_PASS_CEILING_ULPS * math.ulp(max(abs(ceiling), abs(error)))
 
 PROMETHEUS_ONLY_LABELS = frozenset({
     "__name__", "instance", "job",
@@ -137,7 +150,7 @@ class PanelComparison:
             return "STRICT_PASS"
         if self.max_relative_error <= 0.05:
             return "FUZZY_PASS"
-        if self.common_series_count > 0:
+        if self.common_series_count > 0 and _relative_error_at_or_below_ceiling(self.max_relative_error):
             return "SHAPE_PASS"
         return "FAIL"
 

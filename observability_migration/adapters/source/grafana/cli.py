@@ -2159,6 +2159,9 @@ def _run_preflight_reporting(
         parts = [f"{t}:{c}" for t, c in ds_types.items()]
         non_mig = datasource_audit.get("non_migratable_panels", 0)
         extra = f" ({non_mig} non-migratable)" if non_mig else ""
+        unresolved = datasource_audit.get("unresolved_datasource_panels", 0)
+        if unresolved:
+            extra += f" ({unresolved} unresolved datasource variables)"
         print(f"    Datasource audit: {', '.join(parts)}{extra}")
 
     complexity_scores = build_dashboard_complexity(results)

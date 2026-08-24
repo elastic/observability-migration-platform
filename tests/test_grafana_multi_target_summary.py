@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from observability_migration.adapters.source.grafana import panels, rules, schema
 
 _ONLY_ONE = "only 1 could be migrated"
@@ -105,3 +107,64 @@ def test_windows_drop_suffix_only_when_all_dropped_are_windows():
         assert "dropped targets are Windows-specific)" not in joined or (
             "of the dropped targets are Windows-specific" in joined
         )
+
+
+def test_stat_status_grid_does_not_invent_legend_grouping():
+    """Grafana stat panels draw one tile per series (a status grid).
+
+    ``legendFormat: {{job}}`` is a display alias, not series identity. Promoting
+    it to ``BY job`` would merge instances that share a job, and is not a
+    complete reconstruction of Grafana's per-series tiles. The collapse must
+    stay operator-visible instead of being hidden behind a partial BY.
+    """
+    yaml_panel, result = _translate_stat(
+        [
+            {
+                "refId": "A",
+                "expr": "up",
+                "legendFormat": "{{job}}",
+            }
+        ]
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or result.esql_query or ""
+    by_clause = ""
+    for line in query.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("BY ") or " BY " in stripped.upper():
+            by_clause += " " + stripped
+    assert "service.name" not in by_clause.lower(), query
+    assert not re.search(r"\bBY\b.*\bjob\b", by_clause, re.IGNORECASE), query
+    assert result.status == "migrated_with_warnings"
+    assert result.reasons, "status-grid collapse must be operator-visible"
+
+
+def test_stat_outer_aggregation_legend_does_not_widen_scalar():
+    """``sum(rate(...))`` is a scalar; ``{{job}}`` must not add ``BY job``."""
+    yaml_panel, result = _translate_stat(
+        [
+            {
+                "refId": "A",
+                "expr": "sum(rate(http_requests_total[5m]))",
+                "legendFormat": "{{job}}",
+            }
+        ]
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or result.esql_query or ""
+    assert "service.name" not in query, query
+    assert not re.search(r"\bBY\b[^\n]*\bjob\b", query, re.IGNORECASE), query
+    assert result.status in {"migrated", "migrated_with_warnings"}
+
+
+def test_ungrouped_stat_up_warns_when_series_collapse():
+    """Bare ``up`` still fans out to one Grafana tile per scrape target."""
+    _yaml_panel, result = _translate_stat(
+        [
+            {
+                "refId": "A",
+                "expr": "up",
+            }
+        ]
+    )
+    assert result.status == "migrated_with_warnings"
+    joined = " ".join(result.reasons or []).lower()
+    assert "collapse" in joined or "drop" in joined, result.reasons

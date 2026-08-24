@@ -2590,6 +2590,28 @@ class TestMapAlertToKibanaPayload(unittest.TestCase):
         self.assertEqual(result["automation_tier"], "manual_required")
         self.assertFalse(result["valid"])
         self.assertEqual(result["rule_payload"], {})
+        reason = (result.get("payload_status_reason") or "").lower()
+        self.assertIn("logql", reason)
+        self.assertIn("dashboard", reason)
+
+    def test_emitted_grafana_rule_records_empty_actions_gap(self):
+        ir = build_alerting_ir_from_grafana_unified(
+            _grafana_unified_prometheus_rule(),
+            datasource_map={"prometheus": {"type": "prometheus", "name": "Prometheus"}},
+        )
+        result = map_alert_to_kibana_payload(ir)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["rule_payload"]["actions"], [])
+        self.assertIn("obs-migration-no-actions", result["rule_payload"]["tags"])
+        self.assertTrue(
+            any(
+                "notify nobody" in str(loss).lower()
+                or "empty actions" in str(loss).lower()
+                or "notification policies" in str(loss).lower()
+                for loss in result["losses"]
+            ),
+            result["losses"],
+        )
 
     def test_grafana_unified_review_gates_identify_no_data_only_blocker(self):
         ir = build_alerting_ir_from_grafana_unified(
@@ -3338,7 +3360,10 @@ class TestGrafanaAlertComparisonArtifact(unittest.TestCase):
         row = comparison["alerts"][0]
         self.assertEqual(row["target"]["automation_tier"], "manual_required")
         self.assertTrue(row["blocked_reasons"])
-        self.assertTrue(any("No source-faithful target query" in reason for reason in row["blocked_reasons"]))
+        self.assertTrue(
+            any("logql" in reason.lower() for reason in row["blocked_reasons"]),
+            row["blocked_reasons"],
+        )
 
     def test_build_alert_comparison_results_includes_review_gates(self):
         from observability_migration.adapters.source.grafana.alerts import build_alert_comparison_results
@@ -4872,6 +4897,9 @@ class TestGrafanaAlertPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "observability_migration.targets.kibana.alerting.create_rule",
             side_effect=_fake_create_rule,
+        ), patch(
+            "observability_migration.targets.kibana.alerting.list_rules",
+            return_value={"data": [], "total": 0},
         ):
             alert_pipeline.create_rules_if_requested(
                 args=args,
@@ -5139,6 +5167,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             api_key="key",
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
@@ -5190,6 +5219,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             create_rule_fn=_fake_create,
             ensure_data_view_fn=_fake_ensure_data_view,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
@@ -5233,6 +5263,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             create_rule_fn=_fake_create,
             ensure_data_view_fn=_fake_ensure_data_view,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
@@ -5269,6 +5300,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             create_rule_fn=_fake_create,
             ensure_data_view_fn=_fake_ensure_data_view,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
@@ -5330,6 +5362,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             api_key="key",
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(len(calls), 1)
@@ -5387,6 +5420,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             api_key="key",
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         # By default both automated and draft-requires-review tiers are created;
@@ -5444,6 +5478,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             # A hypothetical future tier opted into creation.
             creatable_tiers=frozenset({"automated", "some_future_tier"}),
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"]["created"], 1)
@@ -5479,6 +5514,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             api_key="key",
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"]["created"], 1)
@@ -5506,6 +5542,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             "http://kibana:5601",
             items,
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"], {"created": 0, "failed": 1, "skipped": 0})
@@ -5539,6 +5576,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             "http://kibana:5601",
             items,
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertEqual(result["summary"]["created"], 1)
@@ -5572,11 +5610,220 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
             items,
             preflight=preflight,
             create_rule_fn=_fake_create,
+            list_rules_fn=lambda *_a, **_k: {"data": [], "total": 0},
         )
 
         self.assertTrue(result["preflight_unreachable"])
         self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
         self.assertEqual(result["skipped"][0]["reason"], "preflight_unreachable")
+
+    def test_create_rules_from_payloads_skips_existing_migrated_name(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(*_args, **_kwargs):
+            raise AssertionError("must not duplicate an existing migrated rule")
+
+        def _fake_list(*_args, **_kwargs):
+            return {
+                "data": [
+                    {
+                        "id": "existing-1",
+                        "name": "[migrated] CPU high",
+                        "enabled": False,
+                        "tags": ["obs-migration"],
+                    }
+                ],
+                "total": 1,
+            }
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(result["skipped"][0]["reason"], "already_exists")
+        self.assertEqual(result["skipped"][0]["existing_id"], "existing-1")
+
+    def test_create_rules_from_payloads_does_not_skip_untagged_same_name(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        created = []
+
+        def _fake_create(*_args, **kwargs):
+            created.append(kwargs)
+            return {"id": "new-1", "name": kwargs["name"], "enabled": False}
+
+        def _fake_list(*_args, **_kwargs):
+            return {
+                "data": [
+                    {
+                        "id": "user-1",
+                        "name": "[migrated] CPU high",
+                        "enabled": False,
+                        "tags": [],
+                    }
+                ],
+                "total": 1,
+            }
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 1, "failed": 0, "skipped": 0})
+        self.assertTrue(created)
+
+    def test_create_rules_from_payloads_fails_closed_when_listing_errors(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(*_args, **_kwargs):
+            raise AssertionError("must not create when rule listing failed")
+
+        def _fake_list(*_args, **_kwargs):
+            return {"error": "401 unauthorized", "data": [], "total": 0}
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(result["skipped"][0]["reason"], "existing_rules_inventory_failed")
+
+    def test_create_rules_from_payloads_fails_closed_when_listing_is_truncated(self):
+        from observability_migration.targets.kibana.alerting import (
+            create_rules_from_payloads,
+        )
+
+        def _fake_create(*_args, **_kwargs):
+            raise AssertionError("must not create when rule listing was truncated")
+
+        def _fake_list(*_args, per_page=100, page=1, **_kwargs):
+            return {
+                "data": [
+                    {
+                        "id": f"rule-{page}",
+                        "name": "[migrated] other",
+                        "tags": ["obs-migration"],
+                    }
+                ],
+                "total": 5000,
+            }
+
+        items = [
+            {
+                "alert_id": "grafana-1",
+                "name": "CPU high",
+                "kind": "grafana_unified",
+                "payload": {
+                    "rule_type_id": ".es-query",
+                    "name": "CPU high",
+                    "consumer": "alerts",
+                    "schedule": {"interval": "1m"},
+                    "params": {"esqlQuery": {"esql": "FROM metrics-*"}},
+                    "actions": [],
+                    "tags": [],
+                },
+            },
+        ]
+
+        result = create_rules_from_payloads(
+            "http://kibana:5601",
+            items,
+            api_key="key",
+            create_rule_fn=_fake_create,
+            list_rules_fn=_fake_list,
+        )
+
+        self.assertEqual(result["summary"], {"created": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(result["skipped"][0]["reason"], "existing_rules_inventory_failed")
+
+    def test_list_all_rules_fail_closed_raises_when_max_pages_truncates(self):
+        from observability_migration.targets.kibana.alerting import (
+            RuleInventoryError,
+            _list_all_rules,
+        )
+
+        def _fake_list(*_args, page=1, **_kwargs):
+            return {"data": [{"id": f"rule-{page}", "name": "x", "tags": []}], "total": 5}
+
+        with self.assertRaises(RuleInventoryError) as ctx:
+            _list_all_rules(
+                "http://kibana:5601",
+                list_rules_fn=_fake_list,
+                per_page=1,
+                max_pages=2,
+                fail_closed=True,
+            )
+        self.assertIn("truncated", str(ctx.exception).lower())
 
     def test_audit_migrated_rules_optionally_disables_enabled_rules(self):
         from observability_migration.targets.kibana.alerting import audit_migrated_rules

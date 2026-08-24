@@ -31,7 +31,7 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
   - **create/update dashboards** via the typed Dashboards API — `PUT /api/dashboards/{id}` (default `obs-migrate upload` / `migrate --upload` path)
   - **read** saved objects / list dashboards — `obs-migrate cluster list-dashboards` (Serverless uses `_export`)
   - **manage data views** — `GET/POST/DELETE /api/data_views/...`
-  - **create alert rules** (only if migrating alerts) — `POST /api/alerting/rule`
+  - **create alert rules** (only if migrating alerts) — `POST /api/alerting/rule` **and** `GET /api/alerting/rules/_find` (creation fails closed unless it can inventory existing migrated rules)
   - **read** target indices for field validation — ES `_field_caps`
   - **delete migrated alert rules** — `obs-migrate delete-rules` (dry-run by default; `--confirm` to delete)
 

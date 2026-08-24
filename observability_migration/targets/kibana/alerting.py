@@ -359,6 +359,21 @@ DEFAULT_MIGRATED_RULE_TAG = "obs-migration"
 DEFAULT_REVIEW_RULE_TAG = "obs-migration-review"
 DEFAULT_MIGRATED_RULE_NAME_PREFIX = "[migrated] "
 
+
+class RuleInventoryError(RuntimeError):
+    """Raised when the existing-rule listing cannot be completed."""
+
+
+def _rule_has_marker_tag(rule: dict[str, Any], marker_tag: str) -> bool:
+    """True when ``rule`` carries the creation marker tag (exact tag match)."""
+    if not marker_tag:
+        return False
+    tags = rule.get("tags")
+    if not isinstance(tags, list):
+        return False
+    return marker_tag in {str(tag) for tag in tags if str(tag)}
+
+
 # Automation tiers whose translated payloads we create in Kibana by default.
 # Both fully-automated and draft (review-required) translations land a real,
 # disabled rule the user can inspect; only manual_required is held back because
@@ -618,6 +633,7 @@ def create_rules_from_payloads(
     verify: bool | str = True,
     create_rule_fn: Any | None = None,
     ensure_data_view_fn: Any | None = None,
+    list_rules_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Create Kibana alerting rules from a batch of emitted rule payloads.
 
@@ -707,6 +723,44 @@ def create_rules_from_payloads(
         }
         return summary
 
+    existing_by_name: dict[str, dict[str, Any]] = {}
+    try:
+        listed_rules = _list_all_rules(
+            kibana_url,
+            api_key=api_key,
+            space_id=space_id,
+            timeout=timeout,
+            verify=verify,
+            list_rules_fn=list_rules_fn,
+            fail_closed=True,
+        )
+    except RuleInventoryError as exc:
+        for item in items:
+            summary["skipped"].append(
+                {
+                    "alert_id": item["alert_id"],
+                    "name": item["name"],
+                    "kind": item["kind"],
+                    "reason": "existing_rules_inventory_failed",
+                    "error": str(exc),
+                }
+            )
+        summary["summary"] = {
+            "created": 0,
+            "failed": 0,
+            "skipped": len(items),
+        }
+        print(
+            "ERROR: cannot create alert rules because the existing-rule inventory "
+            f"failed ({exc}); refusing to duplicate migrated rules.",
+            file=sys.stderr,
+        )
+        return summary
+    for rule in listed_rules:
+        name = str(rule.get("name") or "")
+        if name and _rule_has_marker_tag(rule, marker_tag) and name not in existing_by_name:
+            existing_by_name[name] = rule
+
     for item in items:
         tier = item.get("automation_tier", "")
         if not _tier_is_creatable(tier, tiers):
@@ -738,6 +792,18 @@ def create_rules_from_payloads(
             rule_name = f"{name_prefix}{rule_name_source}"
         else:
             rule_name = rule_name_source
+        existing = existing_by_name.get(rule_name)
+        if existing:
+            summary["skipped"].append(
+                {
+                    "alert_id": item["alert_id"],
+                    "name": item["name"],
+                    "kind": item["kind"],
+                    "reason": "already_exists",
+                    "existing_id": str(existing.get("id") or ""),
+                }
+            )
+            continue
         existing_tags = [str(t) for t in (payload.get("tags") or []) if str(t)]
         tags = list(existing_tags)
         if marker_tag and marker_tag not in tags:
@@ -804,14 +870,36 @@ def create_rules_from_payloads(
                 "rule_type_id": rule_type_id,
                 "enabled": bool(response.get("enabled", False)),
                 "kind": item["kind"],
+                "actions_empty": not bool(payload.get("actions")),
             }
         )
+        existing_by_name[rule_name] = {
+            "id": str(response.get("id", "") or ""),
+            "name": rule_name,
+            "tags": tags,
+        }
 
     summary["summary"] = {
         "created": len(summary["created"]),
         "failed": len(summary["failed"]),
         "skipped": len(summary["skipped"]),
     }
+    already_exists = sum(1 for row in summary["skipped"] if row.get("reason") == "already_exists")
+    empty_actions_created = sum(1 for row in summary["created"] if row.get("actions_empty"))
+    if already_exists:
+        print(
+            f"WARNING: skipped {already_exists} Kibana alerting rule(s) that already "
+            f"exist (tagged {marker_tag}); re-running --create-alert-rules does not "
+            "duplicate them.",
+            file=sys.stderr,
+        )
+    if empty_actions_created:
+        print(
+            f"WARNING: {empty_actions_created} created rule(s) have empty actions; "
+            "source notification policies/handles are not mapped onto Kibana "
+            "connectors. Enabling them evaluates and notifies nobody.",
+            file=sys.stderr,
+        )
     return summary
 
 
@@ -863,10 +951,19 @@ def _list_all_rules(
     max_pages: int = 20,
     verify: bool | str = True,
     list_rules_fn: Any | None = None,
+    fail_closed: bool = False,
 ) -> list[dict[str, Any]]:
-    """Page through every rule in the space and return them flattened."""
+    """Page through every rule in the space and return them flattened.
+
+    ``list_rules`` converts HTTP/auth failures to ``{error, data: []}``. When
+    ``fail_closed`` is true those errors raise ``RuleInventoryError`` so callers
+    that need a complete inventory (alert-rule creation) do not treat a failed
+    GET as an empty space. Exhausting ``max_pages`` before ``total`` is reached
+    also raises, so a truncated listing cannot look like a complete inventory.
+    """
     lister = list_rules_fn or list_rules
     all_rules: list[dict[str, Any]] = []
+    total_available: int | None = None
     for page in range(1, max_pages + 1):
         payload = lister(
             kibana_url,
@@ -878,14 +975,29 @@ def _list_all_rules(
             verify=verify,
         )
         if not isinstance(payload, dict):
+            if fail_closed:
+                raise RuleInventoryError("Kibana rule listing returned a non-dict payload")
+            break
+        if payload.get("error"):
+            if fail_closed:
+                raise RuleInventoryError(str(payload.get("error") or "Kibana rule listing failed"))
             break
         page_rules = payload.get("data", [])
         if not isinstance(page_rules, list) or not page_rules:
             break
         all_rules.extend(rule for rule in page_rules if isinstance(rule, dict))
-        total = int(payload.get("total", len(all_rules)) or len(all_rules))
-        if len(all_rules) >= total:
+        total_available = int(payload.get("total", len(all_rules)) or len(all_rules))
+        if len(all_rules) >= total_available:
             break
+    if (
+        fail_closed
+        and total_available is not None
+        and len(all_rules) < total_available
+    ):
+        raise RuleInventoryError(
+            f"Kibana rule listing truncated after {max_pages} pages "
+            f"({len(all_rules)} of {total_available} rules)"
+        )
     return all_rules
 
 

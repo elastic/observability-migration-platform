@@ -63,16 +63,16 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
    ```
 
    `audit-rules` is read-only unless `--disable-enabled` is passed. JSON includes `migrated_rules_seen`, `enabled_migrated_rule_ids`, `disabled_migrated_rule_ids`. Exit is non-zero while enabled migrated rules remain (or remediation fails).
-6. **Review connectors/actions manually** — confirm each rule's connector exists, credentials work, destination is production-correct, escalation policy is accepted, and message templates still make sense in Kibana. The migration can create rule shells; connector/action parity is not automatically proven unless the artifacts and Kibana review show it.
+6. **Review connectors/actions — required, not optional** — Grafana notification policies are **not** mapped onto Kibana connectors. Every emitted migrated rule has empty `actions` and is tagged `obs-migration-no-actions`. Enabling a rule as-is evaluates the query, can go into alert state, and **pages no one**. Confirm each rule has a connector attached, credentials work, destination is production-correct, escalation policy is accepted, and message templates still make sense in Kibana. Treat `obs-migration-no-actions` as **DO NOT ENABLE** until that work is done.
 7. **Canary before bulk enablement** — enable one low-risk rule first (in Kibana UI), watch execution history for several cycles, then enable by tier/owner. Keep source alerts running during overlap.
 
 > **Time field (fallback only).** Migrated `.es-query` rules always carry `params.timeField: "@timestamp"` in the created rule — confirm with `GET /api/alerting/rule/{id}`. That persisted value is what Kibana uses to bound each evaluation to the lookback window. The rule wizard's **Select a time field** step only *displays* `@timestamp` once Kibana can resolve the rule's target index/data view; if that index is missing or empty (e.g. `Unknown index "metrics-..."`, **Test query** disabled), the wizard may show the field as unset even though the persisted value is correct — in that state, fix the target data rather than re-saving from the wizard. Only set the field manually for rules created **before** migrations included it.
 
 ## Enablement decision
 
-- **READY TO ENABLE** — comparison clean enough for owner, upload succeeded (or audit shows disabled migrated rules), `verify-alert-rules` passed **or** was N/A because only non-emitted monitors remain and those are explicitly excluded, connectors/actions reviewed, rollback path known.
-- **ENABLE WITH CONDITIONS** — owner accepts semantic losses or muted/no-action canary period.
-- **DO NOT ENABLE** — `no_emitted_rule_payloads` / all `manual_required`, rule failed/skipped creation, comparison has unresolved semantic gaps, connector routing unknown, target data/field mapping is unresolved, or rollback owner is missing.
+- **READY TO ENABLE** — comparison clean enough for owner, upload succeeded (or audit shows disabled migrated rules), `verify-alert-rules` passed **or** was N/A because only non-emitted monitors remain and those are explicitly excluded, **connectors/actions attached (no `obs-migration-no-actions` left, or the tag is present but a connector was added in Kibana)**, rollback path known.
+- **ENABLE WITH CONDITIONS** — owner accepts semantic losses **and** has attached connectors (empty `actions` is not an acceptable canary — nobody gets paged).
+- **DO NOT ENABLE** — `no_emitted_rule_payloads` / all `manual_required`, rule failed/skipped creation, comparison has unresolved semantic gaps, **`actions` still empty / tagged `obs-migration-no-actions` with no connector attached**, target data/field mapping is unresolved, or rollback owner is missing.
 
 ## Rollback / safety
 
@@ -94,8 +94,11 @@ Source/Elastic credentials: `connect-to-o11y-source` (and your env exports).
 
 ## Honest limits / Do NOT enable
 
-- **Do NOT enable migrated alert rules solely because they were created.** Creation proves the payload was accepted, not that production notifications are safe.
-- **Do NOT claim connectors/actions are migrated perfectly without inspecting the rule and destination.** Notification semantics may need manual review.
+- **Do NOT enable migrated alert rules solely because they were created.** Creation proves the payload was accepted, not that production notifications are safe. Created rules are **disabled** and have **empty `actions`**.
+- **Do NOT enable a rule tagged `obs-migration-no-actions` until a Kibana connector is attached.** Grafana notification policies are not migrated. Enable-as-is evaluates and pages nobody — the worst silent failure for an observability migration.
+- **LogQL / Loki unified alerts are always `manual_required` by policy**, even when the same LogQL translates as a dashboard panel. That is not a translator bug; do not enable a dashboard-translated LogQL expression as if it were a Kibana rule.
+- **Do NOT claim connectors/actions are migrated perfectly without inspecting the rule and destination.** Notification semantics need manual review; `actions: []` is expected, not success.
+- **Re-running `--create-alert-rules` skips existing `[migrated]` names** (`already_exists`) instead of duplicating them. A second run that reports skips is not a failure.
 - **Do NOT treat `verify-alert-rules` as a persistent enablement step.** It is self-cleaning unless `--keep-rules`; it proves create/disabled/cleanup behavior.
 - **Do NOT treat `no_emitted_rule_payloads` as a green verify.** It means there was nothing to create.
 - **Do NOT run `delete-rules --confirm` without explicit user approval.** Dry run first.

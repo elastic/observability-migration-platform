@@ -264,10 +264,40 @@ def build_dashboard_inventory(dashboard: dict[str, Any]) -> dict[str, Any]:
     annotation_list = annotations.get("list", []) if isinstance(annotations, dict) else []
     templating = dashboard.get("templating") or {}
     variables = templating.get("list", []) if isinstance(templating, dict) else []
+    datasource_variables: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+    for var in variables or []:
+        if not isinstance(var, dict):
+            continue
+        if str(var.get("type") or "").strip().lower() != "datasource":
+            continue
+        name = str(var.get("name") or "").strip()
+        if not name:
+            continue
+        seen_names.add(name)
+        datasource_variables.append({
+            "name": name,
+            "type": str(var.get("query") or "").strip().lower(),
+        })
+    # Grafana "Export for sharing externally" declares ${DS_*} in __inputs
+    # (name → pluginId), not templating.list. Fill gaps so marketplace
+    # dashboards resolve instead of becoming unresolved blockers.
+    for item in dashboard.get("__inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "datasource":
+            continue
+        name = str(item.get("name") or "").strip()
+        plugin_id = str(item.get("pluginId") or "").strip().lower()
+        if not name or name in seen_names or not plugin_id:
+            continue
+        seen_names.add(name)
+        datasource_variables.append({"name": name, "type": plugin_id})
     return {
         "links": len(dashboard.get("links", []) or []),
         "annotations": len(annotation_list or []),
         "variables": len(variables or []),
+        "datasource_variables": datasource_variables,
         "rows": len(dashboard.get("rows", []) or []),
         "panels": len(dashboard.get("panels", []) or []),
         "folder_title": str((dashboard.get("_grafana_meta") or {}).get("folderTitle") or ""),

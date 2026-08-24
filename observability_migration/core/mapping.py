@@ -22,6 +22,13 @@ ES_QUERY_RULE_TYPE = ".es-query"
 INDEX_THRESHOLD_RULE_TYPE = ".index-threshold"
 CUSTOM_THRESHOLD_RULE_TYPE = "observability.rules.custom_threshold"
 
+NO_ACTIONS_RULE_TAG = "obs-migration-no-actions"
+EMPTY_ACTIONS_LOSS = (
+    "Kibana rule actions are empty; Grafana notification policies and Datadog "
+    "notification handles are not mapped onto Kibana connectors. Enabling this "
+    "rule evaluates and notifies nobody."
+)
+
 # Kibana enforces a minimum rule schedule of 60s; alert-delay math divides the
 # pending period by the effective check interval, so an unknown/empty schedule
 # falls back to this same floor.
@@ -866,6 +873,13 @@ def _manual_boundary_reason(ir: AlertingIR) -> str:
     reason = _manual_only_family_reason(ir)
     if reason:
         return reason
+    source_query = _primary_source_query(ir)
+    if _source_query_language(source_query) == "logql":
+        return (
+            "LogQL alerting queries are not auto-emitted even when the same "
+            "expression translates in a dashboard panel; alert evaluation, "
+            "reduce, and threshold mapping stay manual_required"
+        )
     for warning in ir.warnings or []:
         text = str(warning or "").strip()
         if text:
@@ -1382,8 +1396,11 @@ def map_alert_to_kibana_payload(
         "params": params,
         "actions": [],
         "enabled": False,
-        "tags": ["obs-migration", f"source:{ir.kind}", *extra_tags],
+        "tags": ["obs-migration", f"source:{ir.kind}", NO_ACTIONS_RULE_TAG, *extra_tags],
     }
+    if EMPTY_ACTIONS_LOSS not in losses:
+        losses.append(EMPTY_ACTIONS_LOSS)
+        ir.losses = list(losses)
 
     # Carry over Grafana's pending period as Kibana's "Alert delay" so migrated
     # rules fire only after a sustained breach rather than on the first check.

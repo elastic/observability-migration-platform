@@ -136,7 +136,7 @@ Output: `reports/parity-report.json`. Verdicts (per panel):
 |---|---|
 | `STRICT_PASS` | Every comparable bucket within 1 %. |
 | `FUZZY_PASS`  | Within 5 %. |
-| `SHAPE_PASS`  | Series label sets overlap but numerics diverge > 5 %. |
+| `SHAPE_PASS`  | Series label sets overlap but numerics diverge more than 5 % and at most 25 %. Above 25 % is `FAIL`. Read `max_relative_error`; do not treat the verdict name as numeric proof. |
 | `FAIL_NO_OVERLAP` | Disjoint series sets — usually a real translation gap or source-data quirk. |
 | `ERROR`       | One side raised an error. |
 | `SKIP`        | Translator returned `not_feasible` or the PromQL uses a construct (`topk`, `histogram_quantile`, etc.) without a comparable ES|QL form. |

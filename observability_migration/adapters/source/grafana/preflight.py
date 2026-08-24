@@ -188,6 +188,34 @@ def _is_grafana_variable_ref(value: str) -> bool:
     return stripped.startswith("$") or stripped.startswith("${") or stripped.startswith("[[")
 
 
+def _grafana_variable_name(value: str) -> str:
+    """Return the template-variable name inside ``$var`` / ``${var}`` / ``[[var]]``."""
+    stripped = str(value or "").strip()
+    if stripped.startswith("${") and stripped.endswith("}"):
+        inner = stripped[2:-1]
+        return inner.split(":")[0].strip()
+    if stripped.startswith("[[") and stripped.endswith("]]"):
+        return stripped[2:-2].strip()
+    if stripped.startswith("$") and not stripped.startswith("${"):
+        return stripped[1:].split(":")[0].strip()
+    return ""
+
+
+def _datasource_variable_lookup(result: Any) -> dict[str, str]:
+    """Map Grafana datasource-variable names to their queried type (e.g. influxdb)."""
+    lookup: dict[str, str] = {}
+    inventory = getattr(result, "inventory", {}) or {}
+    for item in inventory.get("datasource_variables") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        ds_type = str(item.get("type") or "").strip().lower()
+        if name and ds_type:
+            lookup[name] = ds_type
+            lookup[name.lower()] = ds_type
+    return lookup
+
+
 def _is_uid_like(value: str) -> bool:
     """Heuristic: alphanumeric strings that are likely Grafana datasource UIDs."""
     stripped = value.strip()
@@ -222,19 +250,63 @@ def build_datasource_audit(results: list[Any]) -> dict[str, Any]:
     ds_panels: dict[str, int] = {}
     non_migratable: list[dict[str, str]] = []
     variable_refs: Counter = Counter()
+    unresolved_datasource_variables: list[dict[str, str]] = []
 
     seen_non_migratable: set[str] = set()
+    seen_unresolved: set[str] = set()
+    unresolved_panels = 0
     for result in results:
+        ds_var_lookup = _datasource_variable_lookup(result)
+        dashboard_title = str(getattr(result, "dashboard_title", "") or "")
         for pr in getattr(result, "panel_results", []) or []:
-            ds_type = str(getattr(pr, "datasource_type", "") or "").lower()
-            ds_name = str(getattr(pr, "datasource_name", "") or "") or ds_type
+            ds_type_raw = str(getattr(pr, "datasource_type", "") or "")
+            ds_name_raw = str(getattr(pr, "datasource_name", "") or "")
+            ds_uid_raw = str(getattr(pr, "datasource_uid", "") or "")
+            # A marketplace export of {"type": "prometheus", "uid": "${DS_PROM}"}
+            # already has a concrete type. The uid placeholder is late-bound and
+            # does not change migratability — do not reclassify it as unresolved.
+            type_is_concrete = bool(ds_type_raw.strip()) and not _is_grafana_variable_ref(
+                ds_type_raw
+            )
+            var_token = ""
+            if not type_is_concrete:
+                var_token = next(
+                    (
+                        token
+                        for token in (ds_type_raw, ds_name_raw, ds_uid_raw)
+                        if _is_grafana_variable_ref(token)
+                    ),
+                    "",
+                )
+            ds_type = ds_type_raw.lower()
+            ds_name = ds_name_raw or ds_type
+            if var_token:
+                var_name = _grafana_variable_name(var_token)
+                resolved_type = ds_var_lookup.get(var_name) or ds_var_lookup.get(var_name.lower())
+                if resolved_type:
+                    ds_type = resolved_type
+                    ds_name = ds_name_raw or ds_type
+                else:
+                    unresolved_panels += 1
+                    unresolved_key = f"{var_name or var_token.lower()}:{dashboard_title}"
+                    if unresolved_key not in seen_unresolved:
+                        seen_unresolved.add(unresolved_key)
+                        unresolved_datasource_variables.append({
+                            "variable": var_token,
+                            "name": var_name or var_token,
+                            "dashboard": dashboard_title,
+                        })
+                    ds_type = "variable_ref"
+                    ds_name = var_name or var_token
+
             key = f"{ds_type}:{ds_name}"
             ds_counter[key] += 1
             ds_panels[key] = ds_panels.get(key, 0) + 1
-
-            if _is_grafana_variable_ref(ds_type) or _is_grafana_variable_ref(ds_name):
+            if var_token:
                 variable_refs[key] += 1
-                continue
+                if ds_type == "variable_ref":
+                    continue
+
             if _is_uid_like(ds_type):
                 continue
             if ds_type in _KNOWN_MIGRATABLE_TYPES:
@@ -245,13 +317,13 @@ def build_datasource_audit(results: list[Any]) -> dict[str, Any]:
                 non_migratable.append({
                     "type": ds_type,
                     "name": ds_name,
-                    "dashboard": str(getattr(result, "dashboard_title", "")),
+                    "dashboard": dashboard_title,
                 })
 
     type_summary: Counter = Counter()
     for key, count in ds_counter.items():
         ds_type = key.split(":")[0] or "unknown"
-        if _is_grafana_variable_ref(ds_type):
+        if _is_grafana_variable_ref(ds_type) or ds_type == "variable_ref":
             type_summary["variable_ref"] += count
         elif _is_uid_like(ds_type):
             type_summary["uid_ref"] += count
@@ -262,6 +334,8 @@ def build_datasource_audit(results: list[Any]) -> dict[str, Any]:
         "datasource_types": dict(type_summary.most_common()),
         "datasource_details": dict(ds_counter.most_common()),
         "variable_refs": dict(variable_refs.most_common()),
+        "unresolved_datasource_variables": unresolved_datasource_variables,
+        "unresolved_datasource_panels": unresolved_panels,
         "non_migratable": non_migratable,
         "non_migratable_panels": sum(
             ds_panels.get(f"{item['type']}:{item['name']}", 0)
@@ -964,6 +1038,13 @@ def build_preflight_report(
         blockers.append(
             f"{non_mig_panels} panels use non-migratable datasources "
             f"({', '.join(sorted(set(non_mig_types))[:5])})"
+        )
+    unresolved_panels = int(datasource_audit.get("unresolved_datasource_panels", 0) or 0)
+    if unresolved_panels:
+        blockers.append(
+            f"{unresolved_panels} panels use a datasource template variable that "
+            "preflight could not resolve to a concrete type; non_migratable may "
+            "be empty even when those panels cannot migrate"
         )
 
     if unconfirmed_counters:

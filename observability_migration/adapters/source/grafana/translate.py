@@ -3681,6 +3681,10 @@ def simple_metric_family_rule(context):
         bucket = rp.ts_bucket
         physical_metric = _resolve_frag_metric_field(frag, resolver, prefer="gauge")
         stats_expr = f"MAX(LAST_OVER_TIME({physical_metric}))"
+        if context.metadata.get("summary_mode"):
+            warning = gauge_default_agg_warning(group_fields, frag.metric, "MAX")
+            if warning:
+                _append_unique(context.warnings, warning)
     elif can_use_ts_aggregated_gauge:
         source = "TS"
         time_filter = rp.ts_time_filter
