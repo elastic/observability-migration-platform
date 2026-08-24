@@ -511,7 +511,10 @@ class DatasourceAuditVariableTests(unittest.TestCase):
 
         self.assertTrue(audit["non_migratable"])
         self.assertEqual(audit["non_migratable"][0]["type"], "influxdb")
-        self.assertGreater(audit["non_migratable_panels"], 0)
+        self.assertEqual(audit["non_migratable_panels"], 1)
+        self.assertEqual(audit["datasource_types"], {"influxdb": 1})
+        self.assertEqual(sum(audit["datasource_types"].values()), 1)
+        self.assertEqual(audit["unresolved_datasource_panels"], 0)
 
     def test_unresolved_datasource_variable_is_not_a_clean_bill(self):
         panel = SimpleNamespace(
@@ -529,7 +532,49 @@ class DatasourceAuditVariableTests(unittest.TestCase):
 
         self.assertEqual(audit["non_migratable"], [])
         self.assertTrue(audit["unresolved_datasource_variables"])
-        self.assertGreater(audit["unresolved_datasource_panels"], 0)
+        self.assertEqual(audit["unresolved_datasource_panels"], 1)
+
+    def test_unresolved_datasource_type_variable_counts_panels_despite_case(self):
+        panel = SimpleNamespace(
+            datasource_type="${DS_INFLUX}",
+            datasource_name="",
+            datasource_uid="",
+            status="migrated",
+            grafana_type="stat",
+            verification_packet={},
+            readiness="",
+        )
+        result = SimpleNamespace(
+            dashboard_title="Case dash",
+            panel_results=[panel],
+            inventory={},
+            total_panels=1,
+        )
+
+        audit = preflight.build_datasource_audit([result])
+
+        self.assertEqual(audit["non_migratable"], [])
+        self.assertEqual(len(audit["unresolved_datasource_variables"]), 1)
+        self.assertEqual(audit["unresolved_datasource_panels"], 1)
+        self.assertEqual(sum(audit["datasource_types"].values()), 1)
+
+        report = preflight.build_preflight_report(
+            [result],
+            validation_summary={},
+            validation_records=[],
+            verification_payload={},
+            schema_contract={
+                "required_indexes": {},
+                "required_fields": {},
+                "counter_expectations": {},
+                "totals": {},
+            },
+            datasource_audit=audit,
+        )
+        self.assertTrue(
+            any("datasource template variable" in blocker for blocker in report.get("blockers", [])),
+            report.get("blockers"),
+        )
 
 
 if __name__ == "__main__":

@@ -89,10 +89,10 @@ The command writes **`comparison_report.json`** (machine-readable) and a sibling
 **Exit codes:**
 
 - **`2`** — Elasticsearch unreachable or invalid input (missing credentials, bad/missing `verification_packets.json`).
-- **`1`** — at least one panel parity check returned `FAIL` (or a live source comparison returned `SOURCE_FAIL`).
+- **`1`** — at least one panel parity check returned `FAIL` or `ERROR` (or a live source comparison returned `SOURCE_FAIL`).
 - **`0`** — otherwise (including runs where every row is `STRUCTURAL`, `SOURCE_DRIFT`, `SKIP`, or non-`FAIL` numeric verdicts).
 
-Besides **`FAIL`** / **`SOURCE_FAIL`** (which set exit `1`), verdicts **`ERROR`**, **`SKIP`**, **`SHAPE_PASS`**, and **`SOURCE_DRIFT`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` / target telemetry before trusting an all-green exit code. **`SHAPE_PASS` is bounded at 25% relative error; above that the row is `FAIL`.** Still read `max_relative_error` on every `SHAPE_PASS` row — a 20% miss is a pass-shaped name, not numeric proof.
+Besides **`FAIL`** / **`SOURCE_FAIL`** / **`ERROR`** (which set exit `1`), verdicts **`SKIP`**, **`SHAPE_PASS`**, and **`SOURCE_DRIFT`** do not fail the run but still warrant a look — route them to **`explain-migration-gaps`** or re-check `--window-minutes` / `--step-seconds` / target telemetry before trusting an all-green exit code. **`SHAPE_PASS` is bounded at 25% relative error; above that the row is `FAIL`.** Still read `max_relative_error` on every `SHAPE_PASS` row — a 20% miss is a pass-shaped name, not numeric proof.
 
 Route panels with verdict **`FAIL`** / **`SOURCE_FAIL`** or structural rows the user expected to be numerically verified to the **`explain-migration-gaps`** skill for rebuild guidance. Note that **`STRUCTURAL`** can also hide panels that migrated with **accepted approximations** (`migrated_with_warnings` / Datadog `warning`) — structural shape ≠ semantic fidelity; use `explain-migration-gaps` when the user expected numeric proof. For a shareable headline scorecard (not per-panel parity), use **`report-migration-coverage`**.
 

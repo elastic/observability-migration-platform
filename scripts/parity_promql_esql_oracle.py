@@ -60,6 +60,9 @@ from observability_migration.adapters.source.grafana.rules import RulePackConfig
 from observability_migration.adapters.source.grafana.translate import (
     translate_promql_to_esql,
 )
+from observability_migration.core.verification.parity_oracle import (
+    relative_error_at_or_below_ceiling,
+)
 
 CTX = ssl.create_default_context()
 
@@ -158,7 +161,7 @@ class Comparison:
             return "STRICT_PASS"
         if self.max_relative_error <= 0.05:
             return "FUZZY_PASS"
-        if self.max_relative_error <= 0.25:
+        if relative_error_at_or_below_ceiling(self.max_relative_error):
             return "SHAPE_PASS" if self.common_series else "FAIL"
         return "FAIL"
 

@@ -34,6 +34,22 @@ _HISTOGRAM_DIM_COLS = frozenset({"le", "quantile", "phi"})
 # SHAPE_PASS is "labels overlap, numerics are not close" — not a blank check.
 # Above this relative error the comparison is a FAIL, not a pass-shaped verdict.
 SHAPE_PASS_MAX_RELATIVE_ERROR = 0.25
+# Exact 25% ratios such as abs(0.3-0.4)/0.4 compute as 0.25000000000000006.
+_SHAPE_PASS_CEILING_ULPS = 4
+
+
+def relative_error_at_or_below_ceiling(
+    error: float,
+    ceiling: float = SHAPE_PASS_MAX_RELATIVE_ERROR,
+    *,
+    ulps: int = _SHAPE_PASS_CEILING_ULPS,
+) -> bool:
+    """True when ``error`` is at or below ``ceiling``, including float ULP overshoot."""
+    if not math.isfinite(error) or error < 0:
+        return False
+    if error <= ceiling:
+        return True
+    return (error - ceiling) <= ulps * math.ulp(max(abs(ceiling), abs(error)))
 
 # The translator rewrites well-known Prometheus labels to their OTel/ECS field names
 # (e.g. ``job`` -> ``service.name``). Canonicalize the translated side back to the
@@ -123,7 +139,7 @@ class Comparison:
             return "FUZZY_PASS"
         # SHAPE_PASS means labels overlap and numerics diverge moderately.
         # There used to be no ceiling, so 36-90% error still "passed".
-        if self.max_relative_error <= SHAPE_PASS_MAX_RELATIVE_ERROR:
+        if relative_error_at_or_below_ceiling(self.max_relative_error):
             return "SHAPE_PASS" if self.common_series else "FAIL"
         if not self.fail_reason:
             self.fail_reason = (

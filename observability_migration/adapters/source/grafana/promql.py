@@ -4082,9 +4082,12 @@ def _drop_legend_labels_if_redundant(
     measure-spec path (:func:`_build_measure_spec`) so arithmetic panels avoid the
     same distorting outer ``AVG`` the direct path does. All guards must hold to drop:
 
-    * **Non-summary panel** — the TSID split is a line-chart affordance; summary /
-      categorical panels (bargauge) render their breakdown from the explicit
-      ``output_group_fields`` column, so dropping there collapses per-series bars.
+    * **Summary panel** — drop legend-origin extras when the source expression
+      is already a scalar outer aggregation (``sum(rate(...))`` + ``{{job}}``
+      must not become ``BY job``). Other summary panels (bargauge) still keep a
+      requested legend-origin breakdown column.
+    * **Non-summary panel** — the TSID split is a line-chart affordance; XY
+      charts may still keep a proven legend-origin breakdown column (see below).
     * **Legend origin** — the labels came from ``legendFormat``, not an explicit
       PromQL ``by()`` (which is semantically meaningful and stays).
     * **Redundant on TS** — see :func:`_legend_grouping_redundant_on_ts`.
@@ -4095,6 +4098,11 @@ def _drop_legend_labels_if_redundant(
       unaffected.
     """
     if summary_mode:
+        # Do not widen a scalar outer aggregation (``sum(rate(...))`` + ``{{job}}``)
+        # into ``BY job``. Other summary panels (bargauge categorical breakdown)
+        # still keep a legend-origin column when one was requested.
+        if preferred_origin == "legend" and frag.outer_agg and not frag.group_labels:
+            return [field for field in group_fields if field == "time_bucket"]
         return group_fields
     if preferred_origin != "legend":
         return group_fields

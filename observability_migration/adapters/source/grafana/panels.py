@@ -693,11 +693,12 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
         preferred_group_labels.extend(style_labels)
     legend_labels = _extract_legend_labels(target.get("legendFormat", ""))
     legend_contributed = False
-    # Grafana stat/gauge/bargauge panels draw one tile (or bar) per series.
-    # Dropping legend placeholders here collapsed status grids such as
-    # Target health (``up`` + ``{{job}}``) into a single MAX()/LAST() scalar
-    # with status=migrated and zero reasons.
-    if not summary_mode or panel_type in {"bargauge", "stat", "singlestat", "gauge"}:
+    # Legend placeholders are display aliases on stat/gauge status grids — they
+    # are not complete series identity (``{{job}}`` would merge instances) and
+    # must not widen a scalar outer aggregation. Bargauge still uses a legend
+    # placeholder as its categorical breakdown column. XY panels may hint the
+    # label; ``_drop_legend_labels_if_redundant`` decides whether it is real.
+    if not summary_mode or panel_type == "bargauge":
         for lbl in legend_labels:
             if lbl not in preferred_group_labels:
                 preferred_group_labels.append(lbl)
@@ -722,8 +723,7 @@ def _target_translation_hints(panel, panel_type, target, metric_series_labels=No
     # variables). Tagged "dashboard_inferred" so the inference is auditable.
     #
     # Skip inferred dashboard-wide labels on summary panels: those are a guess.
-    # Explicit legend/by() labels still apply above — Grafana stat/gauge tiles
-    # are one-per-series, not a single scalar.
+    # Explicit PromQL ``by()`` remains authoritative; legend text is not.
     #
     # Also skip panels whose own expression already carries an explicit by()/without()
     # clause: that grouping is authoritative and the translator honors it directly, so
