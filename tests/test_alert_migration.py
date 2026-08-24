@@ -5675,7 +5675,7 @@ class TestKibanaAlertingPreflight(unittest.TestCase):
         created = []
 
         def _fake_create(*_args, **kwargs):
-            created.append(kwargs.get("name") or _args[0] if False else kwargs)
+            created.append(kwargs)
             return {"id": "new-1", "name": kwargs["name"], "enabled": False}
 
         def _fake_list(*_args, **_kwargs):
