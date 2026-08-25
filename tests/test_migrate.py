@@ -1818,6 +1818,7 @@ class TranslatorRegressionTests(unittest.TestCase):
             self.resolver.resolve_label("cluster", metric_field="kube_node_info"),
             "cluster",
         )
+        self.assertEqual(self.resolver.discovery_status()["status"], "partial")
 
     def test_resolve_label_user_override_still_wins(self):
         """A user-provided label_rewrites entry trumps everything else."""

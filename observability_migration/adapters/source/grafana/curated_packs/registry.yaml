@@ -105,7 +105,7 @@ packs:
     tags_hint: ["postgres", "db", "stats"]
     path: grafana_9628_postgresql_database
     gnet_revision: 1
-    dashboard_sha256: "521bac34065bcadedf255fc384550ae0528e9a74e91b4475e583b6afe9c39cc7"
+    dashboard_sha256: "2eda2afc28c140374b38d4bad2bc23b3e96667713a2187ad458117eb7ea131d4"
     description: "PostgreSQL Database — Helm release ignore, memory LAST_OVER_TIME, exporter start-time stand-in"
 
   - gnet_id: 14114
@@ -114,5 +114,5 @@ packs:
     tags_hint: ["postgres"]
     path: grafana_14114_postgres_exporter_quickstart
     gnet_revision: 1
-    dashboard_sha256: "5f90614f7ac6eebb6d7dbb784da58d1ef6602fe7c3eb135aa3055a34ad686042"
+    dashboard_sha256: "76b92bbeb9b2d8f3f8abec10b7cb016da87803deca34a99dddab9f668010a53d"
     description: "PostgreSQL Exporter mixin — pg_up Instance populate, unused job drop, bgwriter _total map"

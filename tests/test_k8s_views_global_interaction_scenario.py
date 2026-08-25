@@ -78,21 +78,10 @@ _QUERY_PANEL_TITLES = (
     "Network Received (loopback only) by instance",
 )
 
-_LIVE_QUERY_PANEL_TITLES = (
-    "Global CPU  Usage",
-    "Nodes",
-    "Kubernetes Resource Count",
-    "Namespaces",
-    "CPU Usage",
-    "Running Pods",
-    "Cluster CPU Utilization",
-    "CPU Utilization by instance",
-    "CPU Throttled seconds by namespace",
-    "CPU Core Throttled by instance",
-    "Kubernetes Pods Status Reason",
-    "OOM Events by namespace",
-    "Container Restarts by namespace",
-)
+# Offline ``--control-schema`` is a partial hint list, not exhaustive
+# field-caps. Every query panel must still emit a query (and bind ``cluster``);
+# treating unlisted metrics as proven-absent previously dropped most of these.
+_LIVE_QUERY_PANEL_TITLES = _QUERY_PANEL_TITLES
 
 _JOB_AFFECTED_STABLE_IDS = (
     "0.1",

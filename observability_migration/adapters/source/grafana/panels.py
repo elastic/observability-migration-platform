@@ -1146,7 +1146,6 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
         if metric_fields and len(metric_fields) > 1:
             if "computed_value" in metric_fields:
                 metric_col = "computed_value"
-                metric_fields = ["computed_value"]
             else:
                 return None
         return _build_esql_metric_panel(query, metric_col=metric_col)
@@ -1154,7 +1153,6 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
         if metric_fields and len(metric_fields) > 1:
             if "computed_value" in metric_fields:
                 metric_col = "computed_value"
-                metric_fields = ["computed_value"]
             else:
                 return None
         return _build_esql_gauge_panel(query, metric_col=metric_col, panel=panel)
@@ -4338,6 +4336,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     translations = []
     dropped_live_metric_targets: list[tuple[str, list[str]]] = []
     tolerated_live_metric_target_refs: set[str] = set()
+    tolerated_absent_live_metrics: list[str] = []
     live_optional_metrics = {str(name).strip() for name in (rule_pack.live_optional_metrics or []) if str(name).strip()}
     for idx, (target, _) in enumerate(targets_with_expr, start=1):
         expr = target.get("expr", "")
@@ -4400,6 +4399,8 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             else:
                 tolerated_live_metric_target_refs.add(target_ref)
                 t.metadata["tolerated_missing_live_metrics"] = list(missing_live_metrics)
+                for metric in missing_live_metrics:
+                    _append_unique(tolerated_absent_live_metrics, metric)
             continue
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
         # Keep the target's own expression: ``promql_expr`` is overwritten with
@@ -4411,16 +4412,18 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             t.metadata["negate_reason"] = negate_reason or "expression"
         translations.append(t)
 
-    if dropped_live_metric_targets and not translations:
+    if not translations and (dropped_live_metric_targets or tolerated_live_metric_target_refs):
         missing_metrics: list[str] = []
         for _target_name, metrics in dropped_live_metric_targets:
             for metric in metrics:
                 _append_unique(missing_metrics, metric)
+        for metric in tolerated_absent_live_metrics:
+            _append_unique(missing_metrics, metric)
         missing_panel, panel_result = _make_missing_telemetry_panel(
             yaml_panel,
             title,
             panel_type,
-            missing_metrics,
+            missing_metrics or sorted(live_optional_metrics),
         )
         return missing_panel, _enrich_panel_result(
             panel_result,

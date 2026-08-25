@@ -1328,7 +1328,14 @@ class SchemaResolver:
             ):
                 self._field_cache.pop(field_name, None)
         if self._field_cache:
-            self._discovery_status = "ok"
+            # Control-schema fixtures are intentionally partial (label hints
+            # for Grafana variables). They must not claim exhaustive live
+            # field-caps: status "ok" is reserved for a real ``_field_caps``
+            # fetch, which is what lets missing-metric gates treat False as
+            # proven-absent. Overwriting that here made ``--control-schema``
+            # drop native queries for metrics the fixture never listed.
+            if self._discovery_status != "ok":
+                self._discovery_status = "partial"
             self._discovery_error = ""
             # Offline merges happen before the first resolve_label() call. Mark
             # discovery as attempted so _discover_fields() does not wipe the

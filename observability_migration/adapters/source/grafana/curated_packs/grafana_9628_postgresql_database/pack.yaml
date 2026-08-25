@@ -5,7 +5,9 @@
 # https://grafana.com/grafana/dashboards/9628-postgresql-database/
 #
 # Source: "PostgreSQL Database" (postgres_exporter Prometheus scrape)
-# Revision 1. Panels: 32 renderable + 3 named rows.
+# Revision 1 (canonical grafana.com sha256 in registry.yaml). The community
+# corpus pins revision 8 as a benchmark seed; this pack was validated against
+# revision 1 (32 renderable panels + 3 named rows), not that later revision.
 #
 # Engine vs pack split (do not duplicate engine work here):
 #   Engine: Grafana 5 singlestat root ``format``, native PROMQL for bare

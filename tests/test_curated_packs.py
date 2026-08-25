@@ -118,6 +118,42 @@ def test_fidelity_manifest_gnet_revision_matches_registry():
         )
 
 
+def test_registry_pins_match_community_corpus_when_revision_aligns():
+    """Packs added in this change must not silently disagree with the committed
+    community corpus on the same (gnet_id, revision). Older packs may still
+    use a grafana.com canonical pin that predates the corpus hasher (763).
+    """
+    corpus = json.loads(
+        (Path(__file__).resolve().parents[1] / "parity-rig" / "benchmark" / "community_corpus.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_id_rev = {
+        (int(entry["id"]), int(entry["revision"])): str(entry["sha256"])
+        for entry in corpus["dashboards"]
+    }
+    # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
+    new_pack_ids = {7362, 9628, 14114}
+    mismatches = []
+    for entry in load_curated_registry():
+        gnet_id = int(entry["gnet_id"])
+        if gnet_id not in new_pack_ids:
+            continue
+        key = (gnet_id, int(entry["gnet_revision"]))
+        expected = by_id_rev.get(key)
+        if expected is None:
+            continue
+        actual = str(entry["dashboard_sha256"])
+        if actual != expected:
+            mismatches.append(
+                f"{entry['name']} gnet_id={key[0]} rev={key[1]} "
+                f"registry={actual} corpus={expected}"
+            )
+    assert not mismatches, "registry dashboard_sha256 disagrees with community_corpus.json:\n" + "\n".join(
+        mismatches
+    )
+
+
 # ---------------------------------------------------------------------------
 # find_curated_pack — by gnetId
 # ---------------------------------------------------------------------------
@@ -2263,6 +2299,62 @@ def test_live_optional_metric_is_dropped_without_downgrading_multi_target_panel(
     assert "redis_blocked_clients" not in query
     assert not any("Dropped series whose live target metrics are absent" in reason for reason in result.reasons)
     assert not any("only 1 could be migrated" in reason for reason in result.reasons)
+
+
+def test_all_optional_absent_targets_become_missing_telemetry_markdown():
+    """A panel whose only target is live_optional and field-caps-absent must
+    degrade to missing-telemetry markdown, not IndexError on translations[0].
+    """
+    rule_pack = RulePackConfig(live_optional_metrics=["optional_metric"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {"labels.instance": {"keyword": {"type": "keyword"}}}
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "stat",
+        "title": "Optional Only",
+        "targets": [{"expr": "sum(optional_metric)", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" in (yaml_panel or {})
+    assert "optional_metric" in yaml_panel["markdown"]["content"]
+    assert result.status == "migrated_with_warnings"
+
+
+def test_partial_control_schema_does_not_prove_unlisted_metrics_absent():
+    """``merge_control_schema`` is a label-hint fixture, not exhaustive caps.
+
+    Metrics that simply are not listed must still translate (native PROMQL or
+    ES|QL), matching ``--control-schema`` without ``--es-url``.
+    """
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    resolver.merge_control_schema(
+        {
+            "field_cache": {
+                "cluster": {
+                    "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                }
+            }
+        }
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+
+    panel = {
+        "type": "stat",
+        "title": "CPU",
+        "targets": [{"expr": "sum(node_cpu_seconds_total)", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" not in (yaml_panel or {})
+    assert not any("Telemetry missing" in str(reason) for reason in (result.reasons or []))
+    emitted = yaml_panel or {}
+    assert emitted.get("esql") or emitted.get("promql") or "query" in str(emitted)
 
 
 def test_esql_param_control_retargets_to_single_panel_bound_field():
