@@ -3152,6 +3152,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                 "labels.instance": {"keyword": {"searchable": True, "aggregatable": True}},
             }
         )
+        resolver._discovery_status = "ok"
         expr = (
             'sum(rate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
             'or sum(irate(node_network_receive_bytes_total{instance="$host", device!="lo"}[5m])) '
@@ -3200,6 +3201,7 @@ class TranslatorRegressionTests(unittest.TestCase):
                 "labels.instance": {"keyword": {"searchable": True, "aggregatable": True}},
             }
         )
+        resolver._discovery_status = "ok"
         expr = (
             "sum((rate(node_disk_read_time_seconds_total{device!~\"dm-.+\"}[5m]) "
             "/ rate(node_disk_reads_completed_total{device!~\"dm-.+\"}[5m])) "

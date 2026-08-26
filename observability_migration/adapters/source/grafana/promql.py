@@ -5734,6 +5734,9 @@ def _metric_known_absent(resolver, metric_name: str) -> bool:
     """
     if resolver is None or not metric_name:
         return False
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return False
     field_exists = getattr(resolver, "field_exists", None)
     if not callable(field_exists):
         return False

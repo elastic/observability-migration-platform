@@ -22,6 +22,10 @@ from observability_migration.adapters.source.grafana.panels import (
     translate_dashboard,
     translate_panel,
 )
+from observability_migration.adapters.source.grafana.promql import (
+    _parse_fragment,
+    _reduce_or_operands,
+)
 from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
     _merge_curated_into_base,
@@ -2355,6 +2359,32 @@ def test_partial_control_schema_does_not_prove_unlisted_metrics_absent():
     assert not any("Telemetry missing" in str(reason) for reason in (result.reasons or []))
     emitted = yaml_panel or {}
     assert emitted.get("esql") or emitted.get("promql") or "query" in str(emitted)
+
+
+def test_partial_control_schema_keeps_or_chain_operands():
+    """Partial control schemas must not prune unlisted OR fallback metrics."""
+    resolver = SchemaResolver(RulePackConfig())
+    resolver.merge_control_schema(
+        {
+            "field_cache": {
+                "cluster": {
+                    "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                }
+            }
+        }
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+
+    frag = _parse_fragment(
+        "node_network_receive_bytes_total or rdsosmetrics_network_rx_bytes"
+    )
+    kept, dropped = _reduce_or_operands(frag, resolver)
+
+    assert [operand.metric for operand in kept] == [
+        "node_network_receive_bytes_total",
+        "rdsosmetrics_network_rx_bytes",
+    ]
+    assert dropped == []
 
 
 def test_esql_param_control_retargets_to_single_panel_bound_field():

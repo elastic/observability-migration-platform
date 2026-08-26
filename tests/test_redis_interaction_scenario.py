@@ -59,14 +59,9 @@ _QUERY_PANEL_TITLES = (
     "Redis connected clients",
 )
 
-_LIVE_QUERY_PANEL_TITLES = (
-    "Uptime",
-    "Memory Usage",
-    "Commands Executed / sec",
-    "Network I/O",
-    "Total Items per DB",
-    "Redis connected clients",
-)
+# Offline ``--control-schema`` is a partial hint list, not exhaustive
+# field-caps. Every query panel must still emit a query and bind ``instance``.
+_LIVE_QUERY_PANEL_TITLES = _QUERY_PANEL_TITLES
 
 
 def _migrate_redis(tmp_path: Path) -> Path:
