@@ -2811,32 +2811,35 @@ def nested_agg_family_rule(context):
             else rp.ts_bucket
         )
         outer_stats_expr = f"{result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)}"
+        parts = [
+            f"TS {context.index}",
+            f"| WHERE {rp.ts_time_filter}",
+            *_build_where_lines(filters),
+            f"| WHERE {physical_metric} IS NOT NULL",
+            f"| STATS {first_stats_expr} BY {first_stats_by}",
+            f"| STATS {outer_stats_expr} BY time_bucket",
+        ]
+        # Same scalar reduction as every other summary path: keep the outer
+        # aggregation per bucket and let the panel's declared reducer pick the
+        # value. Collapsing with the outer aggregation over the whole window
+        # reported the window's extreme, and for a rate it also read the
+        # incomplete boundary bucket that ``_collapse_summary_ts_query`` skips.
+        output_group = ["time_bucket"]
+        collapsed = None
         if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
-            context.output_group_fields = []
-            context.esql_query = "\n".join(
-                [
-                    f"TS {context.index}",
-                    f"| WHERE {rp.ts_time_filter}",
-                    *_build_where_lines(filters),
-                    f"| WHERE {physical_metric} IS NOT NULL",
-                    f"| STATS {first_stats_expr} BY {first_stats_by}",
-                    f"| STATS {outer_stats_expr}",
-                    f"| KEEP {result_alias}",
-                ]
+            collapsed = _collapse_summary_ts_query(
+                parts,
+                output_group,
+                [result_alias],
+                keep_time_bucket=context.panel_type in {"table", "table-old"},
+                reduce_calc=context.metadata.get("reduce_calc", ""),
             )
+        if collapsed is None:
+            parts.append("| SORT time_bucket ASC")
         else:
-            context.output_group_fields = ["time_bucket"]
-            context.esql_query = "\n".join(
-                [
-                    f"TS {context.index}",
-                    f"| WHERE {rp.ts_time_filter}",
-                    *_build_where_lines(filters),
-                    f"| WHERE {physical_metric} IS NOT NULL",
-                    f"| STATS {first_stats_expr} BY {first_stats_by}",
-                    f"| STATS {outer_stats_expr} BY time_bucket",
-                    "| SORT time_bucket ASC",
-                ]
-            )
+            output_group = collapsed
+        context.esql_query = "\n".join(parts)
+        context.output_group_fields = output_group
         context.parser_backend = "fragment"
         context.source_type = "TS"
         context.metric_name = result_alias
@@ -2844,52 +2847,107 @@ def nested_agg_family_rule(context):
         context.translation_complete = True
         return f"translated nested {frag.outer_agg} over {frag.range_func} expression"
 
+    # Issue #380: the inner operand is a BARE metric selector here, so this
+    # branch must make the same counter decision ``simple_agg_family_rule``
+    # already makes for ``sum(<counter>)``. ES|QL rejects SUM/AVG/MIN/MAX/
+    # PERCENTILE on counter_long/counter_double, so the inner aggregation has to
+    # read the counter through LAST_OVER_TIME under TS. Emitting
+    # ``FROM ... | STATS SUM(<counter field>)`` made
+    # ``max(sum by (ns) (<counter>))`` fail with verification_exception while
+    # its single-level sibling over the same metric family rendered fine.
+    # ``count`` never reads the value, so it stays legal on a counter field.
+    inner_reads_metric = inner_agg_name != "count"
+    inner_is_counter = inner_reads_metric and (
+        resolver.is_counter(frag.metric) if resolver else _is_counter_fallback(frag.metric, rp)
+    )
+    if inner_is_counter:
+        physical_metric = _resolve_frag_metric_field(frag, resolver, prefer="counter")
+
     nested_agg_arg = physical_metric
-    if inner_agg_name != "count" and _counter_unsafe_cast_needed(physical_metric, resolver):
+    if inner_is_counter:
+        nested_agg_arg = f"LAST_OVER_TIME({physical_metric})"
+        _append_unique(
+            context.warnings,
+            "Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value",
+        )
+    elif inner_reads_metric and _counter_unsafe_cast_needed(physical_metric, resolver):
         nested_agg_arg = f"TO_DOUBLE({physical_metric})"
         _append_unique(context.warnings, _counter_unsafe_cast_warning(physical_metric, resolver))
+    elif inner_reads_metric and inner_agg_name in _COUNTER_UNSAFE_OUTER_AGGS:
+        # Issue #148 in the nested shape: without live capabilities the metric
+        # kind cannot be proven, so the inner aggregation may still hit the
+        # verification_exception above. Keep the query and name the risk rather
+        # than letting a warning-free result imply the panel is safe.
+        counter_warning = _counter_type_uncertainty_warning(frag.metric, resolver)
+        if counter_warning:
+            _append_unique(context.warnings, counter_warning)
+
+    # Same source policy as ``simple_agg_family_rule``: ``FROM`` aggregates every
+    # per-sample document in a bucket, so a TSDS gauge needs ``TS`` for the same
+    # reason a counter does (see ``_gauge_can_use_ts``). Only a field that cannot
+    # be shown to be a TSDS gauge stays on ``FROM``.
+    gauge_uses_ts = (
+        inner_reads_metric
+        and not inner_is_counter
+        and _gauge_can_use_ts(frag.metric, resolver, rp)
+    )
+    source = "TS" if (inner_is_counter or gauge_uses_ts) else "FROM"
+    time_filter = rp.ts_time_filter if source == "TS" else rp.from_time_filter
+    bucket = rp.ts_bucket if source == "TS" else rp.from_bucket
+    # TS groups by every series in the index, so filter the metric's own
+    # presence first — the same guard the range-function branch above and the
+    # single-level path already apply.
+    presence_filter = (
+        f"| WHERE {physical_metric} IS NOT NULL"
+        if (source == "TS" or inner_agg_name == "count")
+        else ""
+    )
+
     first_stats_expr = (
         f"{inner_alias} = {esql_inner_agg}({nested_agg_arg})"
-        if inner_agg_name != "count"
+        if inner_reads_metric
         else f"{inner_alias} = COUNT(*)"
     )
-    second_stats_arg = inner_alias
+    # The inner aggregation is per instant in PromQL, so it is grouped by the
+    # time bucket even on a scalar panel. Grouping by the inner labels alone
+    # folded every sample in the dashboard window into one value, so a stat
+    # panel read a window total instead of an instant.
+    first_stats_by = f"{bucket}, {', '.join(inner_group)}" if inner_group else bucket
+    outer_stats_expr = (
+        f"{result_alias} = {_agg_stats_expr(esql_outer, inner_alias, frag, resolver)}"
+    )
+    parts = [
+        f"{source} {context.index}",
+        f"| WHERE {time_filter}",
+        *_build_where_lines(filters),
+        *([presence_filter] if presence_filter else []),
+        f"| STATS {first_stats_expr} BY {first_stats_by}",
+        f"| STATS {outer_stats_expr} BY time_bucket",
+    ]
+    # A scalar panel reduces the per-bucket series with the reducer the panel
+    # itself declares (``lastNotNull`` by default). Collapsing with the outer
+    # aggregation instead reported the window's extreme: this dashboard's
+    # ``max(sum by (ns) (...))`` stat asks for the latest value, so MAX over
+    # every bucket showed a historical peak whenever the metric had moved.
+    output_group = ["time_bucket"]
+    collapsed = None
     if _summary_mode_from_metadata(context.metadata) or context.panel_type in metric_like_panels:
-        context.output_group_fields = []
-        summary_lines = [
-            f"FROM {context.index}",
-            f"| WHERE {rp.from_time_filter}",
-            *_build_where_lines(filters),
-        ]
-        if count_presence_filter:
-            summary_lines.append(count_presence_filter)
-        if inner_group:
-            summary_lines.append(f"| STATS {first_stats_expr} BY {', '.join(inner_group)}")
-        else:
-            summary_lines.append(f"| STATS {first_stats_expr}")
-        summary_lines.append(f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag, resolver)}")
-        context.esql_query = "\n".join(summary_lines)
+        collapsed = _collapse_summary_ts_query(
+            parts,
+            output_group,
+            [result_alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+            reduce_calc=context.metadata.get("reduce_calc", ""),
+        )
+    if collapsed is None:
+        parts.append("| SORT time_bucket ASC")
     else:
-        context.output_group_fields = ["time_bucket"]
-        first_stats_by = (
-            f"{rp.from_bucket}, {', '.join(inner_group)}"
-            if inner_group
-            else rp.from_bucket
-        )
-        context.esql_query = "\n".join(
-            [
-                f"FROM {context.index}",
-                f"| WHERE {rp.from_time_filter}",
-                *_build_where_lines(filters),
-                *( [count_presence_filter] if count_presence_filter else [] ),
-                f"| STATS {first_stats_expr} BY {first_stats_by}",
-                f"| STATS {result_alias} = {_agg_stats_expr(esql_outer, second_stats_arg, frag, resolver)} BY time_bucket",
-                "| SORT time_bucket ASC",
-            ]
-        )
+        output_group = collapsed
+    context.esql_query = "\n".join(parts)
+    context.output_group_fields = output_group
 
     context.parser_backend = "fragment"
-    context.source_type = "FROM"
+    context.source_type = source
     context.metric_name = result_alias
     context.output_metric_field = result_alias
     context.translation_complete = True

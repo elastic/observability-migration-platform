@@ -6118,6 +6118,269 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("| SORT time_bucket ASC", q)
         self.assertIn("time_bucket", translated.output_group_fields)
 
+    # Issue #380: a nested aggregation whose inner operand is a BARE metric
+    # selector used to skip the counter decision that ``sum(<counter>)`` already
+    # makes, so ``max(sum by (ns) (<counter>))`` emitted
+    # ``FROM ... | STATS SUM(<counter field>)`` and Elasticsearch rejected it
+    # with verification_exception while its single-level sibling on the same
+    # dashboard rendered fine.
+    _ISSUE_380_COUNTER_CAPS = {
+        "metrics.pv_collector_unbound_pvc_count": {
+            "double": {
+                "type": "double",
+                "searchable": True,
+                "aggregatable": True,
+                "time_series_metric": "counter",
+            }
+        },
+        "labels.exported_namespace": {
+            "keyword": {"type": "keyword", "searchable": True, "aggregatable": True}
+        },
+    }
+
+    def _issue_380_resolver(self):
+        return self._native_profile_resolver(dict(self._ISSUE_380_COUNTER_CAPS))
+
+    def test_nested_agg_over_bare_counter_uses_ts_last_over_time(self):
+        translated = self.translate(
+            "max (sum by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="timeseries",
+            resolver=self._issue_380_resolver(),
+        )
+        q = translated.esql_query or ""
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertTrue(q.startswith("TS "), q)
+        self.assertIn(
+            "| STATS inner_val = SUM(LAST_OVER_TIME(metrics.pv_collector_unbound_pvc_count)) "
+            "BY time_bucket = TBUCKET(5 minute), labels.exported_namespace",
+            q,
+        )
+        self.assertIn(
+            "| STATS pv_collector_unbound_pvc_count_max = MAX(inner_val) BY time_bucket", q
+        )
+        # The bare counter reference ES|QL rejects must be gone.
+        self.assertNotIn("SUM(metrics.pv_collector_unbound_pvc_count)", q)
+        self.assertIn(
+            "Counter referenced without rate(); using LAST_OVER_TIME to preserve "
+            "raw cumulative value",
+            translated.warnings,
+        )
+
+    def test_nested_agg_over_bare_counter_reresolves_to_counter_field(self):
+        # Under a layout where the counter and gauge leaves are DISTINCT fields,
+        # the rule's initial ``prefer="gauge"`` resolution names the wrong leaf.
+        # Detecting the counter must re-resolve to the counter leaf, otherwise
+        # LAST_OVER_TIME would wrap a field that does not carry the counter.
+        resolver = self._remote_write_resolver(
+            {
+                "prometheus.labels.exported_namespace": {
+                    "keyword": {"aggregatable": True, "time_series_dimension": True}
+                },
+                "prometheus.pv_collector_unbound_pvc_count.counter": {
+                    "long": {"aggregatable": True, "time_series_metric": "counter"}
+                },
+                "prometheus.pv_collector_unbound_pvc_count.value": {
+                    "long": {"aggregatable": True, "time_series_metric": "gauge"}
+                },
+            }
+        )
+        translated = self.translate(
+            "max (sum by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="timeseries",
+            resolver=resolver,
+        )
+        q = translated.esql_query or ""
+        self.assertIn(
+            "LAST_OVER_TIME(prometheus.pv_collector_unbound_pvc_count.counter)", q
+        )
+        self.assertNotIn("pv_collector_unbound_pvc_count.value", q)
+        # The presence filter must name the same (counter) leaf.
+        self.assertIn(
+            "| WHERE prometheus.pv_collector_unbound_pvc_count.counter IS NOT NULL", q
+        )
+
+    def test_nested_agg_over_bare_counter_filters_null_metric_rows(self):
+        # TS groups by every series in the index unless the metric's own
+        # presence is filtered first, exactly like the range-function branch.
+        translated = self.translate(
+            "max (sum by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="timeseries",
+            resolver=self._issue_380_resolver(),
+        )
+        self.assertIn(
+            "| WHERE metrics.pv_collector_unbound_pvc_count IS NOT NULL",
+            translated.esql_query or "",
+        )
+
+    def test_nested_agg_over_bare_counter_stat_panel_collapses_to_scalar(self):
+        translated = self.translate(
+            "max (sum by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="stat",
+            translation_hints={"summary_mode": True},
+            resolver=self._issue_380_resolver(),
+        )
+        q = translated.esql_query or ""
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertTrue(q.startswith("TS "), q)
+        self.assertIn("LAST_OVER_TIME(metrics.pv_collector_unbound_pvc_count)", q)
+        self.assertEqual(translated.output_group_fields, [])
+        self.assertNotIn("SORT time_bucket", q)
+        self.assertNotIn("BY time_bucket", q.split("| STATS")[-1])
+
+    def test_nested_agg_scalar_panel_honours_last_reducer(self):
+        # This dashboard's stat panel declares ``lastNotNull`` (Grafana's default
+        # for stat/gauge), i.e. it shows the CURRENT value of
+        # ``max(sum by (ns) (...))``. Collapsing the per-bucket series with the
+        # outer aggregation instead reported the window's peak, so a metric that
+        # had since dropped displayed a stale high number.
+        translated = self.translate(
+            "max (sum by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="stat",
+            translation_hints={"summary_mode": True, "reduce_calc": "lastNotNull"},
+            resolver=self._issue_380_resolver(),
+        )
+        q = translated.esql_query or ""
+        alias = "pv_collector_unbound_pvc_count_max"
+        # The outer aggregation stays per bucket ...
+        self.assertIn(f"| STATS {alias} = MAX(inner_val) BY time_bucket", q)
+        # ... and the panel's own reducer picks the latest bucket.
+        self.assertIn(f"| STATS {alias} = LAST({alias}, time_bucket)", q)
+        self.assertIn(f"| KEEP {alias}", q)
+        self.assertEqual(translated.output_group_fields, [])
+
+    def test_nested_agg_over_bare_metric_buckets_inner_stats_on_scalar_panel(self):
+        # The inner aggregation is per instant in PromQL. Grouping it by the
+        # labels alone folded every sample in the dashboard window into one
+        # value, so a scalar panel read a window total instead of an instant.
+        translated = self.translate(
+            "max (sum by (instance) (node_memory_MemAvailable_bytes))",
+            panel_type="stat",
+            translation_hints={"summary_mode": True},
+        )
+        q = translated.esql_query or ""
+        self.assertEqual(translated.feasibility, "feasible")
+        inner_stats = [ln for ln in q.splitlines() if "inner_val =" in ln]
+        self.assertEqual(len(inner_stats), 1, q)
+        self.assertIn("time_bucket = TBUCKET(", inner_stats[0])
+        self.assertIn("service.instance.id", inner_stats[0])
+
+    def test_nested_agg_over_proven_tsds_gauge_uses_ts_without_last_over_time(self):
+        # A proven TSDS gauge takes the same source decision the single-level
+        # path makes (``_gauge_can_use_ts``): FROM aggregates every per-sample
+        # document in a bucket, inflating SUM by the sample multiplicity. Only
+        # the counter needs the LAST_OVER_TIME wrapper.
+        resolver = self._native_profile_resolver(
+            {
+                "metrics.node_memory_MemAvailable_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+                "labels.instance": {
+                    "keyword": {"type": "keyword", "searchable": True, "aggregatable": True}
+                },
+            }
+        )
+        translated = self.translate(
+            "max (sum by (instance) (node_memory_MemAvailable_bytes))",
+            panel_type="timeseries",
+            resolver=resolver,
+        )
+        q = translated.esql_query or ""
+        self.assertTrue(q.startswith("TS "), q)
+        self.assertIn("inner_val = SUM(metrics.node_memory_MemAvailable_bytes)", q)
+        self.assertIn("TBUCKET", q)
+        self.assertNotIn("LAST_OVER_TIME", q)
+
+    def test_nested_agg_gauge_panel_uses_ts_with_adaptive_bucket(self):
+        # The direct-translation tests bypass the panel path, so assert the
+        # promoted TS source survives panel translation (adaptive bucketing,
+        # legend handling) rather than only the rule in isolation.
+        self.seed_field_caps(
+            {
+                "node_mem_bytes": {
+                    "double": {
+                        "type": "double",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_metric": "gauge",
+                    }
+                },
+                "instance": {
+                    "keyword": {
+                        "type": "keyword",
+                        "searchable": True,
+                        "aggregatable": True,
+                        "time_series_dimension": True,
+                    }
+                },
+            }
+        )
+        panel = {
+            "id": 380,
+            "type": "timeseries",
+            "title": "Max instance memory",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "targets": [{"refId": "A", "expr": "max (sum by (instance) (node_mem_bytes))"}],
+        }
+        yaml_panel, result = self.translate_panel(panel)
+        query = yaml_panel["esql"]["query"]
+        self.assertNotEqual(result.status, "requires_manual")
+        self.assertEqual(result.query_ir["source_type"], "TS")
+        self.assertIn("TS metrics-*", query)
+        self.assertIn("TBUCKET", query)
+        self.assertNotIn("BUCKET(@timestamp", query)
+        self.assertNotIn("LAST_OVER_TIME", query)
+
+    def test_nested_agg_over_unprovable_gauge_stays_on_from_when_not_assumed(self):
+        # The other half of the same policy: with no evidence and
+        # ``assume_tsds_gauges`` disabled, the nested path must stay on FROM
+        # rather than emit TS against an index that may not be a TSDS.
+        self.rule_pack = migrate.RulePackConfig(assume_tsds_gauges=False)
+        translated = self.translate(
+            "max (sum by (instance) (node_memory_MemAvailable_bytes))",
+            panel_type="timeseries",
+            resolver=migrate.SchemaResolver(self.rule_pack),
+        )
+        q = translated.esql_query or ""
+        self.assertTrue(q.startswith("FROM "), q)
+        self.assertIn("BUCKET(@timestamp", q)
+        self.assertNotIn("TBUCKET", q)
+        self.assertNotIn("LAST_OVER_TIME", q)
+
+    def test_nested_agg_with_counter_inner_count_keeps_document_count(self):
+        # ``count`` never reads the metric value, so it stays legal on a counter
+        # field and must not gain a LAST_OVER_TIME wrapper.
+        translated = self.translate(
+            "max (count by (exported_namespace) (pv_collector_unbound_pvc_count))",
+            panel_type="timeseries",
+            resolver=self._issue_380_resolver(),
+        )
+        q = translated.esql_query or ""
+        self.assertIn("inner_val = COUNT(*)", q)
+        self.assertNotIn("LAST_OVER_TIME", q)
+        self.assertTrue(q.startswith("FROM "), q)
+
+    def test_nested_agg_over_unverifiable_metric_warns_about_counter_typing(self):
+        # Offline (no field caps) the metric kind cannot be proven, so the inner
+        # aggregation may still hit the verification_exception this issue is
+        # about. Keep the query and say so instead of implying a clean result.
+        translated = self.translate(
+            "max (sum by (instance) (trace_http_request_hits))",
+            panel_type="timeseries",
+        )
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertTrue(
+            any(
+                "metric type of 'trace_http_request_hits' could not be verified" in w
+                for w in translated.warnings
+            ),
+            translated.warnings,
+        )
+
     def test_join_ratio_stat_panel_collapses_to_scalar(self):
         # Join ratio (A/B) on a stat panel must not leave time_bucket in
         # output_group_fields, which would cause metric_panel_rule to promote
