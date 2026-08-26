@@ -2409,6 +2409,40 @@ def _label_replace_needs_source_label(replacement: str) -> bool:
     return "$" in str(replacement or "")
 
 
+def _label_replace_clause_reads_source(eval_clause, dst: str, resolved_src: str) -> bool:
+    """Does the emitted clause actually read the source column?
+
+    Only the full-copy ``EVAL`` and the ``GROK`` extraction do. A constant
+    replacement reads nothing, and an identity copy (``dst`` resolving to the
+    same column as ``src``) emits nothing at all — neither needs ``src`` to
+    survive the inner aggregation.
+    """
+    if not eval_clause:
+        return False
+    if eval_clause.lstrip().startswith("| GROK "):
+        return True
+    return eval_clause.strip() == f"| EVAL {dst} = {resolved_src}"
+
+
+def _label_survives_aggregation(sub, resolved_src: str) -> bool:
+    """Is ``resolved_src`` still readable at the end of ``sub``'s query?
+
+    A ``STATS`` carries forward only its own aliases and grouping keys, so an
+    ``EVAL dst = <src>`` appended afterwards fails at query time with an unknown
+    column unless ``src`` is one of those keys. Un-aggregated queries still have
+    every source field. ``label_replace`` asks for the column by appending it to
+    ``preferred_group_labels``, but that is only a request: a rule is free to
+    derive its grouping from the source expression alone (nested aggregations do,
+    per issue #382), and even an honored inner grouping is dropped again by the
+    outer ``STATS`` of a two-stage nested aggregation.
+    """
+    query = sub.esql_query or ""
+    if not any(line.lstrip().startswith("| STATS") for line in query.splitlines()):
+        return True
+    available = {str(field).strip("`") for field in (sub.output_group_fields or [])}
+    return resolved_src.strip("`") in available
+
+
 @QUERY_TRANSLATORS.register("label_replace_family", priority=6)
 def label_replace_family_rule(context):
     """Translate label_replace(v, dst, replacement, src, regex) via ES|QL EVAL."""
@@ -2450,6 +2484,24 @@ def label_replace_family_rule(context):
         return None  # fall through to not_feasible
 
     eval_clause = _build_label_replace_eval(dst, replacement, resolved_src, regex)
+    # Built before this check so an identity copy (which emits nothing) and a
+    # constant replacement (which reads nothing) are not rejected for a column
+    # they never reference.
+    if _label_replace_clause_reads_source(eval_clause, dst, resolved_src):
+        if not _label_survives_aggregation(sub, resolved_src):
+            grouping = ", ".join(sub.output_group_fields or []) or "nothing"
+            _append_unique(
+                context.warnings,
+                f"label_replace() derives {dst!r} from the source label {src!r}, but "
+                f"the inner expression aggregates that label away (its result is "
+                f"grouped by {grouping}), so the rewritten label cannot be computed "
+                "from the aggregated result; requires manual redesign",
+            )
+            context.feasibility = "not_feasible"
+            context.confidence = 0.0
+            context.translation_complete = True
+            return "label_replace() source label does not survive aggregation"
+
     lines = sub.esql_query.splitlines()
     if eval_clause:
         sort_idx = next(
@@ -2684,10 +2736,21 @@ def nested_agg_family_rule(context):
     if had_vars:
         _append_unique(context.warnings, "Dropped variable-driven label filters during migration")
 
+    # Nested grouping comes from the source expression's own ``by()`` clauses,
+    # never from a panel display hint. The inner grouping decides what the outer
+    # aggregation reduces over, so a hint here changes the returned number
+    # instead of merely splitting series: ``max(sum(m))`` under ``legendFormat:
+    # {{namespace}}`` reduced one sum *per namespace* and reported the largest
+    # namespace instead of the collapsed total, silently and with no warning
+    # (issue #382). Panel-derived ``preferred_group_labels`` (legendFormat
+    # tokens, legacy table column patterns, dashboard-wide inference) carry no
+    # source grouping, and PromQL's own ``sum(m)`` emits one label-less series,
+    # so nothing is dropped and there is nothing to warn about. Explicit inner
+    # ``by()`` labels are honored as before, and this matches
+    # ``_build_measure_spec``'s nested_agg branch, which has always resolved the
+    # inner grouping from ``inner_group`` alone.
     raw_inner_group = list(frag.extra.get("inner_group", []) or [])
     inner_group = resolver.resolve_labels(raw_inner_group) if resolver else list(raw_inner_group)
-    if not inner_group:
-        inner_group = resolver.resolve_labels(context.metadata.get("preferred_group_labels", [])) if resolver else list(context.metadata.get("preferred_group_labels", []))
     result_alias = re.sub(r"[^a-zA-Z0-9_]", "_", f"{frag.metric}_{frag.outer_agg}")
     esql_outer = OUTER_AGG_MAP.get(frag.outer_agg, "COUNT")
     inner_agg_name = frag.extra.get("inner_agg", "count")
@@ -2737,12 +2800,14 @@ def nested_agg_family_rule(context):
         else:
             count_field = None
         if count_field:
-            outer_group_fields = _frag_group_labels(
-                frag,
-                resolver,
-                context.metadata.get("preferred_group_labels"),
-                preferred_origin=context.metadata.get("preferred_group_labels_origin"),
-            )
+            # Same invariant as the inner grouping above, for the same reason:
+            # ``count(count by (cpu) (m))`` is a scalar — how many distinct CPUs
+            # exist — so a ``legendFormat: {{cpu}}`` hint that reaches the outer
+            # BY turns it into ``COUNT_DISTINCT(cpu) BY cpu``, which is 1 for
+            # every CPU. ``_frag_group_labels`` adopts preferred labels whenever
+            # the outer ``by()`` is empty, and for non-legend origins (legacy
+            # table ``styles``) merges them in even when it is not, so pass none.
+            outer_group_fields = _frag_group_labels(frag, resolver, None)
             lines = [
                 f"FROM {context.index}",
                 f"| WHERE {rp.from_time_filter}",
