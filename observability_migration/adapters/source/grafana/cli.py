@@ -318,8 +318,8 @@ def parse_args(argv: list[str] | None = None):
         dest="no_curated_packs",
         help=(
             "Disable automatic curated-pack loading for known Grafana community dashboards. "
-            "By default, when a dashboard is identified by its gnetId, a bundled curated pack "
-            "is merged in automatically (user --rules-file always wins on collision). "
+            "By default, when a dashboard is identified by gnetId or exact title, a bundled "
+            "curated pack is merged in automatically (user --rules-file always wins on collision). "
             "Set this flag to skip curated packs and use only the base rule pack."
         ),
     )

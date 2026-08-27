@@ -16,7 +16,7 @@ problems and share no code, schema, or registry:
 |---|---|---|
 | What it overrides | Query semantics (`query.metric_kinds`, `query.label_candidates`), `panel.type_map`, hand-written `panel.query_overrides`, plus the `fidelity_manifest.yaml` contract | Panel `size` / `position` and section `collapsed` state — geometry only |
 | Files | `pack.yaml` + optional `plugin.py` + `fidelity_manifest.yaml` under `adapters/source/grafana/curated_packs/<pack_dir>/` | a single `pack.yaml` under `adapters/source/datadog/curated_packs/<pack_dir>/` |
-| Matched by | `registry.yaml` on `gnetId`, with a title/tags fallback | `match.title_contains` declared inside the pack itself |
+| Matched by | `registry.yaml` on `gnetId`, then exact `title_hint` (empty tags still match; tag overlap is required only when the dashboard still has tags) | `match.title_contains` declared inside the pack itself |
 | Selects a panel by | `title_match` against the source panel title | the **emitted** panel title and/or presentation `kind`, plus `nth` |
 | Applied | before translation (composes a `RulePackConfig`) | after translation and after `apply_style_guide_layout`, as the last word on layout |
 | Operator opt-out | `--no-curated-packs` | none |
@@ -114,7 +114,11 @@ def resolve_pack_for_dashboard(dashboard: dict, base_pack: RulePackConfig) -> Ru
 
 **Detection order** inside `_load_curated_pack_for`:
 1. `dashboard.get("gnetId")` → exact integer lookup in registry (fast, reliable)
-2. `dashboard.get("title")` + `dashboard.get("tags", [])` → fuzzy fallback for instances that strip `gnetId`
+2. Exact `title_hint` match when `gnetId` is absent. Grafana copies and
+   re-imports often strip both `gnetId` and tags; an empty tag list still
+   matches. When the dashboard still has tags *and* the pack declares
+   `tags_hint`, require overlap so a similarly titled unrelated dashboard
+   does not pick up the pack.
 3. Returns `None` if nothing matches
 
 **Merge semantics** — same logic as `load_rule_pack_files` today:

@@ -107,7 +107,10 @@ nothing to disk and returns just the `MigrationResult` (it no longer takes an
 `output_dir` or returns a YAML path).
 
 Bundled Grafana curated packs can change query semantics, variable/control
-behavior, and final Kibana geometry. Query fixes land through
+behavior, and final Kibana geometry. Packs attach by `gnetId` first; when
+that id is missing (common on Grafana copies), an exact `title_hint` match
+is enough even if dashboard tags were stripped too. Tag overlap is required
+only when the dashboard still has tags. Query fixes land through
 `panel.query_overrides`; scope-only or misleading variable controls can be
 suppressed or rewritten through curated-pack plugins; layout fixes land through
 `panel.layout_overrides` after the standard Kibana layout transform and before

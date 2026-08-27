@@ -37,7 +37,11 @@ def find_curated_pack(
 
     Detection order:
     1. Exact gnetId integer match (fast, reliable).
-    2. Exact title_hint match + tag_hint overlap (fallback when gnetId absent).
+    2. Exact title_hint match when gnetId is absent. Copies and re-imports
+       often strip both gnetId and tags; an empty tag list still matches.
+       When the dashboard still has tags *and* the pack declares tags_hint,
+       require overlap so a similarly titled unrelated dashboard does not
+       pick up the pack.
     """
     entries = load_curated_registry()
 
@@ -57,7 +61,7 @@ def find_curated_pack(
         hint_title = str(entry.get("title_hint") or "").strip().lower()
         hint_tags = {str(t).lower() for t in (entry.get("tags_hint") or [])}
         if hint_title and title_lower == hint_title:
-            if not hint_tags or hint_tags & tag_set:
+            if not hint_tags or not tag_set or hint_tags & tag_set:
                 return entry
 
     return None

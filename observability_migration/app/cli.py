@@ -273,7 +273,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="no_curated_packs",
         help=(
             "Disable automatic curated-pack loading for known Grafana community dashboards "
-            "(gnetId-matched bundles that improve migration fidelity out of the box). "
+            "(matched by gnetId or exact title). "
             "By default curated packs are merged automatically; --rules-file always wins."
         ),
     )
