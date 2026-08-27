@@ -7,7 +7,9 @@
 #
 # Detection order at migration time:
 #   1. Exact gnetId match (preferred — reliable even when title differs)
-#   2. title_hint + tags_hint fallback (for dashboards where gnetId was stripped on import)
+#   2. Exact title_hint match when gnetId is absent. Empty dashboard tags still
+#      match (copies/re-imports often strip both gnetId and tags). When the
+#      dashboard still has tags, require overlap with tags_hint.
 #
 # `gnet_revision` and `dashboard_sha256` are maintainer-verified provenance
 # pins, not a migration-time enforcement mechanism: they record which exact

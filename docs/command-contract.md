@@ -280,7 +280,7 @@ Datadog.
 | `--esql-index` | Grafana | The index / data stream for **schema discovery and every emitted metrics query** (native `PROMQL index=…` and ES\|QL `TS`/`FROM`) | Defaults to `--data-view` when unset. Override it (with `--es-url`) when queries and field discovery should use a specific data stream — required for Prometheus fidelity. `--data-view` may still differ as the Kibana UI / control bind. Grafana-only today; Datadog controls its metric query target through `--data-view` / the active `--field-profile` instead. See [Target index flags](#target-index-flags-data-view-vs-esql-index). |
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
 | `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto` (probe-driven). `esql` forces the ES\|QL translator for every panel. `native` *requests* native `PROMQL` wherever it is safe — panels whose PromQL matchers bind dashboard variables (e.g. `instance=~"$instance"`) prefer native `PROMQL` by default and when `--kibana-url` reports Kibana 9.5+; only a verified Kibana `< 9.5` forces those panels onto ES\|QL. Datadog: no-op. |
-| `--no-curated-packs` | Grafana | Disable automatic curated-pack merge for known `gnetId` dashboards | By default packs (e.g. Redis 763, Node Exporter 1860) merge under any `--rules-file`. Use this to exercise the core translator alone. |
+| `--no-curated-packs` | Grafana | Disable automatic curated-pack merge for known dashboards | By default packs (e.g. Redis 763, Node Exporter 1860) merge under any `--rules-file` when `gnetId` or exact title matches. Use this to exercise the core translator alone. |
 | `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
 | `--validate` | Grafana, Datadog | Run verification-packet ES\|QL validation against Elasticsearch after translation | Requires `--es-url`. Distinct from the lighter native-`PROMQL` parse check that already runs when `--es-url` is set and PROMQL panels exist. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
@@ -876,7 +876,9 @@ customization:
   curated pack (e.g. Redis 763 / 11835 / 14091, Redis Enterprise 18405, Redis
   Cloud 18406, Node Exporter Full 1860), the
   pack is merged in automatically beneath the user `--rules-file` so the user
-  always wins on collision. Pass `--no-curated-packs` to skip all curated packs
+  always wins on collision. If Grafana stripped `gnetId` on copy/import, an
+  exact title match still selects the pack — tags are not required when the
+  dashboard has none. Pass `--no-curated-packs` to skip all curated packs
   and use only the base rule pack.
 - Datadog: YAML `--field-profile path.yaml` for a full custom profile
   (`metric_index`, `tag_map`, prefixes, embedded `metric_map`). `--metric-map-file`

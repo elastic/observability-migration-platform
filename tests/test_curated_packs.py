@@ -65,6 +65,20 @@ def test_registry_pack_names_and_paths_are_unique():
     assert len(set(paths)) == len(paths), f"duplicate pack path in registry: {paths}"
 
 
+def test_registry_title_hints_are_unique():
+    """The title fallback matches a dashboard that stripped its ``gnetId`` (and
+    possibly its tags) on exact ``title_hint`` alone. Two packs sharing a
+    ``title_hint`` would make that fallback pick one arbitrarily, so keep them
+    distinct (case-insensitive)."""
+    entries = load_curated_registry()
+    titles = [
+        (entry.get("title_hint") or "").strip().lower()
+        for entry in entries
+        if (entry.get("title_hint") or "").strip()
+    ]
+    assert len(set(titles)) == len(titles), f"duplicate title_hint in registry: {titles}"
+
+
 def test_registry_provenance_pin_fields_are_well_formed():
     """Issue #350: ``gnet_revision``/``dashboard_sha256`` are maintainer-verified
     provenance pins (see registry.yaml's header comment and
@@ -172,6 +186,28 @@ def test_find_763_by_title_fallback():
     )
     assert entry is not None
     assert entry["gnet_id"] == 763
+
+
+def test_find_763_by_title_fallback_without_tags():
+    """Copies/re-imports often strip gnetId and tags; exact title is enough."""
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Redis Dashboard for Prometheus Redis Exporter 1.x",
+        tags=[],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 763
+    assert entry["name"] == "grafana_763_redis_exporter"
+
+
+def test_find_763_title_fallback_rejects_unrelated_tags():
+    """When the dashboard still has tags, require overlap with tags_hint."""
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Redis Dashboard for Prometheus Redis Exporter 1.x",
+        tags=["mysql"],
+    )
+    assert entry is None
 
 
 def test_find_18405_by_title_fallback():
@@ -1062,6 +1098,18 @@ def test_find_11835_by_title_fallback():
     )
     assert entry is not None
     assert entry["gnet_id"] == 11835
+
+
+def test_find_11835_by_title_fallback_without_tags():
+    """Helm 11835 copies that strip gnetId and tags must still get the pack."""
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha)",
+        tags=[],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 11835
+    assert entry["name"] == "grafana_11835_redis_exporter_helm"
 
 
 def test_resolve_pack_11835_classifies_all_metrics():
