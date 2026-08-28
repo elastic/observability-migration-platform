@@ -2,6 +2,7 @@ source: sum(increase(prometheus_tsdb_compaction_duration_sum{instance="$instance
 feasibility: feasible
 warning: Approximated PromQL arithmetic using same-bucket ES|QL math
 warning: Dropped variable-driven label filters during migration
+warning: Dropped the source rate()/irate()/increase() lookback window [30m]: ES|QL computes RATE/IRATE/INCREASE over the query's time bucket, so this panel now reports a rate over the fixed 5-minute time bucket instead of that window. Panels that differ only by such a window produce the same values here. Native PROMQL preserves the window and is the default when the target supports the ES|QL PROMQL command.
 warning: Approximated sum(increase|rate(m_sum)/increase|rate(m_count)) as a ratio of aggregates (sum(m_sum)/sum(m_count)); per-series means are not weighted the same as Prometheus
 ---
 TS metrics-*

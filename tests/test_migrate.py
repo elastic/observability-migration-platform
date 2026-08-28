@@ -3438,14 +3438,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         esql = translated.esql_query
         self.assertIn("RATE(http_requests_total", esql)
 
-    def test_native_promql_gate_skips_counter_func_on_gauge(self):
-        """When the source PromQL applies a counter-style range function
-        to a gauge-typed field, the panel-level native-PROMQL gate must
-        fall through to ES|QL translation (where the gauge fallback can
-        degrade honestly) instead of emitting a ``PROMQL value=(irate(X))``
-        that hard-fails at render time."""
+    def test_native_promql_gate_only_skips_rule_pack_declared_gauges(self):
+        """Only an explicit ``metric_kinds: <metric>: gauge`` pin routes a
+        counter-style range function off native PROMQL.
+
+        The native ``PROMQL`` command evaluates PromQL range functions from the
+        raw samples and imposes no ``counter_*`` typing, so live field-caps
+        gauge typing must NOT send the panel to ES|QL — that path drops the
+        range-vector ``[window]`` and still emits ``RATE()`` on the gauge
+        (issue #379). A user pin is the one signal the ES|QL path degrades on,
+        so it keeps falling through."""
         from observability_migration.adapters.source.grafana.panels import (
-            _native_promql_has_counter_func_on_gauge,
+            _native_promql_counter_func_on_declared_gauge,
         )
         self.seed_field_caps({
             "node_vmstat_oom_kill": {
@@ -3465,17 +3469,24 @@ class TranslatorRegressionTests(unittest.TestCase):
                 },
             },
         })
-        # Counter-style range function on a gauge-typed field: gate fires.
-        self.assertTrue(_native_promql_has_counter_func_on_gauge(
+        # Live-caps gauge typing alone: native PROMQL is kept (issue #379).
+        self.assertIsNone(_native_promql_counter_func_on_declared_gauge(
             "irate(node_vmstat_oom_kill[5m])", self.resolver,
         ))
-        # Counter-style range function on a counter-typed field: gate
-        # doesn't fire; native PROMQL is still preferred.
-        self.assertFalse(_native_promql_has_counter_func_on_gauge(
+        # Counter-typed field: native PROMQL is kept.
+        self.assertIsNone(_native_promql_counter_func_on_declared_gauge(
             "rate(http_requests_total[5m])", self.resolver,
         ))
-        # No counter-style range function: gate doesn't fire.
-        self.assertFalse(_native_promql_has_counter_func_on_gauge(
+        # Explicit rule-pack gauge pin: fall through to the ES|QL degrade.
+        self.rule_pack.metric_kinds["node_vmstat_oom_kill"] = "gauge"
+        self.assertEqual(
+            _native_promql_counter_func_on_declared_gauge(
+                "irate(node_vmstat_oom_kill[5m])", self.resolver,
+            ),
+            "node_vmstat_oom_kill",
+        )
+        # A pinned gauge without a counter-style range function is untouched.
+        self.assertIsNone(_native_promql_counter_func_on_declared_gauge(
             "avg_over_time(node_vmstat_oom_kill[5m])", self.resolver,
         ))
 

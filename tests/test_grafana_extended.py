@@ -3715,6 +3715,108 @@ class TestPromQLWrapperFragments(unittest.TestCase):
         avg = translate_promql_to_esql("avg_over_time(node_load1[1h])").esql_query
         self.assertRegex(avg, r"AVG_OVER_TIME\(node_load1,\s*\d")
 
+    def test_long_dropped_range_windows_are_reported_as_semantic_loss(self):
+        """Dropping the window is the only correct ES|QL shape, but once the
+        window outgrows any bucket a dashboard view produces, ``rate(m[1d])``
+        and ``rate(m[1w])`` collapse into the same query as ``rate(m[1h])``.
+        The issue-#379 dashboard had exactly that trio, with nothing said about
+        it, so report the loss rather than hiding it.
+
+        How long a window survives depends on the bucket actually emitted, so
+        both regimes are exercised here. Dashboard panels get an adaptive
+        ``TBUCKET(20, ...)`` whose width is unknown at translation time: a bucket
+        stands in for a window only when the view is ~20x it, which holds for
+        ordinary views up to an hour, so those stay quiet and the warning does
+        not become noise on the ``[5m]``/``[1m]`` windows most panels use. An
+        explicit panel ``interval`` pins a fixed bucket instead, and then the
+        exact width is known (see the fixed-bucket case at the end).
+        """
+        from observability_migration.adapters.source.grafana import rules
+        from observability_migration.adapters.source.grafana.translate import (
+            translate_promql_to_esql,
+        )
+
+        def windows_reported(expr, ts_bucket="time_bucket = TBUCKET(20, ?_tstart, ?_tend)"):
+            rp = rules.RulePackConfig()
+            rp.ts_bucket = ts_bucket
+            result = translate_promql_to_esql(expr, rule_pack=rp)
+            return [w for w in (result.warnings or []) if "lookback window" in w]
+
+        for expr, window in (
+            ("rate(http_requests_total[1d])", "[1d]"),
+            ("rate(http_requests_total[1w])", "[1w]"),
+            ("irate(http_requests_total[7d])", "[7d]"),
+            ("sum by (job) (increase(http_requests_total[2h]))", "[2h]"),
+        ):
+            reported = windows_reported(expr)
+            self.assertEqual(len(reported), 1, f"{expr}: got {reported}")
+            self.assertIn(window, reported[0], expr)
+
+        # Windows a dashboard view can reproduce stay quiet.
+        for expr in (
+            "rate(http_requests_total[1m])",
+            "rate(http_requests_total[5m])",
+            "rate(http_requests_total[1h])",
+        ):
+            self.assertEqual(windows_reported(expr), [], expr)
+
+        # A *step* macro already meant "follow the view", so it is not a loss
+        # when the bucket takes over.
+        for expr in (
+            "rate(http_requests_total[$__rate_interval])",
+            "rate(http_requests_total[$__interval])",
+        ):
+            self.assertEqual(windows_reported(expr), [], expr)
+
+        # $__range is the whole view (~20 buckets), not a step, so it is a loss
+        # at every dashboard range. It is substituted to a literal 1h upstream,
+        # which would otherwise sit right under the threshold and stay silent.
+        for expr in (
+            "rate(http_requests_total[$__range])",
+            "rate(http_requests_total[$__range_s])",
+            "rate(http_requests_total[${__range}])",
+        ):
+            self.assertEqual(len(windows_reported(expr)), 1, expr)
+
+        # Prometheus accepts compound durations, so [1h30m] must be measured as
+        # 5400s rather than skipped as unparseable — the identical [90m] warns.
+        for expr, window in (
+            ("rate(http_requests_total[1h30m])", "[1h30m]"),
+            ("rate(http_requests_total[1d12h])", "[1d12h]"),
+        ):
+            reported = windows_reported(expr)
+            self.assertEqual(len(reported), 1, f"{expr}: got {reported}")
+            self.assertIn(window, reported[0], expr)
+        # ...and a compound duration under the threshold still stays quiet.
+        self.assertEqual(windows_reported("rate(http_requests_total[45m30s])"), [])
+
+        # A bare number is seconds, and this translator accepts it, so [7200]
+        # must be measured rather than skipped as unparseable.
+        self.assertEqual(len(windows_reported("rate(http_requests_total[7200])")), 1)
+        self.assertEqual(windows_reported("rate(http_requests_total[600])"), [])
+
+        # A fixed bucket knows its own width, so the adaptive guess above does
+        # not apply: with an explicit 5m panel interval a [1h] lookback really
+        # does become a 5-minute rate, and staying quiet would hide 12x.
+        fixed_5m = "time_bucket = TBUCKET(5 minute)"
+        self.assertEqual(
+            len(windows_reported("rate(http_requests_total[1h])", fixed_5m)), 1
+        )
+        self.assertEqual(
+            windows_reported("rate(http_requests_total[5m])", fixed_5m), []
+        )
+        # The same expression is silent under an adaptive bucket, which is the
+        # whole point of reading the bucket instead of a fixed threshold.
+        self.assertEqual(windows_reported("rate(http_requests_total[1h])"), [])
+
+        # The *_OVER_TIME family keeps its window, so there is nothing to report.
+        self.assertEqual(windows_reported("avg_over_time(node_load1[1w])"), [])
+
+        # A duration inside a label matcher is not a range-vector window.
+        self.assertEqual(
+            windows_reported('rate(http_requests_total{path="/a[1w]"}[5m])'), []
+        )
+
     def test_increase_degraded_to_gauge_fn_still_casts_to_double(self):
         # Regression for the MySQL "Network Usage Hourly" runtime failure:
         # increase() over a counter whose name carries no _total suffix
