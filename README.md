@@ -70,30 +70,30 @@ dashboard with no Elastic or Kibana credentials. The repo ships sample
 dashboards for exactly this, so list them first (offline, no setup):
 
 ```bash
-.venv/bin/obs-migrate list-samples
+uvx --from "$PKG" obs-migrate list-samples
 ```
 
-Then migrate the bundled Grafana sample from files into a local output
-directory:
+Copy the `input_dir` value for the Grafana sample, then migrate it into a
+local output directory:
 
 ```bash
-.venv/bin/obs-migrate migrate \
-  --source grafana \
-  --input-mode files \
-  --input-dir observability_migration/sample_dashboards/grafana/prom-basics \
-  --output-dir sample_out
+uvx --from "$PKG" obs-migrate migrate \
+  --source grafana --input-mode files \
+  --input-dir "<input_dir from list-samples>" \
+  --output-dir sample_out --assets dashboards --compile
 ```
 
-This translates the dashboard into Kibana-ready YAML. Anything that can't be
-expressed natively, such as the sample's World Map panel, is kept as a
-manual-review marker rather than silently dropped.
+This translates the dashboard into Kibana-ready YAML and compiles it to
+NDJSON. Anything that can't be expressed natively, such as the sample's
+World Map panel, is kept as a manual-review marker rather than silently
+dropped.
 
-Everything is written under your `--output-dir`:
+Key output lands under `sample_out/dashboards/`:
 
-- `sample_out/dashboards/yaml/`: the generated dashboard YAML
-- `sample_out/dashboards/compiled/`: the compiled Kibana NDJSON
-- `sample_out/dashboards/migration_summary.md`: a human-readable verdict,
-  scorecard, and per-dashboard worklist; read this first
+- `yaml/`: the generated dashboard YAML
+- `compiled/`: the compiled Kibana NDJSON (requires `--compile`)
+- `migration_summary.md`: a human-readable verdict, scorecard, and
+  per-dashboard worklist; read this first
 
 To go further:
 
