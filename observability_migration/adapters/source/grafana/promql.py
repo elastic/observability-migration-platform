@@ -5825,6 +5825,50 @@ def _expr_for_or_collapse_parse(expr: str, rule_pack=None) -> str:
     return result
 
 
+def _split_top_level_or_text(expr: str) -> list[str]:
+    """Split *expr* on top-level ``or`` tokens (outside parens/brackets/braces
+    and string literals), preserving each operand's original text."""
+    text = str(expr or "")
+    operands: list[str] = []
+    depth = 0
+    start = 0
+    i = 0
+    n = len(text)
+    in_str: str | None = None
+    while i < n:
+        ch = text[i]
+        if in_str is not None:
+            if ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in "\"'":
+            in_str = ch
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+            i += 1
+            continue
+        if ch in ")]}":
+            depth = max(depth - 1, 0)
+            i += 1
+            continue
+        if depth == 0 and text[i : i + 2].lower() == "or":
+            before = text[i - 1] if i > 0 else " "
+            after = text[i + 2] if i + 2 < n else " "
+            if not (before.isalnum() or before == "_") and not (
+                after.isalnum() or after == "_"
+            ):
+                operands.append(text[start:i])
+                i += 2
+                start = i
+                continue
+        i += 1
+    operands.append(text[start:])
+    return operands
+
+
 def collapse_or_for_native_promql(expr, resolver=None, rule_pack=None) -> str:
     """Drop Grafana same-metric range-fallback ``or`` so native PROMQL can run.
 
@@ -5833,19 +5877,45 @@ def collapse_or_for_native_promql(expr, resolver=None, rule_pack=None) -> str:
     ``rate(M[$interval])`` operand of ``rate(...) or irate(...)`` and drops
     live-absent cloud fallbacks. Apply the same rewrite before the native
     path so those single-target panels stay PROMQL instead of degrading.
+
+    The interval-macro substitution is only for *structural* parsing: the
+    operand returned for native emission is mapped back to its original
+    (un-substituted) text so dashboard-adaptive lookback macros
+    (``$__rate_interval`` / ``$interval``) survive (PR #369).
     """
     if not expr or not re.search(r"\bor\b", expr, re.IGNORECASE):
         return expr
+    substituted = _expr_for_or_collapse_parse(expr, rule_pack)
     try:
-        parsed = _parse_fragment(_expr_for_or_collapse_parse(expr, rule_pack))
+        parsed = _parse_fragment(substituted)
     except Exception:
         return expr
+
+    original_operands = _split_top_level_or_text(expr)
+    substituted_operands = _split_top_level_or_text(substituted)
+
+    def _original_operand_for(kept_raw: str) -> str:
+        target = re.sub(r"\s+", "", kept_raw or "")
+        if not target or len(original_operands) != len(substituted_operands):
+            return ""
+        for original, subst in zip(original_operands, substituted_operands):
+            if re.sub(r"\s+", "", subst) == target:
+                return original.strip()
+        return ""
+
     left = _left_operand_of_same_metric_range_fallback(parsed)
     if left is not None and (left.raw_expr or "").strip():
+        original = _original_operand_for(left.raw_expr)
+        if original:
+            return original
+        # Same-metric range fallback always keeps the first operand.
+        if original_operands and original_operands[0].strip():
+            return original_operands[0].strip()
         return left.raw_expr.strip()
     kept, _dropped = _reduce_or_operands(parsed, resolver)
     if len(kept) == 1 and (kept[0].raw_expr or "").strip():
-        return kept[0].raw_expr.strip()
+        original = _original_operand_for(kept[0].raw_expr)
+        return original or kept[0].raw_expr.strip()
     return expr
 
 

@@ -1081,7 +1081,19 @@ class SchemaResolver:
         self._discover_fields()
         if not self._field_cache:
             return None
-        return field_name in self._field_cache
+        if field_name in self._field_cache:
+            return True
+        # A partial cache carries positive information only: a ``--control-schema``
+        # merge (status ``partial``) seeds label hints for Grafana variables but
+        # is intentionally NOT an exhaustive field inventory. An unlisted field
+        # there is unknown (``None``), never proven absent. Returning ``False``
+        # made absence-sensitive callers (native ``metrics.`` prefixing, control
+        # scoping, OR-fallback pruning) drop valid panels/scopes offline.
+        # Every other populated cache (a real ``_field_caps`` fetch, status
+        # ``ok``) stays authoritative, so a genuinely absent field is ``False``.
+        if self._discovery_status == "partial":
+            return None
+        return False
 
     def field_type(self, field_name):
         capability = self.field_capability(field_name)

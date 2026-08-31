@@ -131,6 +131,8 @@ panel:
         | STATS start = MAX(LAST_OVER_TIME({{metric:process_start_time_seconds:gauge}}))
         | EVAL computed_value = DATE_DIFF("seconds", TO_DATETIME(start * 1000), NOW())
         | KEEP computed_value
+      # Elapsed seconds render as a duration (uptime-style) tile, not a raw number.
+      primary_format: s
       status_override: migrated
     # Grafana rate() on RSS/VMS gauges 400s in ES|QL RATE() and is the wrong
     # aggregation even in Prometheus. Plot current gauge values.

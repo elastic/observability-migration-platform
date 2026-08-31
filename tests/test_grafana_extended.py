@@ -2303,6 +2303,29 @@ class TestNativePromQLIntegrity(unittest.TestCase):
         self.assertEqual(panel["metrics"], [{"field": "value"}])
         self.assertEqual(panel["breakdown"]["field"], "series_group")
 
+    def test_existing_series_group_identity_not_composited_twice(self):
+        """A query that already carries an ``EVAL series_group = CONCAT(...)``
+        identity (plus its source ``BY`` labels) must treat that alias as the
+        final breakdown, not feed it back into a second composite. A second
+        ``EVAL series_group = CONCAT(instance, job, series_group)`` would
+        duplicate the legend identity (PR #369, giorgi-imerlishvili-elastic)."""
+        panel = panels._build_esql_multi_series_xy(
+            (
+                "TS metrics-*\n"
+                "| STATS value = MAX(LAST_OVER_TIME(foo)) "
+                "BY time_bucket = TBUCKET(5 minute), labels.instance, labels.job\n"
+                "| EVAL series_group = CONCAT(COALESCE(TO_STRING(labels.instance), \"\"), "
+                "\" / \", COALESCE(TO_STRING(labels.job), \"\"))\n"
+                "| SORT time_bucket ASC"
+            ),
+            "line",
+            metric_fields=["value"],
+        )
+        self.assertEqual(panel["breakdown"]["field"], "series_group")
+        self.assertEqual(
+            panel["query"].count("EVAL series_group"), 1, panel["query"]
+        )
+
     def test_topk_without_labels_translates_with_warnings(self):
         # Ungrouped topk now uses single-bucket fallback (not not_feasible)
         panel = _make_panel(1, "topk(5, rate(foo_total[5m]))")

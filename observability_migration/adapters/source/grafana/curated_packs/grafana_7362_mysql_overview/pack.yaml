@@ -221,6 +221,11 @@ panel:
         | KEEP time_bucket, CPU_busy_pct, `Load 1m`
         | SORT time_bucket ASC
       status_override: migrated
+      approximation_note: >-
+        Approximate: aggregates across all node exporters without a per-host
+        grouping. COUNT_DISTINCT(labels.cpu) is global, so with multiple hosts
+        (which reuse CPU ids) the core count is undercounted and CPU busy % can
+        exceed 100%. Scope to a single host for an exact value.
     - title_match: "Disk Latency"
       esql_query: |
         TS metrics-*
@@ -259,6 +264,11 @@ panel:
         | KEEP time_bucket, Used, Free, Buffers, Cached
         | SORT time_bucket ASC
       status_override: migrated
+      approximation_note: >-
+        Approximate: aggregates across all node exporters without a per-host
+        grouping. Each MAX is taken independently, so the components can come
+        from different hosts and Used = Total - (Free + Buffers + Cached) may
+        mix hosts. Scope to a single host for exact per-node memory.
     - title_match: "Swap Activity"
       esql_query: |
         TS metrics-*

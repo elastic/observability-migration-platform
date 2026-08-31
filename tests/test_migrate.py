@@ -17809,6 +17809,33 @@ class NativePromqlTests(unittest.TestCase):
         self.assertIn("rate(mysql_global_status_queries", collapsed)
         self.assertTrue(can_use_native_promql(collapsed))
 
+    def test_or_collapse_preserves_adaptive_range_macro(self):
+        """The native OR collapse must keep the *original* left operand so
+        adaptive range macros ($__rate_interval / $interval) survive into
+        native emission. Substituting a concrete window is only for structural
+        parsing (PR #369, giorgi-imerlishvili-elastic)."""
+        from observability_migration.adapters.source.grafana.promql import collapse_or_for_native_promql
+        collapsed = collapse_or_for_native_promql(
+            "rate(foo[$__rate_interval]) or irate(foo[5m])"
+        )
+        self.assertIn("$__rate_interval", collapsed)
+        self.assertNotIn(" or ", collapsed)
+
+        collapsed_interval = collapse_or_for_native_promql(
+            "rate(foo[$interval]) or irate(foo[5m])"
+        )
+        self.assertIn("$interval", collapsed_interval)
+        self.assertNotIn(" or ", collapsed_interval)
+
+    def test_rejects_empty_metricless_selector(self):
+        """An empty metricless selector ``{}`` (e.g. what remains after an
+        ignored label was the sole matcher) is invalid PromQL and must not be
+        accepted for native emission (PR #369, giorgi-imerlishvili-elastic)."""
+        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        self.assertFalse(can_use_native_promql("{}"))
+        self.assertFalse(can_use_native_promql("({})"))
+        self.assertFalse(can_use_native_promql("{  }"))
+
     def test_rejects_and_binary_op(self):
         from observability_migration.adapters.source.grafana.panels import can_use_native_promql
         self.assertFalse(can_use_native_promql("foo and bar > 0"))

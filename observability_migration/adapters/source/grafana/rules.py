@@ -295,6 +295,10 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["kibana_type_override"] = override.kibana_type_override
             if override.drop_time_from:
                 entry["drop_time_from"] = True
+            if override.primary_format:
+                entry["primary_format"] = override.primary_format
+            if override.approximation_note:
+                entry["approximation_note"] = override.approximation_note
             pack.panel_query_overrides.append(entry)
         for override in panel_cfg.layout_overrides:
             entry = {

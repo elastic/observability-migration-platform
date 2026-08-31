@@ -17,6 +17,8 @@ from observability_migration.adapters.source.grafana.panels import (
     _materialize_curated_query_override,
     _omit_absent_optional_metrics_from_curated_query,
     _panel_static_legend_label,
+    _prefix_native_metric_fields,
+    _resolve_control_scope_metric,
     _retarget_esql_param_controls_to_panel_bindings,
     _strip_optional_metric_token_from_curated_esql,
     translate_dashboard,
@@ -523,6 +525,68 @@ def test_curated_override_ignores_hidden_target_when_checking_dropped_metrics():
     assert result.status == "migrated"
     assert result.confidence == 1.0
     assert result.reasons == []
+
+
+def _partial_native_resolver():
+    """A prometheus_native resolver whose only knowledge is a partial,
+    label-only control-schema merge. ``discovery_status`` stays ``partial`` and
+    never becomes ``ok``, so the partial cache proves nothing about metric
+    fields (PR #369 review, giorgi-imerlishvili-elastic)."""
+    resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_native")
+    resolver.merge_control_schema(
+        {"field_cache": {"labels.instance": {"keyword": {"type": "keyword"}}}}
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+    return resolver
+
+
+def _exhaustive_native_resolver(field_cache):
+    """A prometheus_native resolver backed by exhaustive live field-caps."""
+    resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_native")
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = dict(field_cache)
+    return resolver
+
+
+def test_native_prefix_kept_after_partial_control_schema_merge():
+    """A prometheus-native Max Connections selector must keep its planned
+    ``metrics.`` prefix after a partial (label-only) control-schema merge:
+    the partial cache proves nothing about metric fields, so a not-found result
+    must not strip the prefix."""
+    resolver = _partial_native_resolver()
+    rewritten = _prefix_native_metric_fields("pg_settings_max_connections", resolver)
+    assert rewritten == "metrics.pg_settings_max_connections"
+
+
+def test_native_prefix_rejected_when_exhaustive_caps_prove_absent():
+    """With exhaustive live field-caps (status ``ok``), a metric that has
+    neither a bare nor a ``metrics.`` field must NOT be invented with a
+    prefix — the absence-sensitive gate still holds for real field-caps."""
+    resolver = _exhaustive_native_resolver(
+        {"labels.instance": {"keyword": {"type": "keyword"}}}
+    )
+    rewritten = _prefix_native_metric_fields("pg_settings_max_connections", resolver)
+    assert rewritten == "pg_settings_max_connections"
+
+
+def test_control_scope_metric_kept_after_partial_control_schema_merge():
+    """The 14114 Instance control must stay scoped to ``pg_up`` after a partial
+    control-schema merge instead of degrading to an unscoped label_values that
+    scans every ``labels.instance`` in mixed ``metrics-*``."""
+    resolver = _partial_native_resolver()
+    scope = _resolve_control_scope_metric("pg_up", resolver, RulePackConfig())
+    assert scope and "pg_up" in scope
+
+
+def test_control_scope_metric_dropped_when_exhaustive_caps_prove_absent():
+    """Exhaustive field-caps that prove the scoping metric absent must still
+    drop the scope (scoping on a missing field would empty the control)."""
+    resolver = _exhaustive_native_resolver(
+        {"labels.instance": {"keyword": {"type": "keyword"}}}
+    )
+    scope = _resolve_control_scope_metric("pg_up", resolver, RulePackConfig())
+    assert scope == ""
 
 
 def test_1860_pressure_panel_includes_irq_series():
@@ -1318,6 +1382,111 @@ def test_9628_start_time_override_does_not_yellow_absent_postmaster_metric():
     assert "process_start_time_seconds" in query
     assert "DATE_DIFF" in query
     assert "pg_postmaster_start_time_seconds" not in query
+
+
+def test_9628_version_metric_displays_version_label_not_static_one():
+    """The Version tile must display the PostgreSQL version label
+    (``labels.short_version``), not the numeric ``pg_static=1``. The metric
+    panel binds the label as a breakdown so the version string is visible
+    (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.pg_static": {"double": {"type": "double"}},
+        "labels.short_version": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 1,
+        "type": "singlestat",
+        "title": "Version",
+        "targets": [{"expr": "pg_static", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+    }
+    yaml_panel, _result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "metric"
+    assert (esql.get("breakdown") or {}).get("field") == "labels.short_version"
+    assert "labels.short_version" in (esql.get("query") or "")
+
+
+def test_9628_start_time_metric_has_duration_format():
+    """The Start Time tile computes elapsed seconds; it must carry a duration
+    format so it renders as a duration rather than a raw number (PR #369)."""
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.process_start_time_seconds": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 2,
+        "type": "singlestat",
+        "title": "Start Time",
+        "targets": [{"expr": "process_start_time_seconds", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+    }
+    yaml_panel, _result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "metric"
+    assert (esql.get("primary") or {}).get("format", {}).get("type") == "duration"
+
+
+def test_7362_cpu_system_panel_surfaces_cross_host_approximation():
+    """The 7362 CPU Usage / Load override aggregates across every node exporter
+    (``COUNT_DISTINCT(labels.cpu)`` is global; hosts reuse CPU IDs), which can
+    exceed 100%. It must surface an approximation warning and downgrade instead
+    of reporting green (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["mysql"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.node_cpu_seconds_total": {"double": {"type": "double"}},
+        "metrics.node_load1": {"double": {"type": "double"}},
+        "labels.cpu": {"keyword": {"type": "keyword"}},
+        "labels.mode": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 3,
+        "type": "timeseries",
+        "title": "CPU Usage / Load",
+        "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert any(
+        "host" in reason.lower()
+        and ("approxim" in reason.lower() or "aggregat" in reason.lower())
+        for reason in result.reasons
+    ), result.reasons
 
 
 def test_9628_instance_query_result_becomes_label_values_control():
@@ -2303,6 +2472,60 @@ def test_live_optional_metric_is_dropped_without_downgrading_multi_target_panel(
     assert "redis_blocked_clients" not in query
     assert not any("Dropped series whose live target metrics are absent" in reason for reason in result.reasons)
     assert not any("only 1 could be migrated" in reason for reason in result.reasons)
+
+
+def test_optional_or_fallback_keeps_surviving_operand():
+    """``foo or optional_b`` where ``foo`` is present and ``optional_b`` is a
+    live-optional absent metric must render from the surviving ``foo`` operand
+    rather than discarding the translated target and degrading the whole panel
+    to missing-telemetry markdown (PR #369 follow-up, giorgi-imerlishvili-elastic).
+    """
+    rule_pack = RulePackConfig(live_optional_metrics=["optional_b"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "foo": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "OR Fallback",
+        "targets": [{"expr": "foo or optional_b", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" not in (yaml_panel or {}), result.reasons
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "foo" in query
+    assert "optional_b" not in query
+
+
+def test_ignored_only_metricless_selector_does_not_emit_empty_native_query():
+    """``{release="$release"}`` with ``release`` ignored strips to an empty
+    metricless selector. That must NOT migrate as a green native
+    ``value=({})`` (invalid PromQL); the gap must be surfaced instead
+    (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    rule_pack = RulePackConfig(ignored_labels=["release"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {"labels.release": {"keyword": {"type": "keyword"}}}
+
+    panel = {
+        "type": "stat",
+        "title": "Release",
+        "targets": [{"expr": '{release="$release"}', "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    serialized = json.dumps(yaml_panel or {})
+    assert "value=({})" not in serialized
+    assert "{}" not in serialized
+    assert result.status != "migrated"
 
 
 def test_all_optional_absent_targets_become_missing_telemetry_markdown():
