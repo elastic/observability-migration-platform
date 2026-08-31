@@ -2433,43 +2433,137 @@ def _is_bare_counter_reference(promql_expr, resolver, rule_pack=None):
     return _is_counter_fallback(metric, rule_pack)
 
 
-def _native_promql_has_counter_func_on_gauge(promql_expr, resolver):
-    """Return True if *promql_expr* applies ``rate``/``irate``/``increase``
-    to a metric that the resolver has *positively* identified as
-    gauge-typed in the target index.
+def _first_counter_range_metric(promql_expr, resolver, predicate_name,
+                                tolerate_failure=False):
+    """First metric in *promql_expr* under ``rate``/``irate``/``increase`` for
+    which ``resolver.<predicate_name>(metric)`` is true, else ``None``.
 
-    Used as a pre-flight gate before emitting native PROMQL: Elastic's
-    PROMQL command rejects counter-style range functions on gauge-typed
-    fields at render time with ``first argument of [RATE(...)] must be
-    counter``. Falling through to ES|QL translation lets the gauge
-    fallback emit a degraded query the cluster can actually serve.
+    Shared by the two native-PROMQL pre-flight checks below, which ask the same
+    question of the same metrics with different resolver predicates.
 
-    The gate requires positive evidence (the field is present in the
-    target index AND is typed gauge). Unknown fields or fields without
-    a recorded ``time_series_metric`` are left alone so existing
-    coverage of expressions like ``rate(foo[5m]) offset 1h`` against a
-    bare/empty schema isn't disturbed.
+    Set *tolerate_failure* for a predicate that reaches the live target, where an
+    error means "unknown" rather than "no". A predicate that decides the
+    translation strategy must not use it.
     """
     if resolver is None or not promql_expr:
-        return False
+        return None
+    predicate = getattr(resolver, predicate_name, None)
+    if not callable(predicate):
+        return None
     sanitized = _strip_promql_string_literals(promql_expr)
     for match in _COUNTER_RANGE_FUNC_PATTERN.finditer(sanitized):
         metric = match.group("metric")
         if not metric:
             continue
-        try:
-            cap = resolver.field_capability(metric)
-        except Exception:
-            continue
-        if cap is None:
-            continue
-        # Only act when the cluster has explicitly typed this field as
-        # something other than ``counter``. ``None`` / unknown means
-        # "no evidence either way" — leave the native PROMQL path alone.
-        kind = getattr(cap, "time_series_metric_kind", None)
-        if kind and kind != "counter":
-            return True
-    return False
+        if tolerate_failure:
+            # ``refutes_counter`` resolves fields against live caps and can fail
+            # on a flaky or partially-available target. That must not abort a
+            # migration, and its only cost is a missing advisory note.
+            try:
+                matched = predicate(metric)
+            except Exception:
+                continue
+        else:
+            # ``declared_gauge`` is a deterministic rule-pack lookup that decides
+            # the translation strategy. Swallowing an error here would silently
+            # ignore the operator's pin, so let it surface.
+            matched = predicate(metric)
+        if matched:
+            return metric
+    return None
+
+
+def _native_promql_counter_func_on_declared_gauge(promql_expr, resolver):
+    """Metric under ``rate``/``irate``/``increase`` that the *user* pinned as a
+    gauge (``metric_kinds: <metric>: gauge``), or ``None``.
+
+    The pre-flight gate before emitting native PROMQL. A panel should only be
+    pushed off the native path when ES|QL would translate it *better*, and the
+    pin is the one degrade signal in
+    ``promql._should_degrade_counter_range_func`` for which that is true: it is
+    the operator asserting the metric really is a gauge, which is a fact about
+    the source and so binds both paths equally.
+
+    The other two signals in that predicate are ES|QL implementation limits, not
+    facts about the metric, so mirroring them here would push panels *into* the
+    path that has the problem:
+
+    - conflicting numeric types across indices (issue #245) make ES|QL reject a
+      bare field reference ("ambiguities in index mappings"), which is why it
+      degrades and casts. Native PROMQL emits no bare ES|QL field reference.
+    - non-counter ``increase`` degrades because ES|QL ``INCREASE`` requires a
+      counter outright. Native PROMQL is less strict, not unconditionally safe:
+      measured on Elasticsearch 9.5, native ``rate``/``irate``/``increase`` over
+      a gauge field all behave the same way — they run while the ``[window]``
+      stays at or above the query's bucket step and throw
+      ``class_cast_exception`` below it. So native ``increase`` still evaluates
+      over the whole window range that ES|QL rejects outright, and keeping it
+      native preserves the ``[window]`` there instead of dropping it
+      unconditionally. :func:`_native_counter_func_on_target_gauge_note`
+      discloses the remaining narrow-window risk, which applies equally to all
+      three functions.
+
+    So the two paths agree on the only signal that describes the data, and
+    diverge exactly where their own engines differ.
+
+    It used to key on live field caps instead, diverting every gauge-typed
+    metric to ES|QL "so the gauge fallback can degrade honestly". That premise
+    was false. The ES|QL policy trusts a source ``rate()``/``irate()`` over live
+    caps (issue #119), so it did not degrade — it emitted ``RATE()`` on the
+    gauge, which Elasticsearch rejects outright (``first argument of [RATE(...)]
+    must be [counter_long, counter_integer or counter_double]``), after
+    ``counter_range_window_rule`` had already dropped the ``[window]``. Because
+    live caps only exist when ``--es-url`` is passed, that made the connection
+    flag silently change the translation strategy and break every gauge
+    range-vector panel (issue #379).
+    """
+    return _first_counter_range_metric(promql_expr, resolver, "declared_gauge")
+
+
+def _native_counter_func_on_target_gauge_note(promql_expr, resolver):
+    """Note for a native counter-style range function over a metric the target
+    does not type as a counter, or ``None``.
+
+    ``refutes_counter`` covers both an explicit ``gauge`` mapping and a plain
+    numeric field carrying no ``time_series_metric`` at all, so the wording says
+    "not counter-typed" rather than asserting a gauge mapping the caps may not
+    actually contain.
+
+    Keeping these native is correct — it is the only form that preserves the
+    ``[window]``, and ES|QL's ``RATE()`` cannot run on the field at all — but it
+    is not risk-free. Measured on Elasticsearch 9.5: native
+    ``rate``/``irate``/``increase`` over a ``time_series_metric=gauge`` field
+    executes only while the ``[window]`` stays large relative to the query's
+    bucket step (``range / buckets``); below that the cluster throws
+    ``class_cast_exception`` (``ReferenceAttribute cannot be cast to ...
+    Bucket``) rather than a typing error. So ``rate(gauge[5m])`` renders on a
+    1-hour view and errors once the range widens, while the same expression over
+    a properly counter-typed field renders at every range. All three functions
+    were measured and behave identically here, so the note covers each of them.
+    Correcting the ingest mapping is the real fix, so say so instead of shipping
+    a panel that fails at some ranges with no explanation.
+
+    The wording carries an explicit "verify" so
+    :func:`~.verification.panel_notes_imply_warning` promotes the panel into the
+    With-warnings scorecard. A panel that renders at 1h and errors at 3d must not
+    be counted as clean, and range-dependent breakage is precisely what an
+    operator has to check by hand.
+    """
+    metric = _first_counter_range_metric(
+        promql_expr, resolver, "refutes_counter", tolerate_failure=True
+    )
+    if not metric:
+        return None
+    return (
+        f"Native PROMQL keeps the source rate()/irate()/increase() window on "
+        f"{metric}, but the target does not type this field as a counter. "
+        "Elasticsearch evaluates a non-counter rate only while the lookback "
+        "window stays large relative to the dashboard range's bucket step, so "
+        "this panel renders at narrow dashboard ranges and errors at wider ones. "
+        "Verify it at the time ranges this dashboard is actually used at, and fix "
+        f"the ingest mapping to type {metric} as a counter (or pin metric_kinds "
+        f"{metric}: gauge to translate it as a gauge average instead)."
+    )
 
 
 # Substrings that mark a target-side *parse* rejection of a native PROMQL query
@@ -2671,16 +2765,13 @@ def _translate_panel_native_promql(
             "(requires Kibana 9.5+; uses ES|QL RLIKE binding instead)",
         )
         return None
-    # Pre-flight type check: if the source PromQL applies a counter-style
-    # range function (``rate``/``irate``/``increase``) to a metric that
-    # the target index has typed as gauge, the native PROMQL command will
-    # 400 with ``first argument of [RATE(...)] must be counter`` at
-    # render time. Fall through to ES|QL translation, which knows how to
-    # degrade to a gauge-equivalent. Surfaced by validating uploaded
-    # Node Exporter Full panels referencing node_vmstat_* / node_netstat_*
-    # counters that don't end in ``_total`` (Elastic's auto-mapping
-    # treats them as gauges).
-    if resolver is not None and _native_promql_has_counter_func_on_gauge(expr, resolver):
+    declared_gauge_metric = _native_promql_counter_func_on_declared_gauge(expr, resolver)
+    if declared_gauge_metric:
+        _append_unique(
+            panel_notes,
+            f"Native PROMQL skipped: rule pack pins {declared_gauge_metric} as a "
+            "gauge, so the counter-style range function degrades via ES|QL",
+        )
         return None
     legend_format = target.get("legendFormat", "")
     legend_labels = _extract_legend_labels(legend_format)
@@ -2879,6 +2970,12 @@ def _translate_panel_native_promql(
     )
     if metric_map_note:
         _append_unique(notes, metric_map_note)
+    # Only meaningful once the native panel is committed: every gate above can
+    # still return None, and on the ES|QL fallback the window is dropped rather
+    # than kept, so an early append would contradict the emitted query.
+    target_gauge_note = _native_counter_func_on_target_gauge_note(expr, resolver)
+    if target_gauge_note:
+        _append_unique(notes, target_gauge_note)
     for recording_rule_note in _recording_rule_metric_map_notes(
         _collect_source_metrics(native_fragment),
         rule_pack,

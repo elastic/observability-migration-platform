@@ -27,6 +27,9 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from observability_migration.adapters.source.grafana import cli, panels, rules, schema
+from observability_migration.adapters.source.grafana.verification import (
+    panel_notes_imply_warning,
+)
 
 
 def _make_panel(idx, expr="rate(http_requests_total[5m])", panel_type="timeseries"):
@@ -161,6 +164,224 @@ class TestNativeValidationStats(unittest.TestCase):
         self.assertFalse(rejected("verification_exception: Unknown column [foo]"))
         self.assertFalse(rejected("Unknown index [metrics-nope]"))
         self.assertFalse(rejected(""))
+
+
+# =========================================================================
+# ISSUE #379 — a reachable target must not change the translation strategy
+# =========================================================================
+
+
+class TestRangeVectorPanelsStayNativeWithLiveFieldCaps(unittest.TestCase):
+    """``--es-url`` supplies live field caps, and it used to reroute every
+    range-vector panel whose metric the target typed as a gauge onto the ES|QL
+    ``TS`` path. That path drops the range-vector ``[window]`` and — because the
+    shared counter policy trusts a source ``rate()`` over live caps (#119) —
+    still emits ``RATE()`` on the gauge, which Elasticsearch rejects with
+    ``first argument of [RATE(...)] must be [counter_long, counter_integer or
+    counter_double]``. So merely pointing the tool at a cluster turned working,
+    window-preserving panels into broken ones (issue #379).
+    """
+
+    GAUGE_CAPS = {
+        "metrics.kubelet_volume_stats_used_bytes": {
+            "double": {
+                "type": "double",
+                "searchable": True,
+                "aggregatable": True,
+                "time_series_metric": "gauge",
+            },
+        },
+    }
+
+    def _resolver(self, rule_pack, caps):
+        res = schema.SchemaResolver(rule_pack)
+        res._discovery_attempted = True
+        res._field_cache = dict(caps)
+        res._discovered_mappings = {}
+        res._schema_profile_cache_id = None
+        return res
+
+    def _translate(self, expr, caps=None, metric_kinds=None):
+        rp = rules.RulePackConfig()
+        rp.native_promql = True
+        if metric_kinds:
+            rp.metric_kinds.update(metric_kinds)
+        resolver = self._resolver(rp, caps if caps is not None else self.GAUGE_CAPS)
+        yaml_panel, result = panels.translate_panel(
+            _make_panel(1, expr),
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+        query = ""
+        if yaml_panel and "esql" in yaml_panel:
+            query = yaml_panel["esql"]["query"]
+        elif result is not None:
+            query = result.esql_query or ""
+        return query, result
+
+    def test_gauge_typed_metric_keeps_native_promql_and_its_window(self):
+        query, _result = self._translate("rate(kubelet_volume_stats_used_bytes[1d])")
+
+        self.assertTrue(
+            query.startswith("PROMQL "),
+            f"live-caps gauge typing must not divert to ES|QL: {query[:120]}",
+        )
+        # The window survives, and no bare ES|QL RATE() is emitted on the gauge.
+        self.assertIn("rate(metrics.kubelet_volume_stats_used_bytes[1d])", query)
+        self.assertNotIn("RATE(metrics.kubelet_volume_stats_used_bytes)", query)
+
+    def test_panels_differing_only_by_window_stay_distinct(self):
+        """The issue's Hourly/Daily/Weekly panels emitted byte-identical ES|QL."""
+        queries = {
+            window: self._translate(
+                f"max by (namespace) (rate(kubelet_volume_stats_used_bytes[{window}]))"
+            )[0]
+            for window in ("1h", "1d", "1w")
+        }
+        for window, query in queries.items():
+            self.assertIn(f"[{window}]", query, f"[{window}] dropped: {query[:120]}")
+        self.assertEqual(
+            len(set(queries.values())), 3,
+            f"windows collapsed to the same query: {queries}",
+        )
+
+    def test_target_gauge_typing_is_reported_as_a_render_risk(self):
+        """Native is the right call, but Elasticsearch only evaluates a gauge
+        rate while the window stays large relative to the bucket step, so the
+        panel must carry the ingest fix rather than fail silently later."""
+        _query, result = self._translate("rate(kubelet_volume_stats_used_bytes[1d])")
+
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        gauge_notes = [n for n in notes if "does not type this field as a counter" in n]
+        self.assertEqual(len(gauge_notes), 1, f"expected one gauge note, got: {notes}")
+        self.assertIn("kubelet_volume_stats_used_bytes", gauge_notes[0])
+
+    def test_target_gauge_typing_lands_in_the_with_warnings_scorecard(self):
+        """A panel that renders at 1h and errors at 3d is not clean. Verified in
+        Kibana on ES 9.5: ``rate(gauge[1h])`` draws over a 24h view and throws
+        ``class_cast_exception`` over a 3d view, so the note has to promote the
+        panel rather than leave the summary reporting zero warnings."""
+        _query, result = self._translate("rate(kubelet_volume_stats_used_bytes[1d])")
+
+        self.assertEqual(result.status, "migrated_with_warnings", result.status)
+        self.assertTrue(
+            panel_notes_imply_warning(getattr(result, "notes", []) or []),
+            f"gauge note must imply a warning: {getattr(result, 'notes', None)}",
+        )
+        self.assertLessEqual(result.confidence, 0.85, result.confidence)
+
+    def test_gauge_note_is_absent_when_the_panel_falls_back_to_esql(self):
+        """The note claims native PROMQL *kept* the window, so it must only
+        attach once the native panel is actually committed. Several gates after
+        the type check can still reject native, and on the ES|QL fallback the
+        window is dropped — the opposite of what the note says."""
+        rp = rules.RulePackConfig()
+        rp.native_promql = True
+        rp.native_promql_validator = lambda _query: (
+            False, "line 1:23: mismatched input '(' expecting STRING"
+        )
+        resolver = self._resolver(rp, self.GAUGE_CAPS)
+        yaml_panel, result = panels.translate_panel(
+            _make_panel(1, "rate(kubelet_volume_stats_used_bytes[1d])"),
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=rp,
+            resolver=resolver,
+        )
+
+        query = (
+            yaml_panel["esql"]["query"]
+            if yaml_panel and "esql" in yaml_panel
+            else (result.esql_query or "")
+        )
+        self.assertFalse(query.startswith("PROMQL"), query[:90])
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        self.assertEqual(
+            [n for n in notes if "Native PROMQL keeps the source" in n], [],
+            f"ES|QL fallback must not claim the window was kept: {notes}",
+        )
+
+    def test_counter_typed_metric_stays_clean(self):
+        """The counter control is the other half of the promotion check: a
+        correctly typed field renders at every range, so it must stay clean."""
+        caps = {
+            "metrics.http_requests_total": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "counter",
+                },
+            },
+        }
+        _query, result = self._translate("rate(http_requests_total[5m])", caps=caps)
+
+        self.assertFalse(
+            panel_notes_imply_warning(getattr(result, "notes", []) or []),
+            f"counter-typed metric must not be promoted: {getattr(result, 'notes', None)}",
+        )
+
+    def test_counter_typed_metric_is_not_flagged(self):
+        caps = {
+            "metrics.http_requests_total": {
+                "double": {
+                    "type": "double",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "time_series_metric": "counter",
+                },
+            },
+        }
+        query, result = self._translate("rate(http_requests_total[5m])", caps=caps)
+
+        self.assertTrue(query.startswith("PROMQL "), query[:120])
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        self.assertEqual(
+            [n for n in notes if "does not type this field as a counter" in n], [],
+            f"counter-typed metric must not get the gauge note: {notes}",
+        )
+
+    def test_rule_pack_gauge_pin_still_degrades_via_esql(self):
+        """A ``metric_kinds`` pin is the operator asserting the source is wrong.
+        It is also the one signal the ES|QL path degrades on, so the panel must
+        keep falling through to the honest gauge analogue."""
+        query, result = self._translate(
+            "rate(kubelet_volume_stats_used_bytes[1d])",
+            metric_kinds={"kubelet_volume_stats_used_bytes": "gauge"},
+        )
+
+        self.assertFalse(
+            query.startswith("PROMQL "),
+            f"a rule-pack gauge pin must leave the native path: {query[:120]}",
+        )
+        self.assertIn("AVG_OVER_TIME", query)
+        self.assertNotIn("RATE(", query)
+        notes = list(getattr(result, "notes", []) or []) + list(result.reasons or [])
+        self.assertTrue(
+            any("rule pack pins" in n for n in notes),
+            f"expected a note naming the pin, got: {notes}",
+        )
+
+    def test_gate_helper_only_matches_the_rule_pack_pin(self):
+        rp = rules.RulePackConfig()
+        resolver = self._resolver(rp, self.GAUGE_CAPS)
+        gate = panels._native_promql_counter_func_on_declared_gauge
+
+        # Live-caps gauge typing alone keeps native PROMQL.
+        self.assertIsNone(gate("rate(kubelet_volume_stats_used_bytes[1d])", resolver))
+        # An explicit pin diverts to the ES|QL degrade.
+        rp.metric_kinds["kubelet_volume_stats_used_bytes"] = "gauge"
+        self.assertEqual(
+            gate("rate(kubelet_volume_stats_used_bytes[1d])", resolver),
+            "kubelet_volume_stats_used_bytes",
+        )
+        # A pinned gauge outside the counter family is untouched: *_over_time
+        # takes its window as a genuine lookback and needs no degrade.
+        self.assertIsNone(
+            gate("avg_over_time(kubelet_volume_stats_used_bytes[1d])", resolver)
+        )
 
 
 # =========================================================================

@@ -670,6 +670,37 @@ Use that doc for:
   and warns. `--translation-mode {auto,native,esql}` can override the automatic
   decision when an operator needs to request native PROMQL where supported or
   disable native PROMQL and force ES|QL translation.
+- **Range-vector windows and counter typing.** Passing `--es-url` adds
+  validation and schema discovery; it does not change which translation strategy
+  a range-vector panel gets. `rate()` / `irate()` / `increase()` stay on the
+  native `PROMQL` path with their `[window]` intact even when the target types
+  the metric as a gauge, because only the rule pack's
+  `metric_kinds: <metric>: gauge` pin selects the ES|QL gauge analogue
+  (`AVG_OVER_TIME` / `MAX_OVER_TIME`). A metric the target types as a gauge
+  keeps native translation and is reported as **migrated with warnings** with a
+  panel note: Elasticsearch evaluates a gauge rate only while the lookback window
+  stays large relative to the dashboard range's bucket step, so such a panel
+  renders at narrow dashboard ranges and errors at wider ones until the ingest
+  mapping types the field as a counter. Verify those panels at the ranges the
+  dashboard is actually used at; a correctly counter-typed field renders at every
+  range and stays clean.
+- On the ES|QL path (`--translation-mode esql`, or a target without the `PROMQL`
+  command) `RATE` / `IRATE` / `INCREASE` are computed over the query's time
+  bucket, so the source `[window]` is deliberately dropped — carrying a fixed
+  window alongside an adaptive `TBUCKET` over-reads by several times as the
+  dashboard range grows. How long a window survives depends on the bucket the
+  panel actually gets. With the adaptive bucket used for dashboard panels,
+  windows an ordinary view can reproduce are translated silently and a longer
+  authored window (over an hour, e.g. `[1d]`, `[1w]`, `[1h30m]`, `[7200]`) is
+  reported as a semantic loss, because panels differing only by such a window
+  collapse into the same query. With a fixed bucket — an explicit Grafana panel
+  `interval`, or a rule pack setting `ts_bucket` — the exact width is known, so
+  any lookback longer than the bucket is reported (a `[1h]` window on a `5m`
+  interval really does become a 5-minute rate). Step macros (`$__rate_interval`,
+  `$__interval`) already meant "follow the view", so they stay silent, but the
+  `$__range` family is the whole view rather than a step and is always reported.
+  `avg_over_time` and the rest of the `*_OVER_TIME` family take their window as a
+  genuine lookback and keep it.
 - `--source api` (or unified `--input-mode api`) pulls dashboard documents over
   HTTP basic auth. Connection details are **flag-first with env fallback**:
   `--grafana-url` / `--grafana-user` / `--grafana-pass` default to `GRAFANA_URL`

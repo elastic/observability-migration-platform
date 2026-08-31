@@ -4160,6 +4160,152 @@ _COUNTER_RANGE_WINDOW_RE = re.compile(
     r"\b(RATE|IRATE|INCREASE)\((?P<arg>[^(),]+),\s*[0-9]+(?:ms|s|m|h|d)\)", re.IGNORECASE
 )
 
+# Any counter-family range call left in an emitted ES|QL query. By the time the
+# postprocessor runs these are always windowless (see ``_range_call``).
+_COUNTER_RANGE_CALL_RE = re.compile(r"\b(?:RATE|IRATE|INCREASE)\s*\(")
+
+_WINDOW_UNIT_SECONDS = {
+    "ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "y": 31536000,
+}
+# Prometheus durations may be compound (``1h30m``, ``1d12h``), so a window is one
+# or more count+unit components. Matching only a single component would let
+# ``rate(foo[1h30m])`` drop its window silently while the identical ``[90m]``
+# reported the loss. A bare number is also accepted here (and by this
+# translator) and means seconds, so ``[7200]`` must not slip through either.
+_DURATION_TOKEN = r"(?:(?:[0-9]+(?:ms|s|m|h|d|w|y))+|[0-9]+(?:\.[0-9]+)?)"
+# ``$__range``/``$__range_s``/``$__range_ms`` are the *whole* dashboard window,
+# unlike the step macros below, and are substituted upstream to a literal ``1h``
+# (see ``promql.preprocess_grafana_macros``). A window of "the entire view" is
+# many buckets wide at every range, so it is always a loss and must not be lumped
+# in with the step macros. The unit suffix may sit outside the braces
+# (``[${__range_s}s]``, ``[${__range_ms}ms]``), which is a form this codebase
+# explicitly supports.
+_RANGE_MACRO = (
+    r"\$(?:\{__range(?:_ms|_s)?\}|__range(?:_ms|_s)?)(?:ms|s|m|h|d|w|y)?"
+)
+# ``[window]`` attached to a counter-style PromQL range function in the *source*
+# expression, e.g. ``rate(foo[1w])`` -> ``1w``. A subquery selector (``[1h:5m]``)
+# never matches because ``:`` is excluded, and those are rejected upstream as
+# unsupported anyway.
+_SOURCE_COUNTER_RANGE_WINDOW_RE = re.compile(
+    r"\b(?:rate|irate|increase)\s*\([^()\[\]]*"
+    rf"\[\s*(?P<window>{_DURATION_TOKEN}|{_RANGE_MACRO})\s*\]",
+    re.IGNORECASE,
+)
+_RANGE_MACRO_RE = re.compile(rf"^{_RANGE_MACRO}$", re.IGNORECASE)
+# Dashboard panels get an *adaptive* bucket, ``view_range / 20``
+# (``_ADAPTIVE_RATE_BUCKETS`` in panels.py), whose width is unknown at
+# translation time. A bucket stands in for an authored ``[window]`` when the
+# dashboard is viewed over roughly 20x it, which up to an hour holds for ordinary
+# views — a ``[1h]`` lookback needs a ~20h range — and the windowless form is
+# then the closer match to Prometheus anyway (see ``_range_call``). Past an hour
+# the author is asking for a long-horizon average no view reproduces: ``[1d]``
+# would need a 20-day range, ``[1w]`` a 140-day one (issue #379).
+_ADAPTIVE_BUCKET_REPRODUCIBLE_WINDOW_SECONDS = 3600
+# An explicit Grafana panel ``interval`` (and a rule pack overriding
+# ``ts_bucket``) instead pins a *fixed* bucket, so the guess above does not
+# apply — the exact width is known and any longer lookback is measurably lost.
+_FIXED_BUCKET_RE = re.compile(
+    r"TBUCKET\(\s*(?P<count>[0-9]+)\s*(?P<unit>millisecond|second|minute|hour|day|week|year)s?\s*\)",
+    re.IGNORECASE,
+)
+_ESQL_BUCKET_UNIT_SECONDS = {
+    "millisecond": 0.001, "second": 1, "minute": 60,
+    "hour": 3600, "day": 86400, "week": 604800, "year": 31536000,
+}
+
+
+def _bucket_reproducible_window_seconds(ts_bucket):
+    """Longest authored lookback the configured time bucket can stand in for,
+    plus a human label for a fixed bucket (``None`` when adaptive).
+
+    A fixed ``TBUCKET(<n> <unit>)`` knows its own width, so that width is the
+    limit. An adaptive ``TBUCKET(<n>, ?_tstart, ?_tend)`` does not (it depends on
+    the view the operator picks), so fall back to the ordinary-view heuristic.
+    """
+    match = _FIXED_BUCKET_RE.search(str(ts_bucket or ""))
+    if not match:
+        return _ADAPTIVE_BUCKET_REPRODUCIBLE_WINDOW_SECONDS, None
+    count, unit = match.group("count"), match.group("unit").lower()
+    seconds = int(count) * _ESQL_BUCKET_UNIT_SECONDS[unit]
+    return seconds, f"{count}-{unit}"
+
+
+def _window_seconds(window):
+    """Seconds for a Prometheus duration, or ``None`` if unparseable.
+
+    Handles compound durations (``1h30m`` -> 5400) by summing components, and a
+    bare number as seconds (``7200`` -> 7200), both of which reach this code.
+    """
+    text = str(window or "").strip()
+    if not re.fullmatch(_DURATION_TOKEN, text, re.IGNORECASE):
+        return None
+    components = re.findall(r"([0-9]+)(ms|s|m|h|d|w|y)", text, re.IGNORECASE)
+    if not components:
+        return float(text)  # bare number == seconds
+    return sum(
+        int(count) * _WINDOW_UNIT_SECONDS[unit.lower()] for count, unit in components
+    )
+
+
+def _unreproducible_counter_range_windows(promql_expr, ts_bucket=None):
+    """Authored rate/irate/increase lookbacks the ES|QL time bucket cannot stand in for.
+
+    Grafana's dynamic *step* macros (``$__rate_interval``, ``$__interval``,
+    ``$interval``, ``$__auto_interval_*``) are excluded: they resolve at render
+    time to the view's step, so a window derived from one already means "follow
+    the view", which is exactly what the bucket does. The ``$__range`` family is
+    not a step — it is the whole view, many buckets wide — so it is reported like
+    any other over-long window. Windowless calls are skipped too: their window is
+    the rule pack's ``default_rate_window``, not an authored value.
+
+    *ts_bucket* is the emitted bucket expression, which decides how long a
+    lookback can be before it is lost (see
+    :func:`_bucket_reproducible_window_seconds`).
+    """
+    windows = []
+    limit, _fixed = _bucket_reproducible_window_seconds(ts_bucket)
+    sanitized = _strip_promql_string_literals(promql_expr or "")
+    for match in _SOURCE_COUNTER_RANGE_WINDOW_RE.finditer(sanitized):
+        window = match.group("window")
+        # A ``$__range`` window is "the whole view" and so is never
+        # bucket-reproducible; a literal one has to outgrow the bucket.
+        if not _RANGE_MACRO_RE.match(window):
+            seconds = _window_seconds(window)
+            if seconds is None or seconds <= limit:
+                continue
+        if window not in windows:
+            windows.append(window)
+    return windows
+
+
+def _dropped_range_window_warning(windows, fixed_bucket=None):
+    """Semantic-loss warning for a source lookback window ES|QL cannot keep.
+
+    *fixed_bucket* is the bucket's human width when it is fixed, so the message
+    can name what the rate is actually computed over instead of describing the
+    adaptive case.
+    """
+    listed = ", ".join(f"[{window}]" for window in windows)
+    if fixed_bucket:
+        became = (
+            f"this panel now reports a rate over the fixed {fixed_bucket} time "
+            "bucket instead of that window"
+        )
+    else:
+        became = (
+            "this panel now reports a rate over the dashboard time range instead "
+            "of that long fixed window (carrying the window alongside an adaptive "
+            "bucket over-reads by up to 5x, so it cannot be kept)"
+        )
+    return (
+        f"Dropped the source rate()/irate()/increase() lookback window {listed}: "
+        f"ES|QL computes RATE/IRATE/INCREASE over the query's time bucket, so "
+        f"{became}. Panels that differ only by such a window produce the same "
+        "values here. Native PROMQL preserves the window and is the default when "
+        "the target supports the ES|QL PROMQL command."
+    )
+
 
 @QUERY_POSTPROCESSORS.register("counter_range_window", priority=93)
 def counter_range_window_rule(context):
@@ -4187,6 +4333,12 @@ def counter_range_window_rule(context):
 
     Only the counter functions are touched. The ``*_OVER_TIME`` family takes its
     window as a genuine lookback and keeps it.
+
+    Dropping the window is the only correct ES|QL shape, but it becomes a
+    semantic loss once the window is longer than any bucket a dashboard view
+    produces: ``rate(m[1d])`` and ``rate(m[1w])`` then collapse into the same
+    query as ``rate(m[1h])``. Report those instead of hiding them (issue #379) —
+    see :func:`_unreproducible_counter_range_windows` for the exclusions.
     """
     query = context.esql_query
     if not query or "(" not in query:
@@ -4194,10 +4346,30 @@ def counter_range_window_rule(context):
     rewritten = _COUNTER_RANGE_WINDOW_RE.sub(
         lambda m: f"{m.group(1)}({m.group('arg')})", query
     )
-    if rewritten == query:
-        return None
-    context.esql_query = rewritten
-    return "counter range windows follow the time bucket"
+    stripped = rewritten != query
+    if stripped:
+        context.esql_query = rewritten
+        query = rewritten
+    # ``_range_call`` already emits the counter family windowless, so most
+    # queries reach here with nothing to strip. Either way, any counter range
+    # call left in the query now carries no window, so report the loss when the
+    # source asked for one the bucket cannot stand in for.
+    warned = False
+    if _COUNTER_RANGE_CALL_RE.search(query):
+        ts_bucket = getattr(context.rule_pack, "ts_bucket", None)
+        lost_windows = _unreproducible_counter_range_windows(context.promql_expr, ts_bucket)
+        if lost_windows:
+            _, fixed_bucket = _bucket_reproducible_window_seconds(ts_bucket)
+            _append_unique(
+                context.warnings,
+                _dropped_range_window_warning(lost_windows, fixed_bucket),
+            )
+            warned = True
+    if stripped:
+        return "counter range windows follow the time bucket"
+    if warned:
+        return "counter range window dropped; reported as a semantic loss"
+    return None
 
 
 @QUERY_POSTPROCESSORS.register("value_wrapper_transforms", priority=92)
