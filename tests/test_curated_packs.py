@@ -153,7 +153,7 @@ def test_registry_pins_match_community_corpus_when_revision_aligns():
         for entry in corpus["dashboards"]
     }
     # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
-    new_pack_ids = {7362, 9628, 14114}
+    new_pack_ids = {7362, 9628, 14114, 12485}
     mismatches = []
     for entry in load_curated_registry():
         gnet_id = int(entry["gnet_id"])
@@ -1785,6 +1785,156 @@ def test_14114_instance_up_becomes_pg_up_control():
     query = str(instance.get("query") or "")
     assert "pg_up" in query or "metrics.pg_up" in query
     assert "metrics.up" not in query
+
+
+def test_find_12485_by_gnet_id():
+    entry = find_curated_pack(gnet_id=12485, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 12485
+    assert entry["name"] == "grafana_12485_postgresql_exporter"
+
+
+def test_resolve_pack_12485_pins_kinds_renames_and_controls():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    # The two `_count` gauges are the important correctness fix.
+    assert resolved.metric_kinds.get("pg_stat_activity_count") == "gauge"
+    assert resolved.metric_kinds.get("pg_locks_count") == "gauge"
+    assert resolved.metric_kinds.get("pg_stat_database_numbackends") == "gauge"
+    # Rated counters stay counters.
+    assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
+    assert resolved.metric_kinds.get("pg_stat_database_tup_fetched") == "counter"
+    # v0.15 renames.
+    for src, tgt in (
+        ("pg_database_size", "metrics.pg_database_size_bytes"),
+        ("pg_replication_lag", "metrics.pg_replication_lag_seconds"),
+        ("pg_stat_statements_calls", "metrics.pg_stat_statements_calls_total"),
+        ("pg_stat_statements_total_time_seconds", "metrics.pg_stat_statements_seconds_total"),
+    ):
+        entry = (resolved.metric_map or {}).get(src)
+        assert getattr(entry, "target", entry) == tgt, src
+    # Controls keyed by the dashboard's capitalised variable names.
+    assert resolved.control_field_overrides.get("Instance") == "labels.instance"
+    assert resolved.control_field_overrides.get("Database") == "labels.datname"
+
+
+def test_12485_database_size_renamed_offline():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 37,
+        "type": "singlestat",
+        "title": "Total database size",
+        "targets": [{"expr": 'sum(pg_database_size{instance="$Instance"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "metrics.pg_database_size_bytes" in query
+    assert "metrics.pg_database_size)" not in query
+
+
+def test_12485_activity_count_is_gauge_not_rated():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 24,
+        "type": "graph",
+        "title": "Connections by state (stacked)",
+        "targets": [{"expr": 'sum by (state) (pg_stat_activity_count{instance="$Instance"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "pg_stat_activity_count" in query
+    # gauge → SUM, never RATE/IRATE (the whole point of forcing the _count gauge).
+    assert "RATE(" not in query.upper()
+    assert "labels.state" in query
+
+
+def test_12485_instance_and_database_controls_rewritten():
+    dashboard = {
+        "gnetId": 12485,
+        "title": "PostgreSQL Exporter",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "Instance",
+                    "type": "query",
+                    "label": "Instance",
+                    "query": 'label_values({job="postgres-exporter"}, instance)',
+                    "includeAll": False,
+                    "current": {"text": "postgres:5432", "value": "postgres:5432"},
+                },
+                {
+                    "name": "Database",
+                    "type": "query",
+                    "label": "Database",
+                    "query": "label_values(datname)",
+                    "includeAll": True,
+                    "current": {"text": "All", "value": "$__all"},
+                },
+                {
+                    "name": "Interval",
+                    "type": "interval",
+                    "query": "30sec,1m,10m,30m,1h,6h,12h,1d",
+                    "current": {"text": "1m", "value": "1m"},
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 14,
+                "type": "singlestat",
+                "title": "Transaction rate",
+                "targets": [
+                    {
+                        "expr": 'sum(rate(pg_stat_database_xact_commit{instance="$Instance",datname=~"$Database"}[$Interval]))',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    names = {c.get("variable_name") for c in controls}
+    # Interval must never become a control; Instance/Database must.
+    assert "Interval" not in names, controls
+    assert "Instance" in names, controls
+    instance = next(c for c in controls if c.get("variable_name") == "Instance")
+    iq = str(instance.get("query") or "")
+    assert "pg_up" in iq
+    assert "postgres-exporter" not in iq
+    if "Database" in names:
+        database = next(c for c in controls if c.get("variable_name") == "Database")
+        dq = str(database.get("query") or "")
+        assert "pg_stat_database_numbackends" in dq or "labels.datname" in dq
 
 
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():

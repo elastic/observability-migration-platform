@@ -146,6 +146,25 @@ rewrites Instance from Prometheus `up{job=~"postgres.*"}` to
 `label_values(pg_up, instance)` — Elastic prometheus_native scrapes store
 exporter health as `pg_up`, not scrape `up` — and drops the unused `$job`
 control so native PROMQL panels are not left with an empty Instance param.
+The PostgreSQL Exporter (12485) pack targets the same exporter family but was
+authored against an older `postgres_exporter` lineage, so its `metric_map`
+bridges four names that changed in `prometheuscommunity/postgres-exporter`
+v0.15 (`pg_database_size` → `pg_database_size_bytes`, `pg_replication_lag` →
+`pg_replication_lag_seconds`, `pg_stat_statements_calls` →
+`pg_stat_statements_calls_total`, `pg_stat_statements_total_time_seconds` →
+`pg_stat_statements_seconds_total`), and its `metric_kinds` force
+`pg_stat_activity_count` / `pg_locks_count` / `pg_stat_database_numbackends` to
+`gauge` (the `_count` suffix would otherwise make the offline heuristic
+`rate()` a gauge). Its plugin repopulates the `Instance` control from
+`label_values(pg_up, instance)` (the source `up{job="postgres-exporter"}` job
+filter never matches an Elastic scrape) and anchors the bare
+`label_values(datname)` `Database` control on `pg_stat_database_numbackends`,
+and the `Interval` Grafana interval variable is dropped rather than emitted as
+an inert control. `pg_stat_statements` / `pg_postmaster_start_time_seconds`
+panels (Query rate, Average query runtime, Uptime) only show data when the
+target exporter runs the `stat_statements` + `postmaster` collectors and the
+`pg_stat_statements` extension is installed; otherwise they degrade to an
+honest field/data gap.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
