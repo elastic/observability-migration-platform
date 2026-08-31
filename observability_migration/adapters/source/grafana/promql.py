@@ -3507,6 +3507,22 @@ def _summary_mode_from_metadata(metadata):
     return bool((metadata or {}).get("summary_mode"))
 
 
+# Preferred-group-label origins that are derived from the source expressions
+# rather than read off the panel. ``sibling_binary`` is a grouping the formula
+# planner proved from the other operand of a binary expression; everything else
+# (``legend``, legacy table ``styles`` and dashboard-wide inference, which arrive
+# untagged) is a display hint and must not decide what a nested aggregation
+# reduces over — see issue #382.
+#
+# Keeping ``sibling_binary`` here is what makes a binary expression over a nested
+# aggregation fail closed instead of emitting wrong math: refusing it too leaves
+# the operand groupings divergent, and the shared-pipeline union then re-adds the
+# sibling's fields to the nested measure anyway — reintroducing the very
+# ``COUNT_DISTINCT(cpu) BY cpu`` this guard exists to prevent. See
+# ``BinaryOverNestedAggTests``.
+_PROVEN_GROUP_LABEL_ORIGINS = frozenset({"sibling_binary"})
+
+
 def _merge_group_fields(explicit_fields, preferred_fields, preferred_origin=None):
     if preferred_origin == "legend" and explicit_fields:
         return explicit_fields
@@ -4524,6 +4540,17 @@ def _build_measure_spec(
                 time_filter = rule_pack.from_time_filter
                 bucket_expr = rule_pack.from_bucket
             stats_expr = f"COUNT_DISTINCT({count_field})"
+            # Nested grouping is the source expression's own, matching the direct
+            # emitter in ``translate.py`` (issue #382): grouping
+            # ``COUNT_DISTINCT(cpu)`` by a panel hint that names ``cpu`` — a
+            # ``legendFormat: {{cpu}}`` shared by fused targets, or a legacy table
+            # column pattern — self-cancels to a constant 1 per CPU. Recomputed
+            # here rather than at the shared ``group_fields`` above because only a
+            # nested reduction is distorted by an extra key. A planner-supplied
+            # ``sibling_binary`` grouping is proven from a donor operand rather
+            # than read off the panel, so it still applies.
+            if preferred_group_labels_origin not in _PROVEN_GROUP_LABEL_ORIGINS:
+                group_fields = _frag_group_labels(frag, resolver, None)
             warnings.append(f"Approximated nested count(count()) as COUNT_DISTINCT({count_field})")
         else:
             return None
