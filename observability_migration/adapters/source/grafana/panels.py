@@ -95,8 +95,11 @@ from .promql import (
     _unique_safe_alias,
     collapse_or_for_native_promql,
     grafana_template_var_name,
+    promql_literal_value,
     substitute_grafana_range_macros,
+    substitute_literal_template_vars,
     substitute_scalar_template_vars,
+    template_vars_in_label_selectors,
 )
 from .rules import PANEL_TRANSLATORS, VARIABLE_TRANSLATORS, RulePackConfig, _append_unique
 from .runtime_features import (
@@ -9117,19 +9120,39 @@ def textbox_variable_rule(context):
     The built-in Kibana query bar or KQL filters serve the same purpose.
     We record the variable metadata so the migration report reflects it
     rather than silently dropping it.
+
+    When ``_substitute_literal_variable_values`` inlined the typed value into
+    panel queries (issue #378), the warning names the frozen value instead: the
+    filter/threshold was preserved, but the viewer can no longer change it
+    without editing the panel query. If the same variable also drove a label
+    matcher, it keeps an interactive control there, and the warning says so —
+    Grafana changed both from one input, Kibana no longer does.
     """
     if context.variable.get("type") != "textbox":
         return None
     name = context.variable.get("name", "")
     context.handled = True
-    context.control_warnings.append(
-        f"textbox variable '{name}' has no direct Kibana control equivalent; "
-        "use the Kibana query bar or a KQL filter instead"
-    )
-    context.trace.append(
-        f"textbox variable '{name}' has no direct Kibana control equivalent; "
-        "use the Kibana query bar or KQL filter instead"
-    )
+    inlined = context.variable.get(_INLINED_LITERAL_KEY)
+    if inlined is not None:
+        warning = (
+            f"textbox variable '{name}' was inlined into panel queries as the "
+            f"literal {inlined} (its Grafana value); Kibana has no free-text "
+            "variable control, so migrated panels use that fixed value -- edit "
+            "the panel query to change it"
+        )
+        if context.variable.get(_INLINED_LITERAL_PARTIAL_KEY):
+            warning += (
+                f"; where '{name}' filtered a label it stayed interactive as a "
+                "Kibana control, so changing that control no longer changes the "
+                f"inlined {inlined} as it did in Grafana"
+            )
+    else:
+        warning = (
+            f"textbox variable '{name}' has no direct Kibana control equivalent; "
+            "use the Kibana query bar or a KQL filter instead"
+        )
+    context.control_warnings.append(warning)
+    context.trace.append(warning)
     return f"noted textbox variable {name} (no Kibana control equivalent)"
 
 
@@ -10013,6 +10036,123 @@ def _substitute_scalar_dropdown_values(dashboard: dict) -> dict:
             expr = target.get("expr")
             if isinstance(expr, str) and expr:
                 target["expr"] = substitute_scalar_template_vars(expr, scalar_values)
+    return dashboard
+
+
+# Grafana variable types whose value is a literal the author typed rather than a
+# selector over series: a ``textbox`` is free-text input and a ``constant`` is a
+# fixed (always hidden) dashboard value. Grafana interpolates both into the
+# PromQL string before Prometheus sees it, so they must be inlined here too
+# (issue #378) — the generic ``$var → label_var`` fallback would otherwise turn
+# them into a metric column that can never exist in the target.
+_LITERAL_VALUE_VARIABLE_TYPES = frozenset({"textbox", "constant"})
+
+# Marks a variable whose value this pass inlined, so ``textbox_variable_rule``
+# can report the frozen value instead of a bare "no Kibana control" note.
+_INLINED_LITERAL_KEY = "_obs_migration_inlined_literal"
+
+# Set alongside the key above when the same variable ALSO drives a label matcher
+# somewhere in the dashboard, which keeps an interactive Kibana control on top of
+# the frozen value. Grafana drove both from one input, so the split must be told.
+_INLINED_LITERAL_PARTIAL_KEY = "_obs_migration_inlined_literal_partial"
+
+
+def _literal_variable_values(variables) -> dict[str, str]:
+    """Map each literal-valued Grafana variable to its PromQL literal.
+
+    Resolution follows Grafana: the ``current`` selection is the value the
+    dashboard actually renders with, and only when there is none does the
+    declared default in ``query`` apply (which is where a ``constant`` keeps its
+    value and a ``textbox`` keeps its initial text). Values that are not valid
+    PromQL literals are omitted — see :func:`promql_literal_value`.
+
+    A *present but unsafe* current value is decisive: it is dropped rather than
+    replaced by the default, because inlining the default would silently compute
+    the panel against a number the dashboard does not use. Omitting it instead
+    leaves the ``$var`` in place for ``template_variable_placeholder_column_rule``
+    to surface as a visible gap.
+    """
+    out: dict[str, str] = {}
+    for variable in variables or []:
+        if not isinstance(variable, dict):
+            continue
+        if str(variable.get("type") or "") not in _LITERAL_VALUE_VARIABLE_TYPES:
+            continue
+        name = variable.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        current = variable.get("current")
+        selected = None
+        if isinstance(current, dict):
+            selected = next(
+                (
+                    value
+                    for value in (current.get("value"), current.get("text"))
+                    if value is not None and str(value).strip()
+                ),
+                None,
+            )
+        literal = promql_literal_value(selected if selected is not None else variable.get("query"))
+        if literal is not None:
+            out[name] = literal
+    return out
+
+
+def _substitute_literal_variable_values(dashboard: dict) -> dict:
+    """Inline ``textbox`` / ``constant`` variable values into panel PromQL.
+
+    Mutates every panel target's ``expr`` in place and returns the dashboard so
+    the call site can keep its fluent assignment. Variables whose value actually
+    reached an expression are tagged so the control-translation pass can
+    disclose the frozen value, and separately tagged when the same variable also
+    drives a label matcher anywhere in the dashboard, so the warning can admit
+    the split. A no-op when the dashboard declares no literal-valued variables
+    (the common case).
+    """
+    variables = (dashboard.get("templating", {}) or {}).get("list", []) or []
+    literal_values = _literal_variable_values(variables)
+    if not literal_values:
+        return dashboard
+
+    inlined: set[str] = set()
+    still_matching: set[str] = set()
+    for panel in _flatten_dashboard_panels(dashboard):
+        targets = panel.get("targets")
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            expr = target.get("expr")
+            if not isinstance(expr, str) or not expr:
+                continue
+            # Applied one variable at a time so the tag records exactly which
+            # values reached a query; a literal never contains ``$``, so the
+            # order of the passes cannot matter.
+            rewritten = expr
+            for name, literal in literal_values.items():
+                replaced = substitute_literal_template_vars(rewritten, {name: literal})
+                if replaced != rewritten:
+                    inlined.add(name)
+                    rewritten = replaced
+            # Collected for every variable on every target, not just the ones
+            # this target inlined: one panel can freeze the value while another
+            # keeps the same variable as a matcher. Only matcher positions count,
+            # since those are what become a Kibana control.
+            still_matching.update(
+                template_vars_in_label_selectors(rewritten) & literal_values.keys()
+            )
+            if rewritten != expr:
+                target["expr"] = rewritten
+
+    for variable in variables:
+        if not isinstance(variable, dict):
+            continue
+        name = variable.get("name")
+        if name in inlined:
+            variable[_INLINED_LITERAL_KEY] = literal_values[name]
+            if name in still_matching:
+                variable[_INLINED_LITERAL_PARTIAL_KEY] = True
     return dashboard
 
 
@@ -11273,6 +11413,13 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
     # (non-templated) panel and the rest of the pipeline can stay
     # ignorant of the fan-out.
     dashboard = _expand_repeat_panels(dashboard, result)
+
+    # Issue #378: a ``textbox`` / ``constant`` variable is a literal the author
+    # typed, so Grafana interpolates it into the PromQL before Prometheus sees
+    # the query. Inline it here for the same reason, and before the scalar-slot
+    # pass below, so the generic ``$var → label_var`` fallback never turns a
+    # threshold into a metric column that cannot exist in the target.
+    dashboard = _substitute_literal_variable_values(dashboard)
 
     # Issue #157: a Grafana dropdown that stands for a *number* (percentile,
     # top-N, threshold) lands in a PromQL scalar slot. Substitute the dropdown's

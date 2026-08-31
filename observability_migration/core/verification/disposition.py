@@ -26,6 +26,25 @@ from observability_migration.targets.kibana.emit.esql_utils import _split_top_le
 SELF_HEAL_SEMANTIC_LOSS = "target telemetry not yet ingested (self-healing panel)"
 
 _ASSIGNMENT_LHS = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$", re.DOTALL)
+# A column the Grafana translator synthesised from an uninterpolated template
+# variable: ``$threshold`` becomes the placeholder metric ``label_threshold``,
+# which the field profile then prefixes (``metrics.label_threshold``) and, under
+# ``prometheus_remote_write``, also suffixes
+# (``prometheus.label_threshold.value``). The source-expression check in
+# ``unknown_column_is_source_template_variable`` keeps a target metric genuinely
+# named ``label_...`` from matching.
+_PLACEHOLDER_COLUMN_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*\.)*label_(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\.(?:value|counter|rate))?$"
+)
+# Source-expression string literals, in all three PromQL quote styles. A
+# ``label_<var>`` inside one is a matcher *value* the source compares against,
+# not a metric it reads, so it must not trigger the abstention below. The
+# closing quote is optional so an unterminated literal is consumed to the end of
+# the expression rather than leaving its contents to excuse the placeholder.
+_SOURCE_STRING_LITERAL_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"?' r"|'(?:\\.|[^'\\])*'?" r"|`[^`]*`?"
+)
 _EVAL_SIMPLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 _STATS_BODY = re.compile(r"^STATS\s+(.+?)\s+BY\s+", re.IGNORECASE | re.DOTALL)
 _EVAL_BODY = re.compile(r"^EVAL\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.+)$", re.IGNORECASE | re.DOTALL)
@@ -62,7 +81,42 @@ def unknown_column_looks_like_alias_bug(column_name: str, esql_query: str | None
     return False
 
 
-def validation_failure_self_heals(validation_result):
+def unknown_column_is_source_template_variable(column_name, source_expression) -> bool:
+    """True when an Unknown column names a source *template variable*.
+
+    A dashboard template variable is a UI input, never telemetry, so a column
+    the translator derived from one can never be ingested — the panel would
+    stay broken forever rather than self-heal. Requires evidence on both sides:
+    the column must carry the translator's ``label_<var>`` placeholder shape,
+    and ``$var`` (or ``${var}`` / ``[[var]]``) must appear in the source
+    expression that produced the query (issue #378).
+
+    Abstains when the source expression *itself* names ``label_<var>`` outside a
+    string literal: the column is then plausibly a real metric whose telemetry
+    has simply not arrived, and wrongly refusing to self-heal would manualize a
+    working panel. The adapter-side guard, which can compare the expression
+    before and after macro expansion, is the precise check; core stays
+    conservative so it never has to import an adapter.
+    """
+    if not column_name or not source_expression:
+        return False
+    match = _PLACEHOLDER_COLUMN_RE.match(str(column_name).strip())
+    if not match:
+        return False
+    text = str(source_expression)
+    name = re.escape(match.group("name"))
+    reference = re.compile(
+        r"\$\{" + name + r"(?::[^}]*)?\}"
+        r"|\$" + name + r"(?!\w)"
+        r"|\[\[" + name + r"(?::[^\]]+)?\]\]"
+    )
+    if not reference.search(text):
+        return False
+    already_named = re.compile(r"(?<![\w.:])label_" + name + r"(?![\w:])")
+    return not already_named.search(_SOURCE_STRING_LITERAL_RE.sub(" ", text))
+
+
+def validation_failure_self_heals(validation_result, source_expression=None):
     """True when a failed live validation is a data-timing issue rather than a
     broken query.
 
@@ -78,6 +132,14 @@ def validation_failure_self_heals(validation_result):
     When ``validation_result`` includes ``esql_query`` (or legacy ``query``),
     alias-shaped Unknown column failures are excluded because the query is
     structurally broken until the translator is fixed.
+
+    ``source_expression`` is the source query the panel was translated from.
+    When given, an Unknown column derived from one of its template variables is
+    excluded too: that column is a translation error, not telemetry that has yet
+    to arrive, so the data-readiness excuse must not downgrade the failure to a
+    warning (issue #378). Only callers whose translator actually synthesises the
+    ``label_<var>`` placeholder should pass it — see
+    :func:`unknown_column_is_source_template_variable`.
     """
     validation_result = validation_result or {}
     analysis = validation_result.get("analysis") or {}
@@ -87,6 +149,8 @@ def validation_failure_self_heals(validation_result):
     for col in analysis.get("unknown_columns") or []:
         name = col.get("name", "") if isinstance(col, dict) else str(col)
         if query and unknown_column_looks_like_alias_bug(name, query):
+            return False
+        if unknown_column_is_source_template_variable(name, source_expression):
             return False
     return bool(analysis.get("unknown_columns") or analysis.get("unknown_indexes"))
 

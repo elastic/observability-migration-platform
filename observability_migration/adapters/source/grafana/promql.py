@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
 import re
 from dataclasses import dataclass, field
@@ -1348,6 +1349,240 @@ def substitute_scalar_template_vars(expr, values):
         return "".join(out)
 
     return process(expr)
+
+
+# Grafana ``textbox`` and ``constant`` variables hold a literal the dashboard
+# author typed, not a series selector: Grafana interpolates the value into the
+# PromQL text before Prometheus ever sees the query. Only values that are
+# themselves valid PromQL literals are inlined here — a regex fragment, a comma
+# list, or a whole sub-expression would need a real PromQL parse to place safely
+# (issue #378).
+_PROMQL_NUMBER_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+_PROMQL_DURATION_UNIT_RE = re.compile(r"(\d+)(ms|[smhdwy])")
+_PROMQL_DURATION_RE = re.compile(r"^(?:\d+(?:ms|[smhdwy]))+$")
+# Prometheus requires a compound duration's units to descend, so ``1h30m`` parses
+# but ``30m1h`` and ``1s1s`` do not. Ordered longest-first to compare positions.
+_PROMQL_DURATION_UNIT_ORDER = ("y", "w", "d", "h", "m", "s", "ms")
+# Metric / label names, including recording-rule names whose segments use ``:``.
+_PROMQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*$")
+# PromQL operator/modifier keywords: identifier-shaped, but inlining one would
+# rewrite the query's structure rather than supply a value.
+_PROMQL_RESERVED_WORDS = frozenset(
+    {
+        "and",
+        "or",
+        "unless",
+        "atan2",
+        "by",
+        "without",
+        "on",
+        "ignoring",
+        "group_left",
+        "group_right",
+        "offset",
+        "bool",
+        "inf",
+        "nan",
+    }
+)
+
+
+def _is_promql_duration(text: str) -> bool:
+    """True for a duration Prometheus accepts (``5m``, ``1h30m``, ``2w``).
+
+    Rejects a repeated or ascending unit sequence (``1s1s``, ``30m1h``), which
+    matches the token shape but fails to parse — inlining one would emit a query
+    that is broken in a new way rather than supplying the author's value.
+    """
+    if not _PROMQL_DURATION_RE.match(text):
+        return False
+    ranks = [
+        _PROMQL_DURATION_UNIT_ORDER.index(unit)
+        for _, unit in _PROMQL_DURATION_UNIT_RE.findall(text)
+    ]
+    return all(earlier < later for earlier, later in itertools.pairwise(ranks))
+
+
+def promql_literal_value(value) -> str | None:
+    """Return *value* as a PromQL literal, or ``None`` when it is not one.
+
+    Accepts numbers (``80``, ``0.95``, ``1e3``), durations (``5m``, ``1h30m``),
+    and metric/label-name identifiers (``node_cpu_seconds_total``,
+    ``job:rate:sum``). Everything else — a regex, a comma-separated list, a
+    quoted string, a whole PromQL sub-expression, an operator keyword — is
+    rejected so it is never spliced blindly into an expression.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        text = repr(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    if not text:
+        return None
+    if _PROMQL_NUMBER_RE.match(text) or _is_promql_duration(text):
+        return text
+    if _PROMQL_IDENTIFIER_RE.match(text) and text.lower() not in _PROMQL_RESERVED_WORDS:
+        return text
+    return None
+
+
+_LITERAL_VAR_TOKEN_RE = re.compile(
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<braced_fmt>[^}]*))?\}"
+    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\[\[(?P<bracket>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<bracket_fmt>[^\]]+))?\]\]"
+)
+# Grafana's ``${var:format}`` modifiers that render a single value unchanged.
+# The quoting/encoding ones (``json``, ``singlequote``, ``percentencode``, …)
+# would need the formatting applied, so a token carrying one is left alone.
+_VALUE_PRESERVING_VAR_FORMATS = frozenset({"raw", "text", "value"})
+
+
+# PromQL string literals: ``"..."`` and ``'...'`` process backslash escapes,
+# while a backtick literal is raw (``\`` is a literal backslash).
+_PROMQL_QUOTE_CHARS = ('"', "'", "`")
+# Inside a label selector only these can quote a value, so only these can hide a
+# closing brace from a selector scan.
+_PROMQL_SELECTOR_QUOTE_CHARS = ('"', "'")
+
+
+def _skip_promql_string_literal(text: str, start: int) -> int:
+    """Index just past the string literal opening at ``start``."""
+    quote = text[start]
+    escapes = quote != "`"
+    idx = start + 1
+    while idx < len(text):
+        char = text[idx]
+        if escapes and char == "\\":
+            idx += 2
+            continue
+        if char == quote:
+            return idx + 1
+        idx += 1
+    return len(text)
+
+
+def _skip_promql_label_selector(text: str, start: int) -> int:
+    """Index just past the ``{...}`` label selector opening at ``start``.
+
+    Only ``"`` and ``'`` hide a ``}`` from this scan, matching how
+    :func:`_parameterize_grafana_label_matchers` delimits the very same
+    selectors — a backtick cannot legally quote a matcher value, so treating it
+    as a string here would put the selector's end in a different place than the
+    rewrite does.
+
+    Returns ``start + 1`` when the selector is unterminated so the caller keeps
+    scanning the rest of the expression instead of swallowing it.
+    """
+    idx = start + 1
+    while idx < len(text):
+        char = text[idx]
+        if char in _PROMQL_SELECTOR_QUOTE_CHARS:
+            idx = _skip_promql_string_literal(text, idx)
+            continue
+        if char == "}":
+            return idx + 1
+        idx += 1
+    return start + 1
+
+
+def substitute_literal_template_vars(expr, values):
+    """Inline literal-valued Grafana template variables into ``expr``.
+
+    *values* maps a variable name to the PromQL literal it stands for (see
+    :func:`promql_literal_value`). ``$var``, ``${var}``, ``${var:raw}`` and
+    ``[[var]]`` tokens for those names are replaced with the literal, mirroring
+    Grafana's own interpolation before a query reaches Prometheus.
+
+    Label selectors (``{job="$job"}``) and string literals are skipped: a
+    variable-driven label matcher is preserved as a bound ES|QL ``?var``
+    parameter with a Kibana control, which keeps the filter interactive instead
+    of freezing it (see ``_matcher_to_esql``), and a string argument (the
+    replacement in ``label_replace``) is not a numeric position to inline into.
+    A backtick literal is raw PromQL text, so it is skipped verbatim rather than
+    rewritten.
+    """
+    if not values or not isinstance(expr, str) or not expr:
+        return expr
+    if "$" not in expr and "[[" not in expr:
+        return expr
+
+    out: list[str] = []
+    idx = 0
+    length = len(expr)
+    while idx < length:
+        char = expr[idx]
+        if char in _PROMQL_QUOTE_CHARS:
+            end = _skip_promql_string_literal(expr, idx)
+            out.append(expr[idx:end])
+            idx = end
+            continue
+        if char == "{":
+            end = _skip_promql_label_selector(expr, idx)
+            out.append(expr[idx:end])
+            idx = end
+            continue
+        match = _LITERAL_VAR_TOKEN_RE.match(expr, idx)
+        if match:
+            name = match.group("braced") or match.group("plain") or match.group("bracket")
+            fmt = (match.group("braced_fmt") or match.group("bracket_fmt") or "").strip().lower()
+            replacement = values.get(name)
+            if replacement is not None and (not fmt or fmt in _VALUE_PRESERVING_VAR_FORMATS):
+                out.append(replacement)
+                idx = match.end()
+                continue
+        out.append(char)
+        idx += 1
+    return "".join(out)
+
+
+def template_vars_in_label_selectors(expr):
+    """Grafana template variable names referenced inside a ``{...}`` selector.
+
+    A variable in that position keeps its filter interactive: the matcher becomes
+    a bound ES|QL ``?var`` parameter with a Kibana control (see
+    ``_matcher_to_esql``), which is why
+    :func:`substitute_literal_template_vars` refuses to freeze it into a
+    literal. Callers use this to tell a frozen value from one that still drives a
+    control, so each matcher is tested with exactly the predicate that creates
+    the parameter in :func:`_parameterize_grafana_label_matchers` — a quoted
+    value that is *entirely* one variable, ignoring regex anchors on ``=~`` /
+    ``!~``, and not a ``$__`` built-in. Everything else is reported as absent: a
+    partial value (``job="shard-$n"``), an unquoted or backtick-quoted value,
+    and a ``$var`` outside any selector, which is an argument to something like
+    ``label_replace``.
+    """
+    names: set[str] = set()
+    if not isinstance(expr, str) or not expr:
+        return names
+    idx = 0
+    length = len(expr)
+    while idx < length:
+        char = expr[idx]
+        if char in _PROMQL_QUOTE_CHARS:
+            idx = _skip_promql_string_literal(expr, idx)
+            continue
+        if char != "{":
+            idx += 1
+            continue
+        end = _skip_promql_label_selector(expr, idx)
+        if end > idx + 1:  # ``_skip_promql_label_selector`` found the closing brace.
+            for part in _split_top_level_csv(expr[idx + 1 : end - 1]):
+                matcher = _PROMQL_LABEL_MATCHER_RE.match(part)
+                if not matcher:
+                    continue
+                prefix = matcher.group("prefix")
+                value = matcher.group("value")
+                is_regex = "=~" in prefix or "!~" in prefix
+                name = grafana_template_var_name(
+                    _strip_promql_regex_anchors(value) if is_regex else value
+                )
+                if name and not name.startswith("__"):
+                    names.add(name)
+        idx = max(end, idx + 1)
+    return names
 
 
 def classify_promql_complexity(expr, rule_pack=None):
@@ -6822,8 +7057,11 @@ __all__ = [
     "classify_promql_complexity",
     "grafana_template_var_name",
     "preprocess_grafana_macros",
+    "promql_literal_value",
     "substitute_grafana_range_macros",
+    "substitute_literal_template_vars",
     "substitute_scalar_template_vars",
+    "template_vars_in_label_selectors",
 ]
 
 
