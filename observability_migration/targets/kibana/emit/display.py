@@ -11,6 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Grafana 5 singlestat stores the unit on the panel (``format: bytes``).
+# Target query formats are not units and must not be treated as such.
+_NON_UNIT_PANEL_FORMATS = frozenset({"", "time_series", "table", "heatmap"})
+
 _OPAQUE_AXIS_TITLE_ALIASES = {
     "aqu-sz",
     # Community dashboards often copy Grafana's percent unit id into axisLabel.
@@ -122,6 +126,11 @@ def extract_grafana_unit(panel: dict) -> str:
     for axis in (panel.get("yaxes") or []):
         if isinstance(axis, dict) and axis.get("format"):
             return str(axis["format"])
+    # Grafana 5 singlestat / stat panels: ``"format": "bytes"`` / ``"s"`` /
+    # ``"percent"`` live on the panel root, not in fieldConfig.
+    legacy = str((panel or {}).get("format") or "").strip()
+    if legacy and legacy not in _NON_UNIT_PANEL_FORMATS:
+        return legacy
     return ""
 
 
@@ -413,9 +422,12 @@ def enrich_yaml_panel_display(
     unit = extract_grafana_unit(grafana_panel)
     fmt = grafana_unit_to_yaml_format(unit)
 
-    # Carry fieldConfig.defaults.decimals into the format so the Kibana panel
-    # respects the same precision the operator set in Grafana.
+    # Carry fieldConfig.defaults.decimals (or Grafana 5 singlestat
+    # ``decimals``) into the format so the Kibana panel respects the same
+    # precision the operator set in Grafana.
     panel_decimals = _field_defaults(grafana_panel).get("decimals")
+    if panel_decimals is None:
+        panel_decimals = grafana_panel.get("decimals")
     if isinstance(panel_decimals, (int, float)) and panel_decimals >= 0:
         decimals_int = int(panel_decimals)
         if fmt is not None:

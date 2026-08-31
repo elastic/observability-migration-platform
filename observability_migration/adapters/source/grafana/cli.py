@@ -2020,6 +2020,11 @@ def _print_schema_discovery_status(
         print("  WARNING: schema discovery reached Elasticsearch but found no fields")
     elif discovery["status"] == "error":
         print(f"  WARNING: schema discovery failed: {discovery['error']}")
+    elif discovery["status"] == "partial":
+        print(
+            f"  Merged {discovery['field_count']} control-schema field hint(s) "
+            "(not exhaustive live field-caps)"
+        )
     else:
         print("  Schema discovery: offline mode")
 

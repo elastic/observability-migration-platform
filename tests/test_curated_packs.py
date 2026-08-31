@@ -17,10 +17,16 @@ from observability_migration.adapters.source.grafana.panels import (
     _materialize_curated_query_override,
     _omit_absent_optional_metrics_from_curated_query,
     _panel_static_legend_label,
+    _prefix_native_metric_fields,
+    _resolve_control_scope_metric,
     _retarget_esql_param_controls_to_panel_bindings,
     _strip_optional_metric_token_from_curated_esql,
     translate_dashboard,
     translate_panel,
+)
+from observability_migration.adapters.source.grafana.promql import (
+    _parse_fragment,
+    _reduce_or_operands,
 )
 from observability_migration.adapters.source.grafana.rules import (
     RulePackConfig,
@@ -132,6 +138,42 @@ def test_fidelity_manifest_gnet_revision_matches_registry():
         )
 
 
+def test_registry_pins_match_community_corpus_when_revision_aligns():
+    """Packs added in this change must not silently disagree with the committed
+    community corpus on the same (gnet_id, revision). Older packs may still
+    use a grafana.com canonical pin that predates the corpus hasher (763).
+    """
+    corpus = json.loads(
+        (Path(__file__).resolve().parents[1] / "parity-rig" / "benchmark" / "community_corpus.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_id_rev = {
+        (int(entry["id"]), int(entry["revision"])): str(entry["sha256"])
+        for entry in corpus["dashboards"]
+    }
+    # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
+    new_pack_ids = {7362, 9628, 14114}
+    mismatches = []
+    for entry in load_curated_registry():
+        gnet_id = int(entry["gnet_id"])
+        if gnet_id not in new_pack_ids:
+            continue
+        key = (gnet_id, int(entry["gnet_revision"]))
+        expected = by_id_rev.get(key)
+        if expected is None:
+            continue
+        actual = str(entry["dashboard_sha256"])
+        if actual != expected:
+            mismatches.append(
+                f"{entry['name']} gnet_id={key[0]} rev={key[1]} "
+                f"registry={actual} corpus={expected}"
+            )
+    assert not mismatches, "registry dashboard_sha256 disagrees with community_corpus.json:\n" + "\n".join(
+        mismatches
+    )
+
+
 # ---------------------------------------------------------------------------
 # find_curated_pack — by gnetId
 # ---------------------------------------------------------------------------
@@ -228,6 +270,57 @@ def test_find_1860_by_title_fallback():
     )
     assert entry is not None
     assert entry["gnet_id"] == 1860
+
+
+def test_find_7362_by_gnet_id():
+    entry = find_curated_pack(gnet_id=7362, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 7362
+    assert entry["name"] == "grafana_7362_mysql_overview"
+
+
+def test_find_7362_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="MySQL Overview",
+        tags=["Percona", "MySQL"],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 7362
+
+
+def test_find_9628_by_gnet_id():
+    entry = find_curated_pack(gnet_id=9628, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 9628
+    assert entry["name"] == "grafana_9628_postgresql_database"
+
+
+def test_find_9628_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="PostgreSQL Database",
+        tags=["postgres", "db", "stats"],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 9628
+
+
+def test_find_14114_by_gnet_id():
+    entry = find_curated_pack(gnet_id=14114, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 14114
+    assert entry["name"] == "grafana_14114_postgres_exporter_quickstart"
+
+
+def test_find_14114_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="PostgreSQL Exporter Quickstart and Dashboard",
+        tags=["postgres"],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 14114
 
 
 def test_find_18406_by_title_fallback():
@@ -468,6 +561,68 @@ def test_curated_override_ignores_hidden_target_when_checking_dropped_metrics():
     assert result.status == "migrated"
     assert result.confidence == 1.0
     assert result.reasons == []
+
+
+def _partial_native_resolver():
+    """A prometheus_native resolver whose only knowledge is a partial,
+    label-only control-schema merge. ``discovery_status`` stays ``partial`` and
+    never becomes ``ok``, so the partial cache proves nothing about metric
+    fields (PR #369 review, giorgi-imerlishvili-elastic)."""
+    resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_native")
+    resolver.merge_control_schema(
+        {"field_cache": {"labels.instance": {"keyword": {"type": "keyword"}}}}
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+    return resolver
+
+
+def _exhaustive_native_resolver(field_cache):
+    """A prometheus_native resolver backed by exhaustive live field-caps."""
+    resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_native")
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = dict(field_cache)
+    return resolver
+
+
+def test_native_prefix_kept_after_partial_control_schema_merge():
+    """A prometheus-native Max Connections selector must keep its planned
+    ``metrics.`` prefix after a partial (label-only) control-schema merge:
+    the partial cache proves nothing about metric fields, so a not-found result
+    must not strip the prefix."""
+    resolver = _partial_native_resolver()
+    rewritten = _prefix_native_metric_fields("pg_settings_max_connections", resolver)
+    assert rewritten == "metrics.pg_settings_max_connections"
+
+
+def test_native_prefix_rejected_when_exhaustive_caps_prove_absent():
+    """With exhaustive live field-caps (status ``ok``), a metric that has
+    neither a bare nor a ``metrics.`` field must NOT be invented with a
+    prefix — the absence-sensitive gate still holds for real field-caps."""
+    resolver = _exhaustive_native_resolver(
+        {"labels.instance": {"keyword": {"type": "keyword"}}}
+    )
+    rewritten = _prefix_native_metric_fields("pg_settings_max_connections", resolver)
+    assert rewritten == "pg_settings_max_connections"
+
+
+def test_control_scope_metric_kept_after_partial_control_schema_merge():
+    """The 14114 Instance control must stay scoped to ``pg_up`` after a partial
+    control-schema merge instead of degrading to an unscoped label_values that
+    scans every ``labels.instance`` in mixed ``metrics-*``."""
+    resolver = _partial_native_resolver()
+    scope = _resolve_control_scope_metric("pg_up", resolver, RulePackConfig())
+    assert scope and "pg_up" in scope
+
+
+def test_control_scope_metric_dropped_when_exhaustive_caps_prove_absent():
+    """Exhaustive field-caps that prove the scoping metric absent must still
+    drop the scope (scoping on a missing field would empty the control)."""
+    resolver = _exhaustive_native_resolver(
+        {"labels.instance": {"keyword": {"type": "keyword"}}}
+    )
+    scope = _resolve_control_scope_metric("pg_up", resolver, RulePackConfig())
+    assert scope == ""
 
 
 def test_1860_pressure_panel_includes_irq_series():
@@ -1043,6 +1198,595 @@ def test_resolve_pack_14091_maps_renamed_fragmentation_metric():
     assert target == "metrics.redis_mem_fragmentation_ratio"
 
 
+def test_resolve_pack_7362_pins_untyped_status_counters_and_processlist_map():
+    """mysqld_exporter publishes suffix-less status counters as untyped.
+
+    Without metric_kinds, Elasticsearch stores them as gauges and RATE() 400s.
+    The processlist metric was also renamed after this dashboard's revision 5.
+    """
+    dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["Percona", "MySQL"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert resolved.metric_kinds.get("mysql_global_status_queries") == "counter"
+    assert resolved.metric_kinds.get("mysql_global_status_questions") == "counter"
+    assert resolved.metric_kinds.get("mysql_global_status_bytes_received") == "counter"
+    assert resolved.metric_kinds.get("mysql_info_schema_processlist_threads") == "gauge"
+    entry = (resolved.metric_map or {}).get("mysql_info_schema_threads")
+    target = getattr(entry, "target", entry)
+    assert target == "metrics.mysql_info_schema_processlist_threads"
+    assert resolved.control_field_overrides.get("host") == "labels.instance"
+    titles = {o.get("title_match") for o in resolved.panel_query_overrides}
+    assert "Process States" in titles
+    assert "MySQL Query Cache Activity" in titles
+    assert "CPU Usage / Load" in titles
+    assert "mysql_global_variables_query_cache_size" in resolved.live_optional_metrics
+    assert "aws_rds_read_latency_average" in resolved.live_optional_metrics
+    cpu_override = next(
+        o for o in resolved.panel_query_overrides if o.get("title_match") == "CPU Usage / Load"
+    )
+    assert cpu_override.get("kibana_type_override") == "line"
+    titles = {o.get("title_match") for o in resolved.panel_layout_overrides}
+    assert "Section 1" in titles
+    overview = next(
+        o for o in resolved.panel_layout_overrides if o.get("title_match") == "Section 1"
+    )
+    assert overview.get("title") == "Overview"
+
+
+def test_7362_hourly_panels_follow_dashboard_time_picker():
+    """Grafana pins timeFrom=24h on the hourly charts.
+
+    Mixed ``metrics-*`` Lens 24h windows render ``No results found`` even when
+    ``_query`` returns one or two sparse buckets. The pack drops timeFrom so
+    these panels follow the dashboard picker like the working sibling MySQL
+    rate charts.
+    """
+    dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["Percona", "MySQL"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    hourly = next(
+        o for o in resolved.panel_query_overrides
+        if o.get("title_match") == "MySQL Network Usage Hourly"
+    )
+    assert hourly.get("drop_time_from") is True
+    panel = {
+        "id": 1,
+        "type": "graph",
+        "title": "MySQL Network Usage Hourly",
+        "timeFrom": "24h",
+        "targets": [
+            {
+                "expr": "increase(mysql_global_status_bytes_received[1h])",
+                "refId": "A",
+                "legendFormat": "Received",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "fieldConfig": {"defaults": {}, "overrides": []},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    assert "time_range" not in esql
+    assert "TBUCKET(20" in (esql.get("query") or "")
+    assert "mysql_global_status_bytes_received" in (esql.get("query") or "")
+
+
+def test_7362_cpu_override_binds_busy_pct_and_load():
+    dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["Percona"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 2,
+        "type": "graph",
+        "title": "CPU Usage / Load",
+        "stack": True,
+        "targets": [
+            {"expr": 'node_load1{instance="$host"}', "refId": "C", "legendFormat": "Load 1m"}
+        ],
+        "seriesOverrides": [{"alias": "Load 1m", "yaxis": 2, "stack": False}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "yaxes": [
+            {"format": "percent", "max": 100, "min": 0},
+            {"format": "none", "min": 0},
+        ],
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    query = esql.get("query") or ""
+    assert "CPU_busy_pct" in query
+    y_cols = [item.get("field") for item in (esql.get("metrics") or [])]
+    assert "CPU_busy_pct" in y_cols
+    assert "Load 1m" in y_cols
+    assert esql.get("type") == "line"
+    load = next(item for item in (esql.get("metrics") or []) if item.get("field") == "Load 1m")
+    assert load.get("axis") == "right"
+    assert "suffix" not in (load.get("format") or {})
+
+
+def test_resolve_pack_9628_ignores_helm_release_and_pins_memory_gauges():
+    """Revision 1 filters on Helm ``release``; typical scrapes do not store it.
+
+    Grafana also ``rate()``s process RSS/VMS gauges, which Elasticsearch
+    rejects as RATE() on double. The pack pins those as gauges and overrides
+    Average Memory Usage to LAST_OVER_TIME.
+    """
+    dashboard = {
+        "gnetId": 9628,
+        "title": "PostgreSQL Database",
+        "tags": ["postgres", "db", "stats"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert "release" in resolved.ignored_labels
+    assert resolved.metric_kinds.get("process_resident_memory_bytes") == "gauge"
+    assert resolved.metric_kinds.get("process_virtual_memory_bytes") == "gauge"
+    assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
+    assert resolved.control_field_overrides.get("instance") == "labels.instance"
+    assert resolved.control_field_overrides.get("datname") == "labels.datname"
+    titles = {o.get("title_match") for o in resolved.panel_query_overrides}
+    assert "Average Memory Usage" in titles
+    assert "Start Time" in titles
+    assert "Version" in titles
+    assert "pg_postmaster_start_time_seconds" in resolved.live_optional_metrics
+
+
+def test_9628_memory_override_uses_last_over_time():
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 24,
+        "type": "graph",
+        "title": "Average Memory Usage",
+        "targets": [
+            {
+                "expr": 'avg(rate(process_resident_memory_bytes{instance="$instance"}[5m]))',
+                "refId": "A",
+                "legendFormat": "Resident Mem",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "yaxes": [{"format": "decbytes"}, {"format": "short"}],
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "LAST_OVER_TIME" in query
+    assert "RATE(" not in query
+    assert "process_resident_memory_bytes" in query
+
+
+def test_9628_start_time_override_does_not_yellow_absent_postmaster_metric():
+    """postgres_exporter v0.15 dropped pg_postmaster_start_time_seconds.
+
+    The override substitutes process_start_time_seconds. That source metric is
+    live_optional, so an absent field-caps hit must not yellow the panel as a
+    pack omission.
+    """
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.process_start_time_seconds": {"double": {"type": "double"}},
+        "metrics.pg_static": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.short_version": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 28,
+        "type": "singlestat",
+        "title": "Start Time",
+        "format": "dateTimeFromNow",
+        "targets": [
+            {
+                "expr": 'pg_postmaster_start_time_seconds{instance="$instance"} * 1000',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status == "migrated", result.reasons
+    assert not any("curated override" in reason for reason in result.reasons)
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "process_start_time_seconds" in query
+    assert "DATE_DIFF" in query
+    assert "pg_postmaster_start_time_seconds" not in query
+
+
+def test_9628_version_metric_displays_version_label_not_static_one():
+    """The Version tile must display the PostgreSQL version label
+    (``labels.short_version``), not the numeric ``pg_static=1``. The metric
+    panel binds the label as a breakdown so the version string is visible
+    (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.pg_static": {"double": {"type": "double"}},
+        "labels.short_version": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 1,
+        "type": "singlestat",
+        "title": "Version",
+        "targets": [{"expr": "pg_static", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+    }
+    yaml_panel, _result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "metric"
+    assert (esql.get("breakdown") or {}).get("field") == "labels.short_version"
+    assert "labels.short_version" in (esql.get("query") or "")
+
+
+def test_9628_start_time_metric_has_duration_format():
+    """The Start Time tile computes elapsed seconds; it must carry a duration
+    format so it renders as a duration rather than a raw number (PR #369)."""
+    dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.process_start_time_seconds": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 2,
+        "type": "singlestat",
+        "title": "Start Time",
+        "targets": [{"expr": "process_start_time_seconds", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+    }
+    yaml_panel, _result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "metric"
+    assert (esql.get("primary") or {}).get("format", {}).get("type") == "duration"
+
+
+def test_7362_cpu_system_panel_surfaces_cross_host_approximation():
+    """The 7362 CPU Usage / Load override aggregates across every node exporter
+    (``COUNT_DISTINCT(labels.cpu)`` is global; hosts reuse CPU IDs), which can
+    exceed 100%. It must surface an approximation warning and downgrade instead
+    of reporting green (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["mysql"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.node_cpu_seconds_total": {"double": {"type": "double"}},
+        "metrics.node_load1": {"double": {"type": "double"}},
+        "labels.cpu": {"keyword": {"type": "keyword"}},
+        "labels.mode": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 3,
+        "type": "timeseries",
+        "title": "CPU Usage / Load",
+        "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert any(
+        "host" in reason.lower()
+        and ("approxim" in reason.lower() or "aggregat" in reason.lower())
+        for reason in result.reasons
+    ), result.reasons
+
+
+def test_9628_instance_query_result_becomes_label_values_control():
+    """Helm query_result(pg_up{release=...}) has no Kibana populate query.
+
+    The pack plugin rewrites Instance to label_values(pg_up, instance) and
+    drops the unused namespace/release cascade so the dashboard still gets
+    an Instance control.
+    """
+    dashboard = {
+        "gnetId": 9628,
+        "title": "PostgreSQL Database",
+        "tags": ["postgres"],
+        "templating": {
+            "list": [
+                {
+                    "name": "namespace",
+                    "type": "query",
+                    "label": "Namespace",
+                    "query": "query_result(pg_exporter_last_scrape_duration_seconds)",
+                },
+                {
+                    "name": "release",
+                    "type": "query",
+                    "label": "Release",
+                    "query": 'query_result(pg_exporter_last_scrape_duration_seconds{kubernetes_namespace="$namespace"})',
+                },
+                {
+                    "name": "instance",
+                    "type": "query",
+                    "label": "Instance",
+                    "query": 'query_result(pg_up{release="$release"})',
+                },
+                {
+                    "name": "datname",
+                    "type": "query",
+                    "label": "Database",
+                    "query": "label_values(datname)",
+                    "includeAll": True,
+                    "multi": True,
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 38,
+                "type": "singlestat",
+                "title": "Max Connections",
+                "targets": [
+                    {
+                        "expr": 'pg_settings_max_connections{instance="$instance"}',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+                "format": "none",
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    names = {control.get("variable_name") for control in controls}
+    assert "instance" in names, controls
+    assert "namespace" not in names
+    assert "release" not in names
+    assert not any("query_result" in warning for warning in (result.control_warnings or [])), (
+        result.control_warnings
+    )
+    instance = next(c for c in controls if c.get("variable_name") == "instance")
+    query = str(instance.get("query") or "")
+    assert "labels.instance" in query or "instance" in query
+
+
+def test_9628_dashboard_does_not_emit_release_control():
+    """Native PROMQL must not resurrect Helm $release as a Kibana control.
+
+    Mixed metrics-* has a kernel ``release`` field; binding it filters Postgres
+    series to nothing (Max Connections / CPU / Open FDs empty in view mode).
+    """
+    from observability_migration.adapters.source.grafana.runtime_features import (
+        KIBANA_PROMQL_CONTROL_PARAMS,
+        PROMQL_LABEL_MATCHER_PARAMS,
+        set_runtime_feature,
+    )
+
+    dashboard = {
+        "gnetId": 9628,
+        "title": "PostgreSQL Database",
+        "tags": ["postgres"],
+        "templating": {
+            "list": [
+                {
+                    "name": "release",
+                    "type": "query",
+                    "label": "Release",
+                    "query": 'query_result(pg_up{release="x"})',
+                },
+                {
+                    "name": "instance",
+                    "type": "query",
+                    "label": "Instance",
+                    "query": 'query_result(pg_up{release="$release"})',
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 38,
+                "type": "singlestat",
+                "title": "Max Connections",
+                "targets": [
+                    {
+                        "expr": 'pg_settings_max_connections{release="$release", instance="$instance"}',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 2},
+                "format": "none",
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolved.native_promql = True
+    set_runtime_feature(
+        resolved, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test"
+    )
+    set_runtime_feature(
+        resolved, KIBANA_PROMQL_CONTROL_PARAMS, supported=True, source="test"
+    )
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    names = {c.get("variable_name") for c in (payload.get("controls") or [])}
+    assert "release" not in names, names
+    max_conn = next(p for p in result.panel_results if p.title == "Max Connections")
+    query = max_conn.esql_query or ""
+    assert "release" not in query
+    assert "?instance" in query or "instance" in query
+
+
+def test_resolve_pack_14114_pins_counters_and_bgwriter_map():
+    """Mixin Buffers names lack OpenMetrics _total; v0.15 exporters add it."""
+    dashboard = {
+        "gnetId": 14114,
+        "title": "PostgreSQL Exporter Quickstart and Dashboard",
+        "tags": ["postgres"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
+    assert resolved.metric_kinds.get("pg_stat_database_numbackends") == "gauge"
+    entry = (resolved.metric_map or {}).get("pg_stat_bgwriter_buffers_alloc")
+    target = getattr(entry, "target", entry)
+    assert target == "metrics.pg_stat_bgwriter_buffers_alloc_total"
+    assert resolved.control_field_overrides.get("instance") == "labels.instance"
+    assert resolved.control_field_overrides.get("db") == "labels.datname"
+
+
+def test_14114_buffers_override_uses_total_suffix_offline():
+    dashboard = {
+        "gnetId": 14114,
+        "title": "PostgreSQL Exporter Quickstart and Dashboard",
+        "tags": ["postgres"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 2,
+        "type": "graph",
+        "title": "Buffers",
+        "targets": [
+            {
+                "expr": "irate(pg_stat_bgwriter_buffers_alloc{instance=~'$instance'}[5m])",
+                "refId": "A",
+                "legendFormat": "buffers_alloc",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "IRATE(metrics.pg_stat_bgwriter_buffers_alloc_total)" in query
+    assert "IRATE(metrics.pg_stat_bgwriter_buffers_alloc)" not in query
+
+
+def test_14114_instance_up_becomes_pg_up_control():
+    """Mixin Instance lists Prometheus ``up``; Elastic stores postgres as ``pg_up``."""
+    dashboard = {
+        "gnetId": 14114,
+        "title": "PostgreSQL Exporter Quickstart and Dashboard",
+        "tags": ["postgres"],
+        "templating": {
+            "list": [
+                {
+                    "name": "instance",
+                    "type": "query",
+                    "label": "instance",
+                    "query": 'label_values(up{job=~"postgres.*"},instance)',
+                    "includeAll": True,
+                    "current": {"selected": False, "text": "All", "value": "$__all"},
+                },
+                {
+                    "name": "job",
+                    "type": "query",
+                    "label": "job",
+                    "query": "label_values(pg_up, job)",
+                    "includeAll": False,
+                    "current": {"selected": True, "text": "postgres", "value": "postgres"},
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 11,
+                "type": "singlestat",
+                "title": "QPS",
+                "targets": [
+                    {
+                        "expr": (
+                            'sum(irate(pg_stat_database_xact_commit{instance=~"$instance"}[5m]))'
+                        ),
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+                "format": "none",
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    names = {control.get("variable_name") for control in controls}
+    assert "instance" in names, controls
+    assert "job" not in names, controls
+    instance = next(c for c in controls if c.get("variable_name") == "instance")
+    query = str(instance.get("query") or "")
+    assert "pg_up" in query or "metrics.pg_up" in query
+    assert "metrics.up" not in query
+
+
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():
     """Offline runs take the FIRST candidate without probing the target.
 
@@ -1056,6 +1800,9 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         18406: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
         14091: [("instance", "labels.instance"), ("job", "labels.job")],
         11835: [("instance", "labels.instance"), ("job", "labels.job")],
+        7362: [("instance", "labels.instance"), ("job", "labels.job")],
+        9628: [("instance", "labels.instance"), ("job", "labels.job")],
+        14114: [("instance", "labels.instance"), ("job", "labels.job")],
     }
     for gnet_id, pairs in expected_first.items():
         resolved = resolve_pack_for_dashboard(
@@ -1460,6 +2207,29 @@ def test_panel_layout_overrides_can_flip_section_collapsed_state():
     assert panels[0]["section"]["collapsed"] is False
 
 
+def test_panel_layout_overrides_can_rename_section_title():
+    panels = [
+        {
+            "title": "Section 1",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "MySQL Uptime",
+                        "position": {"x": 0, "y": 0},
+                        "size": {"w": 6, "h": 6},
+                    }
+                ],
+            },
+        }
+    ]
+    overrides = [{"title_match": "Section 1", "title": "Overview"}]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["title"] == "Overview"
+
+
 def test_curated_query_override_materializes_control_and_metric_placeholders():
     class _FakeResolver:
         def resolve_control_field(self, name, metric_field=None):
@@ -1750,6 +2520,142 @@ def test_live_optional_metric_is_dropped_without_downgrading_multi_target_panel(
     assert "redis_blocked_clients" not in query
     assert not any("Dropped series whose live target metrics are absent" in reason for reason in result.reasons)
     assert not any("only 1 could be migrated" in reason for reason in result.reasons)
+
+
+def test_optional_or_fallback_keeps_surviving_operand():
+    """``foo or optional_b`` where ``foo`` is present and ``optional_b`` is a
+    live-optional absent metric must render from the surviving ``foo`` operand
+    rather than discarding the translated target and degrading the whole panel
+    to missing-telemetry markdown (PR #369 follow-up, giorgi-imerlishvili-elastic).
+    """
+    rule_pack = RulePackConfig(live_optional_metrics=["optional_b"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "foo": {"double": {"type": "double"}},
+        "instance": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "OR Fallback",
+        "targets": [{"expr": "foo or optional_b", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" not in (yaml_panel or {}), result.reasons
+    query = (yaml_panel or {}).get("esql", {}).get("query", "")
+    assert "foo" in query
+    assert "optional_b" not in query
+
+
+def test_ignored_only_metricless_selector_does_not_emit_empty_native_query():
+    """``{release="$release"}`` with ``release`` ignored strips to an empty
+    metricless selector. That must NOT migrate as a green native
+    ``value=({})`` (invalid PromQL); the gap must be surfaced instead
+    (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
+    rule_pack = RulePackConfig(ignored_labels=["release"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {"labels.release": {"keyword": {"type": "keyword"}}}
+
+    panel = {
+        "type": "stat",
+        "title": "Release",
+        "targets": [{"expr": '{release="$release"}', "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    serialized = json.dumps(yaml_panel or {})
+    assert "value=({})" not in serialized
+    assert "{}" not in serialized
+    assert result.status != "migrated"
+
+
+def test_all_optional_absent_targets_become_missing_telemetry_markdown():
+    """A panel whose only target is live_optional and field-caps-absent must
+    degrade to missing-telemetry markdown, not IndexError on translations[0].
+    """
+    rule_pack = RulePackConfig(live_optional_metrics=["optional_metric"])
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {"labels.instance": {"keyword": {"type": "keyword"}}}
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "stat",
+        "title": "Optional Only",
+        "targets": [{"expr": "sum(optional_metric)", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" in (yaml_panel or {})
+    assert "optional_metric" in yaml_panel["markdown"]["content"]
+    assert result.status == "migrated_with_warnings"
+
+
+def test_partial_control_schema_does_not_prove_unlisted_metrics_absent():
+    """``merge_control_schema`` is a label-hint fixture, not exhaustive caps.
+
+    Metrics that simply are not listed must still translate (native PROMQL or
+    ES|QL), matching ``--control-schema`` without ``--es-url``.
+    """
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    resolver.merge_control_schema(
+        {
+            "field_cache": {
+                "cluster": {
+                    "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                }
+            }
+        }
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+
+    panel = {
+        "type": "stat",
+        "title": "CPU",
+        "targets": [{"expr": "sum(node_cpu_seconds_total)", "refId": "A"}],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert "markdown" not in (yaml_panel or {})
+    assert not any("Telemetry missing" in str(reason) for reason in (result.reasons or []))
+    emitted = yaml_panel or {}
+    assert emitted.get("esql") or emitted.get("promql") or "query" in str(emitted)
+
+
+def test_partial_control_schema_keeps_or_chain_operands():
+    """Partial control schemas must not prune unlisted OR fallback metrics."""
+    resolver = SchemaResolver(RulePackConfig())
+    resolver.merge_control_schema(
+        {
+            "field_cache": {
+                "cluster": {
+                    "keyword": {"type": "keyword", "aggregatable": True, "searchable": True}
+                }
+            }
+        }
+    )
+    assert resolver.discovery_status()["status"] == "partial"
+
+    frag = _parse_fragment(
+        "node_network_receive_bytes_total or rdsosmetrics_network_rx_bytes"
+    )
+    kept, dropped = _reduce_or_operands(frag, resolver)
+
+    assert [operand.metric for operand in kept] == [
+        "node_network_receive_bytes_total",
+        "rdsosmetrics_network_rx_bytes",
+    ]
+    assert dropped == []
 
 
 def test_esql_param_control_retargets_to_single_panel_bound_field():
@@ -2150,6 +3056,23 @@ def test_schema_validates_pack_with_collapsed_layout_override():
     assert len(payload.panel.layout_overrides) == 1
     assert payload.panel.layout_overrides[0].title_match == "Network Traffic"
     assert payload.panel.layout_overrides[0].collapsed is False
+
+
+def test_schema_validates_pack_with_title_layout_override():
+    from observability_migration.adapters.source.grafana.extension_schema import validate_rule_pack_payload
+
+    raw = {
+        "panel": {
+            "layout_overrides": [
+                {
+                    "title_match": "Section 1",
+                    "title": "Overview",
+                }
+            ]
+        }
+    }
+    payload = validate_rule_pack_payload(raw)
+    assert payload.panel.layout_overrides[0].title == "Overview"
 
 
 def test_panel_query_override_loaded_from_pack_yaml_round_trip():

@@ -423,7 +423,7 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
         self.assertIn("host_name", result.esql_query)
         self.assertNotIn("instance ==", result.esql_query)
 
-    def test_native_promql_ignored_label_falls_back_to_esql(self):
+    def test_native_promql_strips_ignored_label_matchers(self):
         rule_pack = RulePackConfig(
             native_promql=True,
             ignored_labels=["metrics_path"],
@@ -453,8 +453,9 @@ class TestGrafanaPassthroughIntegration(unittest.TestCase):
             resolver=resolver,
         )
 
-        self.assertNotIn("PROMQL ", result.esql_query)
+        self.assertIn("PROMQL ", result.esql_query)
         self.assertNotIn("metrics_path", result.esql_query)
+        self.assertIn("rate(http_requests_total[5m])", result.esql_query)
 
     def test_alert_label_rewrite_falls_back_to_esql(self):
         rule_pack = RulePackConfig(label_rewrites={"mode": "cpu_mode"})

@@ -874,7 +874,8 @@ customization:
   optional embedded `query.metric_map` (overridden by `--metric-map-file` on
   duplicate keys). When a dashboard carries a `gnetId` that matches a bundled
   curated pack (e.g. Redis 763 / 11835 / 14091, Redis Enterprise 18405, Redis
-  Cloud 18406, Node Exporter Full 1860), the
+  Cloud 18406, Node Exporter Full 1860, MySQL Overview 7362, PostgreSQL
+  Database 9628, PostgreSQL Exporter Quickstart 14114), the
   pack is merged in automatically beneath the user `--rules-file` so the user
   always wins on collision. If Grafana stripped `gnetId` on copy/import, an
   exact title match still selects the pack — tags are not required when the
@@ -912,7 +913,9 @@ Two further gates still push panels to ES|QL even when the target supports
    limits can still degrade individual panels to ES|QL even on Kibana 9.5+.
 2. **Curated pack / construct limits** — pack overrides and unsupported PromQL
    shapes can still emit ES|QL. Pass `--no-curated-packs` to isolate the core
-   translator.
+   translator. Same-metric Grafana fallbacks (`rate(M[$interval]) or irate(M[5m])`)
+   collapse to the left operand before the native path, matching ES|QL
+   translation. True set-union `or` / `and` / `unless` still degrades.
 
 Construct-level unsupported cases can still degrade or require manual review.
 Datadog accepts `--translation-mode` for CLI parity, but it is a no-op because

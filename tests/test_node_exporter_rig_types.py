@@ -35,11 +35,22 @@ def test_apply_metric_type_overrides_promotes_known_node_counters():
     assert resolved["node_cpu_seconds_total"] == "counter"
 
 
-def test_apply_metric_type_overrides_leaves_other_datasets_unchanged():
+def test_apply_metric_type_overrides_promotes_known_mysql_counters():
     scraper = _load_scraper_module()
-    metric_types = {"mysql_global_status_questions": "counter"}
+    metric_types = {
+        "mysql_global_status_questions": "untyped",
+        "mysql_global_status_threads_connected": "gauge",
+    }
     resolved = scraper.apply_metric_type_overrides("mysql.prometheus", metric_types)
-    assert resolved == metric_types
+    assert resolved["mysql_global_status_questions"] == "counter"
+    assert resolved["mysql_global_status_threads_connected"] == "gauge"
+
+
+def test_apply_metric_type_overrides_leaves_unrelated_datasets_unchanged():
+    scraper = _load_scraper_module()
+    metric_types = {"custom_exporter_events": "untyped"}
+    resolved = scraper.apply_metric_type_overrides("custom.prometheus", metric_types)
+    assert resolved is metric_types
 
 
 def test_build_bulk_body_can_add_stable_base_labels() -> None:

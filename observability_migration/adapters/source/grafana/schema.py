@@ -1081,7 +1081,19 @@ class SchemaResolver:
         self._discover_fields()
         if not self._field_cache:
             return None
-        return field_name in self._field_cache
+        if field_name in self._field_cache:
+            return True
+        # A partial cache carries positive information only: a ``--control-schema``
+        # merge (status ``partial``) seeds label hints for Grafana variables but
+        # is intentionally NOT an exhaustive field inventory. An unlisted field
+        # there is unknown (``None``), never proven absent. Returning ``False``
+        # made absence-sensitive callers (native ``metrics.`` prefixing, control
+        # scoping, OR-fallback pruning) drop valid panels/scopes offline.
+        # Every other populated cache (a real ``_field_caps`` fetch, status
+        # ``ok``) stays authoritative, so a genuinely absent field is ``False``.
+        if self._discovery_status == "partial":
+            return None
+        return False
 
     def field_type(self, field_name):
         capability = self.field_capability(field_name)
@@ -1328,7 +1340,14 @@ class SchemaResolver:
             ):
                 self._field_cache.pop(field_name, None)
         if self._field_cache:
-            self._discovery_status = "ok"
+            # Control-schema fixtures are intentionally partial (label hints
+            # for Grafana variables). They must not claim exhaustive live
+            # field-caps: status "ok" is reserved for a real ``_field_caps``
+            # fetch, which is what lets missing-metric gates treat False as
+            # proven-absent. Overwriting that here made ``--control-schema``
+            # drop native queries for metrics the fixture never listed.
+            if self._discovery_status != "ok":
+                self._discovery_status = "partial"
             self._discovery_error = ""
             # Offline merges happen before the first resolve_label() call. Mark
             # discovery as attempted so _discover_fields() does not wipe the

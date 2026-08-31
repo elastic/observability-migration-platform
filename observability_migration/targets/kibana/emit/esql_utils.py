@@ -215,6 +215,17 @@ def _metric_fields_from_projection(projected_fields, group_fields):
     ]
 
 
+def _eval_alias_is_series_identity(expr):
+    """True for string-identity EVAL expressions used as a series key.
+
+    ``EVAL series_group = CONCAT(...)`` / ``TO_STRING(...)`` names the
+    breakdown, not a Y metric. Numeric derived columns (``ratio = a / b``)
+    must keep flowing into ``metric_fields``.
+    """
+    text = str(expr or "").strip().upper()
+    return text.startswith("CONCAT(") or text.startswith("TO_STRING(")
+
+
 def extract_esql_shape(esql):
     commands = split_esql_pipeline(esql)
     shape = ESQLShape()
@@ -251,8 +262,19 @@ def extract_esql_shape(esql):
             for assignment in _split_top_level_csv(command[5:].strip()):
                 alias, _expr = split_top_level_assignment(assignment)
                 field_name = _output_field_name(alias)
-                if field_name and field_name not in shape.projected_fields:
+                if not field_name:
+                    continue
+                if field_name not in shape.projected_fields:
                     shape.projected_fields.append(field_name)
+                if _eval_alias_is_series_identity(_expr):
+                    if field_name not in shape.group_fields:
+                        shape.group_fields.append(field_name)
+                    continue
+                # Derived columns are first-class series (e.g. ``STATS a, b |
+                # EVAL ratio = a / b``). Without this, Lens Y accessors stay on
+                # the STATS aliases and the EVAL column never renders.
+                if field_name not in shape.metric_fields and field_name not in shape.group_fields:
+                    shape.metric_fields.append(field_name)
             continue
 
         if lower_command.startswith("keep "):
@@ -262,9 +284,10 @@ def extract_esql_shape(esql):
                 if part.strip()
             ]
             group_fields = [field for field in shape.group_fields if field in projected_fields]
-            metric_fields = [field for field in shape.metric_fields if field in projected_fields]
-            if not metric_fields:
-                metric_fields = _metric_fields_from_projection(projected_fields, group_fields)
+            # KEEP is the operator-visible output: include EVAL aliases that
+            # survive the projection, in KEEP order — not only STATS names
+            # that happen to still be listed.
+            metric_fields = _metric_fields_from_projection(projected_fields, group_fields)
             time_fields = [
                 field
                 for field in projected_fields

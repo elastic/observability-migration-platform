@@ -1,0 +1,292 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 7362
+# https://grafana.com/grafana/dashboards/7362-mysql-overview/
+#
+# Source: Percona Monitoring and Management "MySQL Overview"
+#         (mysqld_exporter + node_exporter Prometheus scrape)
+# Revision 5. Panels: 36 renderable.
+#
+# Engine vs pack split (do not duplicate engine work here):
+#   Engine: mixed ``rate(node) or irate(node) or rdsosmetrics/aws_rds`` chains
+#           drop live-absent cloud fallbacks; ``sum((rate/rate) or …)`` prefers
+#           the Linux disk ratio when AWS RDS metrics are absent.
+#   Pack:   mysqld_exporter untyped status counters, processlist rename,
+#           MySQL 8 query-cache replacements, System Chart host-label split
+#           (mysql instance ≠ node_exporter instance).
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  label_rewrites:
+    instance: labels.instance
+    job: labels.job
+    state: labels.state
+    handler: labels.handler
+    command: labels.command
+
+  # mysqld_exporter publishes these as ``# TYPE untyped``. Elasticsearch infers
+  # gauge from the missing ``_total`` suffix, so RATE() 400s at render time.
+  # Pin counter here (and in the lab scraper) so ``rate()``/``increase()`` stay
+  # RATE()/Increase, matching PromQL.
+  metric_kinds:
+    mysql_global_status_queries: counter
+    mysql_global_status_questions: counter
+    mysql_global_status_threads_created: counter
+    mysql_global_status_created_tmp_tables: counter
+    mysql_global_status_created_tmp_disk_tables: counter
+    mysql_global_status_created_tmp_files: counter
+    mysql_global_status_select_full_join: counter
+    mysql_global_status_select_full_range_join: counter
+    mysql_global_status_select_range: counter
+    mysql_global_status_select_range_check: counter
+    mysql_global_status_select_scan: counter
+    mysql_global_status_sort_rows: counter
+    mysql_global_status_sort_range: counter
+    mysql_global_status_sort_merge_passes: counter
+    mysql_global_status_sort_scan: counter
+    mysql_global_status_slow_queries: counter
+    mysql_global_status_aborted_connects: counter
+    mysql_global_status_aborted_clients: counter
+    mysql_global_status_table_locks_immediate: counter
+    mysql_global_status_table_locks_waited: counter
+    mysql_global_status_bytes_received: counter
+    mysql_global_status_bytes_sent: counter
+    mysql_global_status_opened_files: counter
+    mysql_global_status_opened_tables: counter
+    mysql_global_status_table_open_cache_hits: counter
+    mysql_global_status_table_open_cache_misses: counter
+    mysql_global_status_table_open_cache_overflows: counter
+    mysql_global_status_opened_table_definitions: counter
+    mysql_global_status_commands_total: counter
+    mysql_global_status_handlers_total: counter
+    mysql_global_status_innodb_buffer_pool_read_requests: counter
+    mysql_global_status_innodb_buffer_pool_reads: counter
+    mysql_global_status_innodb_data_reads: counter
+    mysql_global_status_innodb_data_writes: counter
+    mysql_global_status_qcache_hits: counter
+    mysql_global_status_qcache_inserts: counter
+    mysql_global_status_qcache_not_cached: counter
+    mysql_global_status_qcache_lowmem_prunes: counter
+    node_vmstat_pgpgin: counter
+    node_vmstat_pgpgout: counter
+    node_vmstat_pswpin: counter
+    node_vmstat_pswpout: counter
+    node_cpu_seconds_total: counter
+    node_disk_read_time_seconds_total: counter
+    node_disk_reads_completed_total: counter
+    node_disk_write_time_seconds_total: counter
+    node_disk_writes_completed_total: counter
+    node_network_receive_bytes_total: counter
+    node_network_transmit_bytes_total: counter
+    mysql_global_status_uptime: gauge
+    mysql_global_variables_innodb_buffer_pool_size: gauge
+    mysql_global_status_threads_connected: gauge
+    mysql_global_status_threads_running: gauge
+    mysql_global_status_threads_cached: gauge
+    mysql_global_status_max_used_connections: gauge
+    mysql_global_variables_max_connections: gauge
+    mysql_global_variables_thread_cache_size: gauge
+    mysql_info_schema_processlist_threads: gauge
+    mysql_info_schema_threads: gauge
+    node_load1: gauge
+    node_memory_MemTotal_bytes: gauge
+
+  # metric_map targets are emitted VERBATIM (no field-profile prefix).
+  metric_map:
+    mysql_info_schema_threads: metrics.mysql_info_schema_processlist_threads
+
+  live_optional_metrics:
+    - mysql_global_variables_innodb_additional_mem_pool_size
+    - mysql_global_variables_query_cache_size
+    - mysql_global_status_qcache_free_memory
+    - mysql_global_status_qcache_hits
+    - mysql_global_status_qcache_inserts
+    - mysql_global_status_qcache_not_cached
+    - mysql_global_status_qcache_lowmem_prunes
+    - mysql_global_status_qcache_queries_in_cache
+    - mysql_global_variables_tokudb_cache_size
+    - mysql_info_schema_threads
+    - rdsosmetrics_network_rx
+    - rdsosmetrics_network_tx
+    - aws_rds_read_latency_average
+    - aws_rds_write_latency_average
+    - node_cpu_seconds_total_average
+
+  label_candidates:
+    instance:
+      - labels.instance
+      - service.instance.id
+      - host.name
+    job:
+      - labels.job
+      - service.name
+    state:
+      - labels.state
+      - state
+    handler:
+      - labels.handler
+      - handler
+    command:
+      - labels.command
+      - command
+
+controls:
+  field_overrides:
+    host: labels.instance
+
+panel:
+  query_overrides:
+    - title_match: "Buffer Pool Size of Total RAM"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS pool = MAX(LAST_OVER_TIME({{metric:mysql_global_variables_innodb_buffer_pool_size:gauge}})), ram = MAX(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}}))
+        | EVAL computed_value = CASE(ram > 0, ((pool * 100) / ram), NULL)
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "MySQL Network Usage Hourly"
+      drop_time_from: true
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_global_status_bytes_received:counter}} IS NOT NULL OR {{metric:mysql_global_status_bytes_sent:counter}} IS NOT NULL
+        | STATS Received = SUM(RATE({{metric:mysql_global_status_bytes_received:counter}})), Sent = SUM(RATE({{metric:mysql_global_status_bytes_sent:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Top Command Counters Hourly"
+      drop_time_from: true
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_global_status_commands_total:counter}} IS NOT NULL
+        | STATS Commands = SUM(RATE({{metric:mysql_global_status_commands_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.command
+        | WHERE Commands > 0
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Process States"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_info_schema_processlist_threads:gauge}} IS NOT NULL
+        | STATS process_threads = MAX(LAST_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Top Process States Hourly"
+      drop_time_from: true
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_info_schema_processlist_threads:gauge}} IS NOT NULL
+        | STATS process_threads = MAX(AVG_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | SORT time_bucket ASC
+      status_override: migrated
+    # Query cache was removed in MySQL 8. Show InnoDB buffer-pool pages instead.
+    - title_match: "MySQL Query Cache Memory"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_global_status_buffer_pool_pages:gauge}} IS NOT NULL
+        | STATS pages = MAX(LAST_OVER_TIME({{metric:mysql_global_status_buffer_pool_pages:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "MySQL Query Cache Activity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
+        | WHERE {{metric:mysql_global_status_innodb_buffer_pool_read_requests:counter}} IS NOT NULL OR {{metric:mysql_global_status_innodb_buffer_pool_reads:counter}} IS NOT NULL OR {{metric:mysql_global_status_innodb_data_reads:counter}} IS NOT NULL OR {{metric:mysql_global_status_innodb_data_writes:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:mysql_global_status_innodb_buffer_pool_read_requests:counter}})), reads = SUM(RATE({{metric:mysql_global_status_innodb_buffer_pool_reads:counter}})), data_reads = SUM(RATE({{metric:mysql_global_status_innodb_data_reads:counter}})), data_writes = SUM(RATE({{metric:mysql_global_status_innodb_data_writes:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL Hit_ratio_pct = CASE(requests > 0, ((1 - (reads / requests)) * 100), NULL)
+        | KEEP time_bucket, Hit_ratio_pct, data_reads, data_writes
+        | SORT time_bucket ASC
+      status_override: migrated
+    # PMM assumes mysqld and node_exporter share ``instance``. Typical scrapes
+    # use mysql:3306 vs node:9100, and ``host`` is sourced from mysql_up only.
+    # Drop the host matcher so System Charts light up from node_exporter.
+    - title_match: "CPU Usage / Load"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL OR {{metric:node_load1:gauge}} IS NOT NULL
+        | STATS Load_1m = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), non_idle = SUM(CASE(labels.mode != "idle", RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL CPU_busy_pct = CASE(cpu_cores > 0, ((non_idle * 100) / cpu_cores), NULL), `Load 1m` = Load_1m
+        | KEEP time_bucket, CPU_busy_pct, `Load 1m`
+        | SORT time_bucket ASC
+      status_override: migrated
+      approximation_note: >-
+        Approximate: aggregates across all node exporters without a per-host
+        grouping. COUNT_DISTINCT(labels.cpu) is global, so with multiple hosts
+        (which reuse CPU ids) the core count is undercounted and CPU busy % can
+        exceed 100%. Scope to a single host for an exact value.
+    - title_match: "Disk Latency"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (labels.device IS NULL OR labels.device NOT RLIKE "dm-.*")
+        | WHERE {{metric:node_disk_read_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_reads_completed_total:counter}} IS NOT NULL OR {{metric:node_disk_write_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_writes_completed_total:counter}} IS NOT NULL
+        | STATS Read = SUM((RATE({{metric:node_disk_read_time_seconds_total:counter}}) / RATE({{metric:node_disk_reads_completed_total:counter}}))), Write = SUM((RATE({{metric:node_disk_write_time_seconds_total:counter}}) / RATE({{metric:node_disk_writes_completed_total:counter}}))) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Traffic"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (labels.device IS NULL OR labels.device != "lo")
+        | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS Inbound = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})), Outbound = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "I/O Activity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_vmstat_pgpgin:counter}} IS NOT NULL OR {{metric:node_vmstat_pgpgout:counter}} IS NOT NULL
+        | STATS pgpgin = SUM(RATE({{metric:node_vmstat_pgpgin:counter}})), pgpgout = SUM(RATE({{metric:node_vmstat_pgpgout:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL Pages_in = pgpgin * 1024, Pages_out = pgpgout * 1024
+        | KEEP time_bucket, Pages_in, Pages_out
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Memory Distribution"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemFree_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Buffers_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Cached_bytes:gauge}} IS NOT NULL
+        | STATS Total = MAX(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), Free = MAX(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), Buffers = MAX(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), Cached = MAX(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL Used = Total - (Free + Buffers + Cached)
+        | KEEP time_bucket, Used, Free, Buffers, Cached
+        | SORT time_bucket ASC
+      status_override: migrated
+      approximation_note: >-
+        Approximate: aggregates across all node exporters without a per-host
+        grouping. Each MAX is taken independently, so the components can come
+        from different hosts and Used = Total - (Free + Buffers + Cached) may
+        mix hosts. Scope to a single host for exact per-node memory.
+    - title_match: "Swap Activity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_vmstat_pswpin:counter}} IS NOT NULL OR {{metric:node_vmstat_pswpout:counter}} IS NOT NULL
+        | STATS pswpin = SUM(RATE({{metric:node_vmstat_pswpin:counter}})), pswpout = SUM(RATE({{metric:node_vmstat_pswpout:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL Swap_in = pswpin * 4096, Swap_out = pswpout * 4096
+        | KEEP time_bucket, Swap_in, Swap_out
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    # Grafana's first row is untitled; Kibana requires a section name.
+    - title_match: "Section 1"
+      title: "Overview"
+    # Query cache was removed in MySQL 8; Kibana shows InnoDB buffer pool.
+    - title_match: "Query Cache"
+      title: "InnoDB Buffer Pool"
+    - title_match: "MySQL Query Cache Memory"
+      title: "InnoDB Buffer Pool Pages"
+    - title_match: "MySQL Query Cache Activity"
+      title: "InnoDB Buffer Pool Activity"

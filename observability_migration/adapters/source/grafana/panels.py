@@ -93,6 +93,7 @@ from .promql import (
     _summary_mode_from_metadata,
     _union_group_fields,
     _unique_safe_alias,
+    collapse_or_for_native_promql,
     grafana_template_var_name,
     substitute_grafana_range_macros,
     substitute_scalar_template_vars,
@@ -1143,11 +1144,17 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
             return None
     if kibana_type == "metric":
         if metric_fields and len(metric_fields) > 1:
-            return None
+            if "computed_value" in metric_fields:
+                metric_col = "computed_value"
+            else:
+                return None
         return _build_esql_metric_panel(query, metric_col=metric_col)
     if kibana_type == "gauge":
         if metric_fields and len(metric_fields) > 1:
-            return None
+            if "computed_value" in metric_fields:
+                metric_col = "computed_value"
+            else:
+                return None
         return _build_esql_gauge_panel(query, metric_col=metric_col, panel=panel)
     if kibana_type in ("line", "bar", "area"):
         if not xy_by_cols:
@@ -1188,6 +1195,13 @@ def _native_esql_panel_spec(query, kibana_type, promql_expr=None, panel=None,
             return None
         return _build_esql_pie_panel(query, metric_col=metric_col, by_cols=table_by_cols)
     return None
+
+
+# A metricless selector with no matchers (``{}``, ``{  }``) — not preceded by a
+# metric identifier, so ``metric{}`` (valid, equivalent to ``metric``) is not
+# matched. Invalid PromQL; typically the residue of stripping an ignored label
+# that was the sole matcher of ``{release="$release"}`` (PR #369).
+_PROMQL_EMPTY_METRICLESS_SELECTOR_RE = re.compile(r"(?<![A-Za-z0-9_:])\{\s*\}")
 
 
 _PROMQL_UNSUPPORTED_RE = re.compile(
@@ -1565,6 +1579,11 @@ def _promql_label_matcher_vars_to_params(expr, regex_default_params=None):
             changed = True
         return ", ".join(parts) if changed else selector_text
 
+    return _map_promql_brace_selectors(expr, rewrite_selector)
+
+
+def _map_promql_brace_selectors(expr, rewrite_selector):
+    """Rewrite the contents of every top-level ``{...}`` PromQL selector."""
     pieces = []
     start = 0
     idx = 0
@@ -1598,6 +1617,41 @@ def _promql_label_matcher_vars_to_params(expr, regex_default_params=None):
         idx = end
     pieces.append(text[start:])
     return "".join(pieces)
+
+
+def _strip_ignored_promql_label_matchers(expr, ignored_labels):
+    """Drop selector matchers whose label is in the rule-pack ignore list.
+
+    Native PROMQL keeps Prometheus label names inside ``{}``. Pack
+    ``ignored_labels`` already omit those filters from ES|QL WHERE clauses, but
+    without this strip the native path still emits ``{release=~?release}``.
+    Kibana then synthesizes a Release control from mixed ``metrics-*`` (often a
+    kernel ``release`` field) and every panel that still binds ``?release``
+    goes empty.
+    """
+    drop = {
+        str(name).strip()
+        for name in (ignored_labels or [])
+        if str(name).strip()
+    }
+    if not drop or not expr:
+        return expr
+
+    def rewrite_selector(selector_text):
+        kept = []
+        changed = False
+        for part in _split_top_level_csv(selector_text):
+            matcher = _NATIVE_PROMQL_LABEL_MATCHER_RE.match(part)
+            if matcher and matcher.group("label").strip() in drop:
+                changed = True
+                continue
+            kept.append(part)
+        if not changed:
+            return selector_text
+        return ", ".join(kept)
+
+    rewritten = _map_promql_brace_selectors(expr, rewrite_selector)
+    return re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*)\{\s*\}", r"\1", rewritten)
 
 
 def _trim_wrapping_parens(expr):
@@ -2304,6 +2358,12 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     if _promql_grouping_has_template_variable(promql_expr):
         return False
     sanitized = _strip_promql_string_literals(promql_expr)
+    if _PROMQL_EMPTY_METRICLESS_SELECTOR_RE.search(sanitized):
+        # A metricless selector with no matchers (``{}``) is invalid PromQL.
+        # This shape typically appears after an ignored label was the *sole*
+        # matcher of ``{release="$release"}`` (PR #369): declining native
+        # emission keeps it from scoring green as ``value=({})``.
+        return False
     if _PROMQL_UNSUPPORTED_RE.search(sanitized):
         return False
     if _PROMQL_HISTOGRAM_QUANTILE_RE.search(sanitized) and not is_feature_supported(
@@ -2329,6 +2389,17 @@ _COUNTER_RANGE_FUNC_PATTERN = re.compile(
     r"\b(?P<func>rate|irate|increase)\s*\(\s*(?P<metric>[A-Za-z_:][A-Za-z0-9_:]*)\b",
     re.IGNORECASE,
 )
+
+
+def _is_bare_instant_selector(promql_expr) -> bool:
+    """True when *promql_expr* is a bare instant-vector selector (gauge or counter)."""
+    if not promql_expr:
+        return False
+    try:
+        frag = _parse_fragment(promql_expr)
+    except Exception:
+        return False
+    return bool(frag and getattr(frag, "family", None) == "simple_metric")
 
 
 def _is_bare_counter_reference(promql_expr, resolver, rule_pack=None):
@@ -2527,6 +2598,37 @@ def _translate_panel_native_promql(
 
     target = targets_with_expr[0][0]
     expr = target.get("expr", "")
+    collapsed_expr = collapse_or_for_native_promql(
+        expr, resolver=resolver, rule_pack=rule_pack
+    )
+    if collapsed_expr != expr:
+        _append_unique(
+            panel_notes,
+            "PromQL same-metric 'or': preferred left range-window operand and "
+            "dropped the alternate-window fallback; Grafana uses the right "
+            "side only when the left lacks samples",
+        )
+        expr = collapsed_expr
+    expr = _strip_ignored_promql_label_matchers(
+        expr, getattr(rule_pack, "ignored_labels", None)
+    )
+    if _PROMQL_EMPTY_METRICLESS_SELECTOR_RE.search(_strip_promql_string_literals(expr)):
+        # Stripping an ignored label removed the sole matcher, leaving an empty
+        # metricless selector (``{}``) — invalid PromQL. Decline native
+        # emission and surface the gap instead of scoring green (PR #369).
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: ignoring labels removed the sole matcher, "
+            "leaving an empty metricless selector ({}); needs manual migration",
+        )
+        return None
+    # Native PROMQL is attempted before the ES|QL live-missing loop. An
+    # absent instant gauge would otherwise stay native, score Green, and
+    # either smoke empty or 400 with ``value_$1``/``value_$2`` (issue #158
+    # keeps native on field gaps *after* emit; this gate refuses emit when
+    # field-caps already proved the source metrics are gone).
+    if _live_missing_metrics_for_expr(expr, resolver):
+        return None
     runtime_features = getattr(rule_pack, "runtime_features", {})
     _record_passthrough_native_labels(expr, resolver)
     if (
@@ -2658,16 +2760,18 @@ def _translate_panel_native_promql(
         # is a separate case: ``build_native_promql_query`` rejects it, so those
         # degrade to ES|QL regardless of this gate.)
         #
-        # A bare counter reference (``http_requests_total{job="api"}`` with no
-        # rate()) is likewise kept native even though it is a single metric:
-        # Kibana's PROMQL preview serves the raw cumulative value directly, so
-        # preserve the original expression instead of the ES|QL
-        # ``LAST_OVER_TIME`` fallback and its misleading "Counter referenced
-        # without rate()" warning (issue #139). Bare gauges and rate()/range
-        # functions are not bare counters and still degrade here.
+        # Parse the *source* expression for the bare-selector check: native
+        # cleaning rewrites ``{instance="$host"}`` to ``{instance=?host}``,
+        # which the PromQL AST parser classifies as ``unknown`` and would
+        # wrongly degrade Grafana 5 singlestat gauges (Uptime, buffer pool).
+        is_bare_selector = (
+            getattr(native_fragment, "family", None) == "simple_metric"
+            or _is_bare_instant_selector(expr)
+            or _is_bare_counter_reference(expr, resolver, rule_pack)
+        )
         if "_timeseries" in group_cols and (
             len(_collect_source_metrics(native_fragment, dedup=False)) < 2
-            and not _is_bare_counter_reference(expr, resolver, rule_pack)
+            and not is_bare_selector
         ):
             return None
     # Dashboard metric/gauge tiles collapse a *range* query via
@@ -4019,15 +4123,60 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                                 mode=_esql_mode,
                                 warnings=_override_warnings,
                             )
+                    # A curated metric override that carries a single
+                    # categorical ``BY`` group must bind that group as a Lens
+                    # breakdown so each value is a labeled tile (e.g. 9628
+                    # Version → the PostgreSQL version string), instead of a
+                    # single numeric primary that hides the label (PR #369).
+                    if (
+                        _override_type == "metric"
+                        and isinstance(_native_panel, dict)
+                        and not _native_panel.get("breakdown")
+                    ):
+                        _metric_groups = [
+                            g
+                            for g in (getattr(_shape, "group_fields", []) or [])
+                            if g and not _is_time_like_output_field(g)
+                        ]
+                        _metric_measures = [
+                            m for m in (getattr(_shape, "metric_fields", []) or []) if m
+                        ]
+                        if len(_metric_groups) == 1 and len(_metric_measures) == 1:
+                            _native_panel = _build_esql_metric_panel(
+                                _curated_query,
+                                metric_col=_metric_measures[0],
+                                panel=panel,
+                                breakdown_col=_metric_groups[0],
+                            )
                     if _native_panel:
                         yaml_panel["esql"] = _native_panel
+                        # Apply a pack-declared primary format before enrich so
+                        # its ``setdefault`` preserves it (e.g. elapsed-seconds
+                        # Start Time → duration display) (PR #369).
+                        _primary_format_unit = _override.get("primary_format")
+                        if _primary_format_unit and isinstance(
+                            _native_panel.get("primary"), dict
+                        ):
+                            _pf = grafana_unit_to_yaml_format(_primary_format_unit)
+                            if _pf:
+                                _native_panel["primary"]["format"] = _pf
+                        # Curated overrides skip PANEL_TRANSLATORS; honour
+                        # pack-level timeFrom drops before enrich applies
+                        # Grafana panel time_range.
+                        if _override.get("drop_time_from"):
+                            panel.pop("timeFrom", None)
+                            panel.pop("timeShift", None)
+                        # Apply display units first, then seriesOverrides so a
+                        # right-axis ``format: none`` (Load 1m) can clear the
+                        # inherited left-axis % / bytes format. Matches the
+                        # generic PANEL_TRANSLATORS path.
+                        enrich_yaml_panel_display(yaml_panel, panel)
                         # Wide multi-metric curated queries (e.g. Memory Basic)
                         # need Grafana field overrides like RAM Total
                         # ``stack: false`` applied the same as the generic path.
                         _apply_series_override_axes(
                             yaml_panel, panel, _override_warnings
                         )
-                        enrich_yaml_panel_display(yaml_panel, panel)
                         _label_placeholder_value_metric(
                             yaml_panel,
                             title=title,
@@ -4082,11 +4231,19 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         _optional_omitted = set(
                             _optional_metric_result.omitted_metrics or []
                         )
-                        if _optional_omitted:
+                        _optional_declared = {
+                            str(name).strip()
+                            for name in (rule_pack.live_optional_metrics or [])
+                            if str(name).strip()
+                        }
+                        if _optional_omitted or _optional_declared:
                             _dropped_curated_metrics = [
                                 metric
                                 for metric in _dropped_curated_metrics
                                 if metric not in _optional_omitted
+                                and not _live_optional_source_metric_absent(
+                                    metric, resolver, _optional_declared
+                                )
                             ]
                         if _dropped_curated_metrics:
                             _append_unique(
@@ -4094,6 +4251,16 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                                 "Target telemetry missing from curated override: "
                                 + ", ".join(_dropped_curated_metrics),
                             )
+                            if _status == "migrated":
+                                _status = "migrated_with_warnings"
+                            _score = min(_score, 0.6)
+                        # An explicit approximation disclosure caps the status:
+                        # a deliberately-approximate override (e.g. cross-host
+                        # system aggregation) must surface the gap and never
+                        # report a clean ``migrated`` (PR #369).
+                        _approximation_note = _override.get("approximation_note")
+                        if _approximation_note:
+                            _append_unique(_override_warnings, _approximation_note)
                             if _status == "migrated":
                                 _status = "migrated_with_warnings"
                             _score = min(_score, 0.6)
@@ -4237,6 +4404,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
     translations = []
     dropped_live_metric_targets: list[tuple[str, list[str]]] = []
     tolerated_live_metric_target_refs: set[str] = set()
+    tolerated_absent_live_metrics: list[str] = []
     live_optional_metrics = {str(name).strip() for name in (rule_pack.live_optional_metrics or []) if str(name).strip()}
     for idx, (target, _) in enumerate(targets_with_expr, start=1):
         expr = target.get("expr", "")
@@ -4290,16 +4458,38 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         if missing_live_metrics:
             target_ref = str(target.get("refId") or f"series_{idx}")
             t.metadata["missing_live_metrics"] = list(missing_live_metrics)
-            non_optional_missing_live_metrics = [
-                metric for metric in missing_live_metrics
-                if metric not in live_optional_metrics
+            # Result-aware gate: a missing metric only invalidates this target
+            # when the emitted query still needs it. An ``or`` fallback can
+            # translate to a surviving operand whose query no longer references
+            # the absent metric; keep that feasible survivor instead of
+            # discarding a valid rendering (PR #369).
+            emitted_query = getattr(t, "esql_query", "") or ""
+            translation_feasible = (
+                getattr(t, "feasibility", "") != "not_feasible" and bool(emitted_query)
+            )
+            still_referenced = [
+                metric
+                for metric in missing_live_metrics
+                if _metric_referenced_in_query(metric, emitted_query, target_resolver)
             ]
-            if non_optional_missing_live_metrics:
-                dropped_live_metric_targets.append((target_ref, non_optional_missing_live_metrics))
-            else:
-                tolerated_live_metric_target_refs.add(target_ref)
+            if translation_feasible and not still_referenced:
                 t.metadata["tolerated_missing_live_metrics"] = list(missing_live_metrics)
-            continue
+                for metric in missing_live_metrics:
+                    _append_unique(tolerated_absent_live_metrics, metric)
+            else:
+                gate_metrics = still_referenced or missing_live_metrics
+                non_optional_missing_live_metrics = [
+                    metric for metric in gate_metrics
+                    if metric not in live_optional_metrics
+                ]
+                if non_optional_missing_live_metrics:
+                    dropped_live_metric_targets.append((target_ref, non_optional_missing_live_metrics))
+                else:
+                    tolerated_live_metric_target_refs.add(target_ref)
+                    t.metadata["tolerated_missing_live_metrics"] = list(missing_live_metrics)
+                    for metric in missing_live_metrics:
+                        _append_unique(tolerated_absent_live_metrics, metric)
+                continue
         t.metadata["target_ref_id"] = target.get("refId") or f"series_{idx}"
         # Keep the target's own expression: ``promql_expr`` is overwritten with
         # the merged " ||| " join below, but per-target provenance (and the
@@ -4310,16 +4500,18 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             t.metadata["negate_reason"] = negate_reason or "expression"
         translations.append(t)
 
-    if dropped_live_metric_targets and not translations:
+    if not translations and (dropped_live_metric_targets or tolerated_live_metric_target_refs):
         missing_metrics: list[str] = []
         for _target_name, metrics in dropped_live_metric_targets:
             for metric in metrics:
                 _append_unique(missing_metrics, metric)
+        for metric in tolerated_absent_live_metrics:
+            _append_unique(missing_metrics, metric)
         missing_panel, panel_result = _make_missing_telemetry_panel(
             yaml_panel,
             title,
             panel_type,
-            missing_metrics,
+            missing_metrics or sorted(live_optional_metrics),
         )
         return missing_panel, _enrich_panel_result(
             panel_result,
@@ -6108,6 +6300,44 @@ def _live_missing_metrics_for_expr(expr, resolver):
     return missing
 
 
+def _live_optional_source_metric_absent(metric, resolver, optional_names):
+    """True when *metric* is pack-optional and live field-caps proved it absent.
+
+    Curated overrides sometimes replace a source metric the target never
+    ingested (postgres_exporter dropping ``pg_postmaster_start_time_seconds``)
+    rather than listing it in the override text for later stripping. Those
+    substitutions must not yellow the panel as a pack omission.
+    """
+    if metric not in optional_names or not metric:
+        return False
+    return metric in _live_missing_metrics_for_expr(metric, resolver)
+
+
+def _metric_referenced_in_query(metric, query_text, resolver):
+    """True when *metric* (bare or its resolved field forms) still appears in
+    the final emitted *query_text*.
+
+    Lets the missing-metric post-check stay result-aware: an ``or`` fallback
+    such as ``foo or optional_b`` can translate to a surviving operand
+    (``foo``) whose query never references the absent ``optional_b``. In that
+    case the target renders and must not be discarded just because the original
+    expression mentioned an absent metric.
+    """
+    if not metric or not query_text:
+        return False
+    candidates = {metric}
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    if callable(resolve_metric):
+        for prefer in ("gauge", "counter"):
+            try:
+                resolved = resolve_metric(metric, prefer=prefer)
+            except Exception:
+                resolved = None
+            if resolved:
+                candidates.add(resolved)
+    return any(candidate and candidate in query_text for candidate in candidates)
+
+
 def _source_metrics_absent_from_query(source_exprs, query_text, resolver):
     """Prometheus metrics referenced by *source_exprs* that never appear in the
     final emitted *query_text*.
@@ -7234,6 +7464,9 @@ def _warn_extra_breakdown_dimensions(
         )
 
 
+_ESQL_SERIES_GROUP_EVAL_RE = re.compile(r"\bEVAL\s+series_group\s*=", re.IGNORECASE)
+
+
 def _apply_composite_group_breakdown_to_xy_panel(panel, *, group_cols, warnings=None):
     """Composite multiple non-time ``BY`` columns into one XY breakdown field.
 
@@ -7248,10 +7481,17 @@ def _apply_composite_group_breakdown_to_xy_panel(panel, *, group_cols, warnings=
     if (panel.get("breakdown") or {}).get("field") == "legend":
         return panel
     dims = [str(col) for col in (group_cols or []) if col]
-    if len(dims) < 2:
-        return panel
     query = str(panel.get("query") or "")
     if not query.strip():
+        return panel
+    # An existing ``series_group`` identity alias is already the final
+    # breakdown. Feeding it back into a second CONCAT would emit two
+    # ``EVAL series_group`` stages and duplicate the operands in the legend
+    # identity (PR #369). Keep the existing alias as the breakdown instead.
+    if "series_group" in dims or _ESQL_SERIES_GROUP_EVAL_RE.search(query):
+        panel["breakdown"] = {"field": "series_group"}
+        return panel
+    if len(dims) < 2:
         return panel
 
     concat_args = []
@@ -7560,6 +7800,11 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
                     metric["axis"] = "right"
                     if right_format:
                         metric["format"] = dict(right_format)
+                    elif _grafana_right_axis_present(grafana_panel):
+                        # Grafana ``yaxes[1].format: none`` is an explicit
+                        # "no unit" on the overlay axis. Do not keep the
+                        # left-axis format (Load 1m inheriting CPU %).
+                        metric.pop("format", None)
                 if stack_override is False:
                     metric["stack"] = False
             if alias and not matched:
@@ -7585,6 +7830,11 @@ def _grafana_yaxis_metric_format(grafana_panel: dict, axis: str) -> dict | None:
         return None
     unit = str(yaxes[axis_idx].get("format") or "")
     return grafana_unit_to_yaml_format(unit)
+
+
+def _grafana_right_axis_present(grafana_panel: dict) -> bool:
+    yaxes = grafana_panel.get("yaxes")
+    return isinstance(yaxes, list) and len(yaxes) > 1 and isinstance(yaxes[1], dict)
 
 
 def _field_override_targets_metric(
@@ -9207,7 +9457,12 @@ def _ensure_param_controls(
         and control.get("type") == "esql"
         and control.get("variable_name")
     }
-    missing = sorted(name for name in emitted_params if name not in bound)
+    missing = sorted(
+        name
+        for name in emitted_params
+        if name not in bound
+        and name not in (getattr(rule_pack, "ignored_labels", None) or [])
+    )
     # Inert controls (the reverse of ``missing``): a control whose ``?var`` is
     # bound by neither a migrated panel query nor another control's populate
     # query. Grafana cascade parents (e.g. ``$namespace`` narrowing the
@@ -10733,6 +10988,9 @@ def _apply_panel_layout_overrides_recursively(panels: list[dict], overrides: lis
                     if value is not None:
                         size[key] = int(value)
                 panel["size"] = size
+            new_title = override.get("title")
+            if isinstance(new_title, str) and new_title.strip():
+                panel["title"] = new_title.strip()
             if "collapsed" in override and isinstance(panel.get("section"), dict):
                 panel["section"]["collapsed"] = bool(override.get("collapsed"))
         section = panel.get("section")

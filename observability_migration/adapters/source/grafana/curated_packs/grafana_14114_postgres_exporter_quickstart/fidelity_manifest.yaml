@@ -1,0 +1,52 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 14114 (PostgreSQL Exporter Quickstart)
+# https://grafana.com/grafana/dashboards/14114-postgres-overview/
+#
+# PERFECT = same information as Grafana on postgres_exporter.
+# APPROXIMATE = documented delta (lifetime cache-hit ratio, includeAll All).
+
+schema_version: 1
+gnet_id: 14114
+gnet_revision: 1
+dashboard_title: "PostgreSQL Exporter Quickstart and Dashboard"
+maintainer: "Grafana Labs"
+
+panels:
+  - title: "Rows"
+    fidelity: PERFECT
+    notes: "irate() of tup_fetched/returned/inserted/updated/deleted; ES|QL fusion of five targets."
+  - title: "QPS"
+    fidelity: PERFECT
+    notes: "Native PROMQL sum(irate(commit)) + sum(irate(rollback))."
+  - title: "Buffers"
+    fidelity: PERFECT
+    notes: >
+      Source names pg_stat_bgwriter_buffers_* without OpenMetrics _total.
+      Pack metric_map (and live suffix alias) retargets to *_total on
+      postgres_exporter v0.15. ES|QL IRATE of the five series.
+  - title: "Conflicts/Deadlocks"
+    fidelity: PERFECT
+    notes: "rate() of deadlocks and conflicts counters."
+  - title: "Cache hit ratio"
+    fidelity: APPROXIMATE
+    notes: "Grafana divides lifetime blks_hit / (blks_read + blks_hit) without rate(). Native PROMQL preserves that lifetime ratio."
+  - title: "Number of active connections"
+    fidelity: APPROXIMATE
+    notes: >
+      Native PROMQL of pg_stat_database_numbackends returns the gauge series.
+      Grafana legend {{__name__}} GROKs native PROMQL _timeseries, which does
+      not carry __name__, so Kibana shows "(null)" in the legend. The line is
+      the connection count.
+
+summary:
+  total_panels: 6
+  perfect: 4
+  approximate: 2
+  not_feasible: 0
+  overall_fidelity: HIGH
+  known_gaps:
+    - "Grafana $job is unused in panel queries; pack drops the Kibana control"
+    - "Instance populate query rewritten from Prometheus up to pg_up"
+    - "instance/db includeAll All is a single-select .* token in Kibana"

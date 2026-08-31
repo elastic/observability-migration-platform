@@ -125,7 +125,27 @@ field-caps discovery (`--es-url`) to resolve the metric's actual field name;
 without it they no-op rather than guess. Metrics listed in the pack's
 `live_optional_metrics` that field-caps proved absent are stripped from the
 hand-written override so the rest of the panel can still render; those
-omissions are not reported as pack gaps.
+omissions are not reported as pack gaps. `kibana_type_override` forces the
+Lens chart type when the curated query shape does not match the Grafana panel
+(for example a stacked CPU graph emitted as overlay lines). `drop_time_from`
+strips Grafana's panel `timeFrom` so the override follows the dashboard time
+picker; use it when a pinned window (commonly 24h hourly bars) renders empty
+in Lens on mixed `metrics-*` even though `_query` returns rows.
+`panel.layout_overrides` can also set `title` to rename a section or leaf
+panel after translation (Grafana's empty first row becomes Kibana
+"Section 1"; a pack can rename it to "Overview"). Grafana 5 singlestat
+panels store units on the panel root (`format: bytes` / `s` / `percent`);
+those map to Lens bytes, duration, and `%` formats. Helm-flavored community
+dashboards (PostgreSQL Database 9628) may also ship a pack `plugin.py` that
+rewrites `query_result()` Instance variables to `label_values()` so Kibana
+still gets a populate query after the unused `release` / `namespace` cascade
+is dropped. Native PROMQL also strips `ignored_labels` matchers (so a Helm
+`release` filter cannot bind a kernel `release` field from mixed `metrics-*`
+and empty the panel). The PostgreSQL Exporter Quickstart (14114) plugin
+rewrites Instance from Prometheus `up{job=~"postgres.*"}` to
+`label_values(pg_up, instance)` — Elastic prometheus_native scrapes store
+exporter health as `pg_up`, not scrape `up` — and drops the unused `$job`
+control so native PROMQL panels are not left with an empty Instance param.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
