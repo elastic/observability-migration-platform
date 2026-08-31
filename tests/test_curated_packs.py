@@ -1973,6 +1973,126 @@ def test_12485_io_override_names_read_and_write():
     assert "blk_read_time_B" not in query
 
 
+def test_12485_avg_query_runtime_skips_null_last_bucket():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 102,
+        "type": "singlestat",
+        "title": "Average query runtime",
+        "format": "s",
+        "valueName": "current",
+        "targets": [
+            {
+                "expr": (
+                    'sum((delta(pg_stat_statements_total_time_seconds'
+                    '{instance="$Instance"}[5m])))'
+                    '/sum((delta(pg_stat_statements_calls'
+                    '{instance="$Instance"}[5m])))'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 8, "y": 7, "w": 4, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    query = esql.get("query") or ""
+    assert "LAST(value, step)" not in query
+    assert "computed_value" in query
+    assert "WHERE computed_value IS NOT NULL" in query
+    assert "LIMIT 2" in query
+    assert "RATE(" in query
+    assert "pg_stat_statements_seconds_total" in query
+    assert "pg_stat_statements_calls_total" in query
+    primary = esql.get("primary") or {}
+    assert (primary.get("format") or {}).get("type") == "duration"
+
+
+def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 30,
+        "type": "graph",
+        "title": "Deadlocks by database",
+        "legend": {"show": True, "hideZero": True, "hideEmpty": True},
+        "targets": [
+            {
+                "expr": (
+                    'sum by (datname) ((rate(pg_stat_database_deadlocks'
+                    '{instance="$Instance"}[5m])))'
+                ),
+                "legendFormat": "{{datname}}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 12, "y": 37, "w": 12, "h": 5},
+    }
+
+    global_yaml, global_result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title="Global Statistics",
+    )
+    assert global_result.status in {"migrated", "migrated_with_warnings"}, global_result.reasons
+    global_query = (global_yaml.get("esql") or {}).get("query") or ""
+    assert "labels.datname" in global_query
+    assert "?Database" not in global_query
+    assert "LAST(value, step)" not in global_query
+
+    db_yaml, db_result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title="Database: $Database",
+    )
+    assert db_result.status in {"migrated", "migrated_with_warnings"}, db_result.reasons
+    db_query = (db_yaml.get("esql") or {}).get("query") or ""
+    assert "labels.datname" in db_query
+    assert "?Database" in db_query
+
+
+def test_panel_layout_overrides_can_move_legend_right():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {
+                "type": "bar",
+                "mode": "stacked",
+                "query": "FROM metrics-*",
+                "legend": {"visible": "show", "position": "bottom"},
+            },
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
+            "legend_position": "right",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["legend"]["position"] == "right"
+
+
 def test_12485_layout_fills_kpi_row_and_unhides_gauges():
     dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
@@ -1991,6 +2111,7 @@ def test_12485_layout_fills_kpi_row_and_unhides_gauges():
     assert by_title[("Database", "")]["collapsed"] is False
     assert by_title[("Locks by state", "")]["kibana_type_override"] == "bar"
     assert by_title[("Locks by state", "")]["xy_mode"] == "stacked"
+    assert by_title[("Locks by state", "")]["legend_position"] == "right"
     assert by_title[("Replication lag", "")]["size"]["w"] == 48
     assert by_title[("Replication lag", "")]["position"]["y"] == 84
     assert by_title[("I/O Read/Write time", "")]["size"]["h"] == 16

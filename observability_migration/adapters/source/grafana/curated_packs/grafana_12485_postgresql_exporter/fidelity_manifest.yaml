@@ -50,7 +50,7 @@ panels:
     notes: "sum(pg_database_size → pg_database_size_bytes)."
   - title: "Average query runtime"
     fidelity: APPROXIMATE
-    notes: "delta(total_time_seconds → seconds_total)/delta(calls → calls_total). requires: pg_stat_statements. Ratio of deltas — PERFECT under native PROMQL."
+    notes: "rate(seconds_total)/rate(calls_total) last-non-null bucket (Grafana is current of delta/delta, which maps null to N/A). requires: pg_stat_statements. Same seconds-per-call; skips the incomplete window-edge 0/0 that Kibana duration rendered as N/A."
   - title: "Shared Buffers"
     fidelity: PERFECT
     notes: "pg_settings_shared_buffers_bytes gauge."
@@ -77,13 +77,13 @@ panels:
     notes: "rate(tup_fetched/returned)."
   - title: "Locks by state"
     fidelity: PERFECT
-    notes: "sum by (mode) (pg_locks_count); _count is a gauge, forced in metric_kinds."
+    notes: "sum by (mode) (pg_locks_count); _count is a gauge, forced in metric_kinds. Stacked bar with legend on the right (Grafana is unstacked lines + bottom table legend)."
   - title: "Deadlocks by database"
     fidelity: PERFECT
-    notes: "sum by (datname) (rate(pg_stat_database_deadlocks))."
+    notes: "sum by (datname) (rate(pg_stat_database_deadlocks)). Curated ES|QL legends by labels.datname (native PROMQL leftover was the metric name)."
   - title: "Temporary files by database"
     fidelity: PERFECT
-    notes: "sum by (datname) (rate(pg_stat_database_temp_files))."
+    notes: "sum by (datname) (rate(pg_stat_database_temp_files)). Same datname legend as Deadlocks."
   - title: "Replication lag "
     fidelity: PERFECT
     notes: "max(pg_replication_lag → _seconds). requires: replica."
@@ -117,13 +117,13 @@ panels:
     notes: "rate(tup_fetched/returned) scoped by datname."
   - title: "Locks by state (per database)"
     fidelity: PERFECT
-    notes: "sum by (mode) (pg_locks_count) scoped by datname."
+    notes: "sum by (mode) (pg_locks_count) scoped by datname. Same stacked bar + right legend as Global."
   - title: "Deadlocks by database (per database)"
     fidelity: PERFECT
-    notes: "rate(deadlocks) scoped by datname."
+    notes: "rate(deadlocks) scoped by datname. Legend is the database name."
   - title: "Temporary files by database (per database)"
     fidelity: PERFECT
-    notes: "rate(temp_files) scoped by datname."
+    notes: "rate(temp_files) scoped by datname. Legend is the database name."
 
 summary:
   total_panels: 35

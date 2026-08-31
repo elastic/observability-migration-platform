@@ -65,6 +65,9 @@ class PanelQueryOverrideModel(_StrictModel):
     title_match: str
     esql_query: str
     status_override: str = "migrated"
+    # When set, only apply inside a section whose title casefolds to this
+    # value (or starts with it). Same meaning as layout ``section_match``.
+    section_match: str | None = None
     # Optional Lens presentation override when the curated ES|QL shape does
     # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
     kibana_type_override: str | None = None
@@ -112,6 +115,8 @@ class PanelLayoutOverrideModel(_StrictModel):
     kibana_type_override: str | None = None
     # Stacking for bar/area (``stacked`` / ``unstacked`` / ``percentage``).
     xy_mode: str | None = None
+    # Late override of the XY legend placement (``bottom`` / ``right`` / …).
+    legend_position: str | None = None
 
     @field_validator("xy_mode")
     @classmethod
@@ -121,6 +126,18 @@ class PanelLayoutOverrideModel(_StrictModel):
         allowed = {"stacked", "unstacked", "percentage"}
         if value not in allowed:
             raise ValueError(f"xy_mode must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
+    @field_validator("legend_position")
+    @classmethod
+    def validate_legend_position(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        allowed = {"bottom", "left", "right", "top"}
+        if value not in allowed:
+            raise ValueError(
+                f"legend_position must be one of {sorted(allowed)}, got {value!r}"
+            )
         return value
 
 

@@ -126,6 +126,83 @@ panel:
         | KEEP time_bucket, Read, Write
         | SORT time_bucket ASC
       status_override: migrated
+    # Native PROMQL LAST(delta/delta) lands on the incomplete window-edge
+    # bucket, which is often 0/0 → NaN. Kibana's duration formatter then
+    # renders N/A even though earlier buckets are ~2.4ms and Query rate
+    # (rate()) is still populated. Grafana's own singlestat maps a null
+    # current value to "N/A"; skip the null last rate bucket the same way
+    # Node Exporter "CPU Busy" does. rate(time)/rate(calls) is the same
+    # seconds-per-call as delta(time)/delta(calls).
+    - title_match: "Average query runtime"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_statements_seconds_total:counter}} IS NOT NULL OR {{metric:pg_stat_statements_calls_total:counter}} IS NOT NULL
+        | STATS seconds = SUM(RATE({{metric:pg_stat_statements_seconds_total:counter}})), calls = SUM(RATE({{metric:pg_stat_statements_calls_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(calls > 0, seconds / calls, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 2
+        | SORT time_bucket ASC
+        | LIMIT 1
+        | KEEP computed_value
+      primary_format: s
+      status_override: migrated
+    # Native PROMQL legends these "should be 0" rates as the metric name
+    # (``deadlocks`` / ``temp_files``) instead of ``{{datname}}``. Plot the
+    # rate by ``labels.datname``. Global must not take ?Database (source
+    # query has no datname matcher); the Database section does.
+    - title_match: "Deadlocks by database"
+      section_match: "Global Statistics"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
+        | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, deadlocks
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Deadlocks by database"
+      section_match: "Database"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
+        | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
+        | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, deadlocks
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Temporary files by database"
+      section_match: "Global Statistics"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
+        | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, temp_files
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Temporary files by database"
+      section_match: "Database"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
+        | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
+        | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, temp_files
+        | SORT time_bucket ASC
+      status_override: migrated
   layout_overrides:
     # Grafana 24-col leaves holes at x=4 and x=20 on the KPI strip between
     # Total database size and Average query runtime. Spread the four unique
@@ -160,6 +237,7 @@ panel:
     - title_match: "Locks by state"
       kibana_type_override: bar
       xy_mode: stacked
+      legend_position: right
     # Grafana leaves the right half of this row empty.
     - title_match: "Replication lag"
       position: {x: 0, y: 84}

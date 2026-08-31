@@ -4003,7 +4003,8 @@ def metrics_query_index(datasource_index=None, esql_index=None) -> str:
 
 
 def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_pack=None, resolver=None,
-                    llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None):
+                    llm_endpoint="", llm_model="", llm_api_key="", metric_series_labels=None,
+                    section_title=""):
     """Translate a single Grafana panel, fusing multiple targets when possible."""
     rule_pack = _rule_pack_for_panel(rule_pack or RulePackConfig(), panel)
     # Single metrics read target for native PROMQL and ES|QL (see metrics_query_index).
@@ -4113,9 +4114,12 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         )
 
     if rule_pack.panel_query_overrides and kibana_type:
-        _title_lower = (title or "").lower()
-        for _override in rule_pack.panel_query_overrides:
-            if _title_lower == (_override.get("title_match") or "").lower():
+        _selected_override = _select_panel_pack_override(
+            rule_pack.panel_query_overrides,
+            title,
+            section_title=section_title,
+        )
+        for _override in ([_selected_override] if _selected_override else []):
                 _curated_query = (_override.get("esql_query") or "").strip()
                 _status = _override.get("status_override") or "migrated"
                 if _curated_query and query_index:
@@ -11076,18 +11080,43 @@ def _clear_duplicate_inner_title_label(panel: dict) -> None:
                 metric["label"] = " "
 
 
-def _layout_override_matches(
-    panel: dict, override: dict, *, section_title: str
-) -> bool:
-    title_key = str(panel.get("title") or "").strip().casefold()
+def _pack_override_title_matches(title: str, override: dict) -> bool:
+    title_key = str(title or "").strip().casefold()
     match = str(override.get("title_match") or "").strip().casefold()
-    if not match or title_key != match:
-        return False
+    return bool(match) and title_key == match
+
+
+def _pack_override_section_matches(section_title: str, override: dict) -> bool:
     section_match = str(override.get("section_match") or "").strip().casefold()
     if not section_match:
         return True
     current = str(section_title or "").strip().casefold()
     return current == section_match or current.startswith(section_match)
+
+
+def _select_panel_pack_override(
+    overrides: list[dict], title: str, *, section_title: str = ""
+) -> dict | None:
+    """Pick a pack override for *title*, preferring a matching ``section_match``."""
+    generic = None
+    specific = None
+    for override in overrides or []:
+        if not _pack_override_title_matches(title, override):
+            continue
+        if str(override.get("section_match") or "").strip():
+            if _pack_override_section_matches(section_title, override):
+                specific = override
+        elif generic is None:
+            generic = override
+    return specific or generic
+
+
+def _layout_override_matches(
+    panel: dict, override: dict, *, section_title: str
+) -> bool:
+    if not _pack_override_title_matches(str(panel.get("title") or ""), override):
+        return False
+    return _pack_override_section_matches(section_title, override)
 
 
 def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
@@ -11131,6 +11160,14 @@ def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
                 esql["mode"] = xy_mode
             elif chart_type in {"bar", "area"}:
                 esql.setdefault("mode", "stacked")
+    legend_position = override.get("legend_position")
+    if isinstance(legend_position, str) and legend_position.strip():
+        esql = panel.get("esql")
+        if isinstance(esql, dict):
+            legend = dict(esql.get("legend") or {})
+            legend["position"] = legend_position.strip()
+            legend.setdefault("visible", "show")
+            esql["legend"] = legend
 
 
 def _apply_panel_layout_overrides_recursively(
@@ -11237,6 +11274,7 @@ def _translate_panel_group(
     llm_model="",
     llm_api_key="",
     metric_series_labels=None,
+    section_title="",
 ):
     """Translate a group of Grafana panels, returning (yaml_panels, panel_results)."""
     yaml_panels: list[dict] = []
@@ -11258,6 +11296,7 @@ def _translate_panel_group(
             llm_model=llm_model,
             llm_api_key=llm_api_key,
             metric_series_labels=metric_series_labels,
+            section_title=section_title,
         )
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
@@ -11423,6 +11462,7 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
             llm_model=llm_model,
             llm_api_key=llm_api_key,
             metric_series_labels=metric_series_labels,
+            section_title=normalized_group.title or row_title or "",
         )
         result.yaml_panel_results.extend(panel_results)
 

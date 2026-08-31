@@ -135,9 +135,13 @@ in Lens on mixed `metrics-*` even though `_query` returns rows.
 panel after translation (Grafana's empty first row becomes Kibana
 "Section 1"; a pack can rename it to "Overview"), `section_match` so a
 duplicate title in Global vs Database gets independent geometry, `hide_title`
-to keep metric/gauge chrome titles visible, and `kibana_type_override` /
+to keep metric/gauge chrome titles visible, `kibana_type_override` /
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
-line for rates) without replacing the query. Grafana 5 singlestat
+line for rates) without replacing the query, and `legend_position` to move an
+XY legend (`right` for a long categorical breakdown that does not fit under
+the plot). `query_overrides` accept the same `section_match` so a duplicated
+Global vs Database title can get different ES|QL (for example Global
+deadlocks must not take `?Database`). Grafana 5 singlestat
 panels store units on the panel root (`format: bytes` / `s` / `percent`);
 those map to Lens bytes, duration, and `%` formats. Helm-flavored community
 dashboards (PostgreSQL Database 9628) may also ship a pack `plugin.py` that
@@ -171,8 +175,13 @@ and the `Interval` Grafana interval variable is dropped rather than emitted as
 an inert control. Duplicate Global/Database panel titles are laid out with
 `section_match` so the Database header is a hole-free 3+2 KPI grid and the
 composition panels (connections by state, locks by mode) render as stacked
-bars. Grafana's duplicated `blk_read_time` legend on I/O Read/Write time is
-replaced with explicit Read/Write series. `pg_stat_statements` / `pg_postmaster_start_time_seconds`
+bars with the lock-mode legend on the right. Grafana's duplicated `blk_read_time` legend on I/O Read/Write time is
+replaced with explicit Read/Write series. Deadlocks and temporary files legend
+by `datname` instead of a leftover metric name. Average query runtime uses last-non-null
+`rate(seconds_total)/rate(calls_total)` instead of native PROMQL
+`LAST(delta/delta)` — the incomplete window-edge bucket is often 0/0, which
+Kibana's duration formatter renders as N/A even while Query rate is populated
+(Grafana's own singlestat also maps a null current value to "N/A"). `pg_stat_statements` / `pg_postmaster_start_time_seconds`
 panels (Query rate, Average query runtime, Uptime) only show data when the
 target exporter runs the `stat_statements` + `postmaster` collectors and the
 `pg_stat_statements` extension is installed; otherwise they degrade to an

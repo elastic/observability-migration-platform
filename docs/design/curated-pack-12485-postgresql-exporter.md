@@ -80,9 +80,11 @@ On a target cluster that does not run these, those panels are an honest
   buffers, Active clients, Connections by state/db, Locks by state, DB size,
   Replication lag, Numbackends).
 - **APPROXIMATE** (PERFECT under native PROMQL, documented delta in ES|QL):
-  Shared Buffer Hits, Commit Ratio, Connections used, Average query runtime
-  (ratios), PostgreSQL Uptime (`time() - start_time`). Add per-panel ES|QL
-  `query_overrides` only where a panel would otherwise `render_error`.
+  Shared Buffer Hits, Commit Ratio, Connections used, PostgreSQL Uptime
+  (`time() - start_time`). Average query runtime is a curated last-non-null
+  `rate/rate` override so the KPI does not render N/A on the incomplete
+  window-edge `delta/delta` bucket. Add per-panel ES|QL `query_overrides`
+  only where a panel would otherwise `render_error` or empty-state.
 
 ## Validation gates (UI testing)
 
@@ -128,8 +130,12 @@ collector; Query rate 25.5 & Avg runtime 2.45 ms via pg_stat_statements; Total
 DB size 62.80 MB via the `_bytes` rename; gauges + xy time-series all correct).
 UI polish (2026-09-01): I/O legends are Read/Write; ratio gauges keep chrome
 titles; Global KPI strip fills 48 cols; Database section is a hole-free 3+2
-KPI grid plus 24+24 graph pairs; Locks by state is a stacked bar; Replication
-lag spans the full row.
+KPI grid plus 24+24 graph pairs; Locks by state is a stacked bar with the
+legend on the right; Deadlocks / temp files legend by database name instead of
+a leftover `deadlocks`/`temp_files` series; Replication
+lag spans the full row. Average query runtime skips the incomplete last
+`delta/delta` bucket (native PROMQL `LAST` → Kibana duration N/A) and shows
+last-non-null seconds-per-call (~2.4 ms on the rig).
 
 **14114 re-validation** (same rig, single input): curated pack fired, **6/6
 migrated, 6 Green / 0 Red, render audit PASS (6/6 rendered, 0 errors)** — no

@@ -291,6 +291,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 "esql_query": override.esql_query,
                 "status_override": override.status_override,
             }
+            if override.section_match:
+                entry["section_match"] = override.section_match
             if override.kibana_type_override:
                 entry["kibana_type_override"] = override.kibana_type_override
             if override.drop_time_from:
@@ -331,6 +333,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["kibana_type_override"] = override.kibana_type_override
             if override.xy_mode:
                 entry["xy_mode"] = override.xy_mode
+            if override.legend_position:
+                entry["legend_position"] = override.legend_position
             pack.panel_layout_overrides.append(entry)
 
         for field_name in (
@@ -434,11 +438,17 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.panel_type_overrides.update(user.panel_type_overrides)
     result.control_field_overrides.update(user.control_field_overrides)
 
-    # panel_query_overrides: user overrides win by title_match
-    user_override_titles = {o["title_match"] for o in user.panel_query_overrides}
+    # panel_query_overrides: user overrides win by title_match + section_match
+    def _query_override_key(entry: dict) -> tuple[str, str]:
+        return (
+            str(entry.get("title_match") or "").casefold(),
+            str(entry.get("section_match") or "").casefold(),
+        )
+
+    user_override_keys = {_query_override_key(o) for o in user.panel_query_overrides}
     result.panel_query_overrides = [
         o for o in result.panel_query_overrides
-        if o["title_match"] not in user_override_titles
+        if _query_override_key(o) not in user_override_keys
     ]
     result.panel_query_overrides.extend(user.panel_query_overrides)
 
