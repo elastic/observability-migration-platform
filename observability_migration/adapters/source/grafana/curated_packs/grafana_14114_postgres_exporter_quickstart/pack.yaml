@@ -86,3 +86,44 @@ controls:
     db: labels.datname
     datname: labels.datname
     job: labels.job
+
+panel:
+  query_overrides:
+    # Mixin legendFormat is ``{{__name__}}``. Native PROMQL GROKs that into a
+    # ``breakdown_by: __name__`` column that renders as ``(null)`` in Lens.
+    # Plot numbackends as a named series, split by database when db=All.
+    - title_match: "Number of active connections"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE (?db == "" OR ({{label:datname}} RLIKE ?db OR ({{label:datname}} IS NULL AND "" RLIKE ?db)))
+        | WHERE {{metric:pg_stat_database_numbackends:gauge}} IS NOT NULL
+        | STATS connections = MAX(LAST_OVER_TIME({{metric:pg_stat_database_numbackends:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, connections
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    # Grafana QPS is a short singlestat beside a tall Rows graph, which leaves
+    # a hole under the tile. Make a consistent 40+8 / 24+24 grid with equal
+    # graph heights so the 48-col canvas has no leftover bands.
+    - title_match: "Rows"
+      position: {x: 0, y: 0}
+      size: {w: 40, h: 14}
+    - title_match: "QPS"
+      position: {x: 40, y: 0}
+      size: {w: 8, h: 14}
+      hide_title: false
+    - title_match: "Buffers"
+      position: {x: 0, y: 14}
+      size: {w: 24, h: 14}
+    - title_match: "Conflicts/Deadlocks"
+      position: {x: 24, y: 14}
+      size: {w: 24, h: 14}
+    - title_match: "Cache hit ratio"
+      position: {x: 0, y: 28}
+      size: {w: 24, h: 14}
+    - title_match: "Number of active connections"
+      position: {x: 24, y: 28}
+      size: {w: 24, h: 14}

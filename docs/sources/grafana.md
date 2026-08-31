@@ -133,7 +133,11 @@ picker; use it when a pinned window (commonly 24h hourly bars) renders empty
 in Lens on mixed `metrics-*` even though `_query` returns rows.
 `panel.layout_overrides` can also set `title` to rename a section or leaf
 panel after translation (Grafana's empty first row becomes Kibana
-"Section 1"; a pack can rename it to "Overview"). Grafana 5 singlestat
+"Section 1"; a pack can rename it to "Overview"), `section_match` so a
+duplicate title in Global vs Database gets independent geometry, `hide_title`
+to keep metric/gauge chrome titles visible, and `kibana_type_override` /
+`xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
+line for rates) without replacing the query. Grafana 5 singlestat
 panels store units on the panel root (`format: bytes` / `s` / `percent`);
 those map to Lens bytes, duration, and `%` formats. Helm-flavored community
 dashboards (PostgreSQL Database 9628) may also ship a pack `plugin.py` that
@@ -146,6 +150,10 @@ rewrites Instance from Prometheus `up{job=~"postgres.*"}` to
 `label_values(pg_up, instance)` — Elastic prometheus_native scrapes store
 exporter health as `pg_up`, not scrape `up` — and drops the unused `$job`
 control so native PROMQL panels are not left with an empty Instance param.
+The pack also restretches QPS to the Rows height and lays the four remaining
+graphs as a 24+24 grid so the short Grafana singlestat does not leave a hole,
+and replaces the mixin's `{{__name__}}` connections legend (which GROKs to
+`(null)` under native PROMQL) with a per-database ES|QL series.
 The PostgreSQL Exporter (12485) pack targets the same exporter family but was
 authored against an older `postgres_exporter` lineage, so its `metric_map`
 bridges four names that changed in `prometheuscommunity/postgres-exporter`
@@ -160,7 +168,11 @@ v0.15 (`pg_database_size` → `pg_database_size_bytes`, `pg_replication_lag` →
 filter never matches an Elastic scrape) and anchors the bare
 `label_values(datname)` `Database` control on `pg_stat_database_numbackends`,
 and the `Interval` Grafana interval variable is dropped rather than emitted as
-an inert control. `pg_stat_statements` / `pg_postmaster_start_time_seconds`
+an inert control. Duplicate Global/Database panel titles are laid out with
+`section_match` so the Database header is a hole-free 3+2 KPI grid and the
+composition panels (connections by state, locks by mode) render as stacked
+bars. Grafana's duplicated `blk_read_time` legend on I/O Read/Write time is
+replaced with explicit Read/Write series. `pg_stat_statements` / `pg_postmaster_start_time_seconds`
 panels (Query rate, Average query runtime, Uptime) only show data when the
 target exporter runs the `stat_statements` + `postmaster` collectors and the
 `pg_stat_statements` extension is installed; otherwise they degrade to an

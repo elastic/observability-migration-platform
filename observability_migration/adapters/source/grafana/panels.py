@@ -11053,48 +11053,113 @@ def _iter_leaf_panels(panels: list[dict]):
         yield panel
 
 
-def _apply_panel_layout_overrides_recursively(panels: list[dict], overrides: list[dict]) -> None:
+def _clear_duplicate_inner_title_label(panel: dict) -> None:
+    """Drop an inner metric/gauge label that merely repeats the chrome title."""
+    title = str(panel.get("title") or "").strip()
+    esql = panel.get("esql")
+    if not title or not isinstance(esql, dict):
+        return
+    chart_type = str(esql.get("type") or "")
+    if chart_type == "metric":
+        primary = esql.get("primary")
+        if isinstance(primary, dict):
+            label = str(primary.get("label") or "").strip()
+            if label.casefold() in {title.casefold(), "value", "computed_value"}:
+                # Blank, not omitted: Lens falls back to the field name
+                # (``value`` / ``computed_value``) when the label key is missing.
+                primary["label"] = " "
+    elif chart_type == "gauge":
+        metric = esql.get("metric")
+        if isinstance(metric, dict):
+            label = str(metric.get("label") or "").strip()
+            if label.casefold() in {title.casefold(), "value", "computed_value"}:
+                metric["label"] = " "
+
+
+def _layout_override_matches(
+    panel: dict, override: dict, *, section_title: str
+) -> bool:
+    title_key = str(panel.get("title") or "").strip().casefold()
+    match = str(override.get("title_match") or "").strip().casefold()
+    if not match or title_key != match:
+        return False
+    section_match = str(override.get("section_match") or "").strip().casefold()
+    if not section_match:
+        return True
+    current = str(section_title or "").strip().casefold()
+    return current == section_match or current.startswith(section_match)
+
+
+def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
+    position_override = override.get("position") or {}
+    if position_override:
+        position = dict(panel.get("position", {}))
+        for key in ("x", "y"):
+            value = position_override.get(key)
+            if value is not None:
+                position[key] = int(value)
+        panel["position"] = position
+    size_override = override.get("size") or {}
+    if size_override:
+        size = dict(panel.get("size", {}))
+        for key in ("w", "h"):
+            value = size_override.get(key)
+            if value is not None:
+                size[key] = int(value)
+        panel["size"] = size
+    new_title = override.get("title")
+    if isinstance(new_title, str) and new_title.strip():
+        panel["title"] = new_title.strip()
+    if "collapsed" in override and isinstance(panel.get("section"), dict):
+        panel["section"]["collapsed"] = bool(override.get("collapsed"))
+    if "hide_title" in override and override.get("hide_title") is not None:
+        if override.get("hide_title"):
+            panel["hide_title"] = True
+        else:
+            panel.pop("hide_title", None)
+            _clear_duplicate_inner_title_label(panel)
+    kibana_type = override.get("kibana_type_override")
+    if isinstance(kibana_type, str) and kibana_type.strip():
+        esql = panel.get("esql")
+        if isinstance(esql, dict):
+            chart_type = kibana_type.strip()
+            esql["type"] = chart_type
+            xy_mode = override.get("xy_mode")
+            if chart_type == "line":
+                esql.pop("mode", None)
+            elif xy_mode:
+                esql["mode"] = xy_mode
+            elif chart_type in {"bar", "area"}:
+                esql.setdefault("mode", "stacked")
+
+
+def _apply_panel_layout_overrides_recursively(
+    panels: list[dict], overrides: list[dict], *, section_title: str = ""
+) -> None:
     if not panels or not overrides:
         return
 
-    override_map = {
-        str(override.get("title_match") or "").strip().casefold(): override
+    usable = [
+        override
         for override in overrides
         if str(override.get("title_match") or "").strip()
-    }
-    if not override_map:
+    ]
+    if not usable:
         return
 
     for panel in panels:
-        title_key = str(panel.get("title") or "").strip().casefold()
-        override = override_map.get(title_key)
-        if override:
-            position_override = override.get("position") or {}
-            if position_override:
-                position = dict(panel.get("position", {}))
-                for key in ("x", "y"):
-                    value = position_override.get(key)
-                    if value is not None:
-                        position[key] = int(value)
-                panel["position"] = position
-            size_override = override.get("size") or {}
-            if size_override:
-                size = dict(panel.get("size", {}))
-                for key in ("w", "h"):
-                    value = size_override.get(key)
-                    if value is not None:
-                        size[key] = int(value)
-                panel["size"] = size
-            new_title = override.get("title")
-            if isinstance(new_title, str) and new_title.strip():
-                panel["title"] = new_title.strip()
-            if "collapsed" in override and isinstance(panel.get("section"), dict):
-                panel["section"]["collapsed"] = bool(override.get("collapsed"))
+        for override in usable:
+            if _layout_override_matches(panel, override, section_title=section_title):
+                _apply_one_panel_layout_override(panel, override)
         section = panel.get("section")
         if isinstance(section, dict):
             inner = section.get("panels")
             if isinstance(inner, list):
-                _apply_panel_layout_overrides_recursively(inner, overrides)
+                _apply_panel_layout_overrides_recursively(
+                    inner,
+                    overrides,
+                    section_title=str(panel.get("title") or ""),
+                )
 
 
 def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:

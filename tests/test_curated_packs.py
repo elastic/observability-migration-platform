@@ -1937,6 +1937,114 @@ def test_12485_instance_and_database_controls_rewritten():
         assert "pg_stat_database_numbackends" in dq or "labels.datname" in dq
 
 
+def test_12485_io_override_names_read_and_write():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 26,
+        "type": "graph",
+        "title": "I/O Read/Write time",
+        "targets": [
+            {
+                "expr": 'sum(rate(pg_stat_database_blk_read_time{instance="$Instance"}[1m]))',
+                "legendFormat": "blk_read_time",
+                "refId": "A",
+            },
+            {
+                "expr": 'sum(rate(pg_stat_database_blk_write_time{instance="$Instance"}[1m]))',
+                "legendFormat": "blk_read_time",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 9},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "Read =" in query
+    assert "Write =" in query
+    assert "blk_read_time_B" not in query
+
+
+def test_12485_layout_fills_kpi_row_and_unhides_gauges():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    by_title = {}
+    for item in resolved.panel_layout_overrides:
+        key = (item["title_match"], item.get("section_match") or "")
+        by_title[key] = item
+    assert by_title[("Total database size", "")]["size"]["w"] == 12
+    assert by_title[("Average query runtime", "")]["position"]["x"] == 12
+    assert by_title[("Shared Buffers", "")]["position"]["x"] == 24
+    assert by_title[("Max Connections", "")]["position"]["x"] == 36
+    assert "y" not in by_title[("Total database size", "")].get("position", {})
+    assert by_title[("Shared Buffer Hits", "")]["hide_title"] is False
+    assert by_title[("Connections used", "")]["hide_title"] is False
+    assert by_title[("Commit Ratio", "")]["hide_title"] is False
+    assert by_title[("Database", "")]["collapsed"] is False
+    assert by_title[("Locks by state", "")]["kibana_type_override"] == "bar"
+    assert by_title[("Locks by state", "")]["xy_mode"] == "stacked"
+    assert by_title[("Replication lag", "")]["size"]["w"] == 48
+    assert by_title[("Replication lag", "")]["position"]["y"] == 84
+    assert by_title[("I/O Read/Write time", "")]["size"]["h"] == 16
+    assert by_title[("Transactions", "Global Statistics")]["position"]["y"] == 36
+    assert by_title[("Active clients", "Database")]["position"] == {"x": 0, "y": 0}
+    assert by_title[("Transaction rate", "Database")]["size"]["w"] == 16
+    assert by_title[("Temporary files by database", "Database")]["position"]["y"] == 58
+
+
+def test_14114_numbackends_override_drops_name_breakdown():
+    dashboard = {
+        "gnetId": 14114,
+        "title": "PostgreSQL Exporter Quickstart and Dashboard",
+        "tags": ["postgres"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 6,
+        "type": "graph",
+        "title": "Number of active connections",
+        "targets": [
+            {
+                "expr": 'pg_stat_database_numbackends{datname=~"$db",instance=~"$instance"}',
+                "legendFormat": "{{__name__}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 12, "y": 14, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "connections =" in query
+    assert "__name__" not in query
+    assert "GROK" not in query
+    assert "labels.datname" in query
+    qps = next(
+        item for item in resolved.panel_layout_overrides if item["title_match"] == "QPS"
+    )
+    assert qps["size"]["h"] == 14
+    assert qps["size"]["w"] == 8
+    rows = next(
+        item for item in resolved.panel_layout_overrides if item["title_match"] == "Rows"
+    )
+    assert rows["size"] == {"w": 40, "h": 14}
+
+
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():
     """Offline runs take the FIRST candidate without probing the target.
 
@@ -1953,6 +2061,7 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         7362: [("instance", "labels.instance"), ("job", "labels.job")],
         9628: [("instance", "labels.instance"), ("job", "labels.job")],
         14114: [("instance", "labels.instance"), ("job", "labels.job")],
+        12485: [("instance", "labels.instance"), ("job", "labels.job")],
     }
     for gnet_id, pairs in expected_first.items():
         resolved = resolve_pack_for_dashboard(
@@ -2355,6 +2464,97 @@ def test_panel_layout_overrides_can_flip_section_collapsed_state():
     _apply_panel_layout_overrides_recursively(panels, overrides)
 
     assert panels[0]["section"]["collapsed"] is False
+
+
+def test_panel_layout_overrides_can_unhide_gauge_title():
+    panels = [
+        {
+            "title": "Shared Buffer Hits",
+            "hide_title": True,
+            "esql": {
+                "type": "gauge",
+                "metric": {"field": "value", "label": "Shared Buffer Hits"},
+            },
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 8, "h": 14},
+        }
+    ]
+    overrides = [{"title_match": "Shared Buffer Hits", "hide_title": False}]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert "hide_title" not in panels[0]
+    assert panels[0]["esql"]["metric"]["label"] == " "
+
+
+def test_panel_layout_overrides_section_match_skips_other_section():
+    panels = [
+        {
+            "title": "Global Statistics",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "Transaction rate",
+                        "position": {"x": 8, "y": 6},
+                        "size": {"w": 8, "h": 5},
+                    }
+                ],
+            },
+        },
+        {
+            "title": "Database",
+            "section": {
+                "collapsed": True,
+                "panels": [
+                    {
+                        "title": "Transaction rate",
+                        "position": {"x": 0, "y": 5},
+                        "size": {"w": 8, "h": 5},
+                    }
+                ],
+            },
+        },
+    ]
+    overrides = [
+        {
+            "title_match": "Transaction rate",
+            "section_match": "Database",
+            "position": {"x": 32, "y": 0},
+            "size": {"w": 16, "h": 8},
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    global_txn = panels[0]["section"]["panels"][0]
+    db_txn = panels[1]["section"]["panels"][0]
+    assert global_txn["position"] == {"x": 8, "y": 6}
+    assert db_txn["position"] == {"x": 32, "y": 0}
+    assert db_txn["size"] == {"w": 16, "h": 8}
+
+
+def test_panel_layout_overrides_can_force_stacked_bar():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {"type": "line", "query": "FROM metrics-*"},
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
+            "kibana_type_override": "bar",
+            "xy_mode": "stacked",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["type"] == "bar"
+    assert panels[0]["esql"]["mode"] == "stacked"
 
 
 def test_panel_layout_overrides_can_rename_section_title():

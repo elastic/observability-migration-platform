@@ -323,6 +323,14 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
             }
             if override.title:
                 entry["title"] = override.title
+            if override.section_match:
+                entry["section_match"] = override.section_match
+            if override.hide_title is not None:
+                entry["hide_title"] = override.hide_title
+            if override.kibana_type_override:
+                entry["kibana_type_override"] = override.kibana_type_override
+            if override.xy_mode:
+                entry["xy_mode"] = override.xy_mode
             pack.panel_layout_overrides.append(entry)
 
         for field_name in (

@@ -97,9 +97,31 @@ class PanelSizeOverrideModel(_StrictModel):
 class PanelLayoutOverrideModel(_StrictModel):
     title_match: str
     title: str | None = None
+    # When set, only apply inside a section whose title casefolds to this
+    # value (or starts with it). Lets Global vs Database duplicate titles
+    # get independent geometry.
+    section_match: str | None = None
     position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
     size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
     collapsed: bool | None = None
+    # When False, keep the Kibana chrome title visible even if the display
+    # mapper hid it (metric/gauge tiles stamp the title onto the inner label).
+    hide_title: bool | None = None
+    # Late visual override on the translated ``esql.type`` (line / bar / area /
+    # metric / gauge) without replacing the query.
+    kibana_type_override: str | None = None
+    # Stacking for bar/area (``stacked`` / ``unstacked`` / ``percentage``).
+    xy_mode: str | None = None
+
+    @field_validator("xy_mode")
+    @classmethod
+    def validate_xy_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        allowed = {"stacked", "unstacked", "percentage"}
+        if value not in allowed:
+            raise ValueError(f"xy_mode must be one of {sorted(allowed)}, got {value!r}")
+        return value
 
 
 class QueryConfigModel(_StrictModel):

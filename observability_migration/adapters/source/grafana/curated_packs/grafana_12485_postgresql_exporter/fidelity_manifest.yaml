@@ -71,7 +71,7 @@ panels:
     notes: "rate(tup_inserted/updated/deleted)."
   - title: "I/O Read/Write time"
     fidelity: PERFECT
-    notes: "rate(blk_read_time), rate(blk_write_time) counters."
+    notes: "rate(blk_read_time), rate(blk_write_time) counters. Curated Read/Write series names (Grafana legendFormat duplicates blk_read_time on both targets)."
   - title: "Tuples fetched/returned"
     fidelity: PERFECT
     notes: "rate(tup_fetched/returned)."

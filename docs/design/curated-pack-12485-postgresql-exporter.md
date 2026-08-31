@@ -126,6 +126,10 @@ row (they render on expand).
 **Visual**: every panel renders real data (Uptime 16.57 min via the postmaster
 collector; Query rate 25.5 & Avg runtime 2.45 ms via pg_stat_statements; Total
 DB size 62.80 MB via the `_bytes` rename; gauges + xy time-series all correct).
+UI polish (2026-09-01): I/O legends are Read/Write; ratio gauges keep chrome
+titles; Global KPI strip fills 48 cols; Database section is a hole-free 3+2
+KPI grid plus 24+24 graph pairs; Locks by state is a stacked bar; Replication
+lag spans the full row.
 
 **14114 re-validation** (same rig, single input): curated pack fired, **6/6
 migrated, 6 Green / 0 Red, render audit PASS (6/6 rendered, 0 errors)** — no

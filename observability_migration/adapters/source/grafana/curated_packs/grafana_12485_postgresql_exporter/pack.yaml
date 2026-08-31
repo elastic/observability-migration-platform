@@ -111,3 +111,141 @@ controls:
     Database: labels.datname
     database: labels.datname
     datname: labels.datname
+
+panel:
+  query_overrides:
+    # Grafana ships both series as legendFormat ``blk_read_time`` (a source
+    # typo on the write target). Give Kibana distinct Read/Write names.
+    - title_match: "I/O Read/Write time"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_blk_read_time:counter}} IS NOT NULL OR {{metric:pg_stat_database_blk_write_time:counter}} IS NOT NULL
+        | STATS Read = SUM(RATE({{metric:pg_stat_database_blk_read_time:counter}})), Write = SUM(RATE({{metric:pg_stat_database_blk_write_time:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, Read, Write
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    # Grafana 24-col leaves holes at x=4 and x=20 on the KPI strip between
+    # Total database size and Average query runtime. Spread the four unique
+    # tiles across 48 cols; keep transformed y/h so we do not open a gap
+    # above the graph rows.
+    - title_match: "Total database size"
+      position: {x: 0}
+      size: {w: 12}
+    - title_match: "Average query runtime"
+      position: {x: 12}
+      size: {w: 12}
+    - title_match: "Shared Buffers"
+      position: {x: 24}
+      size: {w: 12}
+    - title_match: "Max Connections"
+      position: {x: 36}
+      size: {w: 12}
+    # Arc gauges hid the chrome title because the inner label repeats it;
+    # show the chrome title so the three ratio tiles scan like the KPI row.
+    - title_match: "Shared Buffer Hits"
+      hide_title: false
+    - title_match: "Connections used"
+      hide_title: false
+    - title_match: "Commit Ratio"
+      hide_title: false
+    # Per-database panels are the second half of this dashboard; keep them
+    # open so the Database control has something visible to rewrite.
+    - title_match: "Database"
+      collapsed: false
+    # Composition-over-time: stacked bar is the Kibana fit (Grafana already
+    # does this for Connections; Locks was a line of modes).
+    - title_match: "Locks by state"
+      kibana_type_override: bar
+      xy_mode: stacked
+    # Grafana leaves the right half of this row empty.
+    - title_match: "Replication lag"
+      position: {x: 0, y: 84}
+      size: {w: 48, h: 16}
+    # Same 24+16 graph rhythm as the Database section.
+    - title_match: "Connections by state (stacked)"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 20}
+      size: {w: 24, h: 16}
+    - title_match: "Connections by database (stacked)"
+      position: {x: 24, y: 20}
+      size: {w: 24, h: 16}
+    - title_match: "Transactions"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 36}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples inserts/updates/deletes"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 36}
+      size: {w: 24, h: 16}
+    - title_match: "I/O Read/Write time"
+      position: {x: 0, y: 52}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples fetched/returned"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 52}
+      size: {w: 24, h: 16}
+    - title_match: "Locks by state"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 68}
+      size: {w: 24, h: 16}
+    - title_match: "Deadlocks by database"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 68}
+      size: {w: 24, h: 8}
+    - title_match: "Temporary files by database"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 76}
+      size: {w: 24, h: 8}
+    # Database section repeats Global titles; scope these so Global geometry
+    # stays on the faithful transform.
+    - title_match: "Active clients"
+      section_match: "Database"
+      position: {x: 0, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Database size"
+      section_match: "Database"
+      position: {x: 16, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Transaction rate"
+      section_match: "Database"
+      position: {x: 32, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Shared Buffer Hits"
+      section_match: "Database"
+      position: {x: 0, y: 8}
+      size: {w: 24, h: 10}
+    - title_match: "Commit Ratio"
+      section_match: "Database"
+      position: {x: 24, y: 8}
+      size: {w: 24, h: 10}
+    - title_match: "Connections by state (stacked)"
+      section_match: "Database"
+      position: {x: 0, y: 18}
+      size: {w: 24, h: 16}
+    - title_match: "Transactions"
+      section_match: "Database"
+      position: {x: 24, y: 18}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples inserts/updates/deletes"
+      section_match: "Database"
+      position: {x: 0, y: 34}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples fetched/returned"
+      section_match: "Database"
+      position: {x: 24, y: 34}
+      size: {w: 24, h: 16}
+    - title_match: "Locks by state"
+      section_match: "Database"
+      position: {x: 0, y: 50}
+      size: {w: 24, h: 16}
+    - title_match: "Deadlocks by database"
+      section_match: "Database"
+      position: {x: 24, y: 50}
+      size: {w: 24, h: 8}
+    - title_match: "Temporary files by database"
+      section_match: "Database"
+      position: {x: 24, y: 58}
+      size: {w: 24, h: 8}
