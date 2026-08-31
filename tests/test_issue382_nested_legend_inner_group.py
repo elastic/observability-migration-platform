@@ -283,9 +283,15 @@ class SummaryPanelBranchTests(unittest.TestCase):
         result = _translate(
             f"max (sum ({_USED_BYTES}))", "{{exported_namespace}}", panel_type="bargauge"
         )
-        inner, outer = _stats_lines(result.esql_query)
-        self.assertEqual(inner, f"| STATS inner_val = SUM(metrics.{_USED_BYTES})")
+        # Nested aggregations lower through ``TS`` + a time bucket (#380/#381),
+        # so the summary panel adds a third stage that collapses the bucketed
+        # series to the one number it displays.
+        inner, outer, collapse = _stats_lines(result.esql_query)
+        self.assertIn(f"inner_val = SUM(metrics.{_USED_BYTES})", inner)
+        self.assertEqual(_grouping_dims(inner), [])
         self.assertIn("MAX(inner_val)", outer)
+        self.assertIn("LAST(", collapse)
+        self.assertNotIn("exported_namespace", result.esql_query or "")
 
 
 class NestedCountCountTests(unittest.TestCase):
