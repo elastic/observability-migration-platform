@@ -71,15 +71,15 @@ query:
     pg_stat_statements_total_time_seconds: counter
     pg_stat_statements_seconds_total: counter
 
-  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
-  # prepended). See docs/command-contract.md, "metric_map targets are verbatim".
+  # metric_map targets are bare logical metric names; the resolver namespaces
+  # them per active field profile (native, remote_write, otel).
   # These are the four names that changed between the dashboard's exporter
   # lineage and prometheuscommunity/postgres-exporter v0.15 (verified live).
   metric_map:
-    pg_database_size: metrics.pg_database_size_bytes
-    pg_replication_lag: metrics.pg_replication_lag_seconds
-    pg_stat_statements_calls: metrics.pg_stat_statements_calls_total
-    pg_stat_statements_total_time_seconds: metrics.pg_stat_statements_seconds_total
+    pg_database_size: pg_database_size_bytes
+    pg_replication_lag: pg_replication_lag_seconds
+    pg_stat_statements_calls: pg_stat_statements_calls_total
+    pg_stat_statements_total_time_seconds: pg_stat_statements_seconds_total
 
   label_candidates:
     instance:

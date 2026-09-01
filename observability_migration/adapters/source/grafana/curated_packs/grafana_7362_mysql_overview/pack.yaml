@@ -93,9 +93,10 @@ query:
     node_load1: gauge
     node_memory_MemTotal_bytes: gauge
 
-  # metric_map targets are emitted VERBATIM (no field-profile prefix).
+  # metric_map targets are bare logical metric names; the resolver namespaces
+  # them per active field profile (native, remote_write, otel).
   metric_map:
-    mysql_info_schema_threads: metrics.mysql_info_schema_processlist_threads
+    mysql_info_schema_threads: mysql_info_schema_processlist_threads
 
   live_optional_metrics:
     - mysql_global_variables_innodb_additional_mem_pool_size

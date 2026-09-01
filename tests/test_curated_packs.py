@@ -1215,14 +1215,14 @@ def test_resolve_pack_14091_maps_renamed_fragmentation_metric():
 
     Current oliver006/redis_exporter exposes redis_mem_fragmentation_ratio; the
     pack carries the rename so operators do not need --metric-map-file. The
-    target must be fully qualified because metric_map targets are verbatim (no
-    field-profile prefix is prepended).
+    target is a bare logical metric name; the resolver namespaces it by the
+    active field profile.
     """
     dashboard = {"gnetId": 14091, "title": "Redis Exporter Quickstart", "tags": []}
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
     entry = (resolved.metric_map or {}).get("redis_memory_fragmentation_ratio")
     target = getattr(entry, "target", entry)
-    assert target == "metrics.redis_mem_fragmentation_ratio"
+    assert target == "redis_mem_fragmentation_ratio"
 
 
 def test_resolve_pack_7362_pins_untyped_status_counters_and_processlist_map():
@@ -1239,7 +1239,7 @@ def test_resolve_pack_7362_pins_untyped_status_counters_and_processlist_map():
     assert resolved.metric_kinds.get("mysql_info_schema_processlist_threads") == "gauge"
     entry = (resolved.metric_map or {}).get("mysql_info_schema_threads")
     target = getattr(entry, "target", entry)
-    assert target == "metrics.mysql_info_schema_processlist_threads"
+    assert target == "mysql_info_schema_processlist_threads"
     assert resolved.control_field_overrides.get("host") == "labels.instance"
     titles = {o.get("title_match") for o in resolved.panel_query_overrides}
     assert "Process States" in titles
@@ -1713,7 +1713,7 @@ def test_resolve_pack_14114_pins_counters_and_bgwriter_map():
     assert resolved.metric_kinds.get("pg_stat_database_numbackends") == "gauge"
     entry = (resolved.metric_map or {}).get("pg_stat_bgwriter_buffers_alloc")
     target = getattr(entry, "target", entry)
-    assert target == "metrics.pg_stat_bgwriter_buffers_alloc_total"
+    assert target == "pg_stat_bgwriter_buffers_alloc_total"
     assert resolved.control_field_overrides.get("instance") == "labels.instance"
     assert resolved.control_field_overrides.get("db") == "labels.datname"
 
@@ -1725,7 +1725,10 @@ def test_14114_buffers_override_uses_total_suffix_offline():
         "tags": ["postgres"],
     }
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
-    resolver = SchemaResolver(resolved)
+    # Assert the prometheus_native emission (metrics.<name>): metric_map targets
+    # are now bare logical names namespaced per profile, so the native output is
+    # what pins the metrics.* spelling.
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     panel = {
         "id": 2,
         "type": "graph",
@@ -1831,12 +1834,13 @@ def test_resolve_pack_12485_pins_kinds_renames_and_controls():
     # Rated counters stay counters.
     assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
     assert resolved.metric_kinds.get("pg_stat_database_tup_fetched") == "counter"
-    # v0.15 renames.
+    # v0.15 renames. Targets are bare logical metric names; the resolver
+    # namespaces them per active field profile.
     for src, tgt in (
-        ("pg_database_size", "metrics.pg_database_size_bytes"),
-        ("pg_replication_lag", "metrics.pg_replication_lag_seconds"),
-        ("pg_stat_statements_calls", "metrics.pg_stat_statements_calls_total"),
-        ("pg_stat_statements_total_time_seconds", "metrics.pg_stat_statements_seconds_total"),
+        ("pg_database_size", "pg_database_size_bytes"),
+        ("pg_replication_lag", "pg_replication_lag_seconds"),
+        ("pg_stat_statements_calls", "pg_stat_statements_calls_total"),
+        ("pg_stat_statements_total_time_seconds", "pg_stat_statements_seconds_total"),
     ):
         entry = (resolved.metric_map or {}).get(src)
         assert getattr(entry, "target", entry) == tgt, src
@@ -1848,7 +1852,9 @@ def test_resolve_pack_12485_pins_kinds_renames_and_controls():
 def test_12485_database_size_renamed_offline():
     dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
-    resolver = SchemaResolver(resolved)
+    # Assert the prometheus_native emission (metrics.<name>): metric_map targets
+    # are now bare logical names namespaced per profile.
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     panel = {
         "id": 37,
         "type": "singlestat",

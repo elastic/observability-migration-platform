@@ -56,10 +56,11 @@ query:
     mode: labels.mode
 
   # Grafana Disk I/O read/written series are NFS-server counters. Emit the
-  # real node disk byte counters instead (verbatim metrics.* targets).
+  # real node disk byte counters instead. Targets are bare logical metric
+  # names; the resolver namespaces them by the active field profile.
   metric_map:
-    node_nfsd_disk_bytes_read_total: metrics.node_disk_read_bytes_total
-    node_nfsd_disk_bytes_written_total: metrics.node_disk_written_bytes_total
+    node_nfsd_disk_bytes_read_total: node_disk_read_bytes_total
+    node_nfsd_disk_bytes_written_total: node_disk_written_bytes_total
 
   label_candidates:
     instance:

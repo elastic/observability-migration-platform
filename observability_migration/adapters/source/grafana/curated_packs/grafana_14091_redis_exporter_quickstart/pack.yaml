@@ -42,11 +42,10 @@ query:
     redis_master_last_io_seconds_ago: gauge
 
   # --- source metric renames --------------------------------------------
-  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
-  # prepended), so the fully-qualified prometheus_native path is required here.
-  # See docs/command-contract.md, "metric_map targets are verbatim".
+  # metric_map targets are bare logical metric names; the resolver namespaces
+  # them per active field profile (native, remote_write, otel).
   metric_map:
-    redis_memory_fragmentation_ratio: metrics.redis_mem_fragmentation_ratio
+    redis_memory_fragmentation_ratio: redis_mem_fragmentation_ratio
 
   # --- Prometheus label → Elastic field candidates ----------------------
   # prometheus_native (``labels.<name>``) first: offline migrations fall

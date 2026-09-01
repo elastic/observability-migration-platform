@@ -56,14 +56,14 @@ query:
     pg_stat_database_numbackends: gauge
     pg_up: gauge
 
-  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
-  # prepended). See docs/command-contract.md, "metric_map targets are verbatim".
+  # metric_map targets are bare logical metric names; the resolver namespaces
+  # them per active field profile (native, remote_write, otel).
   metric_map:
-    pg_stat_bgwriter_buffers_alloc: metrics.pg_stat_bgwriter_buffers_alloc_total
-    pg_stat_bgwriter_buffers_backend: metrics.pg_stat_bgwriter_buffers_backend_total
-    pg_stat_bgwriter_buffers_backend_fsync: metrics.pg_stat_bgwriter_buffers_backend_fsync_total
-    pg_stat_bgwriter_buffers_clean: metrics.pg_stat_bgwriter_buffers_clean_total
-    pg_stat_bgwriter_buffers_checkpoint: metrics.pg_stat_bgwriter_buffers_checkpoint_total
+    pg_stat_bgwriter_buffers_alloc: pg_stat_bgwriter_buffers_alloc_total
+    pg_stat_bgwriter_buffers_backend: pg_stat_bgwriter_buffers_backend_total
+    pg_stat_bgwriter_buffers_backend_fsync: pg_stat_bgwriter_buffers_backend_fsync_total
+    pg_stat_bgwriter_buffers_clean: pg_stat_bgwriter_buffers_clean_total
+    pg_stat_bgwriter_buffers_checkpoint: pg_stat_bgwriter_buffers_checkpoint_total
 
   label_candidates:
     instance:

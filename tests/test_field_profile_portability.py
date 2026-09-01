@@ -128,3 +128,61 @@ def test_concrete_rewrite_target_is_literal_escape_hatch():
     # target is NOT a canonical label -> returned verbatim (today's behavior)
     r = _resolver("otel", label_rewrites={"weird": "some.concrete.field"})
     assert r.resolve_label("weird") == "some.concrete.field"
+
+
+def _metric_resolver(profile, metric_map):
+    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+    from observability_migration.core.metric_mapping import normalize_metric_map
+
+    pack = RulePackConfig()
+    pack.metric_map = normalize_metric_map(metric_map)
+    return SchemaResolver(pack, field_profile=profile)
+
+
+@pytest.mark.parametrize("profile,expected", [
+    ("prometheus_native", "metrics.pg_database_size_bytes"),
+    ("prometheus_metrics", "prometheus.metrics.pg_database_size_bytes"),
+    ("otel", "pg_database_size_bytes"),
+])
+def test_metric_map_target_is_namespaced(profile, expected):
+    # metric_map target is a BARE logical metric name; the resolver namespaces
+    # it per active profile instead of returning it verbatim.
+    r = _metric_resolver(profile, {"pg_database_size": "pg_database_size_bytes"})
+    assert r.resolve_metric_field("pg_database_size") == expected
+
+
+# One representative de-prefixed metric_map target per shipped pack, paired with
+# the OLD verbatim (metrics.-prefixed) spelling those packs used to author.
+# De-prefix + native namespacing MUST net to the exact same native field, i.e.
+# the engine change is byte-identical for prometheus_native.
+_PACK_NATIVE_IDENTITY = [
+    # (dashboard, source_metric, old_prefixed_native_field)
+    ({"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []},
+     "pg_database_size", "metrics.pg_database_size_bytes"),
+    ({"gnetId": 14114, "title": "PostgreSQL Exporter Quickstart and Dashboard",
+      "tags": ["postgres"]},
+     "pg_stat_bgwriter_buffers_alloc", "metrics.pg_stat_bgwriter_buffers_alloc_total"),
+    ({"gnetId": 6417, "title": "Kubernetes Cluster (Prometheus)",
+      "tags": ["kubernetes", "kubernetes-app"]},
+     "node_filesystem_size", "metrics.node_filesystem_size_bytes"),
+    ({"gnetId": 8171, "title": "Kubernetes Nodes", "tags": ["nodes", "prometheus"]},
+     "node_nfsd_disk_bytes_read_total", "metrics.node_disk_read_bytes_total"),
+    ({"gnetId": 7362, "title": "MySQL Overview", "tags": ["Percona", "MySQL"]},
+     "mysql_info_schema_threads", "metrics.mysql_info_schema_processlist_threads"),
+    ({"gnetId": 14091, "title": "Redis Exporter Quickstart", "tags": []},
+     "redis_memory_fragmentation_ratio", "metrics.redis_mem_fragmentation_ratio"),
+]
+
+
+@pytest.mark.parametrize("dashboard,source,old_native", _PACK_NATIVE_IDENTITY)
+def test_shipped_pack_metric_map_native_identity(dashboard, source, old_native):
+    from observability_migration.adapters.source.grafana.rules import (
+        RulePackConfig,
+        resolve_pack_for_dashboard,
+    )
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
+    assert resolver.resolve_metric_field(source) == old_native
