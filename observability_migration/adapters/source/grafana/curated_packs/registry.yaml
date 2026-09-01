@@ -118,3 +118,12 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "76b92bbeb9b2d8f3f8abec10b7cb016da87803deca34a99dddab9f668010a53d"
     description: "PostgreSQL Exporter mixin — pg_up Instance populate, unused job drop, bgwriter _total map"
+
+  - gnet_id: 12485
+    name: grafana_12485_postgresql_exporter
+    title_hint: "PostgreSQL Exporter"
+    tags_hint: []
+    path: grafana_12485_postgresql_exporter
+    gnet_revision: 1
+    dashboard_sha256: "e14a35eac532db4f79837a293411edb20d04164ca59de17d73557d08637a4700"
+    description: "postgres_exporter overview — v0.15 name remap (size_bytes/lag_seconds/stat_statements), _count gauge fixes, Instance/Database populate rewrite"

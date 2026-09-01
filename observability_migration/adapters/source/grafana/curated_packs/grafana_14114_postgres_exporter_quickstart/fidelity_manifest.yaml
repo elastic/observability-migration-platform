@@ -33,17 +33,16 @@ panels:
     fidelity: APPROXIMATE
     notes: "Grafana divides lifetime blks_hit / (blks_read + blks_hit) without rate(). Native PROMQL preserves that lifetime ratio."
   - title: "Number of active connections"
-    fidelity: APPROXIMATE
+    fidelity: PERFECT
     notes: >
-      Native PROMQL of pg_stat_database_numbackends returns the gauge series.
-      Grafana legend {{__name__}} GROKs native PROMQL _timeseries, which does
-      not carry __name__, so Kibana shows "(null)" in the legend. The line is
-      the connection count.
+      Curated ES|QL MAX(LAST_OVER_TIME(numbackends)) BY time_bucket, instance, datname.
+      Grafana {{__name__}} legend is not used; Kibana composites instance / datname
+      into one Lens XY breakdown.
 
 summary:
   total_panels: 6
-  perfect: 4
-  approximate: 2
+  perfect: 5
+  approximate: 1
   not_feasible: 0
   overall_fidelity: HIGH
   known_gaps:

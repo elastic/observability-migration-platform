@@ -133,7 +133,28 @@ picker; use it when a pinned window (commonly 24h hourly bars) renders empty
 in Lens on mixed `metrics-*` even though `_query` returns rows.
 `panel.layout_overrides` can also set `title` to rename a section or leaf
 panel after translation (Grafana's empty first row becomes Kibana
-"Section 1"; a pack can rename it to "Overview"). Grafana 5 singlestat
+"Section 1"; a pack can rename it to "Overview"), `section_match` so a
+duplicate title in Global vs Database gets independent geometry
+(`section_match` is the Grafana row title, the same string `query_overrides`
+use, captured before any section rename), `hide_title`
+to keep metric/gauge chrome titles visible, `kibana_type_override` /
+`xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
+line for rates) without replacing the query, and `legend_position` to move an
+XY legend (`right` for a long categorical breakdown that does not fit under
+the plot). Those last three are **presentation-only** and stay inside the XY
+family: `layout_overrides.kibana_type_override` accepts `line` / `bar` / `area`
+only (a rule pack asking for `metric`, `gauge`, `datatable`, … is rejected at
+load time), because this late pass rewrites `esql.type` / `mode` / `legend`
+without rebuilding the query, while those shapes require different keys
+(`primary`, `metric`, `breakdowns`) — use `query_overrides` (`esql_query` plus
+its own `kibana_type_override`) for an output-shape change. `xy_mode` needs a
+stackable effective type (`bar` / `area`; a Kibana line chart has no stacking
+mode). When a matched panel translated to a non-XY chart, the presentation
+request is skipped and reported as a panel warning (capped at
+`migrated_with_warnings`) rather than emitted as dashboard JSON that
+`docs/dashboards/schema.json` rejects. `query_overrides` accept the same `section_match` so a duplicated
+Global vs Database title can get different ES|QL (for example Global
+deadlocks must not take `?Database`). Grafana 5 singlestat
 panels store units on the panel root (`format: bytes` / `s` / `percent`);
 those map to Lens bytes, duration, and `%` formats. Helm-flavored community
 dashboards (PostgreSQL Database 9628) may also ship a pack `plugin.py` that
@@ -146,6 +167,45 @@ rewrites Instance from Prometheus `up{job=~"postgres.*"}` to
 `label_values(pg_up, instance)` — Elastic prometheus_native scrapes store
 exporter health as `pg_up`, not scrape `up` — and drops the unused `$job`
 control so native PROMQL panels are not left with an empty Instance param.
+The pack also restretches QPS to the Rows height and lays the four remaining
+graphs as a 24+24 grid so the short Grafana singlestat does not leave a hole,
+and replaces the mixin's `{{__name__}}` connections legend (which GROKs to
+`(null)` under native PROMQL) with a per-`(instance, datname)` ES|QL series
+composited into one Lens XY breakdown.
+The PostgreSQL Exporter (12485) pack targets the same exporter family but was
+authored against an older `postgres_exporter` lineage, so its `metric_map`
+bridges four names that changed in `prometheuscommunity/postgres-exporter`
+v0.15 (`pg_database_size` → `pg_database_size_bytes`, `pg_replication_lag` →
+`pg_replication_lag_seconds`, `pg_stat_statements_calls` →
+`pg_stat_statements_calls_total`, `pg_stat_statements_total_time_seconds` →
+`pg_stat_statements_seconds_total`), and its `metric_kinds` force
+`pg_stat_activity_count` / `pg_locks_count` / `pg_stat_database_numbackends` to
+`gauge` (the `_count` suffix would otherwise make the offline heuristic
+`rate()` a gauge). Its plugin repopulates the `Instance` control from
+`label_values(pg_up, instance)` (the source `up{job="postgres-exporter"}` job
+filter never matches an Elastic scrape) and anchors the bare
+`label_values(datname)` `Database` control on `pg_stat_database_numbackends`,
+and the `Interval` Grafana interval variable is dropped rather than emitted as
+an inert control. The source `Database: $Database` row is a Grafana *repeated*
+row driven by a multi-select variable; Kibana cannot repeat panels, so the
+migration emits one expanded Database section with a **single-select** Database
+control (an explicit control warning says so). Selecting a database scopes those
+panels, but several databases rendered side by side is not reproduced — the
+per-database panel fidelity labels describe the selected database, not the
+repetition. Duplicate Global/Database panel titles are laid out with
+`section_match` so the Database header is a hole-free 3+2 KPI grid and the
+composition panels (connections by state, locks by mode) render as stacked
+bars with the lock-mode legend on the right. Grafana's duplicated `blk_read_time` legend on I/O Read/Write time is
+replaced with explicit Read/Write series. Deadlocks and temporary files legend
+by `datname` instead of a leftover metric name. Average query runtime uses last-non-null
+`rate(seconds_total)/rate(calls_total)` instead of native PROMQL
+`LAST(delta/delta)` — the incomplete window-edge bucket is often 0/0, which
+Kibana's duration formatter renders as N/A even while Query rate is populated
+(Grafana's own singlestat also maps a null current value to "N/A"). `pg_stat_statements` / `pg_postmaster_start_time_seconds`
+panels (Query rate, Average query runtime, Uptime) only show data when the
+target exporter runs the `stat_statements` + `postmaster` collectors and the
+`pg_stat_statements` extension is installed; otherwise they degrade to an
+honest field/data gap.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins

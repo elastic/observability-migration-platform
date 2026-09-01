@@ -1,0 +1,329 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 12485
+# https://grafana.com/grafana/dashboards/12485-postgresql-exporter/
+#
+# Source: community "PostgreSQL Exporter" (Prometheus / postgres_exporter).
+# Revision 1. ~37 panels across a Global Statistics section and a per-database
+# "Database: $Database" section (same metric families scoped by datname).
+#
+# Engine vs pack split (do not duplicate engine work here):
+#   Engine: rate()/irate() counter handling, gauge sum/max, five-target fusion,
+#           native PROMQL for the ratio panels, control synthesis.
+#   Pack:   12485 was authored against the older exporter lineage, so its PromQL
+#           names differ from prometheuscommunity/postgres-exporter v0.15
+#           (verified live against the parity rig). metric_map bridges the four
+#           renames; metric_kinds forces the two `_count` gauges that the offline
+#           suffix heuristic would otherwise mistype as counters; plugin.py
+#           repopulates the Instance/Database controls (the source `up{job=...}`
+#           and bare `label_values(datname)` do not resolve on Elastic scrapes).
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # prometheus_native stores every Prometheus label under labels.<name>. Pin the
+  # source labels so offline migrations resolve without a live field-caps probe.
+  label_rewrites:
+    instance: labels.instance
+    job: labels.job
+    datname: labels.datname
+    db: labels.datname
+    state: labels.state
+    mode: labels.mode
+
+  # --- counter / gauge classification -----------------------------------
+  # postgres_exporter v0.15 already declares these via `# TYPE`, but the offline
+  # translation path (no --es-url) needs the classification too, and the two
+  # `_count` gauges MUST be forced or the suffix heuristic makes them counters
+  # (rate() of a gauge → wrong series and IRATE type errors on Elastic).
+  metric_kinds:
+    # Gauges that look like counters by name — the important correctness fix.
+    pg_stat_activity_count: gauge
+    pg_locks_count: gauge
+    pg_stat_database_numbackends: gauge
+    # Plain gauges.
+    pg_up: gauge
+    pg_database_size: gauge
+    pg_database_size_bytes: gauge
+    pg_replication_lag: gauge
+    pg_replication_lag_seconds: gauge
+    pg_postmaster_start_time_seconds: gauge
+    pg_settings_server_version_num: gauge
+    pg_settings_max_connections: gauge
+    pg_settings_shared_buffers_bytes: gauge
+    # Counters (rate()/delta() applied, or lifetime ratio numerators/denominators).
+    pg_stat_database_xact_commit: counter
+    pg_stat_database_xact_rollback: counter
+    pg_stat_database_tup_fetched: counter
+    pg_stat_database_tup_returned: counter
+    pg_stat_database_tup_inserted: counter
+    pg_stat_database_tup_updated: counter
+    pg_stat_database_tup_deleted: counter
+    pg_stat_database_blks_hit: counter
+    pg_stat_database_blks_read: counter
+    pg_stat_database_blk_read_time: counter
+    pg_stat_database_blk_write_time: counter
+    pg_stat_database_deadlocks: counter
+    pg_stat_database_temp_files: counter
+    pg_stat_statements_calls: counter
+    pg_stat_statements_calls_total: counter
+    pg_stat_statements_total_time_seconds: counter
+    pg_stat_statements_seconds_total: counter
+
+  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
+  # prepended). See docs/command-contract.md, "metric_map targets are verbatim".
+  # These are the four names that changed between the dashboard's exporter
+  # lineage and prometheuscommunity/postgres-exporter v0.15 (verified live).
+  metric_map:
+    pg_database_size: metrics.pg_database_size_bytes
+    pg_replication_lag: metrics.pg_replication_lag_seconds
+    pg_stat_statements_calls: metrics.pg_stat_statements_calls_total
+    pg_stat_statements_total_time_seconds: metrics.pg_stat_statements_seconds_total
+
+  label_candidates:
+    instance:
+      - labels.instance
+      - service.instance.id
+      - host.name
+    job:
+      - labels.job
+      - service.name
+    datname:
+      - labels.datname
+      - datname
+    db:
+      - labels.datname
+      - datname
+    state:
+      - labels.state
+      - state
+    mode:
+      - labels.mode
+      - mode
+
+controls:
+  field_overrides:
+    # resolve_control_field matches the variable name exactly; 12485 uses
+    # capitalised variable names ($Instance / $Database), so pin both cases.
+    Instance: labels.instance
+    instance: labels.instance
+    Database: labels.datname
+    database: labels.datname
+    datname: labels.datname
+
+panel:
+  query_overrides:
+    # Grafana ships both series as legendFormat ``blk_read_time`` (a source
+    # typo on the write target). Give Kibana distinct Read/Write names.
+    - title_match: "I/O Read/Write time"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_blk_read_time:counter}} IS NOT NULL OR {{metric:pg_stat_database_blk_write_time:counter}} IS NOT NULL
+        | STATS Read = SUM(RATE({{metric:pg_stat_database_blk_read_time:counter}})), Write = SUM(RATE({{metric:pg_stat_database_blk_write_time:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, Read, Write
+        | SORT time_bucket ASC
+      status_override: migrated
+    # Native PROMQL LAST(delta/delta) lands on the incomplete window-edge
+    # bucket, which is often 0/0 → NaN. Kibana's duration formatter then
+    # renders N/A even though earlier buckets are ~2.4ms and Query rate
+    # (rate()) is still populated. Grafana's own singlestat maps a null
+    # current value to "N/A"; skip the null last rate bucket the same way
+    # Node Exporter "CPU Busy" does. rate(time)/rate(calls) is the same
+    # seconds-per-call as delta(time)/delta(calls).
+    - title_match: "Average query runtime"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_statements_seconds_total:counter}} IS NOT NULL OR {{metric:pg_stat_statements_calls_total:counter}} IS NOT NULL
+        | STATS seconds = SUM(RATE({{metric:pg_stat_statements_seconds_total:counter}})), calls = SUM(RATE({{metric:pg_stat_statements_calls_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(calls > 0, seconds / calls, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 2
+        | SORT time_bucket ASC
+        | LIMIT 1
+        | KEEP computed_value
+      primary_format: s
+      status_override: migrated
+    # Native PROMQL legends these "should be 0" rates as the metric name
+    # (``deadlocks`` / ``temp_files``) instead of ``{{datname}}``. Plot the
+    # rate by ``labels.datname``. Global must not take ?Database (source
+    # query has no datname matcher); the Database section does.
+    - title_match: "Deadlocks by database"
+      section_match: "Global Statistics"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
+        | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, deadlocks
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Deadlocks by database"
+      section_match: "Database"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
+        | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
+        | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, deadlocks
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Temporary files by database"
+      section_match: "Global Statistics"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
+        | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, temp_files
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Temporary files by database"
+      section_match: "Database"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
+        | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
+        | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
+        | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
+        | KEEP time_bucket, `labels.datname`, temp_files
+        | SORT time_bucket ASC
+      status_override: migrated
+  layout_overrides:
+    # Grafana 24-col leaves holes at x=4 and x=20 on the KPI strip between
+    # Total database size and Average query runtime. Spread the four unique
+    # tiles across 48 cols; keep transformed y/h so we do not open a gap
+    # above the graph rows.
+    - title_match: "Total database size"
+      position: {x: 0}
+      size: {w: 12}
+    - title_match: "Average query runtime"
+      position: {x: 12}
+      size: {w: 12}
+    - title_match: "Shared Buffers"
+      position: {x: 24}
+      size: {w: 12}
+    - title_match: "Max Connections"
+      position: {x: 36}
+      size: {w: 12}
+    # Arc gauges hid the chrome title because the inner label repeats it;
+    # show the chrome title so the three ratio tiles scan like the KPI row.
+    - title_match: "Shared Buffer Hits"
+      hide_title: false
+    - title_match: "Connections used"
+      hide_title: false
+    - title_match: "Commit Ratio"
+      hide_title: false
+    # Per-database panels are the second half of this dashboard; keep them
+    # open so the Database control has something visible to rewrite.
+    - title_match: "Database"
+      collapsed: false
+    # Composition-over-time: stacked bar is the Kibana fit (Grafana already
+    # does this for Connections; Locks was a line of modes).
+    - title_match: "Locks by state"
+      kibana_type_override: bar
+      xy_mode: stacked
+      legend_position: right
+    # Grafana leaves the right half of this row empty.
+    - title_match: "Replication lag"
+      position: {x: 0, y: 84}
+      size: {w: 48, h: 16}
+    # Same 24+16 graph rhythm as the Database section.
+    - title_match: "Connections by state (stacked)"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 20}
+      size: {w: 24, h: 16}
+    - title_match: "Connections by database (stacked)"
+      position: {x: 24, y: 20}
+      size: {w: 24, h: 16}
+    - title_match: "Transactions"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 36}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples inserts/updates/deletes"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 36}
+      size: {w: 24, h: 16}
+    - title_match: "I/O Read/Write time"
+      position: {x: 0, y: 52}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples fetched/returned"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 52}
+      size: {w: 24, h: 16}
+    - title_match: "Locks by state"
+      section_match: "Global Statistics"
+      position: {x: 0, y: 68}
+      size: {w: 24, h: 16}
+    - title_match: "Deadlocks by database"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 68}
+      size: {w: 24, h: 8}
+    - title_match: "Temporary files by database"
+      section_match: "Global Statistics"
+      position: {x: 24, y: 76}
+      size: {w: 24, h: 8}
+    # Database section repeats Global titles; scope these so Global geometry
+    # stays on the faithful transform.
+    - title_match: "Active clients"
+      section_match: "Database"
+      position: {x: 0, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Database size"
+      section_match: "Database"
+      position: {x: 16, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Transaction rate"
+      section_match: "Database"
+      position: {x: 32, y: 0}
+      size: {w: 16, h: 8}
+    - title_match: "Shared Buffer Hits"
+      section_match: "Database"
+      position: {x: 0, y: 8}
+      size: {w: 24, h: 10}
+    - title_match: "Commit Ratio"
+      section_match: "Database"
+      position: {x: 24, y: 8}
+      size: {w: 24, h: 10}
+    - title_match: "Connections by state (stacked)"
+      section_match: "Database"
+      position: {x: 0, y: 18}
+      size: {w: 24, h: 16}
+    - title_match: "Transactions"
+      section_match: "Database"
+      position: {x: 24, y: 18}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples inserts/updates/deletes"
+      section_match: "Database"
+      position: {x: 0, y: 34}
+      size: {w: 24, h: 16}
+    - title_match: "Tuples fetched/returned"
+      section_match: "Database"
+      position: {x: 24, y: 34}
+      size: {w: 24, h: 16}
+    - title_match: "Locks by state"
+      section_match: "Database"
+      position: {x: 0, y: 50}
+      size: {w: 24, h: 16}
+    - title_match: "Deadlocks by database"
+      section_match: "Database"
+      position: {x: 24, y: 50}
+      size: {w: 24, h: 8}
+    - title_match: "Temporary files by database"
+      section_match: "Database"
+      position: {x: 24, y: 58}
+      size: {w: 24, h: 8}

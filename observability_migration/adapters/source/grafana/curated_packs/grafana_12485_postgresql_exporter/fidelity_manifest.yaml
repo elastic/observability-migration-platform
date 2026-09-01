@@ -1,0 +1,146 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 12485 (PostgreSQL Exporter)
+# https://grafana.com/grafana/dashboards/12485-postgresql-exporter/
+#
+# PERFECT     = same information as Grafana on postgres_exporter.
+# APPROXIMATE = documented delta (lifetime ratio, time()-start, ES|QL ratio).
+# Panels marked "requires: pg_stat_statements" / "requires: replica" render on
+# real data only when that target telemetry exists; otherwise they are an
+# honest field/data gap, not a translator bug.
+
+schema_version: 1
+gnet_id: 12485
+gnet_revision: 1
+dashboard_title: "PostgreSQL Exporter"
+maintainer: "community"
+
+panels:
+  # --- Global Statistics ---------------------------------------------------
+  - title: "PostgreSQL Version"
+    fidelity: PERFECT
+    notes: "max(pg_settings_server_version_num) gauge."
+  - title: "Max Replication Lag"
+    fidelity: PERFECT
+    notes: "max(pg_replication_lag → pg_replication_lag_seconds). requires: replica (0 on a standalone primary)."
+  - title: "Active clients"
+    fidelity: PERFECT
+    notes: "sum(pg_stat_activity_count{state=active}); _count is a gauge, forced in metric_kinds."
+  - title: "Shared Buffer Hits"
+    fidelity: APPROXIMATE
+    notes: "Lifetime blks_hit/(blks_hit+blks_read)*100. Native PROMQL preserves the ratio; ES|QL is per-document."
+  - title: "Connections used"
+    fidelity: APPROXIMATE
+    notes: "sum(numbackends)/max(max_connections). Cross-metric ratio — PERFECT under native PROMQL."
+  - title: "Commit Ratio"
+    fidelity: APPROXIMATE
+    notes: "xact_commit/(xact_commit+xact_rollback) lifetime ratio."
+  - title: "PostgreSQL Uptime"
+    fidelity: APPROXIMATE
+    notes: "time()-pg_postmaster_start_time_seconds. requires: --collector.postmaster. NOW()-based EVAL in Kibana."
+  - title: "Transaction rate"
+    fidelity: PERFECT
+    notes: "sum(rate(xact_commit))+sum(rate(xact_rollback))."
+  - title: "Query rate"
+    fidelity: PERFECT
+    notes: "sum(rate(pg_stat_statements_calls → _calls_total)). requires: pg_stat_statements."
+  - title: "Total database size"
+    fidelity: PERFECT
+    notes: "sum(pg_database_size → pg_database_size_bytes)."
+  - title: "Average query runtime"
+    fidelity: APPROXIMATE
+    notes: "rate(seconds_total)/rate(calls_total) last-non-null bucket (Grafana is current of delta/delta, which maps null to N/A). requires: pg_stat_statements. Same seconds-per-call; skips the incomplete window-edge 0/0 that Kibana duration rendered as N/A."
+  - title: "Shared Buffers"
+    fidelity: PERFECT
+    notes: "pg_settings_shared_buffers_bytes gauge."
+  - title: "Max Connections"
+    fidelity: PERFECT
+    notes: "pg_settings_max_connections gauge."
+  - title: "Connections by state (stacked)"
+    fidelity: PERFECT
+    notes: "sum by (state) (pg_stat_activity_count)."
+  - title: "Connections by database (stacked)"
+    fidelity: PERFECT
+    notes: "sum by (datname) (pg_stat_activity_count)."
+  - title: "Transactions"
+    fidelity: PERFECT
+    notes: "rate(xact_commit), rate(xact_rollback)."
+  - title: "Tuples inserts/updates/deletes"
+    fidelity: PERFECT
+    notes: "rate(tup_inserted/updated/deleted)."
+  - title: "I/O Read/Write time"
+    fidelity: PERFECT
+    notes: "rate(blk_read_time), rate(blk_write_time) counters. Curated Read/Write series names (Grafana legendFormat duplicates blk_read_time on both targets)."
+  - title: "Tuples fetched/returned"
+    fidelity: PERFECT
+    notes: "rate(tup_fetched/returned)."
+  - title: "Locks by state"
+    fidelity: PERFECT
+    notes: "sum by (mode) (pg_locks_count); _count is a gauge, forced in metric_kinds. Stacked bar with legend on the right (Grafana is unstacked lines + bottom table legend)."
+  - title: "Deadlocks by database"
+    fidelity: PERFECT
+    notes: "sum by (datname) (rate(pg_stat_database_deadlocks)). Curated ES|QL legends by labels.datname (native PROMQL leftover was the metric name)."
+  - title: "Temporary files by database"
+    fidelity: PERFECT
+    notes: "sum by (datname) (rate(pg_stat_database_temp_files)). Same datname legend as Deadlocks."
+  - title: "Replication lag "
+    fidelity: PERFECT
+    notes: "max(pg_replication_lag → _seconds). requires: replica."
+  # --- Database: $Database (same families scoped by datname) ---------------
+  - title: "Active clients (per database)"
+    fidelity: PERFECT
+    notes: "pg_stat_activity_count{state=active,datname=~$Database}."
+  - title: "Database size"
+    fidelity: PERFECT
+    notes: "pg_database_size{datname=$Database} → pg_database_size_bytes."
+  - title: "Shared Buffer Hits (per database)"
+    fidelity: APPROXIMATE
+    notes: "Lifetime blks_hit ratio scoped by datname."
+  - title: "Commit Ratio (per database)"
+    fidelity: APPROXIMATE
+    notes: "xact ratio scoped by datname."
+  - title: "Transaction rate (per database)"
+    fidelity: PERFECT
+    notes: "rate(xact_commit+rollback) scoped by datname."
+  - title: "Connections by state (per database)"
+    fidelity: PERFECT
+    notes: "sum by (state) scoped by datname."
+  - title: "Transactions (per database)"
+    fidelity: PERFECT
+    notes: "rate(xact_commit/rollback) scoped by datname."
+  - title: "Tuples inserts/updates/deletes (per database)"
+    fidelity: PERFECT
+    notes: "rate(tup_*) scoped by datname."
+  - title: "Tuples fetched/returned (per database)"
+    fidelity: PERFECT
+    notes: "rate(tup_fetched/returned) scoped by datname."
+  - title: "Locks by state (per database)"
+    fidelity: PERFECT
+    notes: "sum by (mode) (pg_locks_count) scoped by datname. Same stacked bar + right legend as Global."
+  - title: "Deadlocks by database (per database)"
+    fidelity: PERFECT
+    notes: "rate(deadlocks) scoped by datname. Legend is the database name."
+  - title: "Temporary files by database (per database)"
+    fidelity: PERFECT
+    notes: "rate(temp_files) scoped by datname. Legend is the database name."
+
+summary:
+  total_panels: 35
+  perfect: 28
+  approximate: 7
+  not_feasible: 0
+  overall_fidelity: HIGH
+  known_gaps:
+    - "Grafana $Interval interval variable is dropped (not a Kibana control)."
+    - "Instance populate rewritten from up{job=postgres-exporter} to pg_up; Database anchored on pg_stat_database_numbackends."
+    # The source row `Database: $Database` carries repeat=Database on a
+    # multi-select (multi + includeAll) variable. Kibana has no panel
+    # repetition, so the engine emits ONE expanded section with a
+    # single-select Database control (and says so in a control warning).
+    # The 13 per-database panels below are PERFECT for the selected
+    # database; they are not a reproduction of Grafana's repeated rows.
+    - "Grafana repeats the 'Database: $Database' row per selected database; Kibana cannot repeat panels, so the migration emits one expanded Database section with a single-select Database control. Selecting one database scopes those panels; several databases side by side is not reproduced."
+    - "pg_database_size/pg_replication_lag/pg_stat_statements_* renamed to postgres_exporter v0.15 fields via metric_map."
+    - "pg_stat_activity_count and pg_locks_count are gauges despite the _count suffix."
+    - "Replication lag and pg_stat_statements panels require replica / the extension to show non-empty data."

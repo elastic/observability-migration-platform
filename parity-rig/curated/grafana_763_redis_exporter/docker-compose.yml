@@ -301,6 +301,7 @@ services:
     command:
       - |
         until pg_isready -h postgres -U postgres >/dev/null 2>&1; do sleep 2; done
+        psql -h postgres -U postgres -d rigdb -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
         psql -h postgres -U postgres -d rigdb -c "
           CREATE TABLE IF NOT EXISTS rig_load (
             id SERIAL PRIMARY KEY,
@@ -328,6 +329,18 @@ services:
     environment:
       - POSTGRES_PASSWORD=rigpass
       - POSTGRES_DB=rigdb
+    # Preload pg_stat_statements so the exporter's stat_statements collector has
+    # a view to read. Grafana 12485 "Query rate" / "Average query runtime" panels
+    # depend on pg_stat_statements_* series; without the extension they are an
+    # honest data gap rather than a rendered panel.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "pg_stat_statements.max=10000"
     networks:
       - redis-rig
     healthcheck:
@@ -341,6 +354,12 @@ services:
     container_name: redis-rig-postgres-exporter
     environment:
       - DATA_SOURCE_NAME=postgresql://postgres:rigpass@postgres:5432/rigdb?sslmode=disable
+    # stat_statements: Query rate / Average query runtime panels (Grafana 12485).
+    # postmaster: pg_postmaster_start_time_seconds for the PostgreSQL Uptime panel.
+    # Both collectors are off by default in postgres_exporter v0.15.0.
+    command:
+      - "--collector.stat_statements"
+      - "--collector.postmaster"
     ports:
       - "9187:9187"
     networks:

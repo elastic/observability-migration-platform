@@ -165,7 +165,15 @@ panel:
       status_override: migrated        # migrated | migrated_with_warnings (default: migrated)
 ```
 
-**Merge semantics:** User pack overrides win by `title_match`. If both the curated pack and the user `--rules-file` declare an override for the same panel title, the user's query wins. Overrides with different titles are merged (both apply).
+Optional `section_match` scopes the override to a Grafana row whose title
+casefolds to (or starts with) that string, the same way layout overrides
+distinguish Global vs Database duplicate titles. Layout matching uses that
+source title even when a layout override later renames the section.
+
+**Merge semantics:** User pack overrides win by `(title_match, section_match)`.
+If both the curated pack and the user `--rules-file` declare an override for
+the same panel title and section, the user's query wins. Overrides with
+different titles or sections are merged (both apply).
 
 **ES|QL shape constraints:** The query must produce a shape that `_native_esql_panel_spec` can parse for the target Kibana panel type:
 - `metric` / `gauge` panels: a `STATS` query with exactly one metric column and no `BY` clause. The simplest form is an inline division: `STATS value = MAX(...) / MAX(...)`.

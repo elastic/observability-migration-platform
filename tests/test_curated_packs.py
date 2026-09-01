@@ -7,9 +7,14 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from observability_migration.adapters.source.grafana.curated_packs import (
     find_curated_pack,
     load_curated_registry,
+)
+from observability_migration.adapters.source.grafana.extension_schema import (
+    validate_rule_pack_payload,
 )
 from observability_migration.adapters.source.grafana.panels import (
     _apply_panel_layout_overrides_recursively,
@@ -35,6 +40,28 @@ from observability_migration.adapters.source.grafana.rules import (
     resolve_pack_for_dashboard,
 )
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+DASHBOARD_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "dashboards" / "schema.json"
+)
+
+
+def dashboard_schema_errors(panels: list[dict]) -> list[str]:
+    """Validate *panels* as a dashboard against the vendored Kibana schema.
+
+    Same schema and validator as the ``tests/e2e`` schema gate, applied to a
+    single hand-built dashboard so a layout-override regression is caught in the
+    fast unit gate instead of only after a corpus run.
+    """
+    import jsonschema
+
+    schema = json.loads(DASHBOARD_SCHEMA_PATH.read_text())
+    doc = {"dashboards": [{"name": "layout-override-probe", "panels": panels}]}
+    return [
+        f"{'/'.join(str(part) for part in error.path)}: {error.message}"
+        for error in jsonschema.Draft202012Validator(schema).iter_errors(doc)
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Registry loader
@@ -153,7 +180,7 @@ def test_registry_pins_match_community_corpus_when_revision_aligns():
         for entry in corpus["dashboards"]
     }
     # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
-    new_pack_ids = {7362, 9628, 14114}
+    new_pack_ids = {7362, 9628, 14114, 12485}
     mismatches = []
     for entry in load_curated_registry():
         gnet_id = int(entry["gnet_id"])
@@ -1787,6 +1814,549 @@ def test_14114_instance_up_becomes_pg_up_control():
     assert "metrics.up" not in query
 
 
+def test_find_12485_by_gnet_id():
+    entry = find_curated_pack(gnet_id=12485, title="", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 12485
+    assert entry["name"] == "grafana_12485_postgresql_exporter"
+
+
+def test_resolve_pack_12485_pins_kinds_renames_and_controls():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    # The two `_count` gauges are the important correctness fix.
+    assert resolved.metric_kinds.get("pg_stat_activity_count") == "gauge"
+    assert resolved.metric_kinds.get("pg_locks_count") == "gauge"
+    assert resolved.metric_kinds.get("pg_stat_database_numbackends") == "gauge"
+    # Rated counters stay counters.
+    assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
+    assert resolved.metric_kinds.get("pg_stat_database_tup_fetched") == "counter"
+    # v0.15 renames.
+    for src, tgt in (
+        ("pg_database_size", "metrics.pg_database_size_bytes"),
+        ("pg_replication_lag", "metrics.pg_replication_lag_seconds"),
+        ("pg_stat_statements_calls", "metrics.pg_stat_statements_calls_total"),
+        ("pg_stat_statements_total_time_seconds", "metrics.pg_stat_statements_seconds_total"),
+    ):
+        entry = (resolved.metric_map or {}).get(src)
+        assert getattr(entry, "target", entry) == tgt, src
+    # Controls keyed by the dashboard's capitalised variable names.
+    assert resolved.control_field_overrides.get("Instance") == "labels.instance"
+    assert resolved.control_field_overrides.get("Database") == "labels.datname"
+
+
+def test_12485_database_size_renamed_offline():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 37,
+        "type": "singlestat",
+        "title": "Total database size",
+        "targets": [{"expr": 'sum(pg_database_size{instance="$Instance"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "metrics.pg_database_size_bytes" in query
+    assert "metrics.pg_database_size)" not in query
+
+
+def test_12485_activity_count_is_gauge_not_rated():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 24,
+        "type": "graph",
+        "title": "Connections by state (stacked)",
+        "targets": [{"expr": 'sum by (state) (pg_stat_activity_count{instance="$Instance"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "pg_stat_activity_count" in query
+    # gauge → SUM, never RATE/IRATE (the whole point of forcing the _count gauge).
+    assert "RATE(" not in query.upper()
+    assert "labels.state" in query
+
+
+def test_12485_instance_and_database_controls_rewritten():
+    dashboard = {
+        "gnetId": 12485,
+        "title": "PostgreSQL Exporter",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "Instance",
+                    "type": "query",
+                    "label": "Instance",
+                    "query": 'label_values({job="postgres-exporter"}, instance)',
+                    "includeAll": False,
+                    "current": {"text": "postgres:5432", "value": "postgres:5432"},
+                },
+                {
+                    "name": "Database",
+                    "type": "query",
+                    "label": "Database",
+                    "query": "label_values(datname)",
+                    "includeAll": True,
+                    "current": {"text": "All", "value": "$__all"},
+                },
+                {
+                    "name": "Interval",
+                    "type": "interval",
+                    "query": "30sec,1m,10m,30m,1h,6h,12h,1d",
+                    "current": {"text": "1m", "value": "1m"},
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 14,
+                "type": "singlestat",
+                "title": "Transaction rate",
+                "targets": [
+                    {
+                        "expr": 'sum(rate(pg_stat_database_xact_commit{instance="$Instance",datname=~"$Database"}[$Interval]))',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    names = {c.get("variable_name") for c in controls}
+    # Interval must never become a control; Instance/Database must.
+    assert "Interval" not in names, controls
+    assert "Instance" in names, controls
+    instance = next(c for c in controls if c.get("variable_name") == "Instance")
+    iq = str(instance.get("query") or "")
+    assert "pg_up" in iq
+    assert "postgres-exporter" not in iq
+    # Database is a core claim of the pack: the bare ``label_values(datname)``
+    # has no metric anchor, so the control must be present AND anchored on the
+    # curated per-database gauge (an unanchored ``labels.datname`` query is the
+    # broken pre-pack behavior, not an acceptable fallback).
+    assert "Database" in names, controls
+    database = next(c for c in controls if c.get("variable_name") == "Database")
+    dq = str(database.get("query") or "")
+    assert "pg_stat_database_numbackends" in dq, dq
+
+
+def _pinned_12485_repeat_row_dashboard() -> dict:
+    """Minimal dashboard in the shape of pinned grafana.com 12485 revision 1.
+
+    Faithful to the parts this test is about: ``Database`` is a
+    ``multi``/``includeAll`` query variable with no cached ``current``/
+    ``options``, and the ``Database: $Database`` row is a *collapsed repeated*
+    row (``repeat: Database``) holding the per-database panels.
+    """
+    return {
+        "gnetId": 12485,
+        "title": "PostgreSQL Exporter",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "Instance",
+                    "type": "query",
+                    "label": "Instance",
+                    "query": 'label_values({job="postgres-exporter"}, instance)',
+                    "includeAll": False,
+                    "multi": False,
+                    "current": {},
+                    "options": [],
+                },
+                {
+                    "name": "Database",
+                    "type": "query",
+                    "label": "Database",
+                    "query": "label_values(datname)",
+                    "includeAll": True,
+                    "multi": True,
+                    "current": {},
+                    "options": [],
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 2,
+                "type": "row",
+                "title": "Global Statistics",
+                "collapsed": False,
+                "panels": [],
+                "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+            },
+            {
+                "id": 14,
+                "type": "singlestat",
+                "title": "Transaction rate",
+                "targets": [
+                    {
+                        "expr": 'sum(rate(pg_stat_database_xact_commit{instance="$Instance"}[5m]))',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"x": 0, "y": 1, "w": 4, "h": 3},
+            },
+            {
+                "id": 100,
+                "type": "row",
+                "title": "Database: $Database",
+                "repeat": "Database",
+                "collapsed": True,
+                "gridPos": {"x": 0, "y": 10, "w": 24, "h": 1},
+                "panels": [
+                    {
+                        "id": 101,
+                        "type": "singlestat",
+                        "title": "Active clients",
+                        "targets": [
+                            {
+                                "expr": (
+                                    'sum(pg_stat_activity_count{instance="$Instance",'
+                                    'datname=~"$Database",state="active"})'
+                                ),
+                                "refId": "A",
+                            }
+                        ],
+                        "gridPos": {"x": 0, "y": 11, "w": 4, "h": 3},
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def test_12485_repeated_database_row_becomes_single_select_control():
+    """The pinned source repeats the Database row over a multi-select variable.
+
+    Kibana cannot repeat panels, so the engine deliberately emits ONE section
+    with a single-select Database control plus an explicit warning. The pack's
+    fidelity manifest has to disclose that (see the manifest test below), and
+    this test pins the behavior the disclosure describes.
+    """
+    dashboard = _pinned_12485_repeat_row_dashboard()
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+
+    controls = result.dashboard_ir.to_yaml_dict().get("controls") or []
+    database = next(
+        (c for c in controls if c.get("variable_name") == "Database"), None
+    )
+    assert database is not None, controls
+    assert database.get("multiple") is False, database
+    assert any(
+        "drives panel repetition" in warning for warning in result.control_warnings
+    ), result.control_warnings
+
+
+def test_12485_fidelity_manifest_discloses_repeated_database_row_gap():
+    """Repo rule: an operator-visible structural loss must be disclosed.
+
+    28 PERFECT panel labels and a repopulated Database control must not read as
+    "Grafana's repeated per-database rows were preserved" -- they were not.
+    """
+    import yaml
+
+    from observability_migration.adapters.source.grafana import (
+        curated_packs as _curated_packs_pkg,
+    )
+
+    manifest_path = (
+        Path(_curated_packs_pkg.__file__).parent
+        / "grafana_12485_postgresql_exporter"
+        / "fidelity_manifest.yaml"
+    )
+    manifest = yaml.safe_load(manifest_path.read_text()) or {}
+    known_gaps = [
+        str(gap) for gap in (manifest.get("summary") or {}).get("known_gaps") or []
+    ]
+
+    disclosure = [
+        gap
+        for gap in known_gaps
+        if "repeat" in gap.lower() and "single-select" in gap.lower()
+    ]
+    assert disclosure, (
+        "fidelity_manifest.yaml must disclose that the repeated 'Database: "
+        f"$Database' row becomes one single-select section; known_gaps={known_gaps}"
+    )
+    assert "Database" in disclosure[0]
+
+
+def test_12485_io_override_names_read_and_write():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 26,
+        "type": "graph",
+        "title": "I/O Read/Write time",
+        "targets": [
+            {
+                "expr": 'sum(rate(pg_stat_database_blk_read_time{instance="$Instance"}[1m]))',
+                "legendFormat": "blk_read_time",
+                "refId": "A",
+            },
+            {
+                "expr": 'sum(rate(pg_stat_database_blk_write_time{instance="$Instance"}[1m]))',
+                "legendFormat": "blk_read_time",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 9},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "Read =" in query
+    assert "Write =" in query
+    assert "blk_read_time_B" not in query
+
+
+def test_12485_avg_query_runtime_skips_null_last_bucket():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 102,
+        "type": "singlestat",
+        "title": "Average query runtime",
+        "format": "s",
+        "valueName": "current",
+        "targets": [
+            {
+                "expr": (
+                    'sum((delta(pg_stat_statements_total_time_seconds'
+                    '{instance="$Instance"}[5m])))'
+                    '/sum((delta(pg_stat_statements_calls'
+                    '{instance="$Instance"}[5m])))'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 8, "y": 7, "w": 4, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    query = esql.get("query") or ""
+    assert "LAST(value, step)" not in query
+    assert "computed_value" in query
+    assert "WHERE computed_value IS NOT NULL" in query
+    assert "LIMIT 2" in query
+    assert "RATE(" in query
+    assert "pg_stat_statements_seconds_total" in query
+    assert "pg_stat_statements_calls_total" in query
+    primary = esql.get("primary") or {}
+    assert (primary.get("format") or {}).get("type") == "duration"
+
+
+def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 30,
+        "type": "graph",
+        "title": "Deadlocks by database",
+        "legend": {"show": True, "hideZero": True, "hideEmpty": True},
+        "targets": [
+            {
+                "expr": (
+                    'sum by (datname) ((rate(pg_stat_database_deadlocks'
+                    '{instance="$Instance"}[5m])))'
+                ),
+                "legendFormat": "{{datname}}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 12, "y": 37, "w": 12, "h": 5},
+    }
+
+    global_yaml, global_result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title="Global Statistics",
+    )
+    assert global_result.status in {"migrated", "migrated_with_warnings"}, global_result.reasons
+    global_query = (global_yaml.get("esql") or {}).get("query") or ""
+    assert "labels.datname" in global_query
+    assert "?Database" not in global_query
+    assert "LAST(value, step)" not in global_query
+
+    db_yaml, db_result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title="Database: $Database",
+    )
+    assert db_result.status in {"migrated", "migrated_with_warnings"}, db_result.reasons
+    db_query = (db_yaml.get("esql") or {}).get("query") or ""
+    assert "labels.datname" in db_query
+    assert "?Database" in db_query
+
+
+def test_panel_layout_overrides_can_move_legend_right():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {
+                "type": "bar",
+                "mode": "stacked",
+                "query": "FROM metrics-*",
+                "legend": {"visible": "show", "position": "bottom"},
+            },
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
+            "legend_position": "right",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["legend"]["position"] == "right"
+
+
+def test_12485_layout_fills_kpi_row_and_unhides_gauges():
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    by_title = {}
+    for item in resolved.panel_layout_overrides:
+        key = (item["title_match"], item.get("section_match") or "")
+        by_title[key] = item
+    assert by_title[("Total database size", "")]["size"]["w"] == 12
+    assert by_title[("Average query runtime", "")]["position"]["x"] == 12
+    assert by_title[("Shared Buffers", "")]["position"]["x"] == 24
+    assert by_title[("Max Connections", "")]["position"]["x"] == 36
+    assert "y" not in by_title[("Total database size", "")].get("position", {})
+    assert by_title[("Shared Buffer Hits", "")]["hide_title"] is False
+    assert by_title[("Connections used", "")]["hide_title"] is False
+    assert by_title[("Commit Ratio", "")]["hide_title"] is False
+    assert by_title[("Database", "")]["collapsed"] is False
+    assert by_title[("Locks by state", "")]["kibana_type_override"] == "bar"
+    assert by_title[("Locks by state", "")]["xy_mode"] == "stacked"
+    assert by_title[("Locks by state", "")]["legend_position"] == "right"
+    assert by_title[("Replication lag", "")]["size"]["w"] == 48
+    assert by_title[("Replication lag", "")]["position"]["y"] == 84
+    assert by_title[("I/O Read/Write time", "")]["size"]["h"] == 16
+    assert by_title[("Transactions", "Global Statistics")]["position"]["y"] == 36
+    assert by_title[("Active clients", "Database")]["position"] == {"x": 0, "y": 0}
+    assert by_title[("Transaction rate", "Database")]["size"]["w"] == 16
+    assert by_title[("Temporary files by database", "Database")]["position"]["y"] == 58
+
+
+def test_14114_numbackends_override_drops_name_breakdown():
+    dashboard = {
+        "gnetId": 14114,
+        "title": "PostgreSQL Exporter Quickstart and Dashboard",
+        "tags": ["postgres"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved)
+    panel = {
+        "id": 6,
+        "type": "graph",
+        "title": "Number of active connections",
+        "targets": [
+            {
+                "expr": 'pg_stat_database_numbackends{datname=~"$db",instance=~"$instance"}',
+                "legendFormat": "{{__name__}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 12, "y": 14, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    query = esql.get("query") or ""
+    assert "connections =" in query
+    assert "__name__" not in query
+    assert "GROK" not in query
+    assert "labels.datname" in query
+    # Source is one series per (instance, datname); grouping only by datname
+    # would MAX-collapse two exporters that share a database name.
+    assert "labels.instance" in query
+    stats_line = next(
+        line for line in query.splitlines() if "STATS connections" in line
+    )
+    assert "labels.instance" in stats_line
+    assert "labels.datname" in stats_line
+    assert (esql.get("breakdown") or {}).get("field") == "series_group"
+    assert "EVAL series_group = CONCAT(" in query
+    qps = next(
+        item for item in resolved.panel_layout_overrides if item["title_match"] == "QPS"
+    )
+    assert qps["size"]["h"] == 14
+    assert qps["size"]["w"] == 8
+    rows = next(
+        item for item in resolved.panel_layout_overrides if item["title_match"] == "Rows"
+    )
+    assert rows["size"] == {"w": 40, "h": 14}
+
+
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():
     """Offline runs take the FIRST candidate without probing the target.
 
@@ -1803,6 +2373,7 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         7362: [("instance", "labels.instance"), ("job", "labels.job")],
         9628: [("instance", "labels.instance"), ("job", "labels.job")],
         14114: [("instance", "labels.instance"), ("job", "labels.job")],
+        12485: [("instance", "labels.instance"), ("job", "labels.job")],
     }
     for gnet_id, pairs in expected_first.items():
         resolved = resolve_pack_for_dashboard(
@@ -2151,6 +2722,61 @@ def test_panel_layout_override_user_wins_over_curated():
     assert merged.panel_layout_overrides == user.panel_layout_overrides
 
 
+def test_panel_layout_override_user_section_does_not_drop_other_section():
+    """A user override for one section must not delete the curated sibling."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_layout_overrides = [
+        {"title_match": "Transactions", "section_match": "Global", "size": {"w": 24}},
+        {"title_match": "Transactions", "section_match": "Database", "size": {"w": 16}},
+        {"title_match": "Locks by state", "xy_mode": "stacked"},
+    ]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_layout_overrides = [
+        {"title_match": "Transactions", "section_match": "Database", "size": {"w": 12}},
+    ]
+
+    merged = _merge_curated_into_base(curated, user)
+    by_key = {
+        (item["title_match"], item.get("section_match") or ""): item
+        for item in merged.panel_layout_overrides
+    }
+    assert by_key[("Transactions", "Global")]["size"] == {"w": 24}
+    assert by_key[("Transactions", "Database")]["size"] == {"w": 12}
+    assert by_key[("Locks by state", "")]["xy_mode"] == "stacked"
+
+
+def test_panel_override_merge_strips_whitespace_keys():
+    """Padded user keys must replace the matching curated override, not layer both."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_query_overrides = [
+        {"title_match": "Transactions", "section_match": "Database", "esql_query": "-- curated"},
+    ]
+    curated.panel_layout_overrides = [
+        {"title_match": "Locks by state", "xy_mode": "stacked"},
+    ]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_query_overrides = [
+        {"title_match": " Transactions ", "section_match": " Database ", "esql_query": "-- user"},
+    ]
+    user.panel_layout_overrides = [
+        {"title_match": " Locks by state ", "xy_mode": "grouped"},
+    ]
+
+    merged = _merge_curated_into_base(curated, user)
+    assert len(merged.panel_query_overrides) == 1
+    assert merged.panel_query_overrides[0]["esql_query"] == "-- user"
+    assert len(merged.panel_layout_overrides) == 1
+    assert merged.panel_layout_overrides[0]["xy_mode"] == "grouped"
+
+
 def test_panel_layout_overrides_apply_inside_sections():
     panels = [
         {
@@ -2207,6 +2833,384 @@ def test_panel_layout_overrides_can_flip_section_collapsed_state():
     assert panels[0]["section"]["collapsed"] is False
 
 
+def test_panel_layout_overrides_can_unhide_gauge_title():
+    panels = [
+        {
+            "title": "Shared Buffer Hits",
+            "hide_title": True,
+            "esql": {
+                "type": "gauge",
+                "metric": {"field": "value", "label": "Shared Buffer Hits"},
+            },
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 8, "h": 14},
+        }
+    ]
+    overrides = [{"title_match": "Shared Buffer Hits", "hide_title": False}]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert "hide_title" not in panels[0]
+    assert panels[0]["esql"]["metric"]["label"] == " "
+
+
+def test_panel_layout_overrides_section_match_skips_other_section():
+    panels = [
+        {
+            "title": "Global Statistics",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "Transaction rate",
+                        "position": {"x": 8, "y": 6},
+                        "size": {"w": 8, "h": 5},
+                    }
+                ],
+            },
+        },
+        {
+            "title": "Database",
+            "section": {
+                "collapsed": True,
+                "panels": [
+                    {
+                        "title": "Transaction rate",
+                        "position": {"x": 0, "y": 5},
+                        "size": {"w": 8, "h": 5},
+                    }
+                ],
+            },
+        },
+    ]
+    overrides = [
+        {
+            "title_match": "Transaction rate",
+            "section_match": "Database",
+            "position": {"x": 32, "y": 0},
+            "size": {"w": 16, "h": 8},
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    global_txn = panels[0]["section"]["panels"][0]
+    db_txn = panels[1]["section"]["panels"][0]
+    assert global_txn["position"] == {"x": 8, "y": 6}
+    assert db_txn["position"] == {"x": 32, "y": 0}
+    assert db_txn["size"] == {"w": 16, "h": 8}
+
+
+def test_panel_layout_overrides_can_force_stacked_bar():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {"type": "line", "query": "FROM metrics-*"},
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
+            "kibana_type_override": "bar",
+            "xy_mode": "stacked",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["type"] == "bar"
+    assert panels[0]["esql"]["mode"] == "stacked"
+
+
+def test_panel_layout_overrides_xy_mode_without_type_override():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {"type": "bar", "query": "FROM metrics-*"},
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
+            "xy_mode": "stacked",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["type"] == "bar"
+    assert panels[0]["esql"]["mode"] == "stacked"
+
+
+# ---------------------------------------------------------------------------
+# layout_overrides presentation contract (schema-valid or reported)
+# ---------------------------------------------------------------------------
+
+def _metric_probe_panel() -> dict:
+    return {
+        "title": "PostgreSQL Uptime",
+        "esql": {
+            "type": "metric",
+            "query": "FROM metrics-* | STATS value = MAX(uptime)",
+            "primary": {"field": "value", "label": "PostgreSQL Uptime"},
+        },
+        "position": {"x": 0, "y": 0},
+        "size": {"w": 12, "h": 8},
+    }
+
+
+def _xy_probe_panel(chart_type: str = "line") -> dict:
+    esql = {
+        "type": chart_type,
+        "query": (
+            "FROM metrics-* | STATS value = SUM(locks) BY "
+            "time_bucket = TBUCKET(1 hour), `labels.mode`"
+        ),
+        "dimension": {"field": "time_bucket"},
+        "metrics": [{"field": "value"}],
+        "breakdown": {"field": "labels.mode"},
+    }
+    if chart_type in {"bar", "area"}:
+        esql["mode"] = "stacked"
+    return {
+        "title": "Locks by state",
+        "esql": esql,
+        "position": {"x": 0, "y": 0},
+        "size": {"w": 24, "h": 16},
+    }
+
+
+def test_layout_override_presentation_keys_skip_non_xy_panel():
+    """``xy_mode``/``legend_position`` on a metric tile would add ``mode``/
+    ``legend`` keys that ``ESQLMetricPanelConfig`` (``additionalProperties:
+    false``) rejects. Skip and report instead of emitting invalid JSON."""
+    panels = [_metric_probe_panel()]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [
+            {
+                "title_match": "PostgreSQL Uptime",
+                "xy_mode": "stacked",
+                "legend_position": "right",
+            }
+        ],
+        warnings=warnings,
+    )
+
+    esql = panels[0]["esql"]
+    assert esql["type"] == "metric"
+    assert "mode" not in esql
+    assert "legend" not in esql
+    assert warnings, "a skipped presentation request must be reported"
+    message = warnings[0][1]
+    assert "PostgreSQL Uptime" in message
+    assert "xy_mode" in message and "legend_position" in message
+    assert "query_overrides" in message
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_cannot_change_panel_shape():
+    """A late ``type`` flip keeps the XY ``metrics``/``dimension`` columns and
+    has no ``primary``, so ``metric`` output would fail the schema both ways."""
+    panels = [_xy_probe_panel("line")]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": "Locks by state", "kibana_type_override": "metric"}],
+        warnings=warnings,
+    )
+
+    assert panels[0]["esql"]["type"] == "line"
+    assert warnings
+    assert "query_overrides" in warnings[0][1]
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_xy_mode_on_line_panel_is_reported():
+    """``ESQLLinePanelConfig`` has no ``mode``; dropping it keeps the panel
+    valid, but the ignored stacking request must still be visible."""
+    panels = [_xy_probe_panel("line")]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": "Locks by state", "xy_mode": "stacked"}],
+        warnings=warnings,
+    )
+
+    assert panels[0]["esql"]["type"] == "line"
+    assert "mode" not in panels[0]["esql"]
+    assert warnings
+    assert "kibana_type_override" in warnings[0][1]
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_presentation_output_is_schema_valid():
+    """Every presentation override shape -- including the ones that used to
+    emit invalid JSON -- validates against ``docs/dashboards/schema.json``."""
+    cases = [
+        (_metric_probe_panel(), {"xy_mode": "stacked"}),
+        (_metric_probe_panel(), {"legend_position": "right"}),
+        (_metric_probe_panel(), {"kibana_type_override": "gauge"}),
+        (_xy_probe_panel("line"), {"kibana_type_override": "metric"}),
+        (_xy_probe_panel("line"), {"kibana_type_override": "datatable"}),
+        (_xy_probe_panel("line"), {"xy_mode": "percentage"}),
+        (_xy_probe_panel("bar"), {"kibana_type_override": "line"}),
+        (_xy_probe_panel("bar"), {"xy_mode": "percentage"}),
+        # The real 12485 rule: composition-over-time line -> stacked bar with
+        # the lock-mode legend moved out from under the plot.
+        (
+            _xy_probe_panel("line"),
+            {
+                "kibana_type_override": "bar",
+                "xy_mode": "stacked",
+                "legend_position": "right",
+            },
+        ),
+    ]
+    failures = []
+    for panel, override in cases:
+        panels = [panel]
+        _apply_panel_layout_overrides_recursively(
+            panels, [{"title_match": panel["title"], **override}]
+        )
+        errors = dashboard_schema_errors(panels)
+        if errors:
+            failures.append(f"{override} -> {errors}")
+    assert not failures, "\n".join(failures)
+
+
+def test_12485_locks_layout_override_still_emits_stacked_bar():
+    """The pack's own line -> stacked bar + right legend must keep working."""
+    dashboard = {"gnetId": 12485, "title": "PostgreSQL Exporter", "tags": []}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    override = next(
+        item
+        for item in resolved.panel_layout_overrides
+        if item["title_match"] == "Locks by state" and not item.get("section_match")
+    )
+    panels = [_xy_probe_panel("line")]
+
+    _apply_panel_layout_overrides_recursively(panels, [override])
+
+    esql = panels[0]["esql"]
+    assert esql["type"] == "bar"
+    assert esql["mode"] == "stacked"
+    assert esql["legend"] == {"position": "right", "visible": "show"}
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_rejects_non_xy_kibana_type_override():
+    """A cross-shape request is a rule-pack error, not a silent bad emit."""
+    with pytest.raises(ValueError) as excinfo:
+        validate_rule_pack_payload(
+            {
+                "panel": {
+                    "layout_overrides": [
+                        {"title_match": "Uptime", "kibana_type_override": "metric"}
+                    ]
+                }
+            },
+            source="probe pack",
+        )
+
+    message = str(excinfo.value)
+    assert "presentation-only" in message
+    assert "query_overrides" in message
+
+
+def test_layout_override_rejects_xy_mode_on_line_type():
+    with pytest.raises(ValueError) as excinfo:
+        validate_rule_pack_payload(
+            {
+                "panel": {
+                    "layout_overrides": [
+                        {
+                            "title_match": "Locks by state",
+                            "kibana_type_override": "line",
+                            "xy_mode": "stacked",
+                        }
+                    ]
+                }
+            },
+            source="probe pack",
+        )
+
+    assert "no stacking mode" in str(excinfo.value)
+
+
+def test_layout_override_accepts_xy_family_type_and_stacking():
+    payload = validate_rule_pack_payload(
+        {
+            "panel": {
+                "layout_overrides": [
+                    {
+                        "title_match": "Locks by state",
+                        "kibana_type_override": "bar",
+                        "xy_mode": "stacked",
+                        "legend_position": "right",
+                    }
+                ]
+            }
+        }
+    )
+
+    override = payload.panel.layout_overrides[0]
+    assert override.kibana_type_override == "bar"
+    assert override.xy_mode == "stacked"
+    assert override.legend_position == "right"
+
+
+def test_skipped_layout_presentation_override_is_reported_on_the_panel():
+    """The skip is an operator-visible gap: the panel does not look the way the
+    pack asked, so it must not be reported as a clean ``migrated``."""
+    dashboard = {
+        "title": "Layout Override Probe",
+        "panels": [
+            {
+                "id": 1,
+                "type": "singlestat",
+                "title": "Total database size",
+                "targets": [{"expr": "sum(pg_database_size_bytes)", "refId": "A"}],
+                "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+            }
+        ],
+    }
+    rule_pack = RulePackConfig(
+        panel_layout_overrides=[
+            {"title_match": "Total database size", "xy_mode": "stacked"}
+        ]
+    )
+
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=rule_pack,
+    )
+
+    panel_result = next(
+        item
+        for item in result.panel_results
+        if item.title == "Total database size"
+    )
+    assert panel_result.status == "migrated_with_warnings", panel_result.reasons
+    assert any(
+        "presentation change was skipped" in reason for reason in panel_result.reasons
+    ), panel_result.reasons
+    assert result.migrated_with_warnings >= 1
+    assert not dashboard_schema_errors(
+        result.dashboard_ir.to_yaml_dict().get("panels") or []
+    )
+
+
 def test_panel_layout_overrides_can_rename_section_title():
     panels = [
         {
@@ -2228,6 +3232,41 @@ def test_panel_layout_overrides_can_rename_section_title():
     _apply_panel_layout_overrides_recursively(panels, overrides)
 
     assert panels[0]["title"] == "Overview"
+
+
+def test_panel_layout_overrides_section_match_uses_source_title_after_rename():
+    """section_match is the Grafana row title, not the post-override Kibana title."""
+    panels = [
+        {
+            "title": "Section 1",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "MySQL Uptime",
+                        "position": {"x": 0, "y": 0},
+                        "size": {"w": 6, "h": 6},
+                    }
+                ],
+            },
+        }
+    ]
+    overrides = [
+        {"title_match": "Section 1", "title": "Overview"},
+        {
+            "title_match": "MySQL Uptime",
+            "section_match": "Section 1",
+            "position": {"x": 8, "y": 2},
+            "size": {"w": 12, "h": 8},
+        },
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["title"] == "Overview"
+    child = panels[0]["section"]["panels"][0]
+    assert child["position"] == {"x": 8, "y": 2}
+    assert child["size"] == {"w": 12, "h": 8}
 
 
 def test_curated_query_override_materializes_control_and_metric_placeholders():

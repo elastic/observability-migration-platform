@@ -79,6 +79,23 @@ tests/
 
 ## Key Discoveries (update as you go)
 
+**PostgreSQL Exporter 12485 (2026-08-31) — see `curated-pack-12485-postgresql-exporter.md`:**
+- The shared curated rig (`parity-rig/curated/grafana_763_redis_exporter/`) already
+  runs a real `prometheuscommunity/postgres-exporter:v0.15.0` + load generator into
+  `metrics-postgres.prometheus-default`. New postgres packs validate here — no
+  throwaway rig. Enable `--collector.stat_statements` + `--collector.postmaster`
+  (+ the `pg_stat_statements` extension) on the rig's postgres services when a pack
+  needs those series; redis/other exporters are untouched.
+- Read the **real** exporter (`curl :9187/metrics`) before writing `metric_map`:
+  12485 was authored against an older lineage, so `pg_database_size` →
+  `pg_database_size_bytes`, `pg_replication_lag` → `pg_replication_lag_seconds`,
+  `pg_stat_statements_calls` → `_calls_total`, `pg_stat_statements_total_time_seconds`
+  → `_seconds_total`. `pg_stat_activity_count` / `pg_locks_count` are **gauges**
+  despite the `_count` suffix — force them in `metric_kinds`.
+- Live result: 35 panels, 0 Red / 0 not-feasible, uploaded; render audit 0
+  render_error (32/32 rendered); both controls populate + bind (`?Instance` ×57,
+  `?Database` ×23). 14114 re-validated on the same rig: 6/6, render PASS, no regression.
+
 **Dashboard investigation (2026-07-29):**
 - Dashboard **12776** ("Redis" by the Redis org): uses `redis-datasource` plugin (NOT Prometheus). Queries are Redis commands (`INFO`, `CLIENT LIST`, `SLOWLOG GET`) with empty `expr` fields. `infer_query_language()` returns `"unknown"` for empty queries → panels land as not_feasible. **Not the right target for a PromQL curated pack.** The 12776 readme on grafana.com links to two Prometheus-based alternatives (see below). Future work: a separate ES|QL-injection curated pack variant for `redis-datasource` type dashboards mapped to Elastic Redis integration fields.
 - Dashboard **763** ("Redis Dashboard for Prometheus Redis Exporter 1.x" by oliver006): uses `prometheus` datasource. 13 panels, all PromQL using `redis_exporter` metrics. gnetId=763, revision=6 (latest, 2024-02-17, 181,727 downloads). **This is our first target.**

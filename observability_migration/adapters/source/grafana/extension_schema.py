@@ -8,7 +8,27 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+# Kibana chart types a *late* ``layout_overrides`` change may pick. The layout
+# pass runs after translation and only rewrites ``esql.type``/``mode``/
+# ``legend``, so it can only move a panel inside the XY family, whose schema
+# definitions (``ESQL{Line,Bar,Area}PanelConfig``) share the same required
+# ``query`` + ``metrics`` shape. Switching to metric/gauge/datatable/pie needs a
+# different set of required keys (``primary``, ``metric``, ``breakdowns``) built
+# from a different query, which is what ``query_overrides`` is for.
+XY_LAYOUT_CHART_TYPES = ("area", "bar", "line")
+# XY types whose schema definition carries a stacking ``mode``. ``line`` does
+# not (``ESQLLinePanelConfig`` declares ``additionalProperties: false``).
+XY_STACKABLE_CHART_TYPES = ("area", "bar")
 
 QUERY_OVERRIDE_FIELDS = {
     "default_rate_window",
@@ -65,6 +85,9 @@ class PanelQueryOverrideModel(_StrictModel):
     title_match: str
     esql_query: str
     status_override: str = "migrated"
+    # When set, only apply inside a section whose title casefolds to this
+    # value (or starts with it). Same meaning as layout ``section_match``.
+    section_match: str | None = None
     # Optional Lens presentation override when the curated ES|QL shape does
     # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
     kibana_type_override: str | None = None
@@ -97,9 +120,74 @@ class PanelSizeOverrideModel(_StrictModel):
 class PanelLayoutOverrideModel(_StrictModel):
     title_match: str
     title: str | None = None
+    # When set, only apply inside a section whose title casefolds to this
+    # value (or starts with it). Lets Global vs Database duplicate titles
+    # get independent geometry.
+    section_match: str | None = None
     position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
     size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
     collapsed: bool | None = None
+    # When False, keep the Kibana chrome title visible even if the display
+    # mapper hid it (metric/gauge tiles stamp the title onto the inner label).
+    hide_title: bool | None = None
+    # Late *presentation-only* override on the translated ``esql.type``, limited
+    # to the XY family (``line`` / ``bar`` / ``area``) because this pass does not
+    # rebuild the query or the emitted columns. Use
+    # ``query_overrides.kibana_type_override`` to emit a different panel shape.
+    kibana_type_override: str | None = None
+    # Stacking for bar/area (``stacked`` / ``unstacked`` / ``percentage``).
+    # ``line`` has no stacking mode.
+    xy_mode: str | None = None
+    # Late override of the XY legend placement (``bottom`` / ``right`` / …).
+    legend_position: str | None = None
+
+    @field_validator("kibana_type_override")
+    @classmethod
+    def validate_kibana_type_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value not in XY_LAYOUT_CHART_TYPES:
+            raise ValueError(
+                "layout_overrides.kibana_type_override is presentation-only and must "
+                f"be one of {list(XY_LAYOUT_CHART_TYPES)}, got {value!r}; a "
+                "metric/gauge/datatable/pie panel needs different required keys built "
+                "from a different query, so use panel.query_overrides "
+                "(esql_query + kibana_type_override) for that shape change"
+            )
+        return value
+
+    @field_validator("xy_mode")
+    @classmethod
+    def validate_xy_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        allowed = {"stacked", "unstacked", "percentage"}
+        if value not in allowed:
+            raise ValueError(f"xy_mode must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_xy_mode_target(self) -> PanelLayoutOverrideModel:
+        if self.xy_mode and self.kibana_type_override == "line":
+            raise ValueError(
+                f"xy_mode {self.xy_mode!r} cannot apply to kibana_type_override "
+                "'line': Kibana line charts have no stacking mode. Use "
+                f"kibana_type_override of {list(XY_STACKABLE_CHART_TYPES)}, or drop "
+                "xy_mode"
+            )
+        return self
+
+    @field_validator("legend_position")
+    @classmethod
+    def validate_legend_position(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        allowed = {"bottom", "left", "right", "top"}
+        if value not in allowed:
+            raise ValueError(
+                f"legend_position must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
 
 class QueryConfigModel(_StrictModel):
@@ -240,6 +328,8 @@ def validate_rule_pack_payload(
 
 
 __all__ = [
+    "XY_LAYOUT_CHART_TYPES",
+    "XY_STACKABLE_CHART_TYPES",
     "DashboardConfigModel",
     "GrafanaRulePackModel",
     "IndexRewriteRuleModel",
