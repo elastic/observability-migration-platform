@@ -283,9 +283,14 @@ class SummaryPanelBranchTests(unittest.TestCase):
         result = _translate(
             f"max (sum ({_USED_BYTES}))", "{{exported_namespace}}", panel_type="bargauge"
         )
-        inner, outer = _stats_lines(result.esql_query)
-        self.assertEqual(inner, f"| STATS inner_val = SUM(metrics.{_USED_BYTES})")
-        self.assertIn("MAX(inner_val)", outer)
+        stats = _stats_lines(result.esql_query)
+        self.assertGreaterEqual(len(stats), 2, result.esql_query)
+        inner, *rest = stats
+        self.assertIn(f"inner_val = SUM(metrics.{_USED_BYTES})", inner)
+        # time_bucket is the lastNotNull collapse, not a legend-derived series.
+        self.assertEqual(_grouping_dims(inner), [])
+        self.assertTrue(any("MAX(inner_val)" in line for line in rest), result.esql_query)
+        self.assertNotIn("exported_namespace", result.esql_query)
 
 
 class NestedCountCountTests(unittest.TestCase):
