@@ -410,6 +410,14 @@ def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
     return pack
 
 
+def _override_layer_key(entry: dict) -> tuple[str, str]:
+    """Merge key for query/layout overrides: stripped, casefolded title + section."""
+    return (
+        str(entry.get("title_match") or "").strip().casefold(),
+        str(entry.get("section_match") or "").strip().casefold(),
+    )
+
+
 def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> RulePackConfig:
     """Build a composed pack: curated as the base layer, user pack wins on collision."""
     import copy
@@ -438,25 +446,20 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.panel_type_overrides.update(user.panel_type_overrides)
     result.control_field_overrides.update(user.control_field_overrides)
 
-    # panel_query_overrides: user overrides win by title_match + section_match
-    def _query_override_key(entry: dict) -> tuple[str, str]:
-        return (
-            str(entry.get("title_match") or "").casefold(),
-            str(entry.get("section_match") or "").casefold(),
-        )
-
-    user_override_keys = {_query_override_key(o) for o in user.panel_query_overrides}
+    # panel_query_overrides / panel_layout_overrides: user wins by
+    # (title_match, section_match), matching the runtime matcher which
+    # strips whitespace before casefolding.
+    user_query_keys = {_override_layer_key(o) for o in user.panel_query_overrides}
     result.panel_query_overrides = [
         o for o in result.panel_query_overrides
-        if _query_override_key(o) not in user_override_keys
+        if _override_layer_key(o) not in user_query_keys
     ]
     result.panel_query_overrides.extend(user.panel_query_overrides)
 
-    # panel_layout_overrides: user overrides win by title_match
-    user_layout_titles = {o["title_match"] for o in user.panel_layout_overrides}
+    user_layout_keys = {_override_layer_key(o) for o in user.panel_layout_overrides}
     result.panel_layout_overrides = [
         o for o in result.panel_layout_overrides
-        if o["title_match"] not in user_layout_titles
+        if _override_layer_key(o) not in user_layout_keys
     ]
     result.panel_layout_overrides.extend(user.panel_layout_overrides)
 

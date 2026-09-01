@@ -2542,6 +2542,61 @@ def test_panel_layout_override_user_wins_over_curated():
     assert merged.panel_layout_overrides == user.panel_layout_overrides
 
 
+def test_panel_layout_override_user_section_does_not_drop_other_section():
+    """A user override for one section must not delete the curated sibling."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_layout_overrides = [
+        {"title_match": "Transactions", "section_match": "Global", "size": {"w": 24}},
+        {"title_match": "Transactions", "section_match": "Database", "size": {"w": 16}},
+        {"title_match": "Locks by state", "xy_mode": "stacked"},
+    ]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_layout_overrides = [
+        {"title_match": "Transactions", "section_match": "Database", "size": {"w": 12}},
+    ]
+
+    merged = _merge_curated_into_base(curated, user)
+    by_key = {
+        (item["title_match"], item.get("section_match") or ""): item
+        for item in merged.panel_layout_overrides
+    }
+    assert by_key[("Transactions", "Global")]["size"] == {"w": 24}
+    assert by_key[("Transactions", "Database")]["size"] == {"w": 12}
+    assert by_key[("Locks by state", "")]["xy_mode"] == "stacked"
+
+
+def test_panel_override_merge_strips_whitespace_keys():
+    """Padded user keys must replace the matching curated override, not layer both."""
+    from observability_migration.adapters.source.grafana.rules import _merge_curated_into_base
+
+    curated = RulePackConfig()
+    curated.panel_query_overrides = [
+        {"title_match": "Transactions", "section_match": "Database", "esql_query": "-- curated"},
+    ]
+    curated.panel_layout_overrides = [
+        {"title_match": "Locks by state", "xy_mode": "stacked"},
+    ]
+    curated._curated_pack_name = "test_curated"
+
+    user = RulePackConfig()
+    user.panel_query_overrides = [
+        {"title_match": " Transactions ", "section_match": " Database ", "esql_query": "-- user"},
+    ]
+    user.panel_layout_overrides = [
+        {"title_match": " Locks by state ", "xy_mode": "grouped"},
+    ]
+
+    merged = _merge_curated_into_base(curated, user)
+    assert len(merged.panel_query_overrides) == 1
+    assert merged.panel_query_overrides[0]["esql_query"] == "-- user"
+    assert len(merged.panel_layout_overrides) == 1
+    assert merged.panel_layout_overrides[0]["xy_mode"] == "grouped"
+
+
 def test_panel_layout_overrides_apply_inside_sections():
     panels = [
         {
@@ -2679,6 +2734,28 @@ def test_panel_layout_overrides_can_force_stacked_bar():
         {
             "title_match": "Locks by state",
             "kibana_type_override": "bar",
+            "xy_mode": "stacked",
+        }
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["esql"]["type"] == "bar"
+    assert panels[0]["esql"]["mode"] == "stacked"
+
+
+def test_panel_layout_overrides_xy_mode_without_type_override():
+    panels = [
+        {
+            "title": "Locks by state",
+            "esql": {"type": "bar", "query": "FROM metrics-*"},
+            "position": {"x": 0, "y": 0},
+            "size": {"w": 24, "h": 16},
+        }
+    ]
+    overrides = [
+        {
+            "title_match": "Locks by state",
             "xy_mode": "stacked",
         }
     ]

@@ -11288,18 +11288,21 @@ def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
             panel.pop("hide_title", None)
             _clear_duplicate_inner_title_label(panel)
     kibana_type = override.get("kibana_type_override")
-    if isinstance(kibana_type, str) and kibana_type.strip():
-        esql = panel.get("esql")
-        if isinstance(esql, dict):
-            chart_type = kibana_type.strip()
-            esql["type"] = chart_type
-            xy_mode = override.get("xy_mode")
-            if chart_type == "line":
-                esql.pop("mode", None)
-            elif xy_mode:
-                esql["mode"] = xy_mode
-            elif chart_type in {"bar", "area"}:
-                esql.setdefault("mode", "stacked")
+    xy_mode = override.get("xy_mode")
+    esql = panel.get("esql")
+    if isinstance(esql, dict):
+        type_changed = False
+        if isinstance(kibana_type, str) and kibana_type.strip():
+            esql["type"] = kibana_type.strip()
+            type_changed = True
+        chart_type = str(esql.get("type") or "")
+        if chart_type == "line":
+            esql.pop("mode", None)
+        elif xy_mode:
+            # Schema allows xy_mode without a type override (stack an existing bar/area).
+            esql["mode"] = xy_mode
+        elif type_changed and chart_type in {"bar", "area"}:
+            esql.setdefault("mode", "stacked")
     legend_position = override.get("legend_position")
     if isinstance(legend_position, str) and legend_position.strip():
         esql = panel.get("esql")

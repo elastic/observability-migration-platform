@@ -113,12 +113,14 @@ queries validated; uploaded**. 23 panels native-PROMQL (oracle-verifiable), 12
 ES|QL. Curated pack auto-fired on gnetId 12485.
 
 **Render audit** (`render_audit_driver --elements`, headless Chrome vs the live
-upload): **all 32 panel elements rendered; 0 render_error, 0 error markers, 0
-console/server errors.** Emitted viz types are correct (graphs → `xy`,
-singlestats → `metric`, ratios → `gauge`). The `warn` status is benign: the
-element audit's per-element chart-kind heuristic (XY panels expose a secondary
-metric element) and three duplicate panels inside the collapsed `Database:`
-row (they render on expand).
+upload): **35 panels in the uploaded dashboard; 0 render_error, 0 error markers,
+0 console/server errors on the expanded tree.** Emitted viz types are correct
+(graphs → `xy`, singlestats → `metric`, ratios → `gauge`). The pack forces the
+`Database:` section open (`collapsed: false`) so Database-scoped panels are
+part of the default view, not hidden behind a collapsed row. Remaining `warn`
+status is the element audit's per-element chart-kind heuristic (XY panels
+expose a secondary metric element), not missing panels. `grafana-validate-uploaded`
+is **35/35** with 0 empty / 0 overlaps / 0 runtime errors.
 
 **Interaction**: both controls populate from live ES —
 `Instance` → `['.*', 'postgres:5432']`, `Database` → `['.*', 'postgres',
@@ -138,8 +140,11 @@ lag spans the full row. Average query runtime skips the incomplete last
 last-non-null seconds-per-call (~2.4 ms on the rig).
 
 **14114 re-validation** (same rig, single input): curated pack fired, **6/6
-migrated, 6 Green / 0 Red, render audit PASS (6/6 rendered, 0 errors)** — no
-regression, no changes needed.
+migrated, 6 Green / 0 Red, render audit PASS (6/6 rendered, 0 errors)**. This
+PR also updates the 14114 pack: Number of active connections now groups by
+`instance` and `datname` (Lens `series_group` composite so two exporters that
+share a database name stay distinct series), plus layout overrides so the
+Quickstart dashboard matches Kibana chart conventions.
 
 ## Discoveries
 
