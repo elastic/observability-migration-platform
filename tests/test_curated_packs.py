@@ -4241,9 +4241,13 @@ def test_315_classifies_cadvisor_counters_and_gauges():
 
 def test_315_rewrites_pre_116_labels_and_ignores_dead_matchers():
     resolved, _ = _resolve_315()
-    assert resolved.label_rewrites["pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["container_name"] == "labels.container"
-    assert resolved.label_rewrites["id"] == "labels.id"
+    # label_rewrites are source→canonical; the resolver namespaces per profile.
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["container_name"] == "container"
+    assert "id" not in resolved.label_rewrites  # identity rewrite dropped
+    # Passthrough restores the source-faithful pre-1.16 spellings.
+    assert resolved.source_label_names["pod"] == "pod_name"
+    assert resolved.source_label_names["container"] == "container_name"
     assert "kubernetes_io_hostname" in resolved.ignored_labels
     assert "image" in resolved.ignored_labels
     # systemd/rkt labels must NOT be ignored (those panels degrade to empty).
@@ -4279,7 +4283,7 @@ def test_315_pods_cpu_panel_groups_by_pod_without_dead_matchers():
     )
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     assert "RATE(container_cpu_usage_seconds_total)" in query
     # Dead selector labels must be stripped, not filtered on.
     assert "kubernetes_io_hostname" not in query
@@ -4324,8 +4328,8 @@ def test_315_containers_override_keeps_k8s_series_and_discloses_drop():
     )
     assert result.status == "migrated_with_warnings"
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "labels.pod" in query and "labels.container" in query
-    assert 'labels.container != "POD"' in query
+    assert "k8s.pod.name" in query and "k8s.container.name" in query
+    assert 'k8s.container.name != "POD"' in query
     # The dropped-runtime disclosure must surface as a warning.
     assert any("docker" in r or "rkt" in r for r in result.reasons)
 
@@ -4366,7 +4370,7 @@ def test_315_system_services_panel_degrades_to_empty_not_aggregate():
     # collapse into a single misleading aggregate (a BY grouping is retained).
     assert "systemd_service_name" not in query
     assert '"__systemd_service__"' in query
-    assert "labels.container" in query
+    assert "k8s.container.name" in query
     assert "RATE(container_cpu_usage_seconds_total)" in query
 
 
@@ -4401,18 +4405,19 @@ def test_315_pods_memory_override_groups_by_pod_last_over_time():
     # Gauge → LAST_OVER_TIME (no illegal SUM(MAX(...)) nested aggregate), grouped
     # by pod with the breakdown accessor aligned to the ES|QL output column.
     assert "LAST_OVER_TIME(container_memory_working_set_bytes)" in query
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     # Root cgroup (id=/) has no pod label; the override excludes it.
-    assert "labels.pod IS NOT NULL" in query
+    assert "k8s.pod.name IS NOT NULL" in query
 
 
 def test_315_pods_panels_breakdown_accessor_matches_query_column():
-    """Curated ES|QL keeps the Lens breakdown on labels.pod, not phantom pod_name.
+    """Curated ES|QL keeps the Lens breakdown on the resolved pod field.
 
     The native PROMQL DSL path leaves the breakdown accessor bound to the
-    pre-rewrite ``pod_name`` (Lens "invalid column" after pod_name ->
-    labels.pod). The override must emit ``labels.pod`` as an actual query
-    output column and never reference the bare ``pod_name``.
+    pre-rewrite ``pod_name`` (Lens "invalid column" after the pod_name -> pod
+    rewrite). The override must emit the resolved pod field (here the otel
+    ``k8s.pod.name``) as an actual query output column and never reference the
+    bare ``pod_name``.
     """
     resolved, resolver = _resolve_315()
     for title, expr in (
@@ -4444,7 +4449,7 @@ def test_315_pods_panels_breakdown_accessor_matches_query_column():
         assert result.status in {"migrated", "migrated_with_warnings"}
         esql = yaml_panel.get("esql") or {}
         query = esql.get("query") or ""
-        assert "`labels.pod`" in query, f"{title}: {query}"
+        assert "`k8s.pod.name`" in query, f"{title}: {query}"
         # No bare pre-rewrite label token as a standalone identifier.
         assert "pod_name" not in query, f"{title} leaked pod_name: {query}"
 
@@ -4487,7 +4492,7 @@ def test_315_pods_network_override_names_received_and_sent():
     assert "Received =" in query
     assert "Sent =" in query
     assert "value_B" not in query
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
 
 
 def test_315_all_processes_override_groups_by_cgroup_id():
@@ -4517,9 +4522,10 @@ def test_315_all_processes_override_groups_by_cgroup_id():
     )
     assert result.status in {"migrated", "migrated_with_warnings"}
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "`labels.id`" in query
-    assert 'labels.id != "/"' in query
-    assert "labels.id IS NOT NULL" in query
+    # cgroup `id` has no otel candidate, so it resolves to the bare `id`.
+    assert "`id`" in query
+    assert 'id != "/"' in query
+    assert "id IS NOT NULL" in query
 
 
 # ---------------------------------------------------------------------------
@@ -4594,7 +4600,7 @@ def test_6417_cluster_cpu_usage_reshapes_resource_split():
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     # The old per-resource metric name is reshaped to the resource= label form.
     assert "kube_node_status_allocatable" in query
-    assert 'labels.resource == "cpu"' in query
+    assert 'resource == "cpu"' in query
     assert "kube_pod_container_resource_requests" in query
 
 
@@ -4655,7 +4661,7 @@ def test_6417_deployment_table_groups_by_deployment():
     }
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
-    assert "labels.deployment" in query
+    assert "k8s.deployment.name" in query
     assert "MV_CONTAINS(TO_STRING(?namespace)" in query
 
 
@@ -4679,7 +4685,7 @@ def test_6417_cluster_cpu_usage_binds_node_control():
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "MV_CONTAINS(TO_STRING(?node)" in query
-    assert "labels.node" in query
+    assert "k8s.node.name" in query
 
 
 def test_6417_cpu_requested_reshapes_resource_split():
@@ -4701,7 +4707,7 @@ def test_6417_cpu_requested_reshapes_resource_split():
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "kube_pod_container_resource_requests" in query
-    assert 'labels.resource == "cpu"' in query
+    assert 'resource == "cpu"' in query
     assert "kube_pod_container_resource_requests_cpu_cores" not in query
 
 
@@ -4800,10 +4806,15 @@ def test_741_registry_entry_present():
 
 def test_741_rewrites_heapster_labels_and_keeps_node_instance():
     resolved, _ = _resolve_741()
-    assert resolved.label_rewrites["pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["io_kubernetes_pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["io_kubernetes_container_name"] == "labels.container"
-    assert resolved.label_rewrites["kubernetes_io_hostname"] == "labels.instance"
+    # label_rewrites are source→canonical; the resolver namespaces per profile.
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["io_kubernetes_pod_name"] == "pod"
+    assert resolved.label_rewrites["io_kubernetes_container_name"] == "container"
+    assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
+    # Passthrough restores the source-faithful Heapster spellings.
+    assert resolved.source_label_names["pod"] == "pod_name"
+    assert resolved.source_label_names["container"] == "container_name"
+    assert resolved.source_label_names["instance"] == "kubernetes_io_hostname"
     assert "image" in resolved.ignored_labels
     assert "name" in resolved.ignored_labels
     assert "kubernetes_io_hostname" not in resolved.ignored_labels
@@ -4830,7 +4841,7 @@ def test_741_deployment_cpu_graph_prefix_binds_and_groups_by_pod():
     }
     result, query, _ = _translate_741(panel, section_title="Deployment CPU usage")
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     assert "STARTS_WITH" in query and "?Deployment" in query
     assert "pod_name" not in query
     assert "io_kubernetes" not in query
@@ -4859,7 +4870,7 @@ def test_741_kpi_ratio_uses_deployment_prefix_and_node_instance():
     assert "machine_memory_bytes" in query
     assert "STARTS_WITH" in query and "?Deployment" in query
     assert "?Node" in query
-    assert "labels.instance" in query
+    assert "service.instance.id" in query
 
 
 def test_741_used_memory_panel_id_disambiguates_duplicate_title():
@@ -4999,8 +5010,8 @@ def test_741_containers_override_keeps_k8s_series_and_discloses_drop():
     }
     result, query, _ = _translate_741(panel)
     assert result.status == "migrated_with_warnings"
-    assert "labels.pod" in query and "labels.container" in query
-    assert 'labels.container != "POD"' in query
+    assert "k8s.pod.name" in query and "k8s.container.name" in query
+    assert 'k8s.container.name != "POD"' in query
     assert any("docker" in r or "rkt" in r for r in result.reasons)
 
 
@@ -5206,8 +5217,9 @@ def test_8171_idle_cpu_override_is_busy_by_cpu():
     result, query, _ = _translate_8171(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "Busy =" in query or "Busy =" in query.replace(" ", " ")
-    assert "labels.cpu" in query
-    assert 'labels.mode == "idle"' in query or "{{label:mode}}" in query
+    # cpu / mode have no otel candidate, so they resolve to the bare name.
+    assert "`cpu`" in query
+    assert 'mode == "idle"' in query or "{{label:mode}}" in query
     assert "?server" in query
 
 

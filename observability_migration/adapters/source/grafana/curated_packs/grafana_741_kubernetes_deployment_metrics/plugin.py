@@ -6,13 +6,13 @@
 Two control-populate rewrites that the general pipeline cannot infer:
 
 * ``Deployment`` is a bare ``label_values(deployment)`` with no metric anchor,
-  so there is nothing for the ES|QL control query to key ``labels.deployment``
-  off. Anchor it on ``kube_deployment_status_replicas``.
+  so there is nothing for the ES|QL control query to key the canonical
+  ``deployment`` label off. Anchor it on ``kube_deployment_status_replicas``.
 * ``Node`` is ``label_values(kubernetes_io_hostname)``. That Heapster-era
   node label is not on a modern cAdvisor scrape; ``machine_cpu_cores`` carries
-  ``instance`` (the pack rewrites ``kubernetes_io_hostname`` →
-  ``labels.instance``), so populate from that instead of leaving the control
-  empty.
+  ``instance`` (the pack rewrites ``kubernetes_io_hostname`` → canonical
+  ``instance``), so populate from that instead of leaving the control empty.
+  The resolver namespaces ``deployment``/``instance`` per --field-profile.
 """
 
 

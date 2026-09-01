@@ -8,6 +8,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "parity-rig"))
 
-from verifier.profile_leakage import check_profile_leakage  # noqa: E402
+from verifier.profile_leakage import (  # noqa: E402
+    check_profile_leakage,
+    extract_esql_queries,
+)
 
 # Native byte-identical goldens: the prometheus_native migration output is the
 # invariant the field-profile portability change must never perturb. The source
@@ -28,7 +32,7 @@ _NATIVE_BASELINE_DIR = ROOT / "tests" / "fixtures" / "field_profile_native_basel
 _NATIVE_INDEX = "metrics-k8s.prometheus-default"
 
 
-def _migrate_native(input_dir: str, out_dir: Path) -> None:
+def _migrate(input_dir: str, out_dir: Path, profile: str, index: str) -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = "."
     subprocess.run(
@@ -48,17 +52,21 @@ def _migrate_native(input_dir: str, out_dir: Path) -> None:
             "--assets",
             "dashboards",
             "--field-profile",
-            "prometheus_native",
+            profile,
             "--esql-index",
-            _NATIVE_INDEX,
+            index,
             "--data-view",
-            _NATIVE_INDEX,
+            index,
         ],
         check=True,
         cwd=str(ROOT),
         env=env,
         capture_output=True,
     )
+
+
+def _migrate_native(input_dir: str, out_dir: Path) -> None:
+    _migrate(input_dir, out_dir, "prometheus_native", _NATIVE_INDEX)
 
 
 def _assert_native_byte_identical(input_dir: str, golden: Path, tmp_path: Path) -> None:
@@ -320,3 +328,48 @@ def test_control_field_override_is_canonical(profile, expected):
     pack.control_field_overrides = {"Deployment": "deployment"}
     r = SchemaResolver(pack, field_profile=profile)
     assert r.resolve_control_field("Deployment") == expected
+
+
+# End-to-end per-pack profile-leakage: migrate each converted Kubernetes pack's
+# source dashboard SOLO under every non-native profile and assert the emitted
+# ES|QL never references a field namespaced for a *different* profile (e.g.
+# ``labels.pod`` under otel). Native spelling is already guarded byte-identical
+# by the goldens above; these cover the portability direction. Sourced from the
+# pinned community corpus; skip (never fail) when it is absent.
+_COMMUNITY_DIR = Path("/tmp/community")
+
+# (pack id, community source dashboard basename)
+_K8S_PACK_CORPUS = [
+    ("741", "deployment-metrics"),
+    ("8171", "kubernetes-nodes"),
+    ("6417", "kubernetes-cluster-prometheus"),
+    ("315", "kubernetes-cluster-monitoring-via-prometheus-315"),
+    ("315-1621", "kubernetes-cluster-monitoring-via-prometheus-1621"),
+]
+
+_LEAKAGE_PROFILES = [
+    "otel",
+    "prometheus_metrics",
+    "prometheus_remote_write",
+    "passthrough",
+]
+
+
+@pytest.mark.parametrize("pack_id,corpus_basename", _K8S_PACK_CORPUS)
+@pytest.mark.parametrize("profile", _LEAKAGE_PROFILES)
+def test_k8s_pack_no_profile_leakage(pack_id, corpus_basename, profile, tmp_path):
+    source = _COMMUNITY_DIR / f"{corpus_basename}.json"
+    if not source.is_file():
+        pytest.skip(f"requires the pinned community corpus fixture {source}")
+    solo = tmp_path / "src"
+    solo.mkdir()
+    shutil.copy(source, solo / source.name)
+    out = tmp_path / "out"
+    _migrate(str(solo), out, profile, "metrics-*")
+    violations: list[str] = []
+    for native in glob.glob(str(out / "dashboards" / "native" / "*.native.json")):
+        with open(native, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for query in extract_esql_queries(data):
+            violations += check_profile_leakage(query, profile)
+    assert violations == [], f"pack {pack_id} leaked under {profile}: {violations}"
