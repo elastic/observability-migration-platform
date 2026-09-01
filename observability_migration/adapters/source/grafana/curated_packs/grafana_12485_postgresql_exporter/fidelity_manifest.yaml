@@ -134,6 +134,13 @@ summary:
   known_gaps:
     - "Grafana $Interval interval variable is dropped (not a Kibana control)."
     - "Instance populate rewritten from up{job=postgres-exporter} to pg_up; Database anchored on pg_stat_database_numbackends."
+    # The source row `Database: $Database` carries repeat=Database on a
+    # multi-select (multi + includeAll) variable. Kibana has no panel
+    # repetition, so the engine emits ONE expanded section with a
+    # single-select Database control (and says so in a control warning).
+    # The 13 per-database panels below are PERFECT for the selected
+    # database; they are not a reproduction of Grafana's repeated rows.
+    - "Grafana repeats the 'Database: $Database' row per selected database; Kibana cannot repeat panels, so the migration emits one expanded Database section with a single-select Database control. Selecting one database scopes those panels; several databases side by side is not reproduced."
     - "pg_database_size/pg_replication_lag/pg_stat_statements_* renamed to postgres_exporter v0.15 fields via metric_map."
     - "pg_stat_activity_count and pg_locks_count are gauges despite the _count suffix."
     - "Replication lag and pg_stat_statements panels require replica / the extension to show non-empty data."

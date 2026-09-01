@@ -141,7 +141,18 @@ to keep metric/gauge chrome titles visible, `kibana_type_override` /
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
 XY legend (`right` for a long categorical breakdown that does not fit under
-the plot). `query_overrides` accept the same `section_match` so a duplicated
+the plot). Those last three are **presentation-only** and stay inside the XY
+family: `layout_overrides.kibana_type_override` accepts `line` / `bar` / `area`
+only (a rule pack asking for `metric`, `gauge`, `datatable`, … is rejected at
+load time), because this late pass rewrites `esql.type` / `mode` / `legend`
+without rebuilding the query, while those shapes require different keys
+(`primary`, `metric`, `breakdowns`) — use `query_overrides` (`esql_query` plus
+its own `kibana_type_override`) for an output-shape change. `xy_mode` needs a
+stackable effective type (`bar` / `area`; a Kibana line chart has no stacking
+mode). When a matched panel translated to a non-XY chart, the presentation
+request is skipped and reported as a panel warning (capped at
+`migrated_with_warnings`) rather than emitted as dashboard JSON that
+`docs/dashboards/schema.json` rejects. `query_overrides` accept the same `section_match` so a duplicated
 Global vs Database title can get different ES|QL (for example Global
 deadlocks must not take `?Database`). Grafana 5 singlestat
 panels store units on the panel root (`format: bytes` / `s` / `percent`);
@@ -175,7 +186,13 @@ v0.15 (`pg_database_size` → `pg_database_size_bytes`, `pg_replication_lag` →
 filter never matches an Elastic scrape) and anchors the bare
 `label_values(datname)` `Database` control on `pg_stat_database_numbackends`,
 and the `Interval` Grafana interval variable is dropped rather than emitted as
-an inert control. Duplicate Global/Database panel titles are laid out with
+an inert control. The source `Database: $Database` row is a Grafana *repeated*
+row driven by a multi-select variable; Kibana cannot repeat panels, so the
+migration emits one expanded Database section with a **single-select** Database
+control (an explicit control warning says so). Selecting a database scopes those
+panels, but several databases rendered side by side is not reproduced — the
+per-database panel fidelity labels describe the selected database, not the
+repetition. Duplicate Global/Database panel titles are laid out with
 `section_match` so the Database header is a hole-free 3+2 KPI grid and the
 composition panels (connections by state, locks by mode) render as stacked
 bars with the lock-mode legend on the right. Grafana's duplicated `blk_read_time` legend on I/O Read/Write time is

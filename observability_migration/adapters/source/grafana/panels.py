@@ -64,6 +64,7 @@ from observability_migration.targets.kibana.emit.layout import (
     apply_style_guide_layout,
 )
 
+from .extension_schema import XY_LAYOUT_CHART_TYPES, XY_STACKABLE_CHART_TYPES
 from .extract import _normalize_text_panel_content
 from .links import build_links_panel, translate_dashboard_links
 from .manifest import (
@@ -11259,7 +11260,115 @@ def _layout_override_matches(
     return _pack_override_section_matches(section_title, override)
 
 
-def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
+def _layout_presentation_request(override: dict) -> list[str]:
+    """Names of the presentation keys *override* actually asks for."""
+    requested = []
+    for key in ("kibana_type_override", "xy_mode", "legend_position"):
+        value = override.get(key)
+        if isinstance(value, str) and value.strip():
+            requested.append(key)
+    return requested
+
+
+def _apply_layout_presentation_override(
+    panel: dict, override: dict, warnings: list | None
+) -> None:
+    """Apply the presentation-only part of a layout override (chart type,
+    stacking mode, legend placement).
+
+    This pass runs after translation and rewrites nothing but ``esql.type`` /
+    ``mode`` / ``legend``, so it can only move a panel *within* the XY family
+    (``line`` / ``bar`` / ``area``), which shares one schema shape (``query`` +
+    ``metrics``). A metric/gauge/datatable/pie panel has different required keys
+    (``primary`` / ``metric`` / ``breakdowns``) that only a new query can
+    produce, and every ``ESQL*PanelConfig`` in ``docs/dashboards/schema.json``
+    declares ``additionalProperties: false`` -- so stamping ``mode``/``legend``
+    onto a metric tile, or flipping an XY panel's ``type`` to ``metric``, emits
+    dashboard JSON the schema rejects. Those requests are skipped and reported
+    (``warnings``) instead of silently emitted or silently ignored;
+    ``panel.query_overrides`` is where an output-shape change belongs.
+    """
+    requested = _layout_presentation_request(override)
+    if not requested:
+        return
+    if isinstance(panel.get("section"), dict):
+        # A row container has no chart to present. Nothing to skip and no
+        # operator-visible gap: aiming a presentation key at a row title is a
+        # pack-authoring mistake, caught by the pack's own contract tests.
+        return
+
+    title = str(override.get("title_match") or panel.get("title") or "").strip()
+
+    def _warn(message: str) -> None:
+        if warnings is not None:
+            warnings.append((panel, message))
+
+    esql = panel.get("esql")
+    if not isinstance(esql, dict):
+        _warn(
+            f"curated layout override for panel '{title}' requested "
+            f"{', '.join(requested)}, but the migrated panel is not an ES|QL chart, "
+            "so the presentation change was skipped"
+        )
+        return
+
+    # An omitted ``type`` is a line chart (the schema's default), which is what
+    # the XY definitions assume.
+    current_type = str(esql.get("type") or "line").strip() or "line"
+    if current_type not in XY_LAYOUT_CHART_TYPES:
+        _warn(
+            f"curated layout override for panel '{title}' requested "
+            f"{', '.join(requested)}, but the migrated panel is a Kibana "
+            f"'{current_type}' chart: those keys only apply to the XY family "
+            f"{list(XY_LAYOUT_CHART_TYPES)}, so the presentation change was skipped. "
+            "Use panel.query_overrides to emit a different panel shape"
+        )
+        return
+
+    kibana_type = str(override.get("kibana_type_override") or "").strip()
+    type_changed = False
+    if kibana_type:
+        if kibana_type in XY_LAYOUT_CHART_TYPES:
+            type_changed = kibana_type != current_type
+            esql["type"] = kibana_type
+        else:
+            _warn(
+                f"curated layout override for panel '{title}' requested chart type "
+                f"'{kibana_type}', which is not one of the presentation-only XY types "
+                f"{list(XY_LAYOUT_CHART_TYPES)}; the panel kept its '{current_type}' "
+                "chart. Use panel.query_overrides to emit a different panel shape"
+            )
+    chart_type = str(esql.get("type") or "line").strip() or "line"
+
+    xy_mode = str(override.get("xy_mode") or "").strip()
+    if xy_mode and chart_type in XY_STACKABLE_CHART_TYPES:
+        esql["mode"] = xy_mode
+    elif xy_mode:
+        # ``line`` carries no stacking mode in the schema; dropping it keeps the
+        # emitted panel valid, but the request must still be visible.
+        esql.pop("mode", None)
+        _warn(
+            f"curated layout override for panel '{title}' requested xy_mode "
+            f"'{xy_mode}', which a Kibana '{chart_type}' chart does not support; the "
+            f"stacking request was dropped. Set kibana_type_override to one of "
+            f"{list(XY_STACKABLE_CHART_TYPES)} to stack it"
+        )
+    elif chart_type not in XY_STACKABLE_CHART_TYPES:
+        esql.pop("mode", None)
+    elif type_changed:
+        esql.setdefault("mode", "stacked")
+
+    legend_position = str(override.get("legend_position") or "").strip()
+    if legend_position:
+        legend = dict(esql.get("legend") or {})
+        legend["position"] = legend_position
+        legend.setdefault("visible", "show")
+        esql["legend"] = legend
+
+
+def _apply_one_panel_layout_override(
+    panel: dict, override: dict, warnings: list | None = None
+) -> None:
     position_override = override.get("position") or {}
     if position_override:
         position = dict(panel.get("position", {}))
@@ -11287,34 +11396,15 @@ def _apply_one_panel_layout_override(panel: dict, override: dict) -> None:
         else:
             panel.pop("hide_title", None)
             _clear_duplicate_inner_title_label(panel)
-    kibana_type = override.get("kibana_type_override")
-    xy_mode = override.get("xy_mode")
-    esql = panel.get("esql")
-    if isinstance(esql, dict):
-        type_changed = False
-        if isinstance(kibana_type, str) and kibana_type.strip():
-            esql["type"] = kibana_type.strip()
-            type_changed = True
-        chart_type = str(esql.get("type") or "")
-        if chart_type == "line":
-            esql.pop("mode", None)
-        elif xy_mode:
-            # Schema allows xy_mode without a type override (stack an existing bar/area).
-            esql["mode"] = xy_mode
-        elif type_changed and chart_type in {"bar", "area"}:
-            esql.setdefault("mode", "stacked")
-    legend_position = override.get("legend_position")
-    if isinstance(legend_position, str) and legend_position.strip():
-        esql = panel.get("esql")
-        if isinstance(esql, dict):
-            legend = dict(esql.get("legend") or {})
-            legend["position"] = legend_position.strip()
-            legend.setdefault("visible", "show")
-            esql["legend"] = legend
+    _apply_layout_presentation_override(panel, override, warnings)
 
 
 def _apply_panel_layout_overrides_recursively(
-    panels: list[dict], overrides: list[dict], *, section_title: str = ""
+    panels: list[dict],
+    overrides: list[dict],
+    *,
+    section_title: str = "",
+    warnings: list | None = None,
 ) -> None:
     if not panels or not overrides:
         return
@@ -11332,7 +11422,7 @@ def _apply_panel_layout_overrides_recursively(
         source_title = str(panel.get("title") or "")
         for override in usable:
             if _layout_override_matches(panel, override, section_title=section_title):
-                _apply_one_panel_layout_override(panel, override)
+                _apply_one_panel_layout_override(panel, override, warnings)
         section = panel.get("section")
         if isinstance(section, dict):
             inner = section.get("panels")
@@ -11341,7 +11431,32 @@ def _apply_panel_layout_overrides_recursively(
                     inner,
                     overrides,
                     section_title=source_title,
+                    warnings=warnings,
                 )
+
+
+def _attach_layout_override_warnings(result, yaml_doc: dict, warnings: list) -> None:
+    """Report skipped layout presentation overrides on the panels they targeted.
+
+    ``warnings`` holds ``(panel_dict, message)`` pairs collected while applying
+    the overrides; the panel dicts are the same objects still in ``yaml_doc``, so
+    leaf order lines up with ``result.yaml_panel_results`` (the same pairing
+    ``_sync_visual_ir`` uses below). A skipped presentation request caps the
+    panel at ``migrated_with_warnings``: the panel still renders, but it does not
+    look the way the pack asked for, and that is a gap the report must show.
+    """
+    by_panel: dict[int, list[str]] = {}
+    for panel, message in warnings:
+        by_panel.setdefault(id(panel), []).append(message)
+    for dashboard in yaml_doc.get("dashboards") or []:
+        leaves = list(_iter_leaf_panels(dashboard.get("panels") or []))
+        for panel, panel_result in zip(leaves, result.yaml_panel_results):
+            for message in by_panel.get(id(panel)) or []:
+                _append_unique(panel_result.reasons, message)
+                if panel_result.status == "migrated":
+                    panel_result.status = "migrated_with_warnings"
+                    panel_result.confidence = min(panel_result.confidence, 0.6)
+    recompute_result_counts(result)
 
 
 def _resolve_section_overlaps_recursively(panels: list[dict]) -> None:
@@ -11794,11 +11909,18 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         yaml_doc["dashboards"][0]["controls"] = controls
 
     apply_style_guide_layout(yaml_doc)
+    # A layout override whose presentation request does not fit the translated
+    # panel shape is skipped rather than emitted as schema-invalid JSON; the
+    # skip is reported on the panel it was aimed at (never silently dropped).
+    layout_override_warnings: list = []
     for dashboard in yaml_doc.get("dashboards") or []:
         _apply_panel_layout_overrides_recursively(
             dashboard.get("panels") or [],
             getattr(rule_pack, "panel_layout_overrides", []) or [],
+            warnings=layout_override_warnings,
         )
+    if layout_override_warnings:
+        _attach_layout_override_warnings(result, yaml_doc, layout_override_warnings)
 
     # Safety net: ``apply_style_guide_layout`` (specifically
     # ``_fill_simple_row``) can rescale a row's widths to total
