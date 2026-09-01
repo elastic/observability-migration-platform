@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import glob
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +18,79 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "parity-rig"))
 
 from verifier.profile_leakage import check_profile_leakage  # noqa: E402
+
+# Native byte-identical goldens: the prometheus_native migration output is the
+# invariant the field-profile portability change must never perturb. The source
+# fixtures are the pinned /tmp checkouts used by the live-migrate flow; skip
+# (never fail) when they are absent, matching the repo convention for tests that
+# shell out to the CLI against on-disk fixtures.
+_NATIVE_BASELINE_DIR = ROOT / "tests" / "fixtures" / "field_profile_native_baseline"
+_NATIVE_INDEX = "metrics-k8s.prometheus-default"
+
+
+def _migrate_native(input_dir: str, out_dir: Path) -> None:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "."
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "observability_migration.app.cli",
+            "migrate",
+            "--source",
+            "grafana",
+            "--input-mode",
+            "files",
+            "--input-dir",
+            input_dir,
+            "--output-dir",
+            str(out_dir),
+            "--assets",
+            "dashboards",
+            "--field-profile",
+            "prometheus_native",
+            "--esql-index",
+            _NATIVE_INDEX,
+            "--data-view",
+            _NATIVE_INDEX,
+        ],
+        check=True,
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+    )
+
+
+def _assert_native_byte_identical(input_dir: str, golden: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _migrate_native(input_dir, out)
+    produced = glob.glob(str(out / "dashboards" / "native" / "*.native.json"))
+    assert produced, f"migration emitted no native dashboards from {input_dir}"
+    with open(produced[0], encoding="utf-8") as fh:
+        new_data = json.load(fh)
+    with open(golden, encoding="utf-8") as fh:
+        gold_data = json.load(fh)
+    assert new_data == gold_data
+
+
+@pytest.mark.skipif(
+    not Path("/tmp/gnet-741").is_dir(),
+    reason="requires the pinned /tmp/gnet-741 Grafana source fixture",
+)
+def test_741_native_is_byte_identical(tmp_path):
+    _assert_native_byte_identical(
+        "/tmp/gnet-741", _NATIVE_BASELINE_DIR / "741.native.json", tmp_path
+    )
+
+
+@pytest.mark.skipif(
+    not Path("/tmp/gnet-8171").is_dir(),
+    reason="requires the pinned /tmp/gnet-8171 Grafana source fixture",
+)
+def test_8171_native_is_byte_identical(tmp_path):
+    _assert_native_byte_identical(
+        "/tmp/gnet-8171", _NATIVE_BASELINE_DIR / "8171.native.json", tmp_path
+    )
 
 
 def test_leakage_flags_labels_prefix_under_otel():
