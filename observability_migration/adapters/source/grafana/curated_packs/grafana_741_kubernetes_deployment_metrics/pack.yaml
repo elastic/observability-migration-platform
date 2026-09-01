@@ -1,0 +1,357 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 741
+# https://grafana.com/grafana/dashboards/741-deployment-metrics/
+#
+# Source: community "Kubernetes Deployment metrics".
+# Revision 1. schemaVersion 12 (old `rows[]` layout), 16 leaf panels.
+# Metric family: cAdvisor container_* + machine_* AND kube-state-metrics
+# kube_deployment_status_replicas*.
+#
+# Authored against a pre-1.16 cAdvisor + Heapster-era label lineage:
+#   - `pod_name` / `io_kubernetes_pod_name`     -> modern `pod`
+#   - `io_kubernetes_container_name`            -> modern `container`
+#   - `kubernetes_io_hostname`                  -> scrape `instance`
+#   - `pod_name=~"^$Deployment.*$"`             -> prefix match on pod name
+#     (Grafana interpolates the deployment into a regex; the engine cannot
+#     parameterize `^$Deployment.*$` because it is not a full-value matcher)
+#   - docker (`name!~"^k8s_.*"`) / rkt          -> obsolete; dropped as gaps
+#
+# Engine vs pack split:
+#   Engine: rate()/gauge translation, rows[] -> sections, singlestat reducers,
+#           `^$Deployment$` exact matchers, control synthesis.
+#   Pack:   pre-1.16 label bridge, Deployment prefix ES|QL, k8s-only container
+#           series, Received/Sent network names, cgroup-id All-processes,
+#           plugin.py populate rewrites, Node via labels.instance.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    container_cpu_usage_seconds_total: counter
+    container_network_receive_bytes_total: counter
+    container_network_transmit_bytes_total: counter
+    container_memory_working_set_bytes: gauge
+    machine_cpu_cores: gauge
+    machine_memory_bytes: gauge
+    kube_deployment_status_replicas: gauge
+    kube_deployment_status_replicas_available: gauge
+
+  label_rewrites:
+    pod_name: labels.pod
+    io_kubernetes_pod_name: labels.pod
+    io_kubernetes_container_name: labels.container
+    container_name: labels.container
+    namespace: labels.namespace
+    pod: labels.pod
+    container: labels.container
+    deployment: labels.deployment
+    id: labels.id
+    kubernetes_io_hostname: labels.instance
+    instance: labels.instance
+
+  # Dead cAdvisor selector labels. Do NOT ignore kubernetes_io_hostname — it
+  # is rewritten to labels.instance so $Node actually filters.
+  ignored_labels:
+    - image
+    - name
+
+  label_candidates:
+    pod:
+      - labels.pod
+    container:
+      - labels.container
+    deployment:
+      - labels.deployment
+    instance:
+      - labels.instance
+    id:
+      - labels.id
+
+controls:
+  field_overrides:
+    Deployment: labels.deployment
+    deployment: labels.deployment
+    Node: labels.instance
+    node: labels.instance
+
+panel:
+  query_overrides:
+    # --- KPI ratios (Total usage) -------------------------------------------
+    # Prefix `^$Deployment.*$` is not a full-value matcher, so the engine
+    # cannot bind ?Deployment. Node on machine_* is rewritten to instance.
+    - title_match: "Deployment memory usage"
+      section_match: "Total usage"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Node == "" OR ?Node == ".*" OR ({{label:instance}} RLIKE ?Node OR ({{label:instance}} IS NULL AND "" RLIKE ?Node)))
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR {{label:pod}} IS NULL OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
+        | STATS used = SUM(CASE({{label:pod}} IS NOT NULL, LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(total > 0, used / total, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Deployment CPU usage"
+      section_match: "Total usage"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Node == "" OR ?Node == ".*" OR ({{label:instance}} RLIKE ?Node OR ({{label:instance}} IS NULL AND "" RLIKE ?Node)))
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR {{label:pod}} IS NULL OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:machine_cpu_cores:gauge}} IS NOT NULL
+        | STATS used = SUM(CASE({{label:pod}} IS NOT NULL, RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(total > 0, used / total, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Replicas"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR ({{label:deployment}} RLIKE ?Deployment OR ({{label:deployment}} IS NULL AND "" RLIKE ?Deployment)))
+        | WHERE {{metric:kube_deployment_status_replicas_available:gauge}} IS NOT NULL OR {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
+        | STATS available = SUM(LAST_OVER_TIME({{metric:kube_deployment_status_replicas_available:gauge}})), total = SUM(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(total > 0, available / total, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+
+    # Duplicate Used/Total titles in the same row: select by Grafana panel id.
+    - title_match: "Used"
+      panel_id: 38
+      primary_format: bytes
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 39
+      primary_format: bytes
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Node == "" OR ?Node == ".*" OR ({{label:instance}} RLIKE ?Node OR ({{label:instance}} IS NULL AND "" RLIKE ?Node)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Used"
+      panel_id: 40
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS computed_value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 41
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Node == "" OR ?Node == ".*" OR ({{label:instance}} RLIKE ?Node OR ({{label:instance}} IS NULL AND "" RLIKE ?Node)))
+        | WHERE {{metric:machine_cpu_cores:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Available"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR ({{label:deployment}} RLIKE ?Deployment OR ({{label:deployment}} IS NULL AND "" RLIKE ?Deployment)))
+        | WHERE {{metric:kube_deployment_status_replicas_available:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:kube_deployment_status_replicas_available:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 43
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR ({{label:deployment}} RLIKE ?Deployment OR ({{label:deployment}} IS NULL AND "" RLIKE ?Deployment)))
+        | WHERE {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+
+    # --- Per-pod graphs (Heapster io_kubernetes_* grouping) -----------------
+    - title_match: "Deployment CPU usage"
+      section_match: "Deployment CPU usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Deployment memory usage"
+      section_match: "Deployment memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Deployment network I/O"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{label:pod}} IS NOT NULL AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, Received, Sent
+        | SORT time_bucket ASC
+      status_override: migrated
+
+    # --- Containers: keep k8s series, drop obsolete docker/rkt --------------
+    - title_match: "Containers CPU usage"
+      approximation_note: "Dropped obsolete docker (name!~^k8s_) and rkt (rkt_container_name) runtime series; modern cAdvisor only emits the k8s pod/container series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
+        | KEEP time_bucket, `labels.pod`, `labels.container`, value
+        | SORT time_bucket ASC
+
+    # --- All-processes: group by cgroup id ----------------------------------
+    - title_match: "All processes CPU usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "All processes memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "All processes network I/O"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
+        | WHERE {{label:id}} IS NOT NULL AND {{label:id}} != "/" AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, Received, Sent
+        | SORT time_bucket ASC
+      status_override: migrated
+
+  layout_overrides:
+    # 48-col KPI strip: three ratio gauges on row 1, six named tiles on row 2.
+    - title_match: "Deployment memory usage"
+      section_match: "Total usage"
+      panel_id: 4
+      position: {x: 0, y: 0}
+      size: {w: 16, h: 12}
+      hide_title: false
+    - title_match: "Deployment CPU usage"
+      section_match: "Total usage"
+      panel_id: 6
+      position: {x: 16, y: 0}
+      size: {w: 16, h: 12}
+      hide_title: false
+    - title_match: "Replicas"
+      panel_id: 37
+      position: {x: 32, y: 0}
+      size: {w: 16, h: 12}
+      hide_title: false
+    - title_match: "Used"
+      panel_id: 38
+      title: "Memory used"
+      position: {x: 0, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Total"
+      panel_id: 39
+      title: "Memory total"
+      position: {x: 8, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Used"
+      panel_id: 40
+      title: "CPU used"
+      position: {x: 16, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Total"
+      panel_id: 41
+      title: "CPU total"
+      position: {x: 24, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Available"
+      panel_id: 42
+      title: "Replicas available"
+      position: {x: 32, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Total"
+      panel_id: 43
+      title: "Replicas total"
+      position: {x: 40, y: 12}
+      size: {w: 8, h: 8}
+      hide_title: false
+    - title_match: "Deployment CPU usage"
+      panel_id: 17
+      position: {y: 24}
+      size: {w: 48, h: 12}
+    - title_match: "Containers CPU usage"
+      panel_id: 24
+      position: {y: 36}
+      size: {w: 48, h: 12}
+    - title_match: "All processes CPU usage"
+      panel_id: 20
+      position: {y: 48}
+      size: {w: 48, h: 12}
+    - title_match: "Deployment memory usage"
+      panel_id: 25
+      position: {y: 60}
+      size: {w: 48, h: 12}
+    - title_match: "All processes memory usage"
+      panel_id: 28
+      position: {y: 72}
+      size: {w: 48, h: 12}
+    - title_match: "Deployment network I/O"
+      panel_id: 16
+      position: {y: 84}
+      size: {w: 48, h: 12}
+    - title_match: "All processes network I/O"
+      panel_id: 29
+      position: {y: 96}
+      size: {w: 48, h: 12}

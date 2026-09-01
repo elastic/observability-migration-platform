@@ -4122,6 +4122,7 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
             rule_pack.panel_query_overrides,
             title,
             section_title=section_title,
+            panel_id=panel.get("id") or panel.get("panelId") or "",
         )
         for _override in ([_selected_override] if _selected_override else []):
                 _curated_query = (_override.get("esql_query") or "").strip()
@@ -11235,27 +11236,47 @@ def _pack_override_section_matches(section_title: str, override: dict) -> bool:
     return current == section_match or current.startswith(section_match)
 
 
+def _pack_override_panel_id_matches(panel_id, override: dict) -> bool:
+    wanted = override.get("panel_id")
+    if wanted is None or str(wanted).strip() == "":
+        return True
+    return str(wanted).strip() == str(panel_id or "").strip()
+
+
 def _select_panel_pack_override(
-    overrides: list[dict], title: str, *, section_title: str = ""
+    overrides: list[dict],
+    title: str,
+    *,
+    section_title: str = "",
+    panel_id="",
 ) -> dict | None:
-    """Pick a pack override for *title*, preferring a matching ``section_match``."""
+    """Pick a pack override for *title*, preferring ``panel_id`` then ``section_match``."""
     generic = None
-    specific = None
+    section_specific = None
+    id_specific = None
     for override in overrides or []:
         if not _pack_override_title_matches(title, override):
             continue
+        wanted_id = override.get("panel_id")
+        if wanted_id is not None and str(wanted_id).strip() != "":
+            if _pack_override_panel_id_matches(panel_id, override):
+                id_specific = override
+            continue
         if str(override.get("section_match") or "").strip():
             if _pack_override_section_matches(section_title, override):
-                specific = override
+                section_specific = override
         elif generic is None:
             generic = override
-    return specific or generic
+    return id_specific or section_specific or generic
 
 
 def _layout_override_matches(
     panel: dict, override: dict, *, section_title: str
 ) -> bool:
     if not _pack_override_title_matches(str(panel.get("title") or ""), override):
+        return False
+    actual_id = panel.get("id") or panel.get("_source_panel_id") or panel.get("panelId") or ""
+    if not _pack_override_panel_id_matches(actual_id, override):
         return False
     return _pack_override_section_matches(section_title, override)
 
@@ -11385,9 +11406,6 @@ def _apply_one_panel_layout_override(
             if value is not None:
                 size[key] = int(value)
         panel["size"] = size
-    new_title = override.get("title")
-    if isinstance(new_title, str) and new_title.strip():
-        panel["title"] = new_title.strip()
     if "collapsed" in override and isinstance(panel.get("section"), dict):
         panel["section"]["collapsed"] = bool(override.get("collapsed"))
     if "hide_title" in override and override.get("hide_title") is not None:
@@ -11395,7 +11413,13 @@ def _apply_one_panel_layout_override(
             panel["hide_title"] = True
         else:
             panel.pop("hide_title", None)
+            # Clear the inner label against the *source* title before any
+            # chrome rename, otherwise a Used → Memory used override leaves
+            # Lens looking for a ``Used`` column (N/A).
             _clear_duplicate_inner_title_label(panel)
+    new_title = override.get("title")
+    if isinstance(new_title, str) and new_title.strip():
+        panel["title"] = new_title.strip()
     _apply_layout_presentation_override(panel, override, warnings)
 
 

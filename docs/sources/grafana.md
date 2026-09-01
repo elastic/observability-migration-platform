@@ -136,8 +136,12 @@ panel after translation (Grafana's empty first row becomes Kibana
 "Section 1"; a pack can rename it to "Overview"), `section_match` so a
 duplicate title in Global vs Database gets independent geometry
 (`section_match` is the Grafana row title, the same string `query_overrides`
-use, captured before any section rename), `hide_title`
-to keep metric/gauge chrome titles visible, `kibana_type_override` /
+use, captured before any section rename), `panel_id` so same-section
+duplicate titles (741's three `Total` KPI tiles) get independent queries and
+names, `hide_title` to keep metric/gauge chrome titles visible (when a pack
+also `title`-renames the chrome, the inner Lens label is cleared against the
+*source* title so Lens does not look for a leftover column like `Used`),
+`kibana_type_override` /
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
 XY legend (`right` for a long categorical breakdown that does not fit under
@@ -245,6 +249,33 @@ table by deployment. The pack `plugin.py` rewrites the constant `.*`
 first paint selects every concrete option (Kibana's stand-in for Grafana All)
 instead of hydrating to a single namespace/node. The removed `OutOfDisk` node
 condition is a documented gap.
+
+The Kubernetes Deployment metrics (741) pack is a pre-1.16 cAdvisor +
+kube-state-metrics mix. Heapster labels (`pod_name`, `io_kubernetes_pod_name`,
+`io_kubernetes_container_name`) rewrite to `labels.pod` / `labels.container`.
+`$Node` is *not* dropped: `kubernetes_io_hostname` rewrites to
+`labels.instance` and the plugin populates Node from
+`label_values(machine_cpu_cores, instance)` so the control actually filters
+on a modern scrape (Grafana's `label_values(kubernetes_io_hostname)` is
+empty). `$Deployment` is a bare `label_values(deployment)` that the plugin
+anchors on `kube_deployment_status_replicas`; cAdvisor panels that filter
+`pod_name=~"^$Deployment.*$"` cannot be parameterized as a full-value
+matcher, so curated ES|QL binds `STARTS_WITH(labels.pod, ?Deployment)`
+(Grafana's `.*` All sentinel skips the prefix). Same-section duplicate titles (three `Total` / two `Used` KPI
+tiles) are selected with `panel_id` and renamed Memory/CPU/Replicas
+used/total and laid out as a hole-free 48-col strip (three ratio gauges
+over six named tiles). Docker/rkt container series are dropped as an
+approximation; network butterflies are named Received/Sent; All-processes
+panels group by cgroup `labels.id`.
+
+The Kubernetes Nodes (8171) pack targets node_exporter 0.16+. The source
+"Idle CPU" PromQL is `100 - idle` (busy %) despite the title — Kibana keeps
+that formula, legends Busy by `labels.cpu`, and the layout override renames
+the panel CPU Busy. "Disk I/O" queries `node_nfsd_disk_bytes_*` (NFS
+*server* counters, empty on typical Kubernetes nodes); the pack maps those
+to `node_disk_read_bytes_total` / `node_disk_written_bytes_total` and names
+the series Read / Written / IO time. `$server` stays
+`label_values(node_boot_time_seconds, instance)`.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins

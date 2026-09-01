@@ -1,0 +1,75 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 741 (Kubernetes Deployment metrics)
+# https://grafana.com/grafana/dashboards/741-deployment-metrics/
+#
+# PERFECT     = same information as Grafana on a modern cAdvisor + KSM scrape.
+# APPROXIMATE = documented delta (dropped obsolete runtime series, prefix match).
+# GAP         = not used; docker/rkt series are dropped from the Containers
+#               panel rather than left as empty sibling panels.
+
+schema_version: 1
+gnet_id: 741
+gnet_revision: 1
+dashboard_title: "Kubernetes Deployment metrics"
+maintainer: "community"
+
+panels:
+  - title: "Deployment memory usage"
+    section: "Total usage"
+    fidelity: APPROXIMATE
+    notes: "Working-set / machine_memory ratio scoped by pod-name prefix of $Deployment and $Node via labels.instance. Grafana percent 0-100 is emitted as a 0-1 percentunit ratio. Cross-metric ratio — PERFECT under native PROMQL shape."
+  - title: "Deployment CPU usage"
+    section: "Total usage"
+    fidelity: APPROXIMATE
+    notes: "rate(container_cpu)/machine_cpu_cores with the same Deployment prefix + Node instance bind."
+  - title: "Replicas"
+    fidelity: PERFECT
+    notes: "available/total kube_deployment_status_replicas* by labels.deployment."
+  - title: "Used"
+    fidelity: APPROXIMATE
+    notes: "Two tiles share this title (memory bytes panel id 38, CPU rate panel id 40). Pack selects each by panel_id and renames Memory used / CPU used; values follow the Deployment prefix bind."
+  - title: "Total"
+    fidelity: APPROXIMATE
+    notes: "Three tiles share this title (memory id 39, CPU id 41, replicas id 43). Pack selects each by panel_id and renames Memory/CPU/Replicas total. Memory Total follows Grafana's Node-scoped working-set sum via labels.instance."
+  - title: "Available"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas_available) filtered by $Deployment."
+  - title: "Deployment CPU usage"
+    section: "Deployment CPU usage"
+    fidelity: PERFECT
+    notes: "rate(container_cpu) by labels.pod with Deployment prefix. Curated ES|QL keeps the Lens breakdown on labels.pod (Heapster io_kubernetes_pod_name rewrite would otherwise invalid-column)."
+  - title: "Containers CPU usage"
+    fidelity: APPROXIMATE
+    notes: "Curated ES|QL keeps the k8s pod/container series (excludes POD pause); dropped obsolete docker and rkt targets."
+  - title: "All processes CPU usage"
+    fidelity: APPROXIMATE
+    notes: "Grouped by cAdvisor cgroup labels.id excluding id=/, scoped by Deployment pod-name prefix."
+  - title: "Deployment memory usage"
+    section: "Deployment memory usage"
+    fidelity: PERFECT
+    notes: "working_set by labels.pod with Deployment prefix; breakdown aligned on labels.pod."
+  - title: "All processes memory usage"
+    fidelity: APPROXIMATE
+    notes: "Grouped by cgroup labels.id excluding id=/."
+  - title: "Deployment network I/O"
+    fidelity: PERFECT
+    notes: "Received/Sent by pod (native butterfly would label transmit Value B)."
+  - title: "All processes network I/O"
+    fidelity: APPROXIMATE
+    notes: "Received/Sent by cgroup id with Deployment prefix."
+
+summary:
+  total_panels: 16
+  perfect: 5
+  approximate: 11
+  gap: 0
+  notes: >
+    The operational per-deployment CPU/memory/network graphs render on any
+    modern cAdvisor scrape after the Heapster label bridge and the
+    `^$Deployment.*$` prefix bind. Replica KPIs need kube-state-metrics
+    `kube_deployment_status_replicas(_available)`. $Node populates from
+    machine_cpu_cores instance (better than Grafana's dead
+    kubernetes_io_hostname query). Docker/rkt series are dropped from
+    Containers CPU rather than fabricated aggregates.

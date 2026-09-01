@@ -1,0 +1,48 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 8171 (Kubernetes Nodes)
+# https://grafana.com/grafana/dashboards/8171-kubernetes-nodes/
+#
+# PERFECT     = same information as Grafana on node_exporter 0.16+.
+# APPROXIMATE = documented improvement (CPU Busy title, real disk I/O).
+
+schema_version: 1
+gnet_id: 8171
+gnet_revision: 1
+dashboard_title: "Kubernetes Nodes"
+maintainer: "community"
+
+panels:
+  - title: "Idle CPU"
+    fidelity: APPROXIMATE
+    notes: "Source PromQL is 100-idle = busy % by cpu, despite the title. Curated ES|QL keeps that formula, legends Busy by labels.cpu, and the layout override renames the panel CPU Busy."
+  - title: "System Load"
+    fidelity: PERFECT
+    notes: "node_load1/5/15 gauges with static load 1m/5m/15m legends."
+  - title: "Memory Usage"
+    fidelity: PERFECT
+    notes: "Two panels share this title: stacked used/buffers/cached/free graph and a percent singlestat. Engine translates each from panel type; pack does not override by title."
+  - title: "Disk I/O"
+    fidelity: APPROXIMATE
+    notes: "Grafana queries NFS-server nfsd byte counters (empty on typical k8s nodes). Pack maps those to node_disk_read/written_bytes_total and names Read/Written/IO time."
+  - title: "Disk Space Usage"
+    fidelity: PERFECT
+    notes: "(size-free)/size with device!=rootfs. Same-bucket ratio; PERFECT under native PROMQL."
+  - title: "Network Received"
+    fidelity: PERFECT
+    notes: "rate(node_network_receive_bytes_total) by device, lo excluded."
+  - title: "Network Transmitted"
+    fidelity: PERFECT
+    notes: "rate(node_network_transmit_bytes_total) by device, lo excluded."
+
+summary:
+  total_panels: 8
+  perfect: 6
+  approximate: 2
+  gap: 0
+  notes: >
+    node_exporter 0.16+ names already match the dashboard. The pack makes two
+    Kibana-better repairs (CPU Busy title, real disk I/O instead of nfsd) and
+    pins instance/cpu/device labels for prometheus_native. $server populates
+    from label_values(node_boot_time_seconds, instance) as in Grafana.

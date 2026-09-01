@@ -145,3 +145,21 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "6694907c373d7bb0a24143a171f2751cc939f4e8da3fefb04b25b8a59aaca0ab"
     description: "kube-state-metrics + node_exporter cluster health — old KSM name remap (restarts_total, node_filesystem_*_bytes), resource-split allocatable/requests query_overrides, removed OutOfDisk gap, constant node/namespace vars"
+
+  - gnet_id: 741
+    name: grafana_741_kubernetes_deployment_metrics
+    title_hint: "Kubernetes Deployment metrics"
+    tags_hint: ["kubernetes"]
+    path: grafana_741_kubernetes_deployment_metrics
+    gnet_revision: 1
+    dashboard_sha256: "ee383512d9482a9917c5d5777bde332a91f99972f0168c0a794b20adcaae108c"
+    description: "Kubernetes Deployment metrics — Heapster/cAdvisor label remap, Deployment pod-name prefix bind, k8s-only containers, Node via instance"
+
+  - gnet_id: 8171
+    name: grafana_8171_kubernetes_nodes
+    title_hint: "Kubernetes Nodes"
+    tags_hint: ["nodes", "prometheus"]
+    path: grafana_8171_kubernetes_nodes
+    gnet_revision: 1
+    dashboard_sha256: "5d580022bf35bc2cbe42056affd0a1670aa2adb0afd6942f2e642c550a6b29b2"
+    description: "Kubernetes Nodes (node_exporter 0.16+) — CPU Busy rename, nfsd→node_disk I/O map, instance-pinned $server"

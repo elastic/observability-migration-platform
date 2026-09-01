@@ -88,6 +88,10 @@ class PanelQueryOverrideModel(_StrictModel):
     # When set, only apply inside a section whose title casefolds to this
     # value (or starts with it). Same meaning as layout ``section_match``.
     section_match: str | None = None
+    # When set, only apply to the Grafana panel whose ``id`` equals this
+    # value. Disambiguates duplicate titles in the same section (e.g. 741's
+    # three "Total" KPI tiles).
+    panel_id: int | str | None = None
     # Optional Lens presentation override when the curated ES|QL shape does
     # not match the Grafana panel type (e.g. multi-value bargauge → datatable).
     kibana_type_override: str | None = None
@@ -124,6 +128,9 @@ class PanelLayoutOverrideModel(_StrictModel):
     # value (or starts with it). Lets Global vs Database duplicate titles
     # get independent geometry.
     section_match: str | None = None
+    # When set, only apply to the Grafana panel whose ``id`` equals this
+    # value. Same-section duplicate titles (741 Used/Total) need this.
+    panel_id: int | str | None = None
     position: PanelPositionOverrideModel = Field(default_factory=PanelPositionOverrideModel)
     size: PanelSizeOverrideModel = Field(default_factory=PanelSizeOverrideModel)
     collapsed: bool | None = None
