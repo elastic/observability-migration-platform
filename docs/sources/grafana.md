@@ -237,10 +237,14 @@ bridges the renamed names (`node_filesystem_size`/`_free` →
 → `kube_pod_container_status_restarts_total`), and `metric_kinds` classify the
 KSM gauges and the restarts counter explicitly. Its `query_overrides` reshape the
 resource-split KSM metrics — `kube_node_status_allocatable{resource="cpu"|"memory"|"pods"}`
-is filtered per-resource so the cluster CPU/Memory/Pod usage tiles compute the
-right allocatable denominator — and group the Deployment Replicas table by
-deployment. The removed `OutOfDisk` node condition is a documented gap, and the
-constant `.*` `$node`/`$namespace` variables become bound Kibana controls.
+and `kube_pod_container_resource_requests{resource=...}` — so the cluster
+CPU/Memory/Pod usage tiles, capacity graphs, and the two absolute request
+tiles compute against the modern shape, and group the Deployment Replicas
+table by deployment. The pack `plugin.py` rewrites the constant `.*`
+`$node`/`$namespace` variables into multi-select `label_values()` controls so
+first paint selects every concrete option (Kibana's stand-in for Grafana All)
+instead of hydrating to a single namespace/node. The removed `OutOfDisk` node
+condition is a documented gap.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins

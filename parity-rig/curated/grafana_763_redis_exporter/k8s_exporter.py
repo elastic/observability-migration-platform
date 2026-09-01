@@ -148,10 +148,21 @@ def render() -> str:
     for ns, pods in WORKLOADS.items():
         for pod, container in pods:
             n = _node_for(idx)
-            phase = "Running"
             idx += 1
             L.append(f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}"}} 1')
-            L.append(f'kube_pod_status_phase{{namespace="{ns}",pod="{pod}",phase="{phase}"}} 1')
+            # kube-state-metrics emits every phase as a 0/1 series; 0-valued
+            # non-Running phases keep the Pending/Failed/Succeeded/Unknown
+            # tiles at 0 instead of Lens N/A.
+            for phase_name, value in (
+                ("Pending", 0),
+                ("Running", 1),
+                ("Succeeded", 0),
+                ("Failed", 0),
+                ("Unknown", 0),
+            ):
+                L.append(
+                    f'kube_pod_status_phase{{namespace="{ns}",pod="{pod}",phase="{phase_name}"}} {value}'
+                )
             L.append(
                 f'kube_pod_container_status_running{{namespace="{ns}",pod="{pod}",container="{container}"}} 1'
             )

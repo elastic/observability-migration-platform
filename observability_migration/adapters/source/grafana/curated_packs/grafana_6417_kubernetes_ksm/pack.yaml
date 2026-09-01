@@ -27,8 +27,11 @@
 #   Engine: gauge sum, counter delta(), binary ratios (Disk Usage), row ->
 #           section, singlestat reducers, constant-variable inlining.
 #   Pack:   metric_map for the pure renames, metric_kinds for counter/gauge,
-#           query_overrides for the resource-split allocatable/requests panels,
-#           and honest gaps for OutOfDisk / nodename.
+#           query_overrides for the resource-split allocatable/requests panels
+#           (including the two absolute-request tiles), plugin.py to rewrite
+#           constant `.*` $node/$namespace into multi-select label_values
+#           controls (so first paint is all-values, not the first concrete
+#           option), and honest gaps for OutOfDisk / nodename.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -105,6 +108,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS used = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})), alloc = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
         | WHERE computed_value IS NOT NULL
@@ -116,6 +120,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS used = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
         | WHERE computed_value IS NOT NULL
@@ -127,6 +132,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS used = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
         | WHERE computed_value IS NOT NULL
@@ -135,10 +141,14 @@ panel:
         | KEEP computed_value
 
     # Capacity graphs: allocatable + capacity + requested over time.
+    # Bind $node (Grafana node=~"$node") so a node control selection rewrites
+    # these queries. MV_CONTAINS keeps the Grafana `.*` all-sentinel working
+    # alongside multi-select of concrete node names.
     - title_match: "Cluster Pod Capacity"
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS allocatable = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | KEEP time_bucket, allocatable, capacity, requested
         | SORT time_bucket ASC
@@ -146,6 +156,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS allocatable = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | KEEP time_bucket, allocatable, capacity, requested
         | SORT time_bucket ASC
@@ -153,6 +164,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
         | STATS allocatable = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | KEEP time_bucket, allocatable, capacity, requested
         | SORT time_bucket ASC
@@ -165,11 +177,34 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{control:namespace}}))
         | WHERE {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
         | STATS replicas = MAX(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}})) BY {{label:deployment}}
         | KEEP `labels.deployment`, replicas
         | SORT replicas DESC
+
+    # Absolute request tiles still use the old per-resource metric names
+    # (`_cpu_cores` / `_memory_bytes`). Reshape to the modern resource= label
+    # so they populate on a current kube-state-metrics scrape instead of the
+    # "Telemetry missing" markdown placeholder.
+    - title_match: "CPU Cores Requested by Containers"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{control:namespace}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
+        | WHERE {{label:resource}} == "cpu"
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | KEEP computed_value
+    - title_match: "Memory Requested By Containers"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{control:namespace}}))
+        | WHERE (MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{control:node}}))
+        | WHERE {{label:resource}} == "memory"
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | KEEP computed_value
 
   layout_overrides:
     # "Nodes Out of Disk" queries kube_node_status_condition{condition="OutOfDisk"},

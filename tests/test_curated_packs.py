@@ -4631,3 +4631,107 @@ def test_6417_deployment_table_groups_by_deployment():
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "labels.deployment" in query
+    assert "MV_CONTAINS(TO_STRING(?namespace)" in query
+
+
+def test_6417_cluster_cpu_usage_binds_node_control():
+    panel = {
+        "id": 1,
+        "type": "singlestat",
+        "title": "Cluster CPU Usage",
+        "format": "percentunit",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"})'
+                    ' / sum(kube_node_status_allocatable_cpu_cores{node=~"$node"})'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "MV_CONTAINS(TO_STRING(?node)" in query
+    assert "labels.node" in query
+
+
+def test_6417_cpu_requested_reshapes_resource_split():
+    panel = {
+        "id": 5,
+        "type": "singlestat",
+        "title": "CPU Cores Requested by Containers",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_pod_container_resource_requests_cpu_cores'
+                    '{namespace=~"$namespace", node=~"$node"})'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "kube_pod_container_resource_requests" in query
+    assert 'labels.resource == "cpu"' in query
+    assert "kube_pod_container_resource_requests_cpu_cores" not in query
+
+
+def test_6417_constant_vars_become_multi_select_label_values_controls():
+    """Constant `.*` $node/$namespace must not hydrate to the first concrete value."""
+    dashboard = {
+        "gnetId": 6417,
+        "title": "Kubernetes Cluster (Prometheus)",
+        "tags": ["kubernetes", "kubernetes-app"],
+        "templating": {
+            "list": [
+                {
+                    "name": "node",
+                    "type": "constant",
+                    "query": ".*",
+                    "current": {"text": ".*", "value": ".*"},
+                },
+                {
+                    "name": "namespace",
+                    "type": "constant",
+                    "query": ".*",
+                    "current": {"text": ".*", "value": ".*"},
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 1,
+                "type": "singlestat",
+                "title": "Number Of Nodes",
+                "targets": [
+                    {"expr": 'sum(kube_node_info{node=~"$node"})', "refId": "A"}
+                ],
+                "gridPos": {"x": 0, "y": 0, "w": 8, "h": 3},
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    by_name = {c.get("variable_name"): c for c in controls}
+    assert "node" in by_name and "namespace" in by_name, controls
+    node = by_name["node"]
+    namespace = by_name["namespace"]
+    assert node.get("multiple") is True
+    assert namespace.get("multiple") is True
+    node_query = str(node.get("query") or "")
+    namespace_query = str(namespace.get("query") or "")
+    assert "kube_node_info" in node_query
+    assert "kube_pod_info" in namespace_query
+    assert "node" in node_query
+    assert "namespace" in namespace_query

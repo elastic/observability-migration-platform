@@ -18,13 +18,13 @@ panels:
   # --- Cluster Health ------------------------------------------------------
   - title: "Cluster Pod Usage"
     fidelity: APPROXIMATE
-    notes: "running pods / allocatable pods. allocatable_pods reshaped to kube_node_status_allocatable{resource=pods}. Cross-metric ratio — PERFECT under native PROMQL."
+    notes: "running pods / allocatable pods. allocatable_pods reshaped to kube_node_status_allocatable{resource=pods}. Binds $node via MV_CONTAINS so a node control selection rewrites the tile."
   - title: "Cluster CPU Usage"
     fidelity: APPROXIMATE
-    notes: "requests{resource=cpu} / allocatable{resource=cpu}. Old per-resource metric names reshaped via query_override."
+    notes: "requests{resource=cpu} / allocatable{resource=cpu}. Old per-resource metric names reshaped via query_override. Binds $node via MV_CONTAINS."
   - title: "Cluster Memory Usage"
     fidelity: APPROXIMATE
-    notes: "requests{resource=memory} / allocatable{resource=memory}."
+    notes: "requests{resource=memory} / allocatable{resource=memory}. Binds $node via MV_CONTAINS."
   - title: "Cluster Disk Usage"
     fidelity: APPROXIMATE
     notes: "(size-free)/size on node_filesystem_*_bytes (renamed via metric_map); nodename matcher dropped (not a modern fs label). Same-bucket ES|QL ratio."
@@ -97,11 +97,11 @@ panels:
     fidelity: PERFECT
     notes: "delta(kube_pod_container_status_restarts_total[30m]); renamed via metric_map and typed as counter."
   - title: "CPU Cores Requested by Containers"
-    fidelity: PERFECT
-    notes: "sum(kube_pod_container_resource_requests_cpu_cores). NOTE: renders when the scrape emits the old per-resource metric; a resource-split reshape is only needed for the ratio panels."
+    fidelity: APPROXIMATE
+    notes: "sum(kube_pod_container_resource_requests{resource=cpu}). Old per-resource name reshaped via query_override; binds $namespace and $node."
   - title: "Memory Requested By Containers"
-    fidelity: PERFECT
-    notes: "sum(kube_pod_container_resource_requests_memory_bytes)."
+    fidelity: APPROXIMATE
+    notes: "sum(kube_pod_container_resource_requests{resource=memory}). Same resource-split reshape as the CPU request tile."
 
   # --- Jobs ----------------------------------------------------------------
   - title: "Jobs Succeeded"
@@ -113,14 +113,14 @@ panels:
 
 controls:
   - name: node
-    notes: "Source $node is a constant regex (.*). Synthesized as an optional node control bound on labels.node."
+    notes: "Source $node is a constant regex (.*). plugin.py rewrites it to a multi-select label_values(kube_node_info, node) control so first paint selects every node (Kibana-safe All) instead of hydrating to the first concrete node."
   - name: namespace
-    notes: "Source $namespace is a constant regex (.*). Synthesized as an optional namespace control bound on labels.namespace."
+    notes: "Source $namespace is a constant regex (.*). Same multi-select rewrite on label_values(kube_pod_info, namespace)."
 
 summary:
   total_panels: 27
-  perfect: 17
-  approximate: 9
+  perfect: 15
+  approximate: 11
   gap: 1
   notes: >
     The count/status singlestats (pods, containers, deployments, jobs, nodes)
