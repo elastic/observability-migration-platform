@@ -461,11 +461,118 @@ This is exercised by the late-bound grouping render-audit canary
 (`build_late_bound_grouping_canary`) so the interactive control and the
 collision degrade are both proven to render in Kibana (see `docs/testing.md`).
 
+### Literal-Valued Template Variables (`textbox` / `constant`)
+
+A `textbox` variable is free-text input and a `constant` variable is a fixed,
+always-hidden dashboard value. Neither selects over series: the value is a
+literal the dashboard author typed, and Grafana interpolates it into the PromQL
+string before Prometheus ever sees the query. The migration does the same, in a
+dashboard pre-pass that runs before any translation path
+(`_substitute_literal_variable_values`), so
+`... >= ($pvc_percent_used_warning_threshold / 100)` with a default of `80`
+migrates exactly like `... >= (80 / 100)`.
+
+- **Which values are inlined.** Only values that are themselves valid PromQL
+  literals: numbers (`80`, `0.95`, `1e3`), durations (`5m`, `1h30m`), and
+  metric/label-name identifiers (`node_cpu_seconds_total`, `job:rate:sum`).
+  A regex (`.*`), an alternation, a comma-separated list, a whole
+  sub-expression, a PromQL keyword, or a duration Prometheus would reject
+  (`1m1h` — compound units must descend) is **not** inlined; placing it safely
+  would need a real PromQL parse of the surrounding context. Grafana's
+  `${var:format}` modifiers are honored: value-preserving ones (`raw`, `text`,
+  `value`) are inlined, quoting/encoding ones (`json`, `singlequote`,
+  `percentencode`, `csv`, …) are left alone.
+- **The current selection decides.** The value the dashboard renders with
+  (`current`) wins, and the declared default (`query`) applies only when there
+  is none. A current value that is *present but not a safe literal* is dropped
+  rather than replaced by the default — inlining the default would silently
+  compute the panel against a number nobody selected. Nothing is inlined then,
+  so the guardrail below surfaces the gap instead.
+- **Label matchers are deliberately excluded.** `{namespace="$ns"}` keeps the
+  ES|QL named-parameter path (`namespace == ?ns` plus a Kibana control), which
+  stays *interactive* — strictly better than freezing the filter to one value.
+  String literals are skipped for the same reason, in all three PromQL quote
+  styles (`"…"`, `'…'`, and raw `` `…` ``): in
+  `label_replace(v, "dst", "$1", …)`, `$1` is a regex backreference, not a
+  variable.
+- **The frozen value is disclosed.** A `textbox` whose value reached a query
+  gets a `control_warnings` entry naming the literal, because the viewer can no
+  longer change it without editing the panel query. When the same variable also
+  drives a label matcher *anywhere in the dashboard* it keeps an interactive
+  control there, so the warning additionally says that changing that control no
+  longer changes the inlined value as it did in Grafana. Only positions that are
+  genuinely parameterized count as still-interactive, tested with the same
+  predicate that binds the parameter: a quoted matcher value that is *entirely*
+  one variable (regex anchors on `=~` / `!~` aside) and is not a `$__` built-in.
+  So a string argument, a backtick-quoted or unquoted value, and a partial value
+  such as `job="shard-$n"` never produce that claim. A `constant` is not
+  reported: it is not user-changeable in Grafana either, so inlining loses
+  nothing.
+
+#### Variables That Cannot Be Inlined Never Ship A Phantom Column
+
+`preprocess_grafana_macros` rewrites any remaining `$var` into the bare PromQL
+identifier `label_<var>` so the AST parser still accepts the expression. Most
+shapes then drop or block that placeholder, but a variable sitting in a **binary
+operand** (`metric_a / metric_b >= ($threshold / 100)`) parses as a genuine
+metric selector and used to survive into the emitted ES|QL as the column
+`label_<var>` — under the field profile's metric prefix, e.g.
+`metrics.label_threshold`. That column can never exist, so the panel uploaded
+cleanly and then rendered an Elasticsearch `Unknown column` error tile.
+
+The priority-13 validator `template_variable_placeholder_column_rule` now
+reverts such a panel to `not_feasible` with a warning naming the variable, so it
+becomes an honest "Manual review required" placeholder instead. Blaming a
+variable takes three pieces of evidence, so a target metric genuinely named
+`label_...` (kube-state-metrics really does expose some) is never mistaken for a
+placeholder:
+
+1. the name appears as a `$var` reference in the **source** PromQL;
+2. macro preprocessing *created* an identifier carrying `label_<var>` as a whole
+   `:`-delimited segment — its count in the cleaned expression exceeds the count
+   in the source, so `foo + label_threshold{job="$threshold"}` (a real metric
+   next to a matcher variable) is left alone while `metric:$threshold:rate5m`
+   (which becomes the single unresolvable identifier
+   `metric:label_threshold:rate5m`) is caught;
+3. the **emitted** query *reads from the index* a column that resolves to one of
+   those created identifiers, after stripping the field profile's prefix and,
+   under `--field-profile prometheus_remote_write`, its `.value` / `.counter` /
+   `.rate` suffix. A bound `?param` is a request value, and the target of
+   `EVAL x = …` / `STATS x = …` / `RENAME y AS x` is computed rather than looked
+   up, so neither counts — but occurrences are judged in query order, so the
+   renderer's ordinary `metric = AGG(metric)` shape still reads the index on its
+   right-hand side, and a read that precedes a later definition of the same name
+   still counts.
+
+The LLM last resort (`--llm-endpoint`) runs *after* the validators, and it is
+prompted with the cleaned PromQL where the placeholder already looks like a
+field, so a recovered query is re-checked against the same three tests and
+refused when it reads the placeholder — the panel stays an honest placeholder
+instead of shipping the phantom column through the recovery path.
+
+`--validate` cannot excuse this either: the live-validation self-heal path
+(`validation_failure_self_heals`) treats an `Unknown column` whose name derives
+from a source template variable as a translation error rather than
+not-yet-ingested telemetry, so it is never downgraded from a placeholder to a
+`migrated_with_warnings` warning. It recognizes the column under any field
+profile, including the `prometheus.<name>.value` shape of
+`prometheus_remote_write`. That gate lives in core and cannot inspect the
+pre-/post-macro expressions, so it abstains when the source itself already names
+`label_<var>` *outside a string literal* — inside one (including an unterminated
+one) the name is a matcher value being compared against, not a metric the source
+reads, so it does not excuse the phantom. The adapter-side rule above is the
+precise check, and only
+sources whose translator synthesises the placeholder pass a source expression in
+(Grafana does; Datadog has no such convention).
+
 ### Template Variables in Metric / Label Names
 
 A Grafana template variable that forms part of the **metric or label name** is
 unresolvable at migration time and always degrades to `not_feasible` with a
-clear warning — never a silent or garbage query. Three forms are caught:
+clear warning — never a silent or garbage query. (A `textbox` or `constant`
+variable holding a plain metric name is interpolated first, per the section
+above, so these guardrails only see names that are genuinely unknown offline.)
+Three forms are caught:
 
 | Form | Example | Guardrail |
 |------|---------|-----------|
