@@ -167,7 +167,8 @@ panel:
 
 Optional `section_match` scopes the override to a Grafana row whose title
 casefolds to (or starts with) that string, the same way layout overrides
-distinguish Global vs Database duplicate titles.
+distinguish Global vs Database duplicate titles. Layout matching uses that
+source title even when a layout override later renames the section.
 
 **Merge semantics:** User pack overrides win by `(title_match, section_match)`.
 If both the curated pack and the user `--rules-file` declare an override for

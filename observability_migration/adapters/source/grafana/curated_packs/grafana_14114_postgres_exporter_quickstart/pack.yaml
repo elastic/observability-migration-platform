@@ -91,7 +91,9 @@ panel:
   query_overrides:
     # Mixin legendFormat is ``{{__name__}}``. Native PROMQL GROKs that into a
     # ``breakdown_by: __name__`` column that renders as ``(null)`` in Lens.
-    # Plot numbackends as a named series, split by database when db=All.
+    # Plot numbackends as a named series, split by (instance, datname) so two
+    # exporters that share a database name stay distinct. Lens XY has one
+    # breakdown; the engine composites those labels into ``series_group``.
     - title_match: "Number of active connections"
       kibana_type_override: line
       esql_query: |
@@ -100,8 +102,8 @@ panel:
         | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE (?db == "" OR ({{label:datname}} RLIKE ?db OR ({{label:datname}} IS NULL AND "" RLIKE ?db)))
         | WHERE {{metric:pg_stat_database_numbackends:gauge}} IS NOT NULL
-        | STATS connections = MAX(LAST_OVER_TIME({{metric:pg_stat_database_numbackends:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
-        | KEEP time_bucket, `labels.datname`, connections
+        | STATS connections = MAX(LAST_OVER_TIME({{metric:pg_stat_database_numbackends:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:instance}}, {{label:datname}}
+        | KEEP time_bucket, `labels.instance`, `labels.datname`, connections
         | SORT time_bucket ASC
       status_override: migrated
   layout_overrides:

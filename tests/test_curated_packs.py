@@ -2150,11 +2150,22 @@ def test_14114_numbackends_override_drops_name_breakdown():
         resolver=resolver,
     )
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
-    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    esql = yaml_panel.get("esql") or {}
+    query = esql.get("query") or ""
     assert "connections =" in query
     assert "__name__" not in query
     assert "GROK" not in query
     assert "labels.datname" in query
+    # Source is one series per (instance, datname); grouping only by datname
+    # would MAX-collapse two exporters that share a database name.
+    assert "labels.instance" in query
+    stats_line = next(
+        line for line in query.splitlines() if "STATS connections" in line
+    )
+    assert "labels.instance" in stats_line
+    assert "labels.datname" in stats_line
+    assert (esql.get("breakdown") or {}).get("field") == "series_group"
+    assert "EVAL series_group = CONCAT(" in query
     qps = next(
         item for item in resolved.panel_layout_overrides if item["title_match"] == "QPS"
     )
@@ -2699,6 +2710,41 @@ def test_panel_layout_overrides_can_rename_section_title():
     _apply_panel_layout_overrides_recursively(panels, overrides)
 
     assert panels[0]["title"] == "Overview"
+
+
+def test_panel_layout_overrides_section_match_uses_source_title_after_rename():
+    """section_match is the Grafana row title, not the post-override Kibana title."""
+    panels = [
+        {
+            "title": "Section 1",
+            "section": {
+                "collapsed": False,
+                "panels": [
+                    {
+                        "title": "MySQL Uptime",
+                        "position": {"x": 0, "y": 0},
+                        "size": {"w": 6, "h": 6},
+                    }
+                ],
+            },
+        }
+    ]
+    overrides = [
+        {"title_match": "Section 1", "title": "Overview"},
+        {
+            "title_match": "MySQL Uptime",
+            "section_match": "Section 1",
+            "position": {"x": 8, "y": 2},
+            "size": {"w": 12, "h": 8},
+        },
+    ]
+
+    _apply_panel_layout_overrides_recursively(panels, overrides)
+
+    assert panels[0]["title"] == "Overview"
+    child = panels[0]["section"]["panels"][0]
+    assert child["position"] == {"x": 8, "y": 2}
+    assert child["size"] == {"w": 12, "h": 8}
 
 
 def test_curated_query_override_materializes_control_and_metric_placeholders():

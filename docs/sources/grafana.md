@@ -134,7 +134,9 @@ in Lens on mixed `metrics-*` even though `_query` returns rows.
 `panel.layout_overrides` can also set `title` to rename a section or leaf
 panel after translation (Grafana's empty first row becomes Kibana
 "Section 1"; a pack can rename it to "Overview"), `section_match` so a
-duplicate title in Global vs Database gets independent geometry, `hide_title`
+duplicate title in Global vs Database gets independent geometry
+(`section_match` is the Grafana row title, the same string `query_overrides`
+use, captured before any section rename), `hide_title`
 to keep metric/gauge chrome titles visible, `kibana_type_override` /
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
@@ -157,7 +159,8 @@ control so native PROMQL panels are not left with an empty Instance param.
 The pack also restretches QPS to the Rows height and lays the four remaining
 graphs as a 24+24 grid so the short Grafana singlestat does not leave a hole,
 and replaces the mixin's `{{__name__}}` connections legend (which GROKs to
-`(null)` under native PROMQL) with a per-database ES|QL series.
+`(null)` under native PROMQL) with a per-`(instance, datname)` ES|QL series
+composited into one Lens XY breakdown.
 The PostgreSQL Exporter (12485) pack targets the same exporter family but was
 authored against an older `postgres_exporter` lineage, so its `metric_map`
 bridges four names that changed in `prometheuscommunity/postgres-exporter`

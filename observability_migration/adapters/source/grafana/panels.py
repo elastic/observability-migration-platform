@@ -11325,6 +11325,8 @@ def _apply_panel_layout_overrides_recursively(
         return
 
     for panel in panels:
+        # Child section_match is the Grafana row title, not a renamed Kibana title.
+        source_title = str(panel.get("title") or "")
         for override in usable:
             if _layout_override_matches(panel, override, section_title=section_title):
                 _apply_one_panel_layout_override(panel, override)
@@ -11335,7 +11337,7 @@ def _apply_panel_layout_overrides_recursively(
                 _apply_panel_layout_overrides_recursively(
                     inner,
                     overrides,
-                    section_title=str(panel.get("title") or ""),
+                    section_title=source_title,
                 )
 
 

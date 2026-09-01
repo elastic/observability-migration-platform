@@ -35,8 +35,9 @@ panels:
   - title: "Number of active connections"
     fidelity: PERFECT
     notes: >
-      Curated ES|QL MAX(LAST_OVER_TIME(numbackends)) BY time_bucket, datname.
-      Grafana {{__name__}} legend is not used; Kibana legend is per-database.
+      Curated ES|QL MAX(LAST_OVER_TIME(numbackends)) BY time_bucket, instance, datname.
+      Grafana {{__name__}} legend is not used; Kibana composites instance / datname
+      into one Lens XY breakdown.
 
 summary:
   total_panels: 6
