@@ -217,7 +217,10 @@ DSL rewrites a grouped metric but leaves the Lens breakdown accessor bound to th
 pre-rewrite label (a `by (pod_name)` panel then fails with "invalid column" once
 `pod_name` becomes `labels.pod`), the pack emits explicit `query_overrides` for
 the Pods CPU/memory panels so the ES|QL output column and the Lens breakdown stay
-aligned on `labels.pod`. The obsolete container-runtime series are honest gaps
+aligned on `labels.pod`, and for the Pods/All-processes network panels so the
+transmit series is named `Sent` rather than the fused `Value B`. All-processes
+panels group by the cAdvisor cgroup `id` (`labels.id`, excluding the root
+cgroup). The obsolete container-runtime series are honest gaps
 rather than fabricated aggregates: docker (`name!~"^k8s_"`) and rkt
 (`rkt_container_name`) targets are dropped from the multi-runtime container
 panels (disclosed as an approximation), and the systemd system-service panels

@@ -4218,6 +4218,7 @@ def test_315_rewrites_pre_116_labels_and_ignores_dead_matchers():
     resolved, _ = _resolve_315()
     assert resolved.label_rewrites["pod_name"] == "labels.pod"
     assert resolved.label_rewrites["container_name"] == "labels.container"
+    assert resolved.label_rewrites["id"] == "labels.id"
     assert "kubernetes_io_hostname" in resolved.ignored_labels
     assert "image" in resolved.ignored_labels
     # systemd/rkt labels must NOT be ignored (those panels degrade to empty).
@@ -4421,4 +4422,78 @@ def test_315_pods_panels_breakdown_accessor_matches_query_column():
         assert "`labels.pod`" in query, f"{title}: {query}"
         # No bare pre-rewrite label token as a standalone identifier.
         assert "pod_name" not in query, f"{title} leaked pod_name: {query}"
+
+
+def test_315_pods_network_override_names_received_and_sent():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 5,
+        "type": "graph",
+        "title": "Pods network I/O (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    "sum (rate (container_network_receive_bytes_total"
+                    '{image!="",name=~"^k8s_.*"}[1m])) by (pod_name)'
+                ),
+                "legendFormat": "-> {{ pod_name }}",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    "- sum (rate (container_network_transmit_bytes_total"
+                    '{image!="",name=~"^k8s_.*"}[1m])) by (pod_name)'
+                ),
+                "legendFormat": "<- {{ pod_name }}",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "Received =" in query
+    assert "Sent =" in query
+    assert "value_B" not in query
+    assert "labels.pod" in query
+
+
+def test_315_all_processes_override_groups_by_cgroup_id():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 6,
+        "type": "graph",
+        "title": "All processes CPU usage (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    "sum (rate (container_cpu_usage_seconds_total"
+                    '{id!="/",kubernetes_io_hostname=~"^$Node$"}[1m])) by (id)'
+                ),
+                "legendFormat": "{{ id }}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "`labels.id`" in query
+    assert 'labels.id != "/"' in query
+    assert "labels.id IS NOT NULL" in query
+
 

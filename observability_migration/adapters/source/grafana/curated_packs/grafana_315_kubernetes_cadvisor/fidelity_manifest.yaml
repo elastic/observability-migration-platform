@@ -64,7 +64,7 @@ panels:
     notes: "sum(container_memory_working_set_bytes) by pod. Same curated ES|QL breakdown-alignment override as Pods CPU."
   - title: "Pods network I/O (1m avg)"
     fidelity: PERFECT
-    notes: "receive positive, transmit negative, by pod."
+    notes: "receive positive, transmit negative, by pod. Curated ES|QL names the series Received/Sent; the native butterfly fusion otherwise labels transmit as Value B once a pod breakdown is present."
 
   # --- Per-container workload ---------------------------------------------
   - title: "Containers CPU usage (1m avg)"
@@ -86,13 +86,13 @@ panels:
     notes: "systemd_service_name absent on modern k8s; same impossible-filter override as System services CPU so the panel renders empty rather than erroring."
   - title: "All processes CPU usage (1m avg)"
     fidelity: APPROXIMATE
-    notes: "Groups by the cAdvisor cgroup `id`; renders only where the scrape emits the raw `id` label (real cAdvisor does, kube-state/synthetic scrapes may not)."
+    notes: "Groups by the cAdvisor cgroup `id` (excludes the root cgroup id=/). Curated ES|QL keeps the Lens breakdown on labels.id. Renders per-cgroup series when the scrape emits `id` on container metrics."
   - title: "All processes memory usage"
     fidelity: APPROXIMATE
     notes: "As above; grouped by cgroup id."
   - title: "All processes network I/O (1m avg)"
     fidelity: APPROXIMATE
-    notes: "As above; grouped by cgroup id."
+    notes: "As above; grouped by cgroup id with Received/Sent series names (native butterfly would emit Value B)."
 
 summary:
   total_panels: 21

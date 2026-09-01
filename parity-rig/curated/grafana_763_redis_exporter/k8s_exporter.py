@@ -93,7 +93,11 @@ def render() -> str:
         for pod, container in pods:
             n = _node_for(idx)
             idx += 1
-            base = f'namespace="{ns}",pod="{pod}",container="{container}",image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+            cgroup_id = f"/kubepods/{pod}/{container}"
+            base = (
+                f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+            )
             cpu = elapsed * (0.05 + 0.02 * (idx % 5))
             L.append(f"container_cpu_usage_seconds_total{{{base}}} {cpu:.4f}")
             L.append(

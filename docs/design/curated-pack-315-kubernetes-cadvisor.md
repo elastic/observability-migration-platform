@@ -45,7 +45,8 @@ reducers, and control synthesis. The pack carries only:
 - **`metric_kinds`** — cAdvisor counters (`container_cpu_usage_seconds_total`,
   `container_network_{receive,transmit}_bytes_total`) vs gauges
   (`container_memory_working_set_bytes`, `container_fs_*`, `machine_*`).
-- **`label_rewrites`** — `pod_name`→`labels.pod`, `container_name`→`labels.container`.
+- **`label_rewrites`** — `pod_name`→`labels.pod`, `container_name`→`labels.container`,
+  `id`→`labels.id`.
 - **`ignored_labels`** — `kubernetes_io_hostname`, `image`, `name`. These appear
   only as filters on the good container panels; dropping them lets those panels
   resolve instead of filtering to empty. `systemd_service_name` /
@@ -54,18 +55,22 @@ reducers, and control synthesis. The pack carries only:
 - **`query_overrides`** — the three multi-runtime panels (Containers CPU / memory
   / network) keep only the k8s pod/container series and disclose the dropped
   docker/rkt runtimes via `approximation_note` (status capped at
-  `migrated_with_warnings`, never a clean `migrated`).
+  `migrated_with_warnings`, never a clean `migrated`); Pods CPU/memory keep the
+  Lens breakdown on `labels.pod`; Pods/All-processes network name Received/Sent
+  (native butterfly otherwise labels transmit `Value B`); All-processes panels
+  group by `labels.id` excluding the root cgroup.
 
 No engine changes required — the pack reuses the APIs 12485 added.
 
 ## Fidelity
 
 - **PERFECT** (render on any modern cAdvisor scrape after the label bridge):
-  Network I/O pressure, Pods CPU / memory / network.
+  Network I/O pressure, Pods CPU / memory / network (Received/Sent series names).
 - **APPROXIMATE**: Containers CPU / memory / network (docker/rkt series dropped);
   the cluster-KPI strip and Used/Total stats (require `machine_*` +
   `container_fs_*` + the root-cgroup `id="/"` series); All-processes panels
-  (grouped by the cAdvisor cgroup `id`, present only on a raw cAdvisor scrape).
+  (grouped by the cAdvisor cgroup `id`, excluding `id="/"`; the producer must
+  emit a per-container cgroup `id` or the legend is a single `(null)`).
 - **GAP** (honest empty on modern data): System services CPU / memory
   (`systemd_service_name` is a dead convention).
 
@@ -75,7 +80,8 @@ See `fidelity_manifest.yaml` for the per-panel table.
 
 Live validation uses the shared curated rig (`parity-rig/curated/…`) extended
 with a synthetic cAdvisor exporter (`container_*` + `machine_*` + `container_fs_*`
-with modern `pod`/`container` labels and a root-cgroup `id="/"` series) so the
+with modern `pod`/`container` labels, a root-cgroup `id="/"` series, and a
+per-container cgroup `id` so All-processes legends are not `(null)`) so the
 per-pod panels and the cluster KPIs both have real data.
 
 1. Migrate + upload to Kibana (`prometheus_native`, `--esql-index` = data view).
@@ -88,17 +94,24 @@ per-pod panels and the cluster KPIs both have real data.
 - [x] registry.yaml entry (315, rev 3, sha above)
 - [x] pack.yaml + fidelity_manifest.yaml
 - [x] offline fixture tests (`tests/test_curated_packs.py`)
-- [ ] rig: synthetic cAdvisor exporter (`machine_*`, `container_fs_*`, `id="/"`)
-- [ ] live: migrate + upload + render audit + side-by-side
-- [ ] docs: discoveries here + `docs/sources/grafana.md`
+- [x] rig: synthetic cAdvisor exporter (`machine_*`, `container_fs_*`, `id="/"`, per-container cgroup `id`)
+- [x] live: migrate + upload + render audit + view-mode UI pass
+- [x] docs: discoveries here + `docs/sources/grafana.md`
 
 ## Discoveries
 
 - Offline translation confirms the label bridge: `Pods CPU usage` resolves to
   `SUM(RATE(container_cpu_usage_seconds_total)) BY time_bucket, labels.pod`
   with the `image`/`name`/`kubernetes_io_hostname` matchers stripped; the
-  Containers panels take the curated k8s-only ES|QL; `System services` keeps a
-  `systemd_service_name` filter that resolves to empty (honest gap).
+  Containers panels take the curated k8s-only ES|QL; `System services` uses an
+  impossible-filter override so Lens does not error on a missing
+  `systemd_service_name` column (honest empty).
 - The cluster-KPI panels translate to a same-bucket ratio referencing
   `machine_*` and the `id="/"` root cgroup — so live rendering needs those
   series in the scrape (they are absent from a plain container-only ingest).
+- Engine butterfly + a pod breakdown names transmit `Value B`; Pods network
+  I/O needs an explicit Received/Sent override (same class as Containers
+  network).
+- All-processes panels group by cgroup `id`. A producer that only sets
+  `id="/"` on the root cgroup yields a single `(null)` legend; emit
+  `/kubepods/<pod>/<container>` on workload series.
