@@ -7,6 +7,9 @@
 # PERFECT = same information as Grafana on postgres_exporter.
 # APPROXIMATE = documented delta (lifetime cache-hit ratio, includeAll All).
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 14114
 gnet_revision: 1

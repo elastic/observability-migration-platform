@@ -6,6 +6,9 @@
 #
 # Fidelity: PERFECT = semantic parity | APPROXIMATE = documented delta
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 14091
 gnet_revision: 1

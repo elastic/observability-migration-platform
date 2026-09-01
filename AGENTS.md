@@ -127,6 +127,11 @@ and the license/SBOM refresh. Prefer `make` so the environment matches CI.
   `verifier.corpus_manifest` (top dashboards, long-tail slices, datasource
   quotas, and explicit bug seeds). Avoid unpinned "top N today" corpora as merge
   gates because marketplace changes can look like code regressions.
+- Curated Grafana packs MUST author canonical field/label names and never
+  hardcode `labels.*` / `metrics.*` / `prometheus.*` target spellings; the
+  resolver namespaces per `--field-profile`. New packs are verified by the
+  cross-profile leakage gate (`scripts/run_cross_profile_corpus.py`,
+  `tests/test_field_profile_portability.py`).
 - Skills are mirrored in `.claude/skills/` and `.cursor/skills/` (one `SKILL.md` per skill in each tree). When you add or edit a skill, update **both** copies. They are byte-identical **except** self-referential path prefixes — `~/.claude/...` in the `.claude` copy vs `~/.cursor/...` in the `.cursor` copy — so don't blindly `cp` a skill that links to other skills; rewrite those prefixes for the destination tree.
 
 ## Commit And Push Workflow (For Agents)

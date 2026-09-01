@@ -454,29 +454,44 @@ actually exists in the target cluster and picks the first match.
 
 Rule packs provide the Grafana-side equivalent of Datadog custom field
 profiles. Under the `query:` section, a rule pack can specify
-`label_rewrites` to override default resolution, `label_candidates` to
-extend the candidate list, and `ignored_labels` to suppress labels that
-should not appear in target queries. The `controls:` section can override
-field names used by Kibana dashboard controls.
+`label_rewrites` (source spelling → **canonical** label, e.g. `pod_name: pod`),
+`label_candidates` to extend the candidate list with OTel/bare spellings
+(never `labels.*` / `prometheus.labels.*` — the resolver namespaces those
+per `--field-profile`), `source_label_names` (canonical → original source
+spelling, used under `--field-profile passthrough`), and `ignored_labels`
+to suppress labels that should not appear in target queries. The `controls:`
+section can override field names used by Kibana dashboard controls; those
+overrides are also canonical (`Deployment: deployment`) unless the value is
+a concrete non-canonical field (escape hatch).
+
+Bundled curated packs follow the same contract. Hand-written `esql_query`
+strings use `` `{{label:pod}}` `` / `{{metric:name:gauge}}` placeholders so
+grouping columns and metrics resolve per profile. `metric_map` targets are
+bare logical metric names (see `docs/command-contract.md`). Verify a pack
+with `scripts/run_cross_profile_corpus.py` so emitted ES|QL has zero
+profile leakage and `prometheus_native` output stays byte-identical.
 
 ```yaml
 query:
   label_rewrites:
-    instance: my_custom_host_field
-    job: my_custom_service_field
+    pod_name: pod
+    kubernetes_io_hostname: instance
+
+  source_label_names:
+    pod: pod_name
+    instance: kubernetes_io_hostname
 
   label_candidates:
-    datacenter:
-      - cloud.region
-      - cloud.availability_zone
+    datname:
+      - datname
 
   ignored_labels:
     - __name__
 
 controls:
   field_overrides:
-    job: service.name
-    instance: service.instance.id
+    Deployment: deployment
+    Node: instance
 ```
 
 Load a rule pack with:

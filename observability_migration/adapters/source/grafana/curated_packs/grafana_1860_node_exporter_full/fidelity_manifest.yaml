@@ -9,6 +9,9 @@
 # truth for metric_kinds pins and title_match query overrides (CPU Busy,
 # Processes Memory, and related Node Exporter Full repairs).
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 1860
 gnet_revision: 37

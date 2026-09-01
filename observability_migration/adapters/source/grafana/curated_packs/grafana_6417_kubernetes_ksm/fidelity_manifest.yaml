@@ -8,6 +8,9 @@
 # APPROXIMATE = documented delta (resource-split reshape, same-bucket ratio, nodename drop).
 # GAP         = renders empty because the source series was removed upstream.
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 6417
 gnet_revision: 1

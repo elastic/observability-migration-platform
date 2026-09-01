@@ -6,6 +6,9 @@
 #
 # All panels are stat type. Layout: Grafana 24-col → Kibana 48-col (2× scale)
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 18405
 gnet_revision: 1

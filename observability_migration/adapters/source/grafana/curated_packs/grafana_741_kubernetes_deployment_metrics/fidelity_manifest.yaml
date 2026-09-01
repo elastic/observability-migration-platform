@@ -9,6 +9,9 @@
 # GAP         = not used; docker/rkt series are dropped from the Containers
 #               panel rather than left as empty sibling panels.
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 741
 gnet_revision: 1

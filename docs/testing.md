@@ -92,6 +92,15 @@ pipeline with the Layer-9 invariants. The canary is one generated dashboard
 covering every chart-bearing Kibana target; it must migrate clean and validate
 against the schema, and is the fixture the live render audit uploads.
 
+Grafana curated packs must emit field names for the operator's
+`--field-profile`, not a hardcoded `prometheus_native` layout. The leakage
+linter (`parity-rig/verifier/profile_leakage.py`) and
+`tests/test_field_profile_portability.py` catch a `labels.*` column under
+`otel` (and the other cross-profile cases). Contributors run
+`scripts/run_cross_profile_corpus.py --input-dir DIR` to migrate a dashboard
+directory under every profile; the script exits non-zero on leakage, a
+feasibility drop vs native, or (with `--baseline-native`) a native JSON diff.
+
 → See [Adding a supported panel/widget type](#adding-a-supported-panelwidget-type).
 
 ---

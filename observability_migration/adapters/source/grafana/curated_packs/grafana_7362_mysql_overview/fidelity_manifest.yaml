@@ -7,6 +7,9 @@
 # PERFECT = same information as Grafana on mysqld_exporter + node_exporter.
 # APPROXIMATE = documented delta (MySQL 8 replacements, $interval, host split).
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 7362
 gnet_revision: 5
