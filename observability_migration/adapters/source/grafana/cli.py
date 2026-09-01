@@ -2073,9 +2073,16 @@ def _apply_failed_validation_outcome(panel_result, validation_result):
     with a warning. A genuinely malformed query is broken regardless of data, so
     keep replacing it with a markdown placeholder (issue #154).
 
+    The source PromQL is passed along so an Unknown column that came from a
+    Grafana template variable is not excused as not-yet-ingested telemetry
+    (issue #378).
+
     Returns ``"self_heal"`` or ``"placeholder"``.
     """
-    if validation_failure_self_heals(validation_result):
+    if validation_failure_self_heals(
+        validation_result,
+        source_expression=getattr(panel_result, "promql_expr", "") or "",
+    ):
         mark_panel_migrated_with_missing_target_fields(panel_result, validation_result)
         return "self_heal"
     mark_panel_requires_manual_after_failed_validation(panel_result, validation_result)

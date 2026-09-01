@@ -4628,6 +4628,204 @@ def dynamic_metric_name_rule(context):
     return "dynamic metric name"
 
 
+# PromQL string literals in all three quote styles. The backtick form is raw, so
+# it processes no escapes. Matcher values live here, and a ``label_<var>`` that
+# only appears inside one is a string, never a column.
+_PROMQL_STRING_LITERAL_RE = re.compile(r'"(?:\\.|[^"\\])*"' r"|'(?:\\.|[^'\\])*'" r"|`[^`]*`")
+
+# A PromQL metric identifier, including the ``:`` segments of a recording rule.
+_PROMQL_IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_:]*")
+
+# An ES|QL column reference, optionally backtick-quoted (which is how a
+# recording-rule name with ``:`` segments is emitted).
+_ESQL_COLUMN_TOKEN_RE = re.compile(r"`[^`]+`|[A-Za-z_][A-Za-z0-9_.:]*")
+
+# ``prometheus_remote_write`` stores each metric as ``prometheus.<name>.<suffix>``
+# (see ``SchemaResolver.resolve_metric``), so the column carries a value suffix
+# that is not part of the logical PromQL name.
+_METRIC_VALUE_SUFFIXES = (".value", ".counter", ".rate")
+
+# ``name =`` (but never the comparisons ``==``, ``>=``, ``<=``, ``!=``) and
+# ``… AS name`` introduce a column the query computes for itself.
+_ESQL_ASSIGNS_RE = re.compile(r"\s*=(?!=)")
+_ESQL_RENAME_TARGET_RE = re.compile(r"\bAS\s*$", re.IGNORECASE)
+
+
+def _identifier_counts(text: str) -> dict[str, int]:
+    """How often each PromQL metric identifier occurs outside string literals."""
+    counts: dict[str, int] = {}
+    for token in _PROMQL_IDENTIFIER_TOKEN_RE.findall(_PROMQL_STRING_LITERAL_RE.sub(" ", text)):
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
+def _esql_column_metric_name(token: str) -> str:
+    """The logical PromQL metric name one ES|QL column token stands for.
+
+    Strips backtick quoting, the field profile's prefix (``metrics.``,
+    ``prometheus.``) and the ``prometheus_remote_write`` value suffix, so
+    ``metrics.label_threshold``, ``prometheus.label_threshold.value`` and
+    ``` `metric:label_threshold:rate5m` ``` all reduce to the PromQL name.
+    """
+    name = token.strip("`")
+    for suffix in _METRIC_VALUE_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name.rpartition(".")[2] or name
+
+
+def _esql_assignment_rhs(text: str, start: int) -> str:
+    """The right-hand side of an assignment whose ``=`` ends at ``start``.
+
+    Ends at the comma separating the next assignment in the same command, or at
+    the command's ``|``, whichever comes first — neither counted inside
+    parentheses.
+    """
+    depth = 0
+    idx = start
+    while idx < len(text):
+        char = text[idx]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and char in "|,":
+            break
+        idx += 1
+    return text[start:idx]
+
+
+def _esql_column_metric_names(esql_query: str) -> set[str]:
+    """The metric names the query *reads from the index*.
+
+    A bound parameter (``?threshold``) is a value supplied with the request, and
+    the target of ``EVAL x = <expr>`` / ``STATS x = <expr>`` / ``RENAME y AS x``
+    is a column the query computes, so neither occurrence can be a missing
+    field — counting them would blame a variable for a query that merely *names*
+    something ``label_<var>``.
+
+    Assignment is judged per occurrence, in query order, because the renderer's
+    ordinary shape is ``metric = AGG(metric)``: that right-hand side really does
+    read the index field, so only a target that does not read itself is purely
+    computed, and a read that happened *before* the name was computed still
+    counts.
+    """
+    text = _STRING_LITERAL_RE.sub(" ", esql_query or "")
+    read: set[str] = set()
+    computed: set[str] = set()
+    for match in _ESQL_COLUMN_TOKEN_RE.finditer(text):
+        before = text[: match.start()]
+        if before.endswith("?"):
+            continue
+        name = _esql_column_metric_name(match.group(0))
+        assignment = _ESQL_ASSIGNS_RE.match(text, match.end())
+        if assignment:
+            rhs = _esql_assignment_rhs(text, assignment.end())
+            if name not in {
+                _esql_column_metric_name(token)
+                for token in _ESQL_COLUMN_TOKEN_RE.findall(rhs)
+            }:
+                computed.add(name)
+            continue
+        if _ESQL_RENAME_TARGET_RE.search(before):
+            computed.add(name)
+            continue
+        if name not in computed:
+            read.add(name)
+    return read
+
+
+def _template_variable_placeholder_columns(promql_expr, esql_query, clean_expr=None):
+    """Template variables that reached ``esql_query`` as ``label_<var>`` columns.
+
+    ``preprocess_grafana_macros`` rewrites any ``$var`` it cannot bind as a
+    label-matcher parameter into the bare PromQL identifier ``label_<var>`` so
+    the AST parser still accepts the expression. In most shapes a later rule
+    drops or blocks that placeholder, but a variable sitting in a binary
+    operand (``... >= ($threshold / 100)``) is parsed as a genuine metric
+    selector and survives into the emitted ES|QL as a column reference (issue
+    #378).
+
+    Returns the source variable names, in source order. Blaming a variable takes
+    three pieces of evidence, so a target metric genuinely named ``label_...``
+    is never mistaken for a placeholder:
+
+    1. the name appears as a ``$var`` reference in the *source* PromQL;
+    2. macro preprocessing *created* an identifier carrying ``label_<var>`` as a
+       whole ``:``-delimited segment — it occurs more often in ``clean_expr``
+       than in the source, so ``foo + label_threshold{job="$threshold"}`` (a real
+       metric next to a matcher variable) is left alone while
+       ``label_threshold + $threshold`` is not;
+    3. the *emitted* query reads a column that resolves to exactly one of those
+       created identifiers.
+
+    ``clean_expr`` is the macro-expanded expression (``context.clean_expr``); it
+    is recomputed when the caller does not have it.
+    """
+    raw = str(promql_expr or "")
+    if clean_expr is None:
+        clean_expr = preprocess_grafana_macros(raw)
+    raw_counts = _identifier_counts(raw)
+    clean_counts = _identifier_counts(str(clean_expr or ""))
+    emitted = _esql_column_metric_names(str(esql_query or ""))
+
+    names: list[str] = []
+    for match in _GRAFANA_TEMPLATE_VAR_RE.finditer(raw):
+        name = match.group("braced") or match.group("plain") or match.group("bracket")
+        if not name or name.startswith("__") or name in names:
+            continue
+        placeholder = f"label_{name}"
+        created = {
+            identifier
+            for identifier, count in clean_counts.items()
+            if placeholder in identifier.split(":") and count > raw_counts.get(identifier, 0)
+        }
+        if created & emitted:
+            names.append(name)
+    return names
+
+
+@QUERY_VALIDATORS.register("template_variable_placeholder_column", priority=13)
+def template_variable_placeholder_column_rule(context):
+    """Never ship a query that reads a Grafana template variable as a column.
+
+    A template variable is a dashboard UI input, not telemetry, so the
+    ``label_<var>`` placeholder names a field that can never exist: the panel
+    uploads cleanly and then renders an Elasticsearch ``Unknown column`` error.
+    Degrade to ``not_feasible`` — a "Manual review required" placeholder is
+    honest about the gap, whereas the phantom column hides it behind an error
+    tile (issue #378).
+
+    Literal-valued variables (``textbox`` / ``constant``) are interpolated
+    before translation by ``_substitute_literal_variable_values``, so this rule
+    fires only for a variable whose value could not be represented as a PromQL
+    literal — a query variable used as a scalar, a textbox holding a regex or a
+    whole sub-expression, and so on.
+    """
+    if context.feasibility == "not_feasible" or not context.esql_query:
+        return None
+    names = _template_variable_placeholder_columns(
+        context.promql_expr, context.esql_query, clean_expr=context.clean_expr
+    )
+    if not names:
+        return None
+    context.feasibility = "not_feasible"
+    context.confidence = 0.0
+    for name in names:
+        _append_unique(
+            context.warnings,
+            f"Grafana template variable ({_template_var_display(name)}) is used as a "
+            f"metric value, so the query would read column 'label_{name}' — a "
+            "dashboard input is not telemetry, so that column can never exist. "
+            "Requires manual redesign; a textbox or constant variable holding a "
+            "number, duration, or metric name is inlined automatically",
+        )
+    return "template variable survived as a metric column"
+
+
 @QUERY_VALIDATORS.register("time_filter_source_alignment", priority=20)
 def time_filter_source_alignment_rule(context):
     if context.feasibility == "not_feasible":
@@ -4816,9 +5014,22 @@ def translate_promql_to_esql(
             api_key=llm_api_key,
             extra_context={"warnings": context.warnings},
         )
-        if llm_result and llm_result.get("esql_query"):
+        recovered = (llm_result or {}).get("esql_query")
+        # The recovery runs after QUERY_VALIDATORS, so its query is never
+        # re-validated. An LLM shown the *cleaned* PromQL sees the synthetic
+        # ``label_<var>`` placeholder and reads it as a field, which would put
+        # back exactly the phantom column this pass exists to keep out
+        # (issue #378). Refuse such a recovery instead of resetting feasibility.
+        if recovered and _template_variable_placeholder_columns(
+            context.promql_expr, recovered, clean_expr=context.clean_expr
+        ):
+            _logger.info(
+                "Rejected LLM translation that reads a template-variable column: %s", expr[:80]
+            )
+            recovered = None
+        if recovered:
             _logger.info("LLM recovered not_feasible expression: %s", expr[:80])
-            context.esql_query = llm_result["esql_query"]
+            context.esql_query = recovered
             context.metric_name = llm_result.get("metric_name") or context.metric_name or "llm_value"
             context.output_metric_field = context.metric_name
             context.source_type = llm_result.get("source_type") or "TS"
