@@ -1,0 +1,180 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 6417
+# https://grafana.com/grafana/dashboards/6417-kubernetes-cluster-prometheus/
+#
+# Source: community "Kubernetes Cluster (Prometheus)".
+# Revision 1. schemaVersion 16. 34 leaf panels (mostly singlestats) + 4 capacity
+# graphs + 1 deployment table, grouped in Cluster Health / Deployments / Node /
+# Pods / Containers / Jobs rows.
+# Metric family: kube-state-metrics (kube_*) + node_exporter (node_filesystem_*).
+#
+# The dashboard was authored against an old kube-state-metrics + node_exporter
+# lineage, so several names/shapes differ from what a modern Elastic k8s
+# integration emits:
+#   - `node_filesystem_size` / `node_filesystem_free`  -> `*_bytes` (node_exporter >= 0.16).
+#   - `kube_pod_container_status_restarts`             -> `*_total` (now a counter).
+#   - `kube_node_status_allocatable_pods|_cpu_cores|_memory_bytes` and
+#     `kube_pod_container_resource_requests_cpu_cores|_memory_bytes` collapsed
+#     into ONE metric with a `resource=` label
+#     (`kube_node_status_allocatable{resource="pods|cpu|memory"}`, etc.). That is
+#     a name+label reshape, not a rename, so it needs query_overrides.
+#   - `kube_node_status_condition{condition="OutOfDisk"}` was removed in k8s 1.12.
+#   - `node_filesystem_*{nodename=...}` -> `nodename` is not a standard fs label.
+#
+# Engine vs pack split (do not duplicate engine work here):
+#   Engine: gauge sum, counter delta(), binary ratios (Disk Usage), row ->
+#           section, singlestat reducers, constant-variable inlining.
+#   Pack:   metric_map for the pure renames, metric_kinds for counter/gauge,
+#           query_overrides for the resource-split allocatable/requests panels,
+#           and honest gaps for OutOfDisk / nodename.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  label_rewrites:
+    node: labels.node
+    namespace: labels.namespace
+    pod: labels.pod
+    deployment: labels.deployment
+    phase: labels.phase
+    condition: labels.condition
+    resource: labels.resource
+
+  # `nodename` is not a modern node_filesystem label; dropping the matcher lets
+  # the Disk panels resolve instead of filtering to empty.
+  ignored_labels:
+    - nodename
+
+  # --- counter / gauge classification -----------------------------------
+  metric_kinds:
+    # The one counter — restarts, used under delta(). Classify both the old and
+    # the mapped modern name.
+    kube_pod_container_status_restarts: counter
+    kube_pod_container_status_restarts_total: counter
+    # kube-state-metrics gauges.
+    kube_pod_info: gauge
+    kube_pod_status_phase: gauge
+    kube_pod_container_status_running: gauge
+    kube_pod_container_status_waiting: gauge
+    kube_pod_container_status_terminated: gauge
+    kube_node_info: gauge
+    kube_node_spec_unschedulable: gauge
+    kube_node_status_condition: gauge
+    kube_node_status_allocatable: gauge
+    kube_node_status_capacity: gauge
+    kube_pod_container_resource_requests: gauge
+    kube_deployment_status_replicas: gauge
+    kube_deployment_status_replicas_updated: gauge
+    kube_deployment_status_replicas_unavailable: gauge
+    kube_job_status_succeeded: gauge
+    kube_job_status_active: gauge
+    kube_job_status_failed: gauge
+    # node_exporter gauges. Classify both the dashboard's pre-0.16 names and the
+    # mapped modern names so the offline path does not warn about counter typing.
+    node_filesystem_size: gauge
+    node_filesystem_free: gauge
+    node_filesystem_size_bytes: gauge
+    node_filesystem_free_bytes: gauge
+
+  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
+  # prepended) — targets carry the `metrics.` prefix. These are the pure
+  # renames between the dashboard's lineage and modern node_exporter / KSM.
+  metric_map:
+    node_filesystem_size: metrics.node_filesystem_size_bytes
+    node_filesystem_free: metrics.node_filesystem_free_bytes
+    kube_pod_container_status_restarts: metrics.kube_pod_container_status_restarts_total
+
+  label_candidates:
+    node:
+      - labels.node
+    namespace:
+      - labels.namespace
+    resource:
+      - labels.resource
+
+panel:
+  query_overrides:
+    # --- resource-split reshape: allocatable/requests are now one metric with
+    # a resource= label. Rewrite each ratio + capacity panel explicitly.
+
+    # Cluster Pod Usage = running pods / allocatable pods.
+    - title_match: "Cluster Pod Usage"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS used = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})), alloc = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+    - title_match: "Cluster CPU Usage"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS used = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+    - title_match: "Cluster Memory Usage"
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS used = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(alloc > 0, used / alloc, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+
+    # Capacity graphs: allocatable + capacity + requested over time.
+    - title_match: "Cluster Pod Capacity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS allocatable = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, allocatable, capacity, requested
+        | SORT time_bucket ASC
+    - title_match: "Cluster CPU Capacity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS allocatable = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, allocatable, capacity, requested
+        | SORT time_bucket ASC
+    - title_match: "Cluster Mem Capacity"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | STATS allocatable = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), capacity = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), requested = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, allocatable, capacity, requested
+        | SORT time_bucket ASC
+
+    # Deployment table: the source `{{ deployment }}` legend is a bare selector
+    # with no by(), so the engine collapses every deployment into one MAX line.
+    # Group by deployment so the table lists one row per deployment.
+    - title_match: "Deployment Replicas - Up To Date"
+      kibana_type_override: datatable
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
+        | STATS replicas = MAX(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}})) BY {{label:deployment}}
+        | KEEP `labels.deployment`, replicas
+        | SORT replicas DESC
+
+  layout_overrides:
+    # "Nodes Out of Disk" queries kube_node_status_condition{condition="OutOfDisk"},
+    # a condition removed in Kubernetes 1.12; it degrades to an honest empty.
+    # Keep its chrome title so the empty state reads as "no data" rather than a
+    # missing tile.
+    - title_match: "Nodes Out of Disk"
+      hide_title: false

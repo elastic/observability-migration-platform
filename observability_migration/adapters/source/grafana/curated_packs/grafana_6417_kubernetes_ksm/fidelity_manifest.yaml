@@ -1,0 +1,134 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 6417 (Kubernetes Cluster (Prometheus))
+# https://grafana.com/grafana/dashboards/6417-kubernetes-cluster-prometheus/
+#
+# PERFECT     = same information as Grafana on modern kube-state-metrics + node_exporter.
+# APPROXIMATE = documented delta (resource-split reshape, same-bucket ratio, nodename drop).
+# GAP         = renders empty because the source series was removed upstream.
+
+schema_version: 1
+gnet_id: 6417
+gnet_revision: 1
+dashboard_title: "Kubernetes Cluster (Prometheus)"
+maintainer: "community"
+
+panels:
+  # --- Cluster Health ------------------------------------------------------
+  - title: "Cluster Pod Usage"
+    fidelity: APPROXIMATE
+    notes: "running pods / allocatable pods. allocatable_pods reshaped to kube_node_status_allocatable{resource=pods}. Cross-metric ratio — PERFECT under native PROMQL."
+  - title: "Cluster CPU Usage"
+    fidelity: APPROXIMATE
+    notes: "requests{resource=cpu} / allocatable{resource=cpu}. Old per-resource metric names reshaped via query_override."
+  - title: "Cluster Memory Usage"
+    fidelity: APPROXIMATE
+    notes: "requests{resource=memory} / allocatable{resource=memory}."
+  - title: "Cluster Disk Usage"
+    fidelity: APPROXIMATE
+    notes: "(size-free)/size on node_filesystem_*_bytes (renamed via metric_map); nodename matcher dropped (not a modern fs label). Same-bucket ES|QL ratio."
+  - title: "Cluster Pod Capacity"
+    fidelity: APPROXIMATE
+    notes: "allocatable/capacity/requested pods over time. resource-split reshape."
+  - title: "Cluster CPU Capacity"
+    fidelity: APPROXIMATE
+    notes: "allocatable/capacity/requested cpu over time. resource-split reshape."
+  - title: "Cluster Mem Capacity"
+    fidelity: APPROXIMATE
+    notes: "allocatable/capacity/requested memory over time. resource-split reshape."
+  - title: "Cluster Disk Capacity"
+    fidelity: APPROXIMATE
+    notes: "usage (size-free) + limit (size) on node_filesystem_*_bytes. metric_map rename; nodename dropped."
+
+  # --- Deployments ---------------------------------------------------------
+  - title: "Deployment Replicas - Up To Date"
+    fidelity: APPROXIMATE
+    notes: "Table; the source `{{ deployment }}` legend has no by(), so a query_override groups by labels.deployment to list one row per deployment."
+  - title: "Deployment Replicas"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas)."
+  - title: "Deployment Replicas - Updated"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas_updated)."
+  - title: "Deployment Replicas - Unavailable"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas_unavailable)."
+
+  # --- Node ----------------------------------------------------------------
+  - title: "Number Of Nodes"
+    fidelity: PERFECT
+    notes: "sum(kube_node_info)."
+  - title: "Nodes Out of Disk"
+    fidelity: GAP
+    notes: "kube_node_status_condition{condition=OutOfDisk}; the OutOfDisk node condition was removed in Kubernetes 1.12, so this degrades to an honest empty."
+  - title: "Nodes Unavailable"
+    fidelity: PERFECT
+    notes: "sum(kube_node_spec_unschedulable)."
+
+  # --- Pods ----------------------------------------------------------------
+  - title: "Pods Running"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_status_phase{phase=Running})."
+  - title: "Pods Pending"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_status_phase{phase=Pending})."
+  - title: "Pods Failed"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_status_phase{phase=Failed})."
+  - title: "Pods Succeeded"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_status_phase{phase=Succeeded})."
+  - title: "Pods Unknown"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_status_phase{phase=Unknown})."
+
+  # --- Containers ----------------------------------------------------------
+  - title: "Containers Running"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_running)."
+  - title: "Containers Waiting"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_waiting)."
+  - title: "Containers Terminated"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_terminated)."
+  - title: "Containers Restarts (Last 30 Minutes)"
+    fidelity: PERFECT
+    notes: "delta(kube_pod_container_status_restarts_total[30m]); renamed via metric_map and typed as counter."
+  - title: "CPU Cores Requested by Containers"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_resource_requests_cpu_cores). NOTE: renders when the scrape emits the old per-resource metric; a resource-split reshape is only needed for the ratio panels."
+  - title: "Memory Requested By Containers"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_resource_requests_memory_bytes)."
+
+  # --- Jobs ----------------------------------------------------------------
+  - title: "Jobs Succeeded"
+    fidelity: PERFECT
+    notes: "sum(kube_job_status_succeeded). NOTE: the dashboard ships two tiles titled 'Jobs Succeeded'; the second actually queries kube_job_status_active (a source bug preserved as-is)."
+  - title: "Jobs Failed"
+    fidelity: PERFECT
+    notes: "sum(kube_job_status_failed)."
+
+controls:
+  - name: node
+    notes: "Source $node is a constant regex (.*). Synthesized as an optional node control bound on labels.node."
+  - name: namespace
+    notes: "Source $namespace is a constant regex (.*). Synthesized as an optional namespace control bound on labels.namespace."
+
+summary:
+  total_panels: 27
+  perfect: 17
+  approximate: 9
+  gap: 1
+  notes: >
+    The count/status singlestats (pods, containers, deployments, jobs, nodes)
+    map cleanly to kube-state-metrics gauges. The cluster-health ratio and
+    capacity panels need the modern resource-split KSM shape
+    (kube_node_status_allocatable/capacity{resource=...},
+    kube_pod_container_resource_requests{resource=...}); the pack reshapes the
+    dashboard's old per-resource metric names via query_overrides. The
+    node_filesystem_* disk panels are renamed to *_bytes and drop the dead
+    nodename matcher. Nodes Out of Disk is a permanent gap (the OutOfDisk
+    condition was removed in Kubernetes 1.12).

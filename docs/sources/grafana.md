@@ -230,6 +230,18 @@ non-existent breakdown column. The cluster-total KPI strip additionally needs th
 node `machine_*` metrics and the root-cgroup (`id="/"`) + `container_fs_*` series
 to populate.
 
+The Kubernetes Cluster (kube-state-metrics 6417) pack targets the KSM +
+`node_exporter` family and was authored against an older lineage: `metric_map`
+bridges the renamed names (`node_filesystem_size`/`_free` →
+`node_filesystem_size_bytes`/`_free_bytes`, `kube_pod_container_status_restarts`
+→ `kube_pod_container_status_restarts_total`), and `metric_kinds` classify the
+KSM gauges and the restarts counter explicitly. Its `query_overrides` reshape the
+resource-split KSM metrics — `kube_node_status_allocatable{resource="cpu"|"memory"|"pods"}`
+is filtered per-resource so the cluster CPU/Memory/Pod usage tiles compute the
+right allocatable denominator — and group the Deployment Replicas table by
+deployment. The removed `OutOfDisk` node condition is a documented gap, and the
+constant `.*` `$node`/`$namespace` variables become bound Kibana controls.
+
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
 recording the exact grafana.com revision the pack authors read, re-checkable

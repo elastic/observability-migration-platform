@@ -4497,3 +4497,137 @@ def test_315_all_processes_override_groups_by_cgroup_id():
     assert "labels.id IS NOT NULL" in query
 
 
+# ---------------------------------------------------------------------------
+# Grafana 6417 — Kubernetes Cluster (kube-state-metrics)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_6417():
+    dashboard = {
+        "gnetId": 6417,
+        "title": "Kubernetes Cluster (Prometheus)",
+        "tags": ["kubernetes", "kubernetes-app"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_6417(panel):
+    resolved, resolver = _resolve_6417()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query
+
+
+def test_6417_registry_entry_present():
+    entry = find_curated_pack(gnet_id=6417, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_6417_kubernetes_ksm"
+    assert entry["gnet_revision"] == 1
+
+
+def test_6417_maps_old_node_exporter_and_restarts_names():
+    resolved, _ = _resolve_6417()
+
+    def _target(name):
+        entry = resolved.metric_map[name]
+        return getattr(entry, "target", str(entry))
+
+    assert _target("node_filesystem_size").endswith("node_filesystem_size_bytes")
+    assert _target("node_filesystem_free").endswith("node_filesystem_free_bytes")
+    assert _target("kube_pod_container_status_restarts").endswith(
+        "kube_pod_container_status_restarts_total"
+    )
+    assert resolved.metric_kinds["kube_pod_container_status_restarts_total"] == "counter"
+    assert resolved.metric_kinds["node_filesystem_size"] == "gauge"
+
+
+def test_6417_cluster_cpu_usage_reshapes_resource_split():
+    panel = {
+        "id": 1,
+        "type": "singlestat",
+        "title": "Cluster CPU Usage",
+        "format": "percentunit",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_pod_container_resource_requests_cpu_cores{node=~"$node"})'
+                    ' / sum(kube_node_status_allocatable_cpu_cores{node=~"$node"})'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    # The old per-resource metric name is reshaped to the resource= label form.
+    assert "kube_node_status_allocatable" in query
+    assert 'labels.resource == "cpu"' in query
+    assert "kube_pod_container_resource_requests" in query
+
+
+def test_6417_restarts_delta_uses_counter_total():
+    panel = {
+        "id": 2,
+        "type": "singlestat",
+        "title": "Containers Restarts (Last 30 Minutes)",
+        "targets": [
+            {
+                "expr": 'sum(delta(kube_pod_container_status_restarts{namespace="kube-system"}[30m]))',
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "kube_pod_container_status_restarts_total" in query
+    assert "DELTA" in query
+
+
+def test_6417_out_of_disk_degrades_to_empty_gap():
+    panel = {
+        "id": 3,
+        "type": "singlestat",
+        "title": "Nodes Out of Disk",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_node_status_condition'
+                    '{condition="OutOfDisk", node=~"$node", status="true"})'
+                ),
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 3},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    # The removed OutOfDisk condition is kept as a real (empty) filter, not faked.
+    assert 'OutOfDisk' in query
+
+
+def test_6417_deployment_table_groups_by_deployment():
+    panel = {
+        "id": 4,
+        "type": "table",
+        "title": "Deployment Replicas - Up To Date",
+        "targets": [
+            {
+                "expr": 'kube_deployment_status_replicas{namespace=~"$namespace"}',
+                "legendFormat": "{{ deployment }}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
+    }
+    result, query = _translate_6417(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "labels.deployment" in query
