@@ -12,7 +12,7 @@ Three control-populate rewrites that the general pipeline cannot infer:
   ``label_values(pg_up, instance)`` — the same source-faithful ``instance``
   label, anchored on a metric that always exists per server.
 * ``Database`` is a bare ``label_values(datname)`` with no metric anchor, so
-  there is nothing for the ES|QL control query to key ``labels.datname`` off.
+  there is nothing for the ES|QL control query to key the canonical ``datname`` off.
   Anchor it on a per-database gauge (``pg_stat_database_numbackends``).
 * ``Interval`` is a Grafana *interval* variable (rate-window helper), not a
   query variable. It must never become a Kibana control.

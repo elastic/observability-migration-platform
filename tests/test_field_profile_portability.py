@@ -402,3 +402,33 @@ def test_redis_pack_no_profile_leakage(pack_id, corpus_basename, profile, tmp_pa
         for query in extract_esql_queries(data):
             violations += check_profile_leakage(query, profile)
     assert violations == [], f"pack {pack_id} leaked under {profile}: {violations}"
+
+
+# Same end-to-end profile-leakage check for Postgres / MySQL / Node-Exporter packs.
+_PG_MYSQL_NODE_PACK_CORPUS = [
+    ("12485", "postgresql-exporter"),
+    ("14114", "postgres-overview"),
+    ("9628", "postgresql-database"),
+    ("7362", "mysql-overview"),
+    ("1860", "node-exporter-full"),
+]
+
+
+@pytest.mark.parametrize("pack_id,corpus_basename", _PG_MYSQL_NODE_PACK_CORPUS)
+@pytest.mark.parametrize("profile", _LEAKAGE_PROFILES)
+def test_pg_mysql_node_pack_no_profile_leakage(pack_id, corpus_basename, profile, tmp_path):
+    source = _COMMUNITY_DIR / f"{corpus_basename}.json"
+    if not source.is_file():
+        pytest.skip(f"requires the pinned community corpus fixture {source}")
+    solo = tmp_path / "src"
+    solo.mkdir()
+    shutil.copy(source, solo / source.name)
+    out = tmp_path / "out"
+    _migrate(str(solo), out, profile, "metrics-*")
+    violations: list[str] = []
+    for native in glob.glob(str(out / "dashboards" / "native" / "*.native.json")):
+        with open(native, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for query in extract_esql_queries(data):
+            violations += check_profile_leakage(query, profile)
+    assert violations == [], f"pack {pack_id} leaked under {profile}: {violations}"

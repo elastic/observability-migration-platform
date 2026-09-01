@@ -22,15 +22,16 @@
 query:
   metrics_dataset_filter: "prometheus"
 
-  # prometheus_native stores every Prometheus label under labels.<name>. Pin the
-  # source labels so offline migrations resolve without a live field-caps probe.
+  # Source→canonical only. Profile namespacing (labels.*, prometheus.labels.*,
+  # OTel) is applied by the resolver per --field-profile.
   label_rewrites:
-    instance: labels.instance
-    job: labels.job
-    datname: labels.datname
-    db: labels.datname
-    state: labels.state
-    mode: labels.mode
+    db: datname
+
+  # datname is not in PROM_TO_OTEL_CANDIDATES; keep it canonical (bare spelling)
+  # so the db→datname rewrite recurses into profile namespacing.
+  label_candidates:
+    datname:
+      - datname
 
   # --- counter / gauge classification -----------------------------------
   # postgres_exporter v0.15 already declares these via `# TYPE`, but the offline
@@ -81,36 +82,15 @@ query:
     pg_stat_statements_calls: pg_stat_statements_calls_total
     pg_stat_statements_total_time_seconds: pg_stat_statements_seconds_total
 
-  label_candidates:
-    instance:
-      - labels.instance
-      - service.instance.id
-      - host.name
-    job:
-      - labels.job
-      - service.name
-    datname:
-      - labels.datname
-      - datname
-    db:
-      - labels.datname
-      - datname
-    state:
-      - labels.state
-      - state
-    mode:
-      - labels.mode
-      - mode
-
 controls:
   field_overrides:
     # resolve_control_field matches the variable name exactly; 12485 uses
     # capitalised variable names ($Instance / $Database), so pin both cases.
-    Instance: labels.instance
-    instance: labels.instance
-    Database: labels.datname
-    database: labels.datname
-    datname: labels.datname
+    Instance: instance
+    instance: instance
+    Database: datname
+    database: datname
+    datname: datname
 
 panel:
   query_overrides:
@@ -151,7 +131,7 @@ panel:
       status_override: migrated
     # Native PROMQL legends these "should be 0" rates as the metric name
     # (``deadlocks`` / ``temp_files``) instead of ``{{datname}}``. Plot the
-    # rate by ``labels.datname``. Global must not take ?Database (source
+    # rate by ``{{label:datname}}``. Global must not take ?Database (source
     # query has no datname matcher); the Database section does.
     - title_match: "Deadlocks by database"
       section_match: "Global Statistics"
@@ -162,7 +142,7 @@ panel:
         | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
         | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
         | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
-        | KEEP time_bucket, `labels.datname`, deadlocks
+        | KEEP time_bucket, `{{label:datname}}`, deadlocks
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Deadlocks by database"
@@ -175,7 +155,7 @@ panel:
         | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
         | WHERE {{metric:pg_stat_database_deadlocks:counter}} IS NOT NULL
         | STATS deadlocks = SUM(RATE({{metric:pg_stat_database_deadlocks:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
-        | KEEP time_bucket, `labels.datname`, deadlocks
+        | KEEP time_bucket, `{{label:datname}}`, deadlocks
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Temporary files by database"
@@ -187,7 +167,7 @@ panel:
         | WHERE (?Instance == "" OR ({{label:instance}} RLIKE ?Instance OR ({{label:instance}} IS NULL AND "" RLIKE ?Instance)))
         | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
         | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
-        | KEEP time_bucket, `labels.datname`, temp_files
+        | KEEP time_bucket, `{{label:datname}}`, temp_files
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Temporary files by database"
@@ -200,7 +180,7 @@ panel:
         | WHERE (?Database == "" OR ({{label:datname}} RLIKE ?Database OR ({{label:datname}} IS NULL AND "" RLIKE ?Database)))
         | WHERE {{metric:pg_stat_database_temp_files:counter}} IS NOT NULL
         | STATS temp_files = SUM(RATE({{metric:pg_stat_database_temp_files:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:datname}}
-        | KEEP time_bucket, `labels.datname`, temp_files
+        | KEEP time_bucket, `{{label:datname}}`, temp_files
         | SORT time_bucket ASC
       status_override: migrated
   layout_overrides:

@@ -870,11 +870,9 @@ def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
     assert "IRATE(" in query
     assert "TBUCKET(20" in query
     assert "TBUCKET(100" not in query
-    assert "labels.interrupt" in query
-    assert "labels.cpu" in query
-    assert 'CONCAT(COALESCE(TO_STRING(labels.interrupt)' in query or (
-        "labels.interrupt" in query and "CPU" in query
-    )
+    assert "interrupt" in query
+    assert "cpu" in query
+    assert "CPU" in query
     assert '"type"' not in query
     assert '"info"' not in query
     assert "GROK" not in query
@@ -1244,7 +1242,7 @@ def test_resolve_pack_7362_pins_untyped_status_counters_and_processlist_map():
     entry = (resolved.metric_map or {}).get("mysql_info_schema_threads")
     target = getattr(entry, "target", entry)
     assert target == "mysql_info_schema_processlist_threads"
-    assert resolved.control_field_overrides.get("host") == "labels.instance"
+    assert resolved.control_field_overrides.get("host") == "instance"
     titles = {o.get("title_match") for o in resolved.panel_query_overrides}
     assert "Process States" in titles
     assert "MySQL Query Cache Activity" in titles
@@ -1364,8 +1362,8 @@ def test_resolve_pack_9628_ignores_helm_release_and_pins_memory_gauges():
     assert resolved.metric_kinds.get("process_resident_memory_bytes") == "gauge"
     assert resolved.metric_kinds.get("process_virtual_memory_bytes") == "gauge"
     assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("datname") == "labels.datname"
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    assert resolved.control_field_overrides.get("datname") == "datname"
     titles = {o.get("title_match") for o in resolved.panel_query_overrides}
     assert "Average Memory Usage" in titles
     assert "Start Time" in titles
@@ -1453,7 +1451,7 @@ def test_9628_start_time_override_does_not_yellow_absent_postmaster_metric():
 
 def test_9628_version_metric_displays_version_label_not_static_one():
     """The Version tile must display the PostgreSQL version label
-    (``labels.short_version``), not the numeric ``pg_static=1``. The metric
+    (canonical ``short_version``), not the numeric ``pg_static=1``. The metric
     panel binds the label as a breakdown so the version string is visible
     (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
     dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
@@ -1482,8 +1480,8 @@ def test_9628_version_metric_displays_version_label_not_static_one():
     )
     esql = yaml_panel.get("esql") or {}
     assert esql.get("type") == "metric"
-    assert (esql.get("breakdown") or {}).get("field") == "labels.short_version"
-    assert "labels.short_version" in (esql.get("query") or "")
+    assert (esql.get("breakdown") or {}).get("field") == "short_version"
+    assert "short_version" in (esql.get("query") or "")
 
 
 def test_9628_start_time_metric_has_duration_format():
@@ -1519,7 +1517,7 @@ def test_9628_start_time_metric_has_duration_format():
 
 def test_7362_cpu_system_panel_surfaces_cross_host_approximation():
     """The 7362 CPU Usage / Load override aggregates across every node exporter
-    (``COUNT_DISTINCT(labels.cpu)`` is global; hosts reuse CPU IDs), which can
+    (``COUNT_DISTINCT`` of the cpu label is global; hosts reuse CPU IDs), which can
     exceed 100%. It must surface an approximation warning and downgrade instead
     of reporting green (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
     dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["mysql"]}
@@ -1718,8 +1716,8 @@ def test_resolve_pack_14114_pins_counters_and_bgwriter_map():
     entry = (resolved.metric_map or {}).get("pg_stat_bgwriter_buffers_alloc")
     target = getattr(entry, "target", entry)
     assert target == "pg_stat_bgwriter_buffers_alloc_total"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("db") == "labels.datname"
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    assert resolved.control_field_overrides.get("db") == "datname"
 
 
 def test_14114_buffers_override_uses_total_suffix_offline():
@@ -1849,8 +1847,8 @@ def test_resolve_pack_12485_pins_kinds_renames_and_controls():
         entry = (resolved.metric_map or {}).get(src)
         assert getattr(entry, "target", entry) == tgt, src
     # Controls keyed by the dashboard's capitalised variable names.
-    assert resolved.control_field_overrides.get("Instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("Database") == "labels.datname"
+    assert resolved.control_field_overrides.get("Instance") == "instance"
+    assert resolved.control_field_overrides.get("Database") == "datname"
 
 
 def test_12485_database_size_renamed_offline():
@@ -1902,7 +1900,7 @@ def test_12485_activity_count_is_gauge_not_rated():
     assert "pg_stat_activity_count" in query
     # gauge → SUM, never RATE/IRATE (the whole point of forcing the _count gauge).
     assert "RATE(" not in query.upper()
-    assert "labels.state" in query
+    assert "state" in query
 
 
 def test_12485_instance_and_database_controls_rewritten():
@@ -2239,7 +2237,7 @@ def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
     )
     assert global_result.status in {"migrated", "migrated_with_warnings"}, global_result.reasons
     global_query = (global_yaml.get("esql") or {}).get("query") or ""
-    assert "labels.datname" in global_query
+    assert "datname" in global_query
     assert "?Database" not in global_query
     assert "LAST(value, step)" not in global_query
 
@@ -2253,7 +2251,7 @@ def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
     )
     assert db_result.status in {"migrated", "migrated_with_warnings"}, db_result.reasons
     db_query = (db_yaml.get("esql") or {}).get("query") or ""
-    assert "labels.datname" in db_query
+    assert "datname" in db_query
     assert "?Database" in db_query
 
 
@@ -2318,7 +2316,7 @@ def test_14114_numbackends_override_drops_name_breakdown():
         "tags": ["postgres"],
     }
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
-    resolver = SchemaResolver(resolved)
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     panel = {
         "id": 6,
         "type": "graph",
@@ -2345,10 +2343,8 @@ def test_14114_numbackends_override_drops_name_breakdown():
     assert "connections =" in query
     assert "__name__" not in query
     assert "GROK" not in query
-    assert "labels.datname" in query
     # Source is one series per (instance, datname); grouping only by datname
     # would MAX-collapse two exporters that share a database name.
-    assert "labels.instance" in query
     stats_line = next(
         line for line in query.splitlines() if "STATS connections" in line
     )

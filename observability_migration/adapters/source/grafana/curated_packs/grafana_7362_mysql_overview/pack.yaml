@@ -19,12 +19,16 @@
 query:
   metrics_dataset_filter: "prometheus"
 
-  label_rewrites:
-    instance: labels.instance
-    job: labels.job
-    state: labels.state
-    handler: labels.handler
-    command: labels.command
+  # Source→canonical only. Profile namespacing is applied by the resolver.
+  # state/handler/command are not in PROM_TO_OTEL_CANDIDATES; keep them
+  # canonical (bare spelling) so grouping columns namespace per profile.
+  label_candidates:
+    state:
+      - state
+    handler:
+      - handler
+    command:
+      - command
 
   # mysqld_exporter publishes these as ``# TYPE untyped``. Elasticsearch infers
   # gauge from the missing ``_total`` suffix, so RATE() 400s at render time.
@@ -115,27 +119,9 @@ query:
     - aws_rds_write_latency_average
     - node_cpu_seconds_total_average
 
-  label_candidates:
-    instance:
-      - labels.instance
-      - service.instance.id
-      - host.name
-    job:
-      - labels.job
-      - service.name
-    state:
-      - labels.state
-      - state
-    handler:
-      - labels.handler
-      - handler
-    command:
-      - labels.command
-      - command
-
 controls:
   field_overrides:
-    host: labels.instance
+    host: instance
 
 panel:
   query_overrides:
@@ -164,7 +150,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
         | WHERE {{metric:mysql_global_status_commands_total:counter}} IS NOT NULL
-        | STATS Commands = SUM(RATE({{metric:mysql_global_status_commands_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.command
+        | STATS Commands = SUM(RATE({{metric:mysql_global_status_commands_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:command}}
         | WHERE Commands > 0
         | SORT time_bucket ASC
       status_override: migrated
@@ -174,7 +160,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
         | WHERE {{metric:mysql_info_schema_processlist_threads:gauge}} IS NOT NULL
-        | STATS process_threads = MAX(LAST_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | STATS process_threads = MAX(LAST_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:state}}
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Top Process States Hourly"
@@ -184,7 +170,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
         | WHERE {{metric:mysql_info_schema_processlist_threads:gauge}} IS NOT NULL
-        | STATS process_threads = MAX(AVG_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | STATS process_threads = MAX(AVG_OVER_TIME({{metric:mysql_info_schema_processlist_threads:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:state}}
         | SORT time_bucket ASC
       status_override: migrated
     # Query cache was removed in MySQL 8. Show InnoDB buffer-pool pages instead.
@@ -194,7 +180,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?host == "" OR ({{label:instance}} RLIKE ?host OR ({{label:instance}} IS NULL AND "" RLIKE ?host)))
         | WHERE {{metric:mysql_global_status_buffer_pool_pages:gauge}} IS NOT NULL
-        | STATS pages = MAX(LAST_OVER_TIME({{metric:mysql_global_status_buffer_pool_pages:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.state
+        | STATS pages = MAX(LAST_OVER_TIME({{metric:mysql_global_status_buffer_pool_pages:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:state}}
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "MySQL Query Cache Activity"
@@ -217,21 +203,21 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL OR {{metric:node_load1:gauge}} IS NOT NULL
-        | STATS Load_1m = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), non_idle = SUM(CASE(labels.mode != "idle", RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, labels.cpu, NULL)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | STATS Load_1m = MAX(LAST_OVER_TIME({{metric:node_load1:gauge}})), non_idle = SUM(CASE({{label:mode}} != "idle", RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), cpu_cores = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL, {{label:cpu}}, NULL)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | EVAL CPU_busy_pct = CASE(cpu_cores > 0, ((non_idle * 100) / cpu_cores), NULL), `Load 1m` = Load_1m
         | KEEP time_bucket, CPU_busy_pct, `Load 1m`
         | SORT time_bucket ASC
       status_override: migrated
       approximation_note: >-
         Approximate: aggregates across all node exporters without a per-host
-        grouping. COUNT_DISTINCT(labels.cpu) is global, so with multiple hosts
+        grouping. COUNT_DISTINCT({{label:cpu}}) is global, so with multiple hosts
         (which reuse CPU ids) the core count is undercounted and CPU busy % can
         exceed 100%. Scope to a single host for an exact value.
     - title_match: "Disk Latency"
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (labels.device IS NULL OR labels.device NOT RLIKE "dm-.*")
+        | WHERE ({{label:device}} IS NULL OR {{label:device}} NOT RLIKE "dm-.*")
         | WHERE {{metric:node_disk_read_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_reads_completed_total:counter}} IS NOT NULL OR {{metric:node_disk_write_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_writes_completed_total:counter}} IS NOT NULL
         | STATS Read = SUM((RATE({{metric:node_disk_read_time_seconds_total:counter}}) / RATE({{metric:node_disk_reads_completed_total:counter}}))), Write = SUM((RATE({{metric:node_disk_write_time_seconds_total:counter}}) / RATE({{metric:node_disk_writes_completed_total:counter}}))) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | SORT time_bucket ASC
@@ -240,7 +226,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (labels.device IS NULL OR labels.device != "lo")
+        | WHERE ({{label:device}} IS NULL OR {{label:device}} != "lo")
         | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS Inbound = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})), Outbound = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | SORT time_bucket ASC
