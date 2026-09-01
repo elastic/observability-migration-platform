@@ -1291,8 +1291,11 @@ class SchemaResolver:
         return False
 
     def resolve_control_field(self, variable_name, metric_field=None):
-        if variable_name in self._rule_pack.control_field_overrides:
-            return self._rule_pack.control_field_overrides[variable_name]
+        override = self._rule_pack.control_field_overrides.get(variable_name)
+        if override is not None:
+            if self._is_canonical_label(override):
+                return self.resolve_label(override, metric_field=metric_field)
+            return override  # concrete field escape hatch
         return self.resolve_label(variable_name, metric_field=metric_field)
 
     def concrete_index_candidates(self):

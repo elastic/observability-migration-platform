@@ -205,3 +205,18 @@ def test_shipped_pack_metric_map_native_identity(dashboard, source, old_native):
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
     resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     assert resolver.resolve_metric_field(source) == old_native
+
+
+@pytest.mark.parametrize("profile,expected", [
+    ("prometheus_native", "labels.deployment"),
+    ("prometheus_metrics", "prometheus.labels.deployment"),
+    ("otel", "k8s.deployment.name"),
+])
+def test_control_field_override_is_canonical(profile, expected):
+    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    pack = RulePackConfig()
+    pack.control_field_overrides = {"Deployment": "deployment"}
+    r = SchemaResolver(pack, field_profile=profile)
+    assert r.resolve_control_field("Deployment") == expected
