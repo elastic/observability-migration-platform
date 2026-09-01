@@ -152,6 +152,25 @@ def test_metric_map_target_is_namespaced(profile, expected):
     assert r.resolve_metric_field("pg_database_size") == expected
 
 
+def test_applied_metric_map_records_resolved_native_field():
+    # ``_metric_map_applied`` feeds migration_report.json's metric-rename map,
+    # which ``obs-migrate compare`` replays single-hop into the parity oracle.
+    # It MUST record the fully-resolved (profile-namespaced) field the emitted
+    # ES|QL actually queries -- not the bare target -- or the reference PromQL
+    # for a renamed metric qualifies to a field that addresses nothing.
+    r = _metric_resolver("prometheus_native", {"pg_database_size": "pg_database_size_bytes"})
+    assert r.resolve_metric_field("pg_database_size") == "metrics.pg_database_size_bytes"
+    assert r._metric_map_applied["pg_database_size"] == "metrics.pg_database_size_bytes"
+
+
+def test_applied_metric_map_records_bare_field_under_otel():
+    # Under otel the resolved field is the bare logical name, so the recorded
+    # rename target is bare too (no profile namespace to qualify into).
+    r = _metric_resolver("otel", {"pg_database_size": "pg_database_size_bytes"})
+    assert r.resolve_metric_field("pg_database_size") == "pg_database_size_bytes"
+    assert r._metric_map_applied["pg_database_size"] == "pg_database_size_bytes"
+
+
 # One representative de-prefixed metric_map target per shipped pack, paired with
 # the OLD verbatim (metrics.-prefixed) spelling those packs used to author.
 # De-prefix + native namespacing MUST net to the exact same native field, i.e.

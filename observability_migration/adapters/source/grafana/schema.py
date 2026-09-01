@@ -1035,18 +1035,33 @@ class SchemaResolver:
             if mapped.gap_reason and mapped.gap_reason not in self._metric_map_gaps:
                 self._metric_map_gaps.append(mapped.gap_reason)
             if mapped.applied:
-                self._metric_map_applied[metric_name] = mapped.target
                 # The applied target is a bare logical metric name; let it flow
                 # through the profile-namespacing branches below instead of
-                # returning it verbatim.
+                # returning it verbatim. The fully-resolved (profile-namespaced)
+                # field is recorded in ``_metric_map_applied`` via ``_emit`` at
+                # each return point, so ``migration_report.json`` and the
+                # ``compare`` oracle see the same qualified field the translated
+                # ES|QL uses (a bare target under-qualifies the reference and
+                # empties the reference side for renamed metrics).
                 logical_name = mapped.target
             # Unapplied mapping: continue with source name.
+        # Record the fully-resolved field for an applied rename at each return
+        # point below. ``applied_key`` is the original source metric name (the
+        # ``_metric_map_applied`` key); ``_emit`` overwrites the bare bookkeeping
+        # with the profile-namespaced field just before returning it.
+        applied_key = metric_name if (mapped is not None and mapped.applied) else None
+
+        def _emit(field: str) -> str:
+            if applied_key is not None:
+                self._metric_map_applied[applied_key] = field
+            return field
+
         # Passthrough profile: emit the (possibly remapped) name verbatim,
         # skipping discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:
             if self._field_cache and logical_name not in self._field_cache:
                 self._emitted_unverified_passthrough_field = True
-            return logical_name
+            return _emit(logical_name)
         self._discover_fields()
         profile = self._namespacing_schema_profile()
         if profile == "prometheus_native":
@@ -1058,27 +1073,27 @@ class SchemaResolver:
             cache = self._field_cache or {}
             for candidate in self._profile_metric_candidates(logical_name, profile):
                 if candidate in cache:
-                    return self._counter_suffix_alias(candidate, logical_name)
-            return self._counter_suffix_alias(f"metrics.{logical_name}", logical_name)
+                    return _emit(self._counter_suffix_alias(candidate, logical_name))
+            return _emit(self._counter_suffix_alias(f"metrics.{logical_name}", logical_name))
         if profile == "prometheus_metrics":
             # Classic Metricbeat remote_write (use_types=false): nested under
             # prometheus.metrics.<name> with labels under prometheus.labels.*.
             cache = self._field_cache or {}
             for candidate in self._profile_metric_candidates(logical_name, profile):
                 if candidate in cache:
-                    return self._counter_suffix_alias(candidate, logical_name)
-            return self._counter_suffix_alias(f"prometheus.metrics.{logical_name}", logical_name)
+                    return _emit(self._counter_suffix_alias(candidate, logical_name))
+            return _emit(self._counter_suffix_alias(f"prometheus.metrics.{logical_name}", logical_name))
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to
             # prometheus_native when caps advertise metrics.* (issue #270).
             cache = self._field_cache or {}
             if logical_name in cache:
-                return logical_name
+                return _emit(logical_name)
             prefixed = f"metrics.{logical_name}"
             if prefixed in cache:
-                return prefixed
-            return logical_name
+                return _emit(prefixed)
+            return _emit(logical_name)
         # Bare metric names in caps must not override the remote_write plan —
         # emit `prometheus.<metric>.<suffix>` even when OTel-shaped targets
         # advertise the logical PromQL name as a field.
@@ -1091,9 +1106,9 @@ class SchemaResolver:
         for suffix in suffixes:
             candidate = f"prometheus.{logical_name}{suffix}"
             if self._field_cache and candidate in self._field_cache:
-                return candidate
+                return _emit(candidate)
         default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
-        return f"prometheus.{logical_name}{default_suffix}"
+        return _emit(f"prometheus.{logical_name}{default_suffix}")
 
     def resolve_labels(self, labels, metric_field=None):
         resolved = []
