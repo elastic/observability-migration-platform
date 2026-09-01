@@ -965,7 +965,11 @@ def test_resolve_pack_label_candidates_from_curated():
     dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
     base = RulePackConfig()
     resolved = resolve_pack_for_dashboard(dashboard, base)
-    assert "service.instance.id" in resolved.label_candidates.get("instance", [])
+    # 763 authors canonical label names; the resolver maps `instance` to its
+    # OTel spelling under the otel profile (the pack no longer hardcodes any
+    # labels.* candidate — that would leak under otel).
+    r = SchemaResolver(resolved, field_profile="otel")
+    assert r.resolve_label("instance") == "service.instance.id"
 
 
 def test_resolve_pack_no_gnet_id_uses_title_fallback():
@@ -2364,13 +2368,15 @@ def test_14114_numbackends_override_drops_name_breakdown():
 
 
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():
-    """Offline runs take the FIRST candidate without probing the target.
+    """Offline prometheus_native runs must emit labels.<name> for every pack.
 
-    All three Redis packs describe Prometheus scrapes, so labels.<name> must lead;
-    an OTel-first order silently emits service.name / db.name for a
-    prometheus_native deployment (observed on 18405/18406 before this was fixed).
+    These packs describe Prometheus scrapes. They author canonical label names
+    and the resolver namespaces them to the prometheus_native layout
+    (labels.<name>) offline, so a Prometheus scrape deployment gets the correct
+    field without probing the target (previously guaranteed by pinning a
+    labels.* candidate first, which leaked under otel).
     """
-    expected_first = {
+    expected_native = {
         763: [("instance", "labels.instance"), ("job", "labels.job")],
         18405: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
         18406: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
@@ -2381,25 +2387,32 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         14114: [("instance", "labels.instance"), ("job", "labels.job")],
         12485: [("instance", "labels.instance"), ("job", "labels.job")],
     }
-    for gnet_id, pairs in expected_first.items():
+    for gnet_id, pairs in expected_native.items():
         resolved = resolve_pack_for_dashboard(
             {"gnetId": gnet_id, "title": "", "tags": []}, RulePackConfig()
         )
-        for label, first in pairs:
-            candidates = (resolved.label_candidates or {}).get(label)
-            assert candidates, f"{gnet_id}: no candidates for {label}"
-            assert candidates[0] == first, (
-                f"{gnet_id}: {label} resolves to {candidates[0]} offline, expected {first}"
+        r = SchemaResolver(resolved, field_profile="prometheus_native")
+        for label, native in pairs:
+            got = r.resolve_label(label)
+            assert got == native, (
+                f"{gnet_id}: {label} resolves to {got} under prometheus_native, "
+                f"expected {native}"
             )
 
 
-def test_763_pack_pins_labels_instance_for_queries_and_controls():
+def test_763_pack_authors_canonical_instance_for_queries_and_controls():
     resolved = resolve_pack_for_dashboard(
         {"gnetId": 763, "title": "Redis...", "tags": ["redis"]},
         RulePackConfig(),
     )
-    assert resolved.label_rewrites.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
+    # Canonical authoring: no hardcoded labels.* rewrite, and the control
+    # override is the canonical label name. The resolver namespaces per profile.
+    assert "instance" not in resolved.label_rewrites
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    r_native = SchemaResolver(resolved, field_profile="prometheus_native")
+    assert r_native.resolve_control_field("instance") == "labels.instance"
+    r_otel = SchemaResolver(resolved, field_profile="otel")
+    assert r_otel.resolve_control_field("instance") == "service.instance.id"
 
 
 # ---------------------------------------------------------------------------
@@ -2494,7 +2507,11 @@ def test_763_curated_pack_preserves_namespace_and_instance_controls():
     instance_control = next(control for control in controls if control.get("variable_name") == "instance")
     assert namespace_control.get("label") == "namespace"
     assert "redis_up IS NOT NULL" in str(namespace_control.get("query") or "")
-    assert "labels.namespace" in str(namespace_control.get("query") or "")
+    # Canonical authoring: the control resolves the `namespace` label per
+    # profile (bare offline / OTel-shaped default; labels.namespace under
+    # prometheus_native). Assert the resolved field is bound, not a hardcoded
+    # labels.* spelling.
+    assert "namespace IS NOT NULL" in str(namespace_control.get("query") or "")
     assert instance_control.get("label") == "instance"
     assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
     assert "?namespace" in str(instance_control.get("query") or "")
@@ -3948,8 +3965,10 @@ def test_763_hits_misses_panel_uses_curated_override():
     assert "AVG(IRATE(" in query
     assert "redis_keyspace_hits_total" in query
     assert "redis_keyspace_misses_total" in query
-    assert "labels.instance" in query
-    assert "| KEEP time_bucket, `labels.instance`, hits, misses" in query
+    # Canonical authoring: the grouping label resolves per profile; under the
+    # default offline profile it emits the bare `instance` spelling (native
+    # byte-identity to labels.instance is guarded by the cross-profile gate).
+    assert "| KEEP time_bucket, `instance`, hits, misses" in query
 
 
 def test_763_average_time_spent_panel_uses_curated_override():
@@ -3976,7 +3995,7 @@ def test_763_average_time_spent_panel_uses_curated_override():
     query = yaml_panel["esql"].get("query", "")
     assert "@timestamp >= ?_tstart" in query
     assert "TBUCKET(2 minute)" in query
-    assert "labels.cmd" in query
+    assert "| KEEP time_bucket, `cmd`, computed_value" in query
     assert "computed_value" in query
     assert "redis_commands_duration_seconds_total" in query
     assert "redis_commands_total" in query
@@ -4007,7 +4026,7 @@ def test_763_total_time_spent_panel_uses_curated_override():
     query = yaml_panel["esql"].get("query", "")
     assert "@timestamp >= ?_tstart" in query
     assert "TBUCKET(2 minute)" in query
-    assert "labels.cmd" in query
+    assert "| KEEP time_bucket, `cmd`, redis_commands_duration_seconds_total" in query
     assert "redis_commands_duration_seconds_total" in query
     assert "SUM(IRATE(" in query
 

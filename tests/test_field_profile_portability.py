@@ -373,3 +373,32 @@ def test_k8s_pack_no_profile_leakage(pack_id, corpus_basename, profile, tmp_path
         for query in extract_esql_queries(data):
             violations += check_profile_leakage(query, profile)
     assert violations == [], f"pack {pack_id} leaked under {profile}: {violations}"
+
+
+# Same end-to-end profile-leakage check for the converted Redis packs. The two
+# packs with a pinned community source dashboard are covered here; skip (never
+# fail) when that corpus fixture is absent.
+_REDIS_PACK_CORPUS = [
+    ("763", "redis-exporter-763"),
+    ("11835", "redis-dashboard-for-prometheus-redis-exporter-helm-stable-redis-ha"),
+]
+
+
+@pytest.mark.parametrize("pack_id,corpus_basename", _REDIS_PACK_CORPUS)
+@pytest.mark.parametrize("profile", _LEAKAGE_PROFILES)
+def test_redis_pack_no_profile_leakage(pack_id, corpus_basename, profile, tmp_path):
+    source = _COMMUNITY_DIR / f"{corpus_basename}.json"
+    if not source.is_file():
+        pytest.skip(f"requires the pinned community corpus fixture {source}")
+    solo = tmp_path / "src"
+    solo.mkdir()
+    shutil.copy(source, solo / source.name)
+    out = tmp_path / "out"
+    _migrate(str(solo), out, profile, "metrics-*")
+    violations: list[str] = []
+    for native in glob.glob(str(out / "dashboards" / "native" / "*.native.json")):
+        with open(native, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for query in extract_esql_queries(data):
+            violations += check_profile_leakage(query, profile)
+    assert violations == [], f"pack {pack_id} leaked under {profile}: {violations}"
