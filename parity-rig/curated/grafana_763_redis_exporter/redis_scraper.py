@@ -55,6 +55,15 @@ TARGETS = [
         "postgres:5432",
         {},
     ),
+    # Synthetic Kubernetes exporter: cAdvisor (container_*/machine_*) for
+    # Grafana 315 and kube-state-metrics + node_exporter for Grafana 6417.
+    (
+        "http://k8s_exporter:9288/metrics",
+        "k8s.prometheus",
+        "kube-state-metrics",
+        "ksm:8080",
+        {},
+    ),
 ]
 
 _LABEL_RE = re.compile(r'(\w+)="([^"]*)"')

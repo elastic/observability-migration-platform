@@ -127,3 +127,12 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "e14a35eac532db4f79837a293411edb20d04164ca59de17d73557d08637a4700"
     description: "postgres_exporter overview — v0.15 name remap (size_bytes/lag_seconds/stat_statements), _count gauge fixes, Instance/Database populate rewrite"
+
+  - gnet_id: 315
+    name: grafana_315_kubernetes_cadvisor
+    title_hint: "Kubernetes cluster monitoring (via Prometheus)"
+    tags_hint: ["kubernetes"]
+    path: grafana_315_kubernetes_cadvisor
+    gnet_revision: 3
+    dashboard_sha256: "6fb5e045bc6d860f0f22ce7e145f4da04d2e25fd4fbf9fda29355cef6d63aeae"
+    description: "cAdvisor cluster monitoring — pre-1.16 label remap (pod_name/container_name → pod/container), obsolete rkt/docker/systemd series dropped as gaps, machine_*/container_fs_* KPIs"

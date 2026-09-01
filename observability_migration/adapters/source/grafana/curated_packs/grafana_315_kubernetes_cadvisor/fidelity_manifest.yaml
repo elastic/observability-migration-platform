@@ -1,0 +1,108 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 315 (Kubernetes cluster monitoring via Prometheus)
+# https://grafana.com/grafana/dashboards/315-kubernetes-cluster-monitoring-via-prometheus/
+#
+# PERFECT     = same information as Grafana on a modern cAdvisor scrape.
+# APPROXIMATE = documented delta (dropped obsolete runtime series, id/device gaps).
+# GAP         = renders empty on modern data because the underlying series/label
+#               no longer exists (obsolete container runtimes, pre-1.16 labels).
+#
+# The dashboard is cAdvisor-only (container_* + machine_*). Panels marked
+# "requires: machine_* / container_fs_*" render on real data only when the
+# target cAdvisor scrape emits the node machine metrics and the root cgroup
+# (id="/") filesystem series; otherwise they are an honest field/data gap.
+
+schema_version: 1
+gnet_id: 315
+gnet_revision: 3
+dashboard_title: "Kubernetes cluster monitoring (via Prometheus)"
+maintainer: "community"
+
+panels:
+  # --- Network I/O pressure -----------------------------------------------
+  - title: "Network I/O pressure"
+    fidelity: PERFECT
+    notes: "sum(rate(container_network_receive/transmit_bytes_total)) butterfly; engine emits Sent as the negated transmit rate."
+
+  # --- Total usage (cluster KPIs) -----------------------------------------
+  - title: "Cluster memory usage"
+    fidelity: APPROXIMATE
+    notes: "sum(container_memory_working_set_bytes{id=/})/sum(machine_memory_bytes)*100. requires: machine_memory_bytes + root-cgroup (id=/) series. Cross-metric ratio — PERFECT under native PROMQL."
+  - title: "Cluster CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "sum(rate(container_cpu_usage_seconds_total{id=/}))/sum(machine_cpu_cores)*100. requires: machine_cpu_cores + id=/ series."
+  - title: "Cluster filesystem usage"
+    fidelity: APPROXIMATE
+    notes: "container_fs_usage_bytes/container_fs_limit_bytes*100 with device=~/dev/[sv]d.. filter. requires: container_fs_* with a matching device label (the classic Grafana N/A when the device regex matches nothing)."
+  - title: "Used"  # memory
+    fidelity: APPROXIMATE
+    notes: "sum(container_memory_working_set_bytes{id=/}). requires: root-cgroup id=/ series."
+  - title: "Total"  # memory
+    fidelity: APPROXIMATE
+    notes: "sum(machine_memory_bytes). requires: machine_memory_bytes."
+  - title: "Used"  # cpu (cores)
+    fidelity: APPROXIMATE
+    notes: "sum(rate(container_cpu_usage_seconds_total{id=/})). requires: id=/ series."
+  - title: "Total"  # cpu (cores)
+    fidelity: APPROXIMATE
+    notes: "sum(machine_cpu_cores). requires: machine_cpu_cores."
+  - title: "Used"  # filesystem
+    fidelity: APPROXIMATE
+    notes: "sum(container_fs_usage_bytes{device,id=/}). requires: container_fs_usage_bytes."
+  - title: "Total"  # filesystem
+    fidelity: APPROXIMATE
+    notes: "sum(container_fs_limit_bytes{device,id=/}). requires: container_fs_limit_bytes."
+
+  # --- Per-pod workload (the core, renders on modern cAdvisor) -------------
+  - title: "Pods CPU usage (1m avg)"
+    fidelity: PERFECT
+    notes: "sum(rate(container_cpu_usage_seconds_total)) by pod. Curated ES|QL override groups by labels.pod directly: the native PROMQL path rewrites the metric but leaves the Lens breakdown accessor on the pre-rewrite `pod_name`, which fails as 'invalid column' after pod_name -> labels.pod. Explicit ES|QL keeps query output and breakdown aligned and excludes the root cgroup (id=/) series (no pod label)."
+  - title: "Pods memory usage"
+    fidelity: PERFECT
+    notes: "sum(container_memory_working_set_bytes) by pod. Same curated ES|QL breakdown-alignment override as Pods CPU."
+  - title: "Pods network I/O (1m avg)"
+    fidelity: PERFECT
+    notes: "receive positive, transmit negative, by pod."
+
+  # --- Per-container workload ---------------------------------------------
+  - title: "Containers CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "Curated ES|QL keeps the k8s pod/container series (excludes the POD pause container); dropped the obsolete docker (name!~^k8s_) and rkt (rkt_container_name) targets."
+  - title: "Containers memory usage"
+    fidelity: APPROXIMATE
+    notes: "As above; per pod/container working set."
+  - title: "Containers network I/O (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "As above; received/sent by pod. Docker/rkt series dropped."
+
+  # --- Obsolete-runtime and pre-1.16 panels (honest gaps) -----------------
+  - title: "System services CPU usage (1m avg)"
+    fidelity: GAP
+    notes: "systemd_service_name is a pre-labelmap cAdvisor convention absent on modern k8s. Curated ES|QL override filters on an impossible container value so the panel degrades to an honest empty (data_gap) instead of a Lens 'invalid column' error on the non-existent systemd_service_name breakdown."
+  - title: "System services memory usage"
+    fidelity: GAP
+    notes: "systemd_service_name absent on modern k8s; same impossible-filter override as System services CPU so the panel renders empty rather than erroring."
+  - title: "All processes CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "Groups by the cAdvisor cgroup `id`; renders only where the scrape emits the raw `id` label (real cAdvisor does, kube-state/synthetic scrapes may not)."
+  - title: "All processes memory usage"
+    fidelity: APPROXIMATE
+    notes: "As above; grouped by cgroup id."
+  - title: "All processes network I/O (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "As above; grouped by cgroup id."
+
+summary:
+  total_panels: 21
+  perfect: 4
+  approximate: 15
+  gap: 2
+  notes: >
+    The dashboard's per-pod/per-container workload panels (the operational core)
+    render on any modern cAdvisor scrape after the pre-1.16 label bridge. The
+    cluster-total KPI strip requires the node machine_* metrics and the root
+    cgroup (id="/") + container_fs_* series. The systemd and docker/rkt runtime
+    series are permanent gaps: those container runtimes no longer exist, so the
+    pack drops them rather than fabricate a single misleading aggregate.

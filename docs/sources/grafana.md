@@ -207,6 +207,26 @@ target exporter runs the `stat_statements` + `postmaster` collectors and the
 `pg_stat_statements` extension is installed; otherwise they degrade to an
 honest field/data gap.
 
+The Kubernetes cluster-monitoring (cAdvisor 315) pack bridges a pre-1.16
+cAdvisor lineage: `label_rewrites` map `pod_name`/`container_name` to the modern
+`labels.pod`/`labels.container`, and `ignored_labels` strip dead selector
+matchers (`kubernetes_io_hostname`, `image`, `name`) so the per-pod/per-container
+panels are not filtered to empty. Its `$Node` variable is dropped as inert —
+modern cAdvisor container series carry no node label. Because the native PROMQL
+DSL rewrites a grouped metric but leaves the Lens breakdown accessor bound to the
+pre-rewrite label (a `by (pod_name)` panel then fails with "invalid column" once
+`pod_name` becomes `labels.pod`), the pack emits explicit `query_overrides` for
+the Pods CPU/memory panels so the ES|QL output column and the Lens breakdown stay
+aligned on `labels.pod`. The obsolete container-runtime series are honest gaps
+rather than fabricated aggregates: docker (`name!~"^k8s_"`) and rkt
+(`rkt_container_name`) targets are dropped from the multi-runtime container
+panels (disclosed as an approximation), and the systemd system-service panels
+(`systemd_service_name`, a pre-labelmap relabel that no longer exists) degrade to
+an honest empty via an impossible-filter override instead of erroring on a
+non-existent breakdown column. The cluster-total KPI strip additionally needs the
+node `machine_*` metrics and the root-cgroup (`id="/"`) + `container_fs_*` series
+to populate.
+
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
 recording the exact grafana.com revision the pack authors read, re-checkable

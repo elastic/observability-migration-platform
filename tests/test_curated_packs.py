@@ -4182,3 +4182,243 @@ def test_panel_layout_override_loaded_from_pack_yaml_round_trip():
         assert override["collapsed"] is False
     finally:
         os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Grafana 315 — Kubernetes cluster monitoring (cAdvisor)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_315():
+    dashboard = {
+        "gnetId": 315,
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def test_315_registry_entry_present():
+    entry = find_curated_pack(gnet_id=315, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_315_kubernetes_cadvisor"
+    assert entry["gnet_revision"] == 3
+
+
+def test_315_classifies_cadvisor_counters_and_gauges():
+    resolved, _ = _resolve_315()
+    assert resolved.metric_kinds["container_cpu_usage_seconds_total"] == "counter"
+    assert resolved.metric_kinds["container_network_receive_bytes_total"] == "counter"
+    assert resolved.metric_kinds["container_memory_working_set_bytes"] == "gauge"
+    assert resolved.metric_kinds["machine_cpu_cores"] == "gauge"
+
+
+def test_315_rewrites_pre_116_labels_and_ignores_dead_matchers():
+    resolved, _ = _resolve_315()
+    assert resolved.label_rewrites["pod_name"] == "labels.pod"
+    assert resolved.label_rewrites["container_name"] == "labels.container"
+    assert "kubernetes_io_hostname" in resolved.ignored_labels
+    assert "image" in resolved.ignored_labels
+    # systemd/rkt labels must NOT be ignored (those panels degrade to empty).
+    assert "systemd_service_name" not in resolved.ignored_labels
+    assert "rkt_container_name" not in resolved.ignored_labels
+
+
+def test_315_pods_cpu_panel_groups_by_pod_without_dead_matchers():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 1,
+        "type": "graph",
+        "title": "Pods CPU usage (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    'sum (rate (container_cpu_usage_seconds_total'
+                    '{image!="",name=~"^k8s_.*",kubernetes_io_hostname=~"^$Node$"}[1m]))'
+                    " by (pod_name)"
+                ),
+                "legendFormat": "{{ pod_name }}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "labels.pod" in query
+    assert "RATE(container_cpu_usage_seconds_total)" in query
+    # Dead selector labels must be stripped, not filtered on.
+    assert "kubernetes_io_hostname" not in query
+    assert 'name RLIKE' not in query
+    assert "image" not in query
+
+
+def test_315_containers_override_keeps_k8s_series_and_discloses_drop():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 2,
+        "type": "graph",
+        "title": "Containers CPU usage (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    'sum (rate (container_cpu_usage_seconds_total'
+                    '{image!="",name=~"^k8s_.*",container_name!="POD"}[1m]))'
+                    " by (container_name, pod_name)"
+                ),
+                "legendFormat": "pod: {{ pod_name }} | {{ container_name }}",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'sum (rate (container_cpu_usage_seconds_total'
+                    '{image!="",name!~"^k8s_.*"}[1m]))'
+                    " by (kubernetes_io_hostname, name, image)"
+                ),
+                "legendFormat": "docker: {{ name }}",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status == "migrated_with_warnings"
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "labels.pod" in query and "labels.container" in query
+    assert 'labels.container != "POD"' in query
+    # The dropped-runtime disclosure must surface as a warning.
+    assert any("docker" in r or "rkt" in r for r in result.reasons)
+
+
+def test_315_system_services_panel_degrades_to_empty_not_aggregate():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 3,
+        "type": "graph",
+        "title": "System services CPU usage (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    'sum (rate (container_cpu_usage_seconds_total'
+                    '{systemd_service_name!="",kubernetes_io_hostname=~"^$Node$"}[1m]))'
+                    " by (systemd_service_name)"
+                ),
+                "legendFormat": "{{ systemd_service_name }}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    # Curated ES|QL override: systemd_service_name never exists on modern
+    # cAdvisor, so grouping/breaking down by it would fail in Lens ("invalid
+    # column"). The override filters on an impossible container value so the
+    # panel degrades to an honest empty (data_gap) with valid columns — it must
+    # NOT reference the non-existent systemd_service_name column, and must NOT
+    # collapse into a single misleading aggregate (a BY grouping is retained).
+    assert "systemd_service_name" not in query
+    assert '"__systemd_service__"' in query
+    assert "labels.container" in query
+    assert "RATE(container_cpu_usage_seconds_total)" in query
+
+
+def test_315_pods_memory_override_groups_by_pod_last_over_time():
+    resolved, resolver = _resolve_315()
+    panel = {
+        "id": 4,
+        "type": "graph",
+        "title": "Pods memory usage",
+        "targets": [
+            {
+                "expr": (
+                    "sum (container_memory_working_set_bytes"
+                    '{image!="",name=~"^k8s_.*",kubernetes_io_hostname=~"^$Node$"})'
+                    " by (pod_name)"
+                ),
+                "legendFormat": "{{ pod_name }}",
+                "refId": "A",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    # Gauge → LAST_OVER_TIME (no illegal SUM(MAX(...)) nested aggregate), grouped
+    # by pod with the breakdown accessor aligned to the ES|QL output column.
+    assert "LAST_OVER_TIME(container_memory_working_set_bytes)" in query
+    assert "labels.pod" in query
+    # Root cgroup (id=/) has no pod label; the override excludes it.
+    assert "labels.pod IS NOT NULL" in query
+
+
+def test_315_pods_panels_breakdown_accessor_matches_query_column():
+    """Curated ES|QL keeps the Lens breakdown on labels.pod, not phantom pod_name.
+
+    The native PROMQL DSL path leaves the breakdown accessor bound to the
+    pre-rewrite ``pod_name`` (Lens "invalid column" after pod_name ->
+    labels.pod). The override must emit ``labels.pod`` as an actual query
+    output column and never reference the bare ``pod_name``.
+    """
+    resolved, resolver = _resolve_315()
+    for title, expr in (
+        (
+            "Pods CPU usage (1m avg)",
+            "sum (rate (container_cpu_usage_seconds_total[1m])) by (pod_name)",
+        ),
+        (
+            "Pods memory usage",
+            "sum (container_memory_working_set_bytes) by (pod_name)",
+        ),
+    ):
+        panel = {
+            "id": 9,
+            "type": "graph",
+            "title": title,
+            "targets": [
+                {"expr": expr, "legendFormat": "{{ pod_name }}", "refId": "A"}
+            ],
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+        }
+        yaml_panel, result = translate_panel(
+            panel,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=resolved,
+            resolver=resolver,
+        )
+        assert result.status in {"migrated", "migrated_with_warnings"}
+        esql = yaml_panel.get("esql") or {}
+        query = esql.get("query") or ""
+        assert "`labels.pod`" in query, f"{title}: {query}"
+        # No bare pre-rewrite label token as a standalone identifier.
+        assert "pod_name" not in query, f"{title} leaked pod_name: {query}"
+
