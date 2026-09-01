@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "parity-rig"))
 
@@ -72,3 +74,57 @@ def test_source_label_names_populated_by_pack_loader(tmp_path):
         "pod": "pod_name",
         "instance": "kubernetes_io_hostname",
     }
+
+
+def _resolver(profile, *, label_rewrites=None, label_candidates=None, source_label_names=None):
+    from observability_migration.adapters.source.grafana.rules import RulePackConfig
+    from observability_migration.adapters.source.grafana.schema import SchemaResolver
+
+    pack = RulePackConfig()
+    pack.label_rewrites = label_rewrites or {}
+    pack.label_candidates = label_candidates or {}
+    pack.source_label_names = source_label_names or {}
+    return SchemaResolver(pack, field_profile=profile)
+
+
+# Pack-declared canonical labels. Values are candidate *target fields* (OTel
+# spellings), matching how real packs populate ``label_candidates`` and the
+# resolver's documented resolution priority (user label_candidates prepend).
+# The resolver then namespaces per profile (labels.* / prometheus.labels.*)
+# rather than echoing the raw candidate.
+CANON = {"pod": ["k8s.pod.name"], "instance": ["service.instance.id"]}
+
+
+@pytest.mark.parametrize("profile,expected", [
+    ("prometheus_native", "labels.pod"),
+    ("prometheus_metrics", "prometheus.labels.pod"),
+    ("prometheus_remote_write", "prometheus.labels.pod"),
+    ("otel", "k8s.pod.name"),
+])
+def test_canonical_label_resolves_per_profile(profile, expected):
+    r = _resolver(profile, label_candidates=CANON)
+    assert r.resolve_label("pod") == expected
+
+
+@pytest.mark.parametrize("profile,expected", [
+    ("prometheus_native", "labels.pod"),
+    ("prometheus_metrics", "prometheus.labels.pod"),
+    ("otel", "k8s.pod.name"),
+])
+def test_heapster_rewrite_recurses_to_canonical(profile, expected):
+    # pod_name -> pod (canonical), then profile namespacing
+    r = _resolver(profile, label_rewrites={"pod_name": "pod"}, label_candidates=CANON)
+    assert r.resolve_label("pod_name") == expected
+
+
+def test_passthrough_is_source_faithful():
+    r = _resolver("passthrough", label_candidates=CANON,
+                  source_label_names={"pod": "pod_name"})
+    assert r.resolve_label("pod") == "pod_name"       # canonical placeholder -> source
+    assert r.resolve_label("pod_name") == "pod_name"  # raw source stays source
+
+
+def test_concrete_rewrite_target_is_literal_escape_hatch():
+    # target is NOT a canonical label -> returned verbatim (today's behavior)
+    r = _resolver("otel", label_rewrites={"weird": "some.concrete.field"})
+    assert r.resolve_label("weird") == "some.concrete.field"

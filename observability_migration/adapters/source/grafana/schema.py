@@ -649,18 +649,34 @@ class SchemaResolver:
         except Exception as exc:
             self._concrete_index_error = f"_resolve/index request failed: {exc}"
 
+    def _is_canonical_label(self, name):
+        """True when *name* is a logical label the resolver can namespace."""
+        return (
+            name in self.PROM_TO_OTEL_CANDIDATES
+            or name in self._rule_pack.label_candidates
+        )
+
     def resolve_label(self, label, metric_field=None):
         if label in self._rule_pack.ignored_labels:
             return None
+        # Source→canonical rewrites (e.g. Heapster `pod_name` → `pod`): when the
+        # rewrite target is itself a canonical label, recurse so profile
+        # namespacing applies. A concrete (non-canonical) target is returned
+        # verbatim (documented escape hatch).
         if label in self._rule_pack.label_rewrites:
-            return self._rule_pack.label_rewrites[label]
-        # Passthrough profile: emit the source label verbatim, skipping live
-        # discovery and OTel/Prometheus normalization. Explicit rule-pack
-        # overrides above still win.
+            target = self._rule_pack.label_rewrites[label]
+            if target != label and self._is_canonical_label(target):
+                return self.resolve_label(target, metric_field=metric_field)
+            if not self._is_canonical_label(target):
+                return target
+            label = target  # canonical == label edge case; fall through
+        # Passthrough profile: source-faithful. A canonical placeholder maps to
+        # its declared source spelling; a raw source name stays as-is.
         if self._passthrough:
-            if self._field_cache and label not in self._field_cache:
+            resolved = self._rule_pack.source_label_names.get(label, label)
+            if self._field_cache and resolved not in self._field_cache:
                 self._emitted_unverified_passthrough_field = True
-            return label
+            return resolved
         self._discover_fields()
         planned = self._effective_schema_profile()
         # Metric-aware: when the label is scoped to a metric (a
