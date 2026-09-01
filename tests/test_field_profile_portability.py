@@ -284,6 +284,29 @@ def test_shipped_pack_metric_map_native_identity(dashboard, source, old_native):
     assert resolver.resolve_metric_field(source) == old_native
 
 
+@pytest.mark.parametrize("profile,expected_metric", [
+    # A metric_map-renamed metric inside a native PROMQL ``value=(…)`` command
+    # must be namespaced for the active profile, exactly like a non-renamed
+    # metric. Returning the bare metric_map target (regression) emitted e.g.
+    # ``sum(pg_database_size_bytes{…})`` under native, which addresses no field
+    # in a ``metrics.*``-namespaced index and rendered the panel empty.
+    ("prometheus_native", "metrics.pg_database_size_bytes"),
+    ("prometheus_metrics", "prometheus.metrics.pg_database_size_bytes"),
+    ("otel", "pg_database_size_bytes"),
+    ("passthrough", "pg_database_size_bytes"),
+])
+def test_native_promql_metric_map_target_is_namespaced(profile, expected_metric):
+    from observability_migration.adapters.source.grafana.panels import (
+        _prefix_native_metric_fields,
+    )
+
+    r = _metric_resolver(profile, {"pg_database_size": "pg_database_size_bytes"})
+    out = _prefix_native_metric_fields(
+        'sum(pg_database_size{instance=~"$Instance"})', r
+    )
+    assert out == f'sum({expected_metric}{{instance=~"$Instance"}})'
+
+
 @pytest.mark.parametrize("profile,expected", [
     ("prometheus_native", "labels.deployment"),
     ("prometheus_metrics", "prometheus.labels.deployment"),
