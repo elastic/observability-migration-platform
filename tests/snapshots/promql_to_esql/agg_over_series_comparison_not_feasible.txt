@@ -1,0 +1,5 @@
+source: count(node_filesystem_avail_bytes < node_filesystem_size_bytes)
+feasibility: not_feasible
+warning: PromQL comparison '<' between two time-series inside an aggregation (count(A < B)) filters one series by another and has no honest ES|QL translation; compare against a scalar threshold instead of a second series; marked not_feasible
+---
+

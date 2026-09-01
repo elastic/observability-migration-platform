@@ -449,6 +449,26 @@ CASES: list[tuple[str, str, str]] = [
         "http_requests_total and http_other_total",
         "timeseries",
     ),
+    # An aggregation *wrapping* a set operator has to refuse for the same reason
+    # the bare operator above does (issue #377). The reproduction is grafana.com
+    # dashboard 11454 panel 12, whose sibling graph panel already refused.
+    (
+        "agg_over_and_operator_not_feasible",
+        (
+            "count((max by (persistentvolumeclaim,namespace) (kubelet_volume_stats_used_bytes))"
+            " and ((max by (persistentvolumeclaim,namespace) (kubelet_volume_stats_used_bytes))"
+            " / (max by (persistentvolumeclaim,namespace) (kubelet_volume_stats_capacity_bytes)))"
+            " >= (80 / 100)) or vector(0)"
+        ),
+        "stat",
+    ),
+    # A comparison between two *series* under an aggregation reaches the same
+    # closing guard: it filters one series by another, which ES|QL cannot express.
+    (
+        "agg_over_series_comparison_not_feasible",
+        "count(node_filesystem_avail_bytes < node_filesystem_size_bytes)",
+        "timeseries",
+    ),
     # --- explicit hard blockers ---------------------------------------------
     (
         "histogram_quantile_bare_rate_feasible",
