@@ -1,0 +1,208 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 315
+# https://grafana.com/grafana/dashboards/315-kubernetes-cluster-monitoring-via-prometheus/
+#
+# Source: community "Kubernetes cluster monitoring (via Prometheus)".
+# Revision 3. schemaVersion 12 (old `rows[]` layout), 21 panels across 13 rows.
+# Metric family: cAdvisor container_* + machine_* (NOT kube-state-metrics).
+#
+# This dashboard was authored against a pre-1.16 cAdvisor lineage, so its PromQL
+# uses label names and container-runtime conventions that modern Kubernetes /
+# the Elastic cAdvisor integration no longer emit:
+#   - `pod_name` / `container_name`  -> modern cAdvisor is `pod` / `container`.
+#   - `kubernetes_io_hostname`       -> a per-node relabel that no longer exists;
+#                                       cAdvisor container series carry no node
+#                                       label at all, so the $Node control is
+#                                       inert and is dropped.
+#   - `systemd_service_name`, `rkt_container_name`, `name!~"^k8s_.*"` (docker) ->
+#                                       obsolete container runtimes. Those series
+#                                       are dropped as honest gaps (see
+#                                       fidelity_manifest.yaml); we never fake a
+#                                       single aggregate in their place.
+#
+# Engine vs pack split (do not duplicate engine work here):
+#   Engine: rate() counter handling, gauge sum, unary-minus butterfly net I/O,
+#           rows[] -> Kibana sections, singlestat reducers, control synthesis.
+#   Pack:   bridge the pre-1.16 label names (label_rewrites, including cgroup
+#           `id` → `labels.id`), strip the dead selector labels so the good
+#           container panels are not filtered to empty (ignored_labels),
+#           classify counters/gauges (metric_kinds), keep only the k8s series
+#           on the multi-runtime panels, name Pods/All-processes network
+#           Received/Sent (native butterfly otherwise emits Value B), and
+#           group All-processes panels by cgroup id (query_overrides).
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  # --- counter / gauge classification -----------------------------------
+  metric_kinds:
+    container_cpu_usage_seconds_total: counter
+    container_network_receive_bytes_total: counter
+    container_network_transmit_bytes_total: counter
+    container_memory_working_set_bytes: gauge
+    container_fs_usage_bytes: gauge
+    container_fs_limit_bytes: gauge
+    machine_cpu_cores: gauge
+    machine_memory_bytes: gauge
+
+  # --- pre-1.16 cAdvisor label renames ----------------------------------
+  # The dashboard groups by / matches on the old names; rewrite to the modern
+  # cAdvisor labels the Elastic integration ingests.
+  label_rewrites:
+    pod_name: labels.pod
+    container_name: labels.container
+    namespace: labels.namespace
+    pod: labels.pod
+    container: labels.container
+    id: labels.id
+
+  # --- dead selector labels ---------------------------------------------
+  # These appear only as filters on the good container panels; on modern data
+  # they do not exist, so without ignoring them every WHERE clause filters to
+  # empty. Ignoring drops the matcher (and the inert $Node selector) so the
+  # pod/container panels resolve. `systemd_service_name` / `rkt_container_name`
+  # are intentionally NOT ignored: those panels must degrade to an honest empty
+  # (data_gap), not collapse into one misleading aggregate line.
+  ignored_labels:
+    - kubernetes_io_hostname
+    - image
+    - name
+
+  label_candidates:
+    pod:
+      - labels.pod
+      - labels.pod_name
+    container:
+      - labels.container
+      - labels.container_name
+    namespace:
+      - labels.namespace
+    id:
+      - labels.id
+
+panel:
+  query_overrides:
+    # Multi-runtime panels ship k8s + docker + rkt targets. On modern cAdvisor
+    # only the k8s (pod/container) series exist; keep just that series and
+    # disclose the dropped docker/rkt runtimes as an approximation.
+    - title_match: "Containers CPU usage (1m avg)"
+      approximation_note: "Dropped obsolete docker (name!~^k8s_) and rkt (rkt_container_name) runtime series; modern cAdvisor only emits the k8s pod/container series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
+        | KEEP time_bucket, `labels.pod`, `labels.container`, value
+        | SORT time_bucket ASC
+    - title_match: "Containers memory usage"
+      approximation_note: "Dropped obsolete docker and rkt runtime series; modern cAdvisor only emits the k8s pod/container series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
+        | KEEP time_bucket, `labels.pod`, `labels.container`, value
+        | SORT time_bucket ASC
+    - title_match: "Containers network I/O (1m avg)"
+      approximation_note: "Dropped obsolete docker and rkt runtime series; only the k8s pod series remain (received positive, sent negative)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, Received, Sent
+        | SORT time_bucket ASC
+    # Engine butterfly fusion names the transmit series `value_B` / "Value B"
+    # when a label breakdown is present. Name Received/Sent like the Containers
+    # network override so the Lens legend matches Grafana's -> / <- series.
+    - title_match: "Pods network I/O (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:pod}} IS NOT NULL AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, Received, Sent
+        | SORT time_bucket ASC
+    # All-processes panels group by the cAdvisor cgroup `id`. Explicit ES|QL
+    # keeps the Lens breakdown on `labels.id` (the native PROMQL path leaves
+    # it bound to the pre-rewrite `id`) and drops the root cgroup (id="/").
+    - title_match: "All processes CPU usage (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, value
+        | SORT time_bucket ASC
+    - title_match: "All processes memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, value
+        | SORT time_bucket ASC
+    - title_match: "All processes network I/O (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:id}} IS NOT NULL AND {{label:id}} != "/" AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `labels.id`, Received, Sent
+        | SORT time_bucket ASC
+    # Per-pod panels group by the pre-1.16 `pod_name` label. The engine's native
+    # PROMQL DSL rewrites the metric name but leaves the Lens breakdown accessor
+    # bound to the pre-rewrite `pod_name`, so after label_rewrites the compiled
+    # column is `labels.pod` and Lens fails with "invalid column". Emit explicit
+    # ES|QL so the query output column and the Lens breakdown agree (same pattern
+    # the 12485 pack uses for its by-label legends). `{{label:pod}} IS NOT NULL`
+    # drops the root cgroup (id="/") series which carries no pod label.
+    - title_match: "Pods CPU usage (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, value
+        | SORT time_bucket ASC
+    - title_match: "Pods memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `labels.pod`, value
+        | SORT time_bucket ASC
+    # systemd system-service panels group by `systemd_service_name`, a pre-1.16
+    # cAdvisor relabel artifact that modern cAdvisor never emits. Rather than let
+    # the native breakdown reference a non-existent column (Lens "invalid
+    # column"), emit a valid query with an impossible container filter so the
+    # panel degrades to an honest empty (data_gap) instead of erroring.
+    - title_match: "System services CPU usage (1m avg)"
+      approximation_note: "systemd system-service series (systemd_service_name) are a pre-1.16 cAdvisor relabel artifact; modern cAdvisor does not emit them, so this panel is an honest empty (data_gap)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} == "__systemd_service__"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:container}}
+        | KEEP time_bucket, `labels.container`, value
+        | SORT time_bucket ASC
+    - title_match: "System services memory usage"
+      approximation_note: "systemd system-service series are a pre-1.16 cAdvisor relabel artifact; modern cAdvisor does not emit them, so this panel is an honest empty (data_gap)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} == "__systemd_service__"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:container}}
+        | KEEP time_bucket, `labels.container`, value
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    # $Node is the only variable and cannot bind (cAdvisor container series carry
+    # no node label); the engine drops it as inert. Nothing to move here beyond
+    # the rows[] -> section geometry the engine already produces. Kept as a
+    # placeholder anchor so the manifest and layout stay in one place.
+    - title_match: "Network I/O pressure"
+      size: {w: 48}
