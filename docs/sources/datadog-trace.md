@@ -613,6 +613,7 @@ min:apache.performance.uptime{$host,$scope}
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS _bucket_value = MIN(apache_performance_uptime) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
+| WHERE _bucket_value IS NOT NULL
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -911,6 +912,7 @@ sum:celery.flower.events.count{$task,$endpoint} by {worker,task,type}.as_count()
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS query1 = SUM(celery_flower_events_count) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), worker, task, type
+| WHERE query1 IS NOT NULL
 | STATS query1 = LAST(query1, time_bucket) BY worker, task, type
 | KEEP worker, task, type, query1
 | SORT query1 ASC
@@ -1797,6 +1799,7 @@ sum:docker.containers.running{$scope}
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS _bucket_value = SUM(docker_containers_running) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
+| WHERE _bucket_value IS NOT NULL
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -1836,6 +1839,7 @@ sum:docker.containers.stopped{$scope}
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS _bucket_value = SUM(docker_containers_stopped) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
+| WHERE _bucket_value IS NOT NULL
 | STATS value = LAST(_bucket_value, time_bucket)
 ```
 
@@ -3953,6 +3957,7 @@ FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS query1 = AVG(mongodb_uptime) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
+| WHERE value IS NOT NULL
 | STATS value = LAST(value, time_bucket)
 | KEEP value
 ```
@@ -4292,6 +4297,7 @@ max:mongodb.replset.optime_lag{$scope,$replset_name} by {replset_name}
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS query1 = MAX(mongodb_replset_optime_lag) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), replset_name
+| WHERE query1 IS NOT NULL
 | STATS query1 = LAST(query1, time_bucket) BY replset_name
 | KEEP replset_name, query1
 | SORT query1 DESC
@@ -6822,6 +6828,7 @@ avg:redis_memory_used_bytes{*} by {instance}
 FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS _bucket_value = AVG(redis_memory_used_bytes) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend), instance
+| WHERE _bucket_value IS NOT NULL
 | STATS value = LAST(_bucket_value, time_bucket) BY instance
 | SORT value DESC
 | LIMIT 100
@@ -7484,6 +7491,7 @@ FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
 | STATS query1 = AVG(system_cpu_user) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
+| WHERE value IS NOT NULL
 | STATS value = LAST(value, time_bucket)
 | KEEP value
 ```
@@ -7761,6 +7769,7 @@ FROM metrics-*
 | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND host.name == "web01" AND deployment.environment != "staging"
 | STATS query1 = SUM(system_net_bytes_rcvd) BY time_bucket = BUCKET(@timestamp, 75, ?_tstart, ?_tend)
 | EVAL value = query1
+| WHERE value IS NOT NULL
 | STATS value = LAST(value, time_bucket)
 | KEEP value
 ```
@@ -7844,4 +7853,4 @@ Every panel marked `not_feasible` in the trace run (5 total):
 
 ---
 
-*Last generated: 2026-08-12 13:42 UTC*
+*Last generated: 2026-09-02 14:04 UTC*

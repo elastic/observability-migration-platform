@@ -32,11 +32,14 @@ from .preflight import (
     _metric_candidates,
 )
 from .promql import (
+    _ABSENT_OR_OPERAND_WARNING,
     _APPROX_AGG_OVER_SUMMARY_RATIO_WARNING,
     _COUNTER_UNSAFE_OUTER_AGGS,
     AGG_FUNCTION_MAP,
     OUTER_AGG_MAP,
     PromQLFragment,
+    _agg_over_or_not_feasible_reason,
+    _append_not_feasible_reason,
     _apply_fragment_to_context,
     _apply_metric_map_to_rate_on_simple,
     _apply_unit_scale,
@@ -62,6 +65,7 @@ from .promql import (
     _frag_has_incompatible_group_fields,
     _frag_has_incompatible_target_fields,
     _frag_source_labels,
+    _fragment_metric_names,
     _gauge_can_use_ts,
     _grouping_parts,
     _inline_filters_into_stats_expr,
@@ -83,6 +87,7 @@ from .promql import (
     _resolve_metric_field,
     _same_metric_range_fallback_warning,
     _summary_mode_from_metadata,
+    agg_over_or_reduction,
     classify_promql_complexity,
     colocated_binary_agg_plan,
     colocated_metric_fields,
@@ -1140,6 +1145,51 @@ def colocated_binary_agg_unblock(context):
         return None
     extra.pop("not_feasible_reasons", None)
     return "cleared not_feasible for co-located per-element arithmetic"
+
+
+@QUERY_CLASSIFIERS.register("agg_over_or_operand_drop", priority=0)
+def agg_over_or_operand_drop_rule(context):
+    """Refuse ``agg(A or B)`` when no reduction can elect a single operand.
+
+    The parse-time guard in ``_ast_aggregate_fragment`` hands ``or`` on because
+    its two reductions -- the same-metric range-window fallback and the
+    live-absent operand drop -- need a resolver it does not have. Nothing
+    downstream then claimed the fragment, so the generic
+    ``fragment_extract``/``stats_expression`` fallback rebuilt
+    ``agg(<first metric leaf>)`` from the fragment's summary fields and shipped
+    it clean: ``count(node_a or node_b)`` became ``COUNT(node_a)`` with no
+    warning (issue #434). The bare chain keeps both operands (``COALESCE`` /
+    unified ``WHERE ... OR``) or refuses outright, so the wrapper was inverting
+    the verdict on the identical expression.
+
+    Runs at priority 0, ahead of ``fragment_guardrails`` (1), which turns the
+    reason into the refusal. Order against ``colocated_binary_agg_unblock``
+    (also 0) does not matter: that rule only clears reasons when
+    ``colocated_binary_agg_plan`` can render, which requires the same reduction
+    to have elected an operand -- exactly the case this rule stays silent for.
+    """
+    frag = context.fragment
+    reduction = agg_over_or_reduction(frag, context.resolver)
+    if reduction is None:
+        return None
+    if reduction.preferred is None:
+        reason = _agg_over_or_not_feasible_reason(
+            frag.outer_agg, _fragment_metric_names(reduction.chain)
+        )
+        _append_not_feasible_reason(frag, reason)
+        return reason
+    # A reduction did elect an operand, but the ones it removed still have to be
+    # disclosed -- the same warnings the bare path emits for the same drops.
+    details = []
+    if reduction.dropped_absent:
+        _append_unique(context.warnings, _ABSENT_OR_OPERAND_WARNING)
+        details.append("disclosed live-absent 'or' operand drop")
+    if reduction.dropped_fallback:
+        _append_unique(
+            context.warnings, _same_metric_range_fallback_warning(reduction.chain)
+        )
+        details.append("disclosed dropped same-metric range-window fallback")
+    return "; ".join(details) or None
 
 
 @QUERY_CLASSIFIERS.register("fragment_guardrails", priority=1)

@@ -45,13 +45,13 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
 | grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 22 | 0 | 0 | 0 | 1 |
-| grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Home - Migration Test Lab | 6 | 2 | 3 | 0 | 1 | 0 | 0 |
 | grafana | Kubernetes / Views / Global | 26 | 11 | 15 | 0 | 0 | 0 | 4 |
 | grafana | Kitchen Sink Panel Canary | 16 | 9 | 7 | 0 | 0 | 0 | 0 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | Node Exporter Full | 117 | 43 | 74 | 0 | 0 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 11 | 5 | 0 | 0 | 0 |
-| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 9 | 3 | 0 | 0 | 0 | 0 |
+| grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 27 | 13 | 5 | 0 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 8 | 4 | 0 | 0 | 0 | 0 |
 | datadog | Apache - Overview | 22 | 12 | 9 | 1 | 0 | 0 | 0 |
 | datadog | Celery Overview | 17 | 10 | 1 | 2 | 0 | 4 | 0 |
 | datadog | Consul Overview | 27 | 16 | 2 | 4 | 0 | 5 | 0 |
@@ -76,8 +76,8 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 122 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 406 | Translated with approximations — review recommended |
+| **CORRECT** | 121 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 407 | Translated with approximations — review recommended |
 | **EXPECTED_LIMITATION** | 212 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
@@ -88,19 +88,19 @@ For the exact source-specific stage order, see `docs/architecture.md`,
 |------:|---------|
 | 136 | Datadog $scope template variable cannot be represented by a single Kibana control and was omitted; recreate the scope filters manually in Kibana |
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 35 | Grafana panel description is not carried into the migrated Kibana panel automatically |
-| 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 22 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
+| 23 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 20 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
-| 14 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 15 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
 | 10 | rollup interval is approximated in ES\|QL |
 | 9 | Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead |
 | 9 | as_count interval semantics are approximated in ES\|QL |
-| 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
 | 7 | fill(zero) only applies to null values in returned rows; empty buckets may still be omitted |
-| 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
-| 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
-| 5 | Approximated bargauge as bar chart |
+| 5 | Applied Grafana transformation 'calculateField' as ES\|QL rewrite |
+| 5 | Approximated grouped stat panel as summary table |
+| 5 | Visible panel targets did not expose PromQL-compatible expressions |
+| 5 | Panel queries InfluxQL/Flux (InfluxDB), not PromQL; this migration translates Prometheus queries, so it must be rebuilt against an Elasticsearch data source |
+| 5 | hostmap visual approximated as a grouped table; host dimensions and metric values are preserved, but Datadog tile coloring is not |
+| 5 | rate semantics approximated with delta over observed bucket span; when switching Agent→OTel collection, map counters with --metric-map-file (transform/unit_scale) so RATE() emits against the OTel counter field |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -263,8 +263,8 @@ From the latest trace run:
 ```
 Elements:            740 total (717 panels + 23 rows)
 Renderable panels:   717
-  Migrated:             114 (15.9%)
-  With warnings:        145 (20.2%)
+  Migrated:             107 (14.9%)
+  With warnings:        152 (21.2%)
   OK:                   192 (26.8%)
   Warning:              167 (23.3%)
   Requires manual:       29 (4.0%)
@@ -275,12 +275,12 @@ Renderable panels:   717
 Verdict breakdown:
 
 ```
-  CORRECT:                  122
-  MINOR_ISSUE:              406
+  CORRECT:                  121
+  MINOR_ISSUE:              407
   EXPECTED_LIMITATION:      212
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
 
 ---
 
-*Last generated: 2026-08-04 18:38 UTC*
+*Last generated: 2026-09-02 14:04 UTC*
