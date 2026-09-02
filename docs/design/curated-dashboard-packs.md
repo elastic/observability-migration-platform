@@ -17,7 +17,7 @@ problems and share no code, schema, or registry:
 | What it overrides | Query semantics (`query.metric_kinds`, `query.label_candidates`), `panel.type_map`, hand-written `panel.query_overrides`, plus the `fidelity_manifest.yaml` contract | Panel `size` / `position` and section `collapsed` state — geometry only |
 | Files | `pack.yaml` + optional `plugin.py` + `fidelity_manifest.yaml` under `adapters/source/grafana/curated_packs/<pack_dir>/` | a single `pack.yaml` under `adapters/source/datadog/curated_packs/<pack_dir>/` |
 | Matched by | `registry.yaml` on `gnetId`, then exact `title_hint` (empty tags still match; tag overlap is required only when the dashboard still has tags) | `match.title_contains` declared inside the pack itself |
-| Selects a panel by | `title_match` against the source panel title | the **emitted** panel title and/or presentation `kind`, plus `nth` |
+| Selects a panel by | `title_match` against the source panel title, plus optional `section_match` / `panel_id` | the **emitted** panel title and/or presentation `kind`, plus `nth` |
 | Applied | before translation (composes a `RulePackConfig`) | after translation and after `apply_style_guide_layout`, as the last word on layout |
 | Operator opt-out | `--no-curated-packs` | none |
 | Specified in | *Problem* → *Open Questions Resolved* below | [Datadog Curated Layout Packs](#datadog-curated-layout-packs) |
@@ -168,12 +168,15 @@ panel:
 Optional `section_match` scopes the override to a Grafana row whose title
 casefolds to (or starts with) that string, the same way layout overrides
 distinguish Global vs Database duplicate titles. Layout matching uses that
-source title even when a layout override later renames the section.
+source title even when a layout override later renames the section. Optional
+`panel_id` further scopes the override to the Grafana panel whose `id` equals
+that value, so same-section duplicate titles (741's three `Total` KPI tiles)
+can carry independent queries and names.
 
-**Merge semantics:** User pack overrides win by `(title_match, section_match)`.
+**Merge semantics:** User pack overrides win by `(title_match, section_match, panel_id)`.
 If both the curated pack and the user `--rules-file` declare an override for
-the same panel title and section, the user's query wins. Overrides with
-different titles or sections are merged (both apply).
+the same panel title, section, and id, the user's query wins. Overrides with
+different titles, sections, or ids are merged (both apply).
 
 **ES|QL shape constraints:** The query must produce a shape that `_native_esql_panel_spec` can parse for the target Kibana panel type:
 - `metric` / `gauge` panels: a `STATS` query with exactly one metric column and no `BY` clause. The simplest form is an inline division: `STATS value = MAX(...) / MAX(...)`.

@@ -293,6 +293,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
             }
             if override.section_match:
                 entry["section_match"] = override.section_match
+            if override.panel_id is not None:
+                entry["panel_id"] = override.panel_id
             if override.kibana_type_override:
                 entry["kibana_type_override"] = override.kibana_type_override
             if override.drop_time_from:
@@ -327,6 +329,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["title"] = override.title
             if override.section_match:
                 entry["section_match"] = override.section_match
+            if override.panel_id is not None:
+                entry["panel_id"] = override.panel_id
             if override.hide_title is not None:
                 entry["hide_title"] = override.hide_title
             if override.kibana_type_override:
@@ -410,11 +414,12 @@ def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
     return pack
 
 
-def _override_layer_key(entry: dict) -> tuple[str, str]:
-    """Merge key for query/layout overrides: stripped, casefolded title + section."""
+def _override_layer_key(entry: dict) -> tuple[str, str, str]:
+    """Merge key for query/layout overrides: stripped title + section + panel_id."""
     return (
         str(entry.get("title_match") or "").strip().casefold(),
         str(entry.get("section_match") or "").strip().casefold(),
+        str(entry.get("panel_id") or "").strip(),
     )
 
 
@@ -447,8 +452,8 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.control_field_overrides.update(user.control_field_overrides)
 
     # panel_query_overrides / panel_layout_overrides: user wins by
-    # (title_match, section_match), matching the runtime matcher which
-    # strips whitespace before casefolding.
+    # (title_match, section_match, panel_id), matching the runtime matcher
+    # which strips whitespace before casefolding.
     user_query_keys = {_override_layer_key(o) for o in user.panel_query_overrides}
     result.panel_query_overrides = [
         o for o in result.panel_query_overrides

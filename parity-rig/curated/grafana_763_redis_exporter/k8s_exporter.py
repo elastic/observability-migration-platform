@@ -4,13 +4,17 @@
 #
 # Synthetic Kubernetes metrics exporter for the curated-pack validation rig.
 #
-# Emits a small, coherent cluster in modern shape so the two Kubernetes curated
+# Emits a small, coherent cluster in modern shape so the Kubernetes curated
 # packs can be validated on real (rig-ingested) data:
 #   - Grafana 315 (cAdvisor): container_* + machine_* + container_fs_* with the
 #     modern `pod`/`container` labels and a root-cgroup `id="/"` series.
 #   - Grafana 6417 (kube-state-metrics + node_exporter): kube_* in the modern
 #     resource-split shape (kube_node_status_allocatable{resource=...}, etc.),
 #     plus node_filesystem_*_bytes.
+#   - Grafana 741 (Deployment metrics): same cAdvisor + KSM deployment series,
+#     including kube_deployment_status_replicas_available. Pod names are
+#     `{deployment}-{ordinal}` so Grafana's `pod=~"^$Deployment.*$"` prefix
+#     matches.
 #
 # Counters are wall-clock monotonic so RATE()/DELTA() render on the rig. The
 # `OutOfDisk` node condition is deliberately NOT emitted (removed in k8s 1.12) so
@@ -186,6 +190,8 @@ def render() -> str:
     # ---- kube-state-metrics: deployments --------------------------------
     L.append("# HELP kube_deployment_status_replicas The number of replicas per deployment")
     L.append("# TYPE kube_deployment_status_replicas gauge")
+    L.append("# HELP kube_deployment_status_replicas_available The number of available replicas")
+    L.append("# TYPE kube_deployment_status_replicas_available gauge")
     L.append("# HELP kube_deployment_status_replicas_updated The number of updated replicas")
     L.append("# TYPE kube_deployment_status_replicas_updated gauge")
     L.append("# HELP kube_deployment_status_replicas_unavailable The number of unavailable replicas")
@@ -193,6 +199,9 @@ def render() -> str:
     for ns, deps in DEPLOYMENTS.items():
         for dep, replicas in deps.items():
             L.append(f'kube_deployment_status_replicas{{namespace="{ns}",deployment="{dep}"}} {replicas}')
+            L.append(
+                f'kube_deployment_status_replicas_available{{namespace="{ns}",deployment="{dep}"}} {replicas}'
+            )
             L.append(f'kube_deployment_status_replicas_updated{{namespace="{ns}",deployment="{dep}"}} {replicas}')
             L.append(f'kube_deployment_status_replicas_unavailable{{namespace="{ns}",deployment="{dep}"}} 0')
 
