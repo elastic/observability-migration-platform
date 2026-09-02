@@ -372,23 +372,22 @@
               "type": "line",
               "data_source": {
                 "type": "esql",
-                "query": "PROMQL index=metrics-k8s.prometheus-default start=?_tstart end=?_tend buckets=50 value=(rate(metrics.node_network_receive_bytes_total{instance=~?server, device!~\"lo\"}[5m]))\n| GROK _timeseries \"\"\"(?:\\A\\{(?:\"labels\":\\{)?|,)\"device\":\"%{DATA:device}\\\"\"\"\"\n| KEEP step, value, device"
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE (NOT (labels.device RLIKE \"lo\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"lo\")))\n| WHERE metrics.node_network_receive_bytes_total IS NOT NULL\n| STATS Received = SUM(RATE(metrics.node_network_receive_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, Received\n| SORT time_bucket ASC"
               },
               "x": {
-                "column": "step",
+                "column": "time_bucket",
                 "label": "Time"
               },
               "y": [
                 {
-                  "column": "value",
-                  "label": "Network Received",
+                  "column": "Received",
                   "format": {
                     "type": "bytes"
                   }
                 }
               ],
               "breakdown_by": {
-                "column": "device"
+                "column": "labels.device"
               }
             }
           ],
@@ -433,23 +432,22 @@
               "type": "line",
               "data_source": {
                 "type": "esql",
-                "query": "PROMQL index=metrics-k8s.prometheus-default start=?_tstart end=?_tend buckets=50 value=(rate(metrics.node_network_transmit_bytes_total{instance=~?server, device!~\"lo\"}[5m]))\n| GROK _timeseries \"\"\"(?:\\A\\{(?:\"labels\":\\{)?|,)\"device\":\"%{DATA:device}\\\"\"\"\"\n| KEEP step, value, device"
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE (NOT (labels.device RLIKE \"lo\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"lo\")))\n| WHERE metrics.node_network_transmit_bytes_total IS NOT NULL\n| STATS Transmitted = SUM(RATE(metrics.node_network_transmit_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, Transmitted\n| SORT time_bucket ASC"
               },
               "x": {
-                "column": "step",
+                "column": "time_bucket",
                 "label": "Time"
               },
               "y": [
                 {
-                  "column": "value",
-                  "label": "Network Transmitted",
+                  "column": "Transmitted",
                   "format": {
                     "type": "bytes"
                   }
                 }
               ],
               "breakdown_by": {
-                "column": "device"
+                "column": "labels.device"
               }
             }
           ],
