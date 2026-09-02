@@ -136,3 +136,12 @@ packs:
     gnet_revision: 3
     dashboard_sha256: "6fb5e045bc6d860f0f22ce7e145f4da04d2e25fd4fbf9fda29355cef6d63aeae"
     description: "cAdvisor cluster monitoring — pre-1.16 label remap (pod_name/container_name → pod/container), obsolete rkt/docker/systemd series dropped as gaps, machine_*/container_fs_* KPIs"
+
+  - gnet_id: 6417
+    name: grafana_6417_kubernetes_ksm
+    title_hint: "Kubernetes Cluster (Prometheus)"
+    tags_hint: ["kubernetes", "kubernetes-app"]
+    path: grafana_6417_kubernetes_ksm
+    gnet_revision: 1
+    dashboard_sha256: "6694907c373d7bb0a24143a171f2751cc939f4e8da3fefb04b25b8a59aaca0ab"
+    description: "kube-state-metrics + node_exporter cluster health — old KSM name remap (restarts_total, node_filesystem_*_bytes), resource-split allocatable/requests query_overrides, removed OutOfDisk gap, constant node/namespace vars"
