@@ -649,18 +649,34 @@ class SchemaResolver:
         except Exception as exc:
             self._concrete_index_error = f"_resolve/index request failed: {exc}"
 
+    def _is_canonical_label(self, name):
+        """True when *name* is a logical label the resolver can namespace."""
+        return (
+            name in self.PROM_TO_OTEL_CANDIDATES
+            or name in self._rule_pack.label_candidates
+        )
+
     def resolve_label(self, label, metric_field=None):
         if label in self._rule_pack.ignored_labels:
             return None
+        # Source→canonical rewrites (e.g. Heapster `pod_name` → `pod`): when the
+        # rewrite target is itself a canonical label, recurse so profile
+        # namespacing applies. A concrete (non-canonical) target is returned
+        # verbatim (documented escape hatch).
         if label in self._rule_pack.label_rewrites:
-            return self._rule_pack.label_rewrites[label]
-        # Passthrough profile: emit the source label verbatim, skipping live
-        # discovery and OTel/Prometheus normalization. Explicit rule-pack
-        # overrides above still win.
+            target = self._rule_pack.label_rewrites[label]
+            if target != label and self._is_canonical_label(target):
+                return self.resolve_label(target, metric_field=metric_field)
+            if not self._is_canonical_label(target):
+                return target
+            label = target  # canonical == label edge case; fall through
+        # Passthrough profile: source-faithful. A canonical placeholder maps to
+        # its declared source spelling; a raw source name stays as-is.
         if self._passthrough:
-            if self._field_cache and label not in self._field_cache:
+            resolved = self._rule_pack.source_label_names.get(label, label)
+            if self._field_cache and resolved not in self._field_cache:
                 self._emitted_unverified_passthrough_field = True
-            return label
+            return resolved
         self._discover_fields()
         planned = self._effective_schema_profile()
         # Metric-aware: when the label is scoped to a metric (a
@@ -991,9 +1007,15 @@ class SchemaResolver:
         returns the expected default-layout name `prometheus.<metric>.value`
         so the contract layer can surface the missing field via preflight.
 
-        Explicit rule-pack ``metric_map`` wins over profile/passthrough when the
-        entry is applied (class-1 exact or class-2 with emitter obligations).
-        Unapplied variant mismatches and other gaps are recorded explicitly.
+        Explicit rule-pack ``metric_map`` renames the logical metric name when
+        the entry is applied (class-1 exact or class-2 with emitter obligations).
+        The applied target is a **bare logical metric name**, not a fully
+        qualified field: it then flows through the same profile-namespacing
+        branches as any other metric (``metrics.<target>`` under native,
+        ``prometheus.metrics.<target>`` under prometheus_metrics,
+        ``prometheus.<target>.<suffix>`` under remote_write, bare ``<target>``
+        under otel; verbatim under passthrough). Unapplied variant mismatches and
+        other gaps are recorded explicitly.
 
         ``source_labels`` selects among ``variants`` when the map entry uses
         attribute-split source filters.
@@ -1005,6 +1027,7 @@ class SchemaResolver:
             getattr(self._rule_pack, "metric_map", None),
             source_labels=source_labels,
         )
+        logical_name = metric_name
         if mapped is not None:
             for warning in mapped.warnings:
                 if warning not in self._metric_map_warnings:
@@ -1012,15 +1035,33 @@ class SchemaResolver:
             if mapped.gap_reason and mapped.gap_reason not in self._metric_map_gaps:
                 self._metric_map_gaps.append(mapped.gap_reason)
             if mapped.applied:
-                self._metric_map_applied[metric_name] = mapped.target
-                return mapped.target
+                # The applied target is a bare logical metric name; let it flow
+                # through the profile-namespacing branches below instead of
+                # returning it verbatim. The fully-resolved (profile-namespaced)
+                # field is recorded in ``_metric_map_applied`` via ``_emit`` at
+                # each return point, so ``migration_report.json`` and the
+                # ``compare`` oracle see the same qualified field the translated
+                # ES|QL uses (a bare target under-qualifies the reference and
+                # empties the reference side for renamed metrics).
+                logical_name = mapped.target
             # Unapplied mapping: continue with source name.
-        # Passthrough profile: emit the source metric name verbatim, skipping
-        # discovery and any layout-specific prefixing/suffixing.
+        # Record the fully-resolved field for an applied rename at each return
+        # point below. ``applied_key`` is the original source metric name (the
+        # ``_metric_map_applied`` key); ``_emit`` overwrites the bare bookkeeping
+        # with the profile-namespaced field just before returning it.
+        applied_key = metric_name if (mapped is not None and mapped.applied) else None
+
+        def _emit(field: str) -> str:
+            if applied_key is not None:
+                self._metric_map_applied[applied_key] = field
+            return field
+
+        # Passthrough profile: emit the (possibly remapped) name verbatim,
+        # skipping discovery and any layout-specific prefixing/suffixing.
         if self._passthrough:
-            if self._field_cache and metric_name not in self._field_cache:
+            if self._field_cache and logical_name not in self._field_cache:
                 self._emitted_unverified_passthrough_field = True
-            return metric_name
+            return _emit(logical_name)
         self._discover_fields()
         profile = self._namespacing_schema_profile()
         if profile == "prometheus_native":
@@ -1030,29 +1071,29 @@ class SchemaResolver:
             # advertise so emitted ES|QL does not hard-code a missing nested
             # field when the flat alias is the only runtime-valid shape.
             cache = self._field_cache or {}
-            for candidate in self._profile_metric_candidates(metric_name, profile):
+            for candidate in self._profile_metric_candidates(logical_name, profile):
                 if candidate in cache:
-                    return self._counter_suffix_alias(candidate, metric_name)
-            return self._counter_suffix_alias(f"metrics.{metric_name}", metric_name)
+                    return _emit(self._counter_suffix_alias(candidate, logical_name))
+            return _emit(self._counter_suffix_alias(f"metrics.{logical_name}", logical_name))
         if profile == "prometheus_metrics":
             # Classic Metricbeat remote_write (use_types=false): nested under
             # prometheus.metrics.<name> with labels under prometheus.labels.*.
             cache = self._field_cache or {}
-            for candidate in self._profile_metric_candidates(metric_name, profile):
+            for candidate in self._profile_metric_candidates(logical_name, profile):
                 if candidate in cache:
-                    return self._counter_suffix_alias(candidate, metric_name)
-            return self._counter_suffix_alias(f"prometheus.metrics.{metric_name}", metric_name)
+                    return _emit(self._counter_suffix_alias(candidate, logical_name))
+            return _emit(self._counter_suffix_alias(f"prometheus.metrics.{logical_name}", logical_name))
         if profile != "prometheus_remote_write":
             # OTel plan (and auto when resolved to otel): field-level candidate
             # selection only — do not switch the planned layout to
             # prometheus_native when caps advertise metrics.* (issue #270).
             cache = self._field_cache or {}
-            if metric_name in cache:
-                return metric_name
-            prefixed = f"metrics.{metric_name}"
+            if logical_name in cache:
+                return _emit(logical_name)
+            prefixed = f"metrics.{logical_name}"
             if prefixed in cache:
-                return prefixed
-            return metric_name
+                return _emit(prefixed)
+            return _emit(logical_name)
         # Bare metric names in caps must not override the remote_write plan —
         # emit `prometheus.<metric>.<suffix>` even when OTel-shaped targets
         # advertise the logical PromQL name as a field.
@@ -1063,11 +1104,11 @@ class SchemaResolver:
         else:
             suffixes = (".value", ".counter", ".rate")
         for suffix in suffixes:
-            candidate = f"prometheus.{metric_name}{suffix}"
+            candidate = f"prometheus.{logical_name}{suffix}"
             if self._field_cache and candidate in self._field_cache:
-                return candidate
+                return _emit(candidate)
         default_suffix = ".counter" if prefer == "counter" else (".rate" if prefer == "rate" else ".value")
-        return f"prometheus.{metric_name}{default_suffix}"
+        return _emit(f"prometheus.{logical_name}{default_suffix}")
 
     def resolve_labels(self, labels, metric_field=None):
         resolved = []
@@ -1250,8 +1291,11 @@ class SchemaResolver:
         return False
 
     def resolve_control_field(self, variable_name, metric_field=None):
-        if variable_name in self._rule_pack.control_field_overrides:
-            return self._rule_pack.control_field_overrides[variable_name]
+        override = self._rule_pack.control_field_overrides.get(variable_name)
+        if override is not None:
+            if self._is_canonical_label(override):
+                return self.resolve_label(override, metric_field=metric_field)
+            return override  # concrete field escape hatch
         return self.resolve_label(variable_name, metric_field=metric_field)
 
     def concrete_index_candidates(self):

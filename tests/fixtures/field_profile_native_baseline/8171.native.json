@@ -1,0 +1,516 @@
+{
+  "kind": "native_dashboard",
+  "version": 1,
+  "dashboard_id": "obs-migrate-kubernetes-nodes",
+  "title": "Kubernetes Nodes",
+  "source_adapter": "grafana",
+  "payload": {
+    "title": "Kubernetes Nodes",
+    "panels": [
+      {
+        "grid": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 11
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "CPU Busy",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE labels.mode == \"idle\"\n| WHERE metrics.node_cpu_seconds_total IS NOT NULL\n| STATS idle_rate = AVG(IRATE(metrics.node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.cpu\n| EVAL Busy = 100 * (1 - idle_rate)\n| WHERE Busy IS NOT NULL\n| KEEP time_bucket, `labels.cpu`, Busy\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Busy",
+                  "format": {
+                    "type": "number",
+                    "suffix": "%"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.cpu"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "cpu usage",
+                "visible": true
+              },
+              "domain": {
+                "type": "custom",
+                "min": 0.0,
+                "max": 100.0
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 24,
+          "y": 0,
+          "w": 24,
+          "h": 11
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "System Load",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE metrics.node_load1 IS NOT NULL OR metrics.node_load5 IS NOT NULL OR metrics.node_load15 IS NOT NULL\n| STATS load_1m = AVG(LAST_OVER_TIME(metrics.node_load1)), load_5m = AVG(LAST_OVER_TIME(metrics.node_load5)), load_15m = AVG(LAST_OVER_TIME(metrics.node_load15)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.instance\n| KEEP time_bucket, `labels.instance`, load_1m, load_5m, load_15m\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "load_1m",
+                  "label": "load 1m",
+                  "format": {
+                    "type": "percent"
+                  }
+                },
+                {
+                  "column": "load_5m",
+                  "label": "load 5m",
+                  "format": {
+                    "type": "percent"
+                  }
+                },
+                {
+                  "column": "load_15m",
+                  "label": "load 15m",
+                  "format": {
+                    "type": "percent"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.instance"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "%",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 11,
+          "w": 36,
+          "h": 10
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Memory Usage",
+          "layers": [
+            {
+              "type": "area_stacked",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL OR metrics.node_memory_Buffers_bytes IS NOT NULL OR metrics.node_memory_Cached_bytes IS NOT NULL OR metrics.node_memory_MemFree_bytes IS NOT NULL\n| STATS node_memory_MemTotal_bytes_C_lhs_lhs_lhs = AVG(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)), memory_buffers = AVG(LAST_OVER_TIME(metrics.node_memory_Buffers_bytes)), memory_cached = AVG(LAST_OVER_TIME(metrics.node_memory_Cached_bytes)), memory_free = AVG(LAST_OVER_TIME(metrics.node_memory_MemFree_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), labels.instance\n| EVAL memory_used = (((node_memory_MemTotal_bytes_C_lhs_lhs_lhs - memory_free) - memory_buffers) - memory_cached)\n| DROP node_memory_MemTotal_bytes_C_lhs_lhs_lhs\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "memory_used",
+                  "label": "memory used",
+                  "format": {
+                    "type": "bytes"
+                  }
+                },
+                {
+                  "column": "memory_buffers",
+                  "label": "memory buffers",
+                  "format": {
+                    "type": "bytes"
+                  }
+                },
+                {
+                  "column": "memory_cached",
+                  "label": "memory cached",
+                  "format": {
+                    "type": "bytes"
+                  }
+                },
+                {
+                  "column": "memory_free",
+                  "label": "memory free",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.instance"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 36,
+          "y": 11,
+          "w": 12,
+          "h": 10
+        },
+        "type": "vis",
+        "config": {
+          "type": "metric",
+          "title": "Memory Usage",
+          "data_source": {
+            "type": "esql",
+            "query": "TS metrics-k8s.prometheus-default\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE metrics.node_memory_MemTotal_bytes IS NOT NULL OR metrics.node_memory_MemFree_bytes IS NOT NULL OR metrics.node_memory_Buffers_bytes IS NOT NULL OR metrics.node_memory_Cached_bytes IS NOT NULL\n| STATS node_memory_MemTotal_bytes_instance = AVG(LAST_OVER_TIME(metrics.node_memory_MemTotal_bytes)), node_memory_MemFree_bytes_instance = AVG(LAST_OVER_TIME(metrics.node_memory_MemFree_bytes)), node_memory_Buffers_bytes_instance = AVG(LAST_OVER_TIME(metrics.node_memory_Buffers_bytes)), node_memory_Cached_bytes_instance = AVG(LAST_OVER_TIME(metrics.node_memory_Cached_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)\n| EVAL computed_value = (((((node_memory_MemTotal_bytes_instance - node_memory_MemFree_bytes_instance) - node_memory_Buffers_bytes_instance) - node_memory_Cached_bytes_instance) / node_memory_MemTotal_bytes_instance) * 100)\n| STATS computed_value = LAST(computed_value, time_bucket)\n| KEEP computed_value"
+          },
+          "metrics": [
+            {
+              "type": "primary",
+              "column": "computed_value",
+              "label": "Memory Usage",
+              "format": {
+                "type": "number",
+                "suffix": "%"
+              }
+            }
+          ],
+          "hide_title": true
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 21,
+          "w": 36,
+          "h": 11
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Disk I/O",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE metrics.node_disk_read_bytes_total IS NOT NULL OR metrics.node_disk_written_bytes_total IS NOT NULL OR metrics.node_disk_io_time_seconds_total IS NOT NULL\n| STATS Read = SUM(RATE(metrics.node_disk_read_bytes_total)), Written = SUM(RATE(metrics.node_disk_written_bytes_total)), `IO time` = SUM(RATE(metrics.node_disk_io_time_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| KEEP time_bucket, Read, Written, `IO time`\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Read",
+                  "format": {
+                    "type": "bytes"
+                  }
+                },
+                {
+                  "column": "Written",
+                  "format": {
+                    "type": "bytes"
+                  }
+                },
+                {
+                  "column": "IO time",
+                  "label": "IO Time",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ]
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 36,
+          "y": 21,
+          "w": 12,
+          "h": 11
+        },
+        "type": "vis",
+        "config": {
+          "type": "metric",
+          "title": "Disk Space Usage",
+          "data_source": {
+            "type": "esql",
+            "query": "PROMQL index=metrics-k8s.prometheus-default start=?_tstart end=?_tend buckets=50 value=((sum(metrics.node_filesystem_size_bytes{device!=\"rootfs\", instance=~?server}) - sum(metrics.node_filesystem_free_bytes{device!=\"rootfs\", instance=~?server})) / sum(metrics.node_filesystem_size_bytes{device!=\"rootfs\", instance=~?server}))\n| STATS value = LAST(value, step)"
+          },
+          "metrics": [
+            {
+              "type": "primary",
+              "column": "value",
+              "label": " ",
+              "format": {
+                "type": "percent"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 32,
+          "w": 24,
+          "h": 10
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Network Received",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE (NOT (labels.device RLIKE \"lo\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"lo\")))\n| WHERE metrics.node_network_receive_bytes_total IS NOT NULL\n| STATS Received = SUM(RATE(metrics.node_network_receive_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, Received\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Received",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.device"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 24,
+          "y": 32,
+          "w": 24,
+          "h": 10
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Network Transmitted",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?server == \"\" OR (labels.instance RLIKE ?server OR (labels.instance IS NULL AND \"\" RLIKE ?server)))\n| WHERE (NOT (labels.device RLIKE \"lo\") OR (labels.device IS NULL AND NOT (\"\" RLIKE \"lo\")))\n| WHERE metrics.node_network_transmit_bytes_total IS NOT NULL\n| STATS Transmitted = SUM(RATE(metrics.node_network_transmit_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.device\n| KEEP time_bucket, `labels.device`, Transmitted\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Transmitted",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.device"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      }
+    ],
+    "description": "Kubernetes Nodes for node exporter 0.16+ (via Prometheus)\r\n",
+    "pinned_panels": [
+      {
+        "type": "esql_control",
+        "config": {
+          "control_type": "VALUES_FROM_QUERY",
+          "title": "server",
+          "variable_name": "server",
+          "variable_type": "values",
+          "esql_query": "FROM metrics-k8s.prometheus-default | WHERE `metrics.node_boot_time_seconds` IS NOT NULL AND `labels.instance` IS NOT NULL | STATS count = COUNT(*) BY `labels.instance` | EVAL options = MV_APPEND(\".*\", `labels.instance`) | MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options | RENAME options AS `labels.instance` | SORT `labels.instance` ASC | LIMIT 1000",
+          "selected_options": [],
+          "single_select": true
+        }
+      }
+    ],
+    "tags": [
+      "nodes",
+      "prometheus"
+    ],
+    "time_range": {
+      "from": "now-1h",
+      "to": "now",
+      "mode": "relative"
+    },
+    "refresh_interval": {
+      "pause": true,
+      "value": 0
+    }
+  },
+  "mapping": {
+    "mapped": 8,
+    "unmapped": 0,
+    "sections": 0,
+    "controls": 1,
+    "reasons": {}
+  }
+}

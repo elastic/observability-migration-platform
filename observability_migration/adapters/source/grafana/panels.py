@@ -2018,7 +2018,16 @@ def _prefix_native_metric_fields(expr, resolver):
             return None
         binding = _native_metric_map_binding(resolver, name)
         if binding is not None:
-            return binding.target_field
+            # The pack's metric_map target is a bare *logical* metric name; route
+            # it back through ``resolve_metric_field(source)`` so the applied
+            # rename is namespaced for the active field profile (``metrics.<t>``
+            # under native, ``prometheus.metrics.<t>`` under prometheus_metrics,
+            # etc.). Returning ``binding.target_field`` verbatim would leak a bare
+            # field into the native ``value=(…)`` command and match no documents.
+            try:
+                return resolve(name)
+            except Exception:
+                return binding.target_field
         try:
             resolved = resolve(name)
         except Exception:

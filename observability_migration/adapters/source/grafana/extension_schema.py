@@ -215,6 +215,7 @@ class QueryConfigModel(_StrictModel):
     logs_timestamp_field: str | None = None
     logs_limit: int | None = None
     label_rewrites: dict[str, str] = Field(default_factory=dict)
+    source_label_names: dict[str, str] = Field(default_factory=dict)
     label_candidates: dict[str, list[str]] = Field(default_factory=dict)
     ignored_labels: list[str] = Field(default_factory=list)
     index_rewrites: list[IndexRewriteRuleModel] = Field(default_factory=list)

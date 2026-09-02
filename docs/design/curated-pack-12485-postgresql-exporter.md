@@ -59,7 +59,7 @@ On a target cluster that does not run these, those panels are an honest
   `pg_stat_database_numbackends` to `gauge`; assert counters for the rated
   `pg_stat_database_*` and mapped `pg_stat_statements_*` targets; gauges for the
   `pg_settings_*` / size / lag / start-time series.
-- **`metric_map`** — the four renames above (targets emitted verbatim under `metrics.`).
+- **`metric_map`** — the four renames above (bare logical metric names; the field profile namespaces them, e.g. `metrics.<target>` under `prometheus_native`).
 - **`label_rewrites` / `label_candidates`** — `instance`→`labels.instance`,
   `datname`/`db`→`labels.datname`, `job`→`labels.job`, `state`→`labels.state`,
   `mode`→`labels.mode`.
@@ -162,7 +162,8 @@ Quickstart dashboard matches Kibana chart conventions.
   `pg_postmaster_start_time_seconds` (gauge), `pg_stat_statements_calls_total`
   and `pg_stat_statements_seconds_total` (counters, labelled by `datname`,
   `queryid`, `user`).
-- `metric_map` targets are emitted **verbatim** (the field-profile prefix is
-  not prepended), so map targets must include the `metrics.` prefix; non-mapped
-  gauges are emitted bare offline (`pg_stat_activity_count`, not
-  `metrics.pg_stat_activity_count`).
+- `metric_map` targets are **bare logical metric names**; the active field
+  profile namespaces them just like non-mapped metrics. The offline default
+  `otel` emits both bare (`pg_database_size_bytes`, `pg_stat_activity_count`);
+  `prometheus_native` emits both under `metrics.`
+  (`metrics.pg_database_size_bytes`, `metrics.pg_stat_activity_count`).

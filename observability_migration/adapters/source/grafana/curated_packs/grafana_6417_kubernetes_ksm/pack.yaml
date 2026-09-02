@@ -81,13 +81,14 @@ query:
     node_filesystem_size_bytes: gauge
     node_filesystem_free_bytes: gauge
 
-  # metric_map targets are emitted VERBATIM (the field profile prefix is NOT
-  # prepended) — targets carry the `metrics.` prefix. These are the pure
-  # renames between the dashboard's lineage and modern node_exporter / KSM.
+  # metric_map targets are bare logical metric names; the resolver namespaces
+  # them per active field profile (native, remote_write, otel). These
+  # are the pure renames between the dashboard's lineage and modern
+  # node_exporter / KSM.
   metric_map:
-    node_filesystem_size: metrics.node_filesystem_size_bytes
-    node_filesystem_free: metrics.node_filesystem_free_bytes
-    kube_pod_container_status_restarts: metrics.kube_pod_container_status_restarts_total
+    node_filesystem_size: node_filesystem_size_bytes
+    node_filesystem_free: node_filesystem_free_bytes
+    kube_pod_container_status_restarts: kube_pod_container_status_restarts_total
 
   label_candidates:
     node:

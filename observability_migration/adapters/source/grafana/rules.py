@@ -149,6 +149,9 @@ class RulePackConfig:
     logs_timestamp_field: str = "@timestamp"
     logs_limit: int = 200
     label_rewrites: dict = field(default_factory=dict)
+    # Canonical label name → source-faithful spelling, emitted under
+    # ``--field-profile passthrough`` so migrated queries keep source label names.
+    source_label_names: dict = field(default_factory=dict)
     label_candidates: dict = field(default_factory=dict)
     ignored_labels: list = field(default_factory=lambda: [
         "origin_prometheus",
@@ -364,6 +367,7 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
             if field_name in raw_query_cfg or field_name in raw_dashboard_cfg:
                 pack._explicit_scalar_fields.add(field_name)
         pack.label_rewrites.update(query_cfg.label_rewrites)
+        pack.source_label_names.update(query_cfg.source_label_names)
         for metric_name, kind in query_cfg.metric_kinds.items():
             pack.metric_kinds[metric_name] = str(kind).strip().lower()
         for metric_name in query_cfg.live_optional_metrics:
@@ -448,6 +452,7 @@ def _merge_curated_into_base(curated: RulePackConfig, user: RulePackConfig) -> R
     result.metric_kinds.update(user.metric_kinds)
     result.metric_map.update(user.metric_map)
     result.label_rewrites.update(user.label_rewrites)
+    result.source_label_names.update(user.source_label_names)
     result.panel_type_overrides.update(user.panel_type_overrides)
     result.control_field_overrides.update(user.control_field_overrides)
 

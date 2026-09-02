@@ -1,0 +1,749 @@
+{
+  "kind": "native_dashboard",
+  "version": 1,
+  "dashboard_id": "obs-migrate-kubernetes-deployment-metrics",
+  "title": "Kubernetes Deployment metrics",
+  "source_adapter": "grafana",
+  "payload": {
+    "title": "Kubernetes Deployment metrics",
+    "panels": [
+      {
+        "grid": {
+          "y": 0
+        },
+        "title": "Total usage",
+        "collapsed": false,
+        "panels": [
+          {
+            "grid": {
+              "x": 0,
+              "y": 0,
+              "w": 16,
+              "h": 12
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Deployment memory usage",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Node == \"\" OR ?Node == \".*\" OR (labels.instance RLIKE ?Node OR (labels.instance IS NULL AND \"\" RLIKE ?Node)))\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR labels.pod IS NULL OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_memory_working_set_bytes IS NOT NULL OR metrics.machine_memory_bytes IS NOT NULL\n| STATS used = SUM(CASE(labels.pod IS NOT NULL, LAST_OVER_TIME(metrics.container_memory_working_set_bytes), NULL)), total = SUM(LAST_OVER_TIME(metrics.machine_memory_bytes)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(total > 0, used / total, NULL)\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 1\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " ",
+                  "format": {
+                    "type": "percent"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 0,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Memory used",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_memory_working_set_bytes IS NOT NULL AND labels.pod IS NOT NULL\n| STATS computed_value = SUM(LAST_OVER_TIME(metrics.container_memory_working_set_bytes))\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " ",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 8,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Memory total",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Node == \"\" OR ?Node == \".*\" OR (labels.instance RLIKE ?Node OR (labels.instance IS NULL AND \"\" RLIKE ?Node)))\n| WHERE metrics.container_memory_working_set_bytes IS NOT NULL\n| STATS computed_value = SUM(LAST_OVER_TIME(metrics.container_memory_working_set_bytes))\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " ",
+                  "format": {
+                    "type": "bytes"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 16,
+              "y": 0,
+              "w": 16,
+              "h": 12
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Deployment CPU usage",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Node == \"\" OR ?Node == \".*\" OR (labels.instance RLIKE ?Node OR (labels.instance IS NULL AND \"\" RLIKE ?Node)))\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR labels.pod IS NULL OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_cpu_usage_seconds_total IS NOT NULL OR metrics.machine_cpu_cores IS NOT NULL\n| STATS used = SUM(CASE(labels.pod IS NOT NULL, RATE(metrics.container_cpu_usage_seconds_total), NULL)), total = SUM(LAST_OVER_TIME(metrics.machine_cpu_cores)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(total > 0, used / total, NULL)\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 1\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " ",
+                  "format": {
+                    "type": "percent"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 16,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "CPU used",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_cpu_usage_seconds_total IS NOT NULL AND labels.pod IS NOT NULL\n| STATS computed_value = SUM(RATE(metrics.container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 1\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " "
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 24,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "CPU total",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Node == \"\" OR ?Node == \".*\" OR (labels.instance RLIKE ?Node OR (labels.instance IS NULL AND \"\" RLIKE ?Node)))\n| WHERE metrics.machine_cpu_cores IS NOT NULL\n| STATS computed_value = SUM(LAST_OVER_TIME(metrics.machine_cpu_cores))\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " "
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 32,
+              "y": 0,
+              "w": 16,
+              "h": 12
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Replicas",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR (labels.deployment RLIKE ?Deployment OR (labels.deployment IS NULL AND \"\" RLIKE ?Deployment)))\n| WHERE metrics.kube_deployment_status_replicas_available IS NOT NULL OR metrics.kube_deployment_status_replicas IS NOT NULL\n| STATS available = SUM(LAST_OVER_TIME(metrics.kube_deployment_status_replicas_available)), total = SUM(LAST_OVER_TIME(metrics.kube_deployment_status_replicas)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)\n| EVAL computed_value = CASE(total > 0, available / total, NULL)\n| WHERE computed_value IS NOT NULL\n| SORT time_bucket DESC\n| LIMIT 1\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " ",
+                  "format": {
+                    "type": "percent"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 32,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Replicas available",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR (labels.deployment RLIKE ?Deployment OR (labels.deployment IS NULL AND \"\" RLIKE ?Deployment)))\n| WHERE metrics.kube_deployment_status_replicas_available IS NOT NULL\n| STATS computed_value = SUM(LAST_OVER_TIME(metrics.kube_deployment_status_replicas_available))\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " "
+                }
+              ]
+            }
+          },
+          {
+            "grid": {
+              "x": 40,
+              "y": 12,
+              "w": 8,
+              "h": 8
+            },
+            "type": "vis",
+            "config": {
+              "type": "metric",
+              "title": "Replicas total",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR (labels.deployment RLIKE ?Deployment OR (labels.deployment IS NULL AND \"\" RLIKE ?Deployment)))\n| WHERE metrics.kube_deployment_status_replicas IS NOT NULL\n| STATS computed_value = SUM(LAST_OVER_TIME(metrics.kube_deployment_status_replicas))\n| KEEP computed_value"
+              },
+              "metrics": [
+                {
+                  "type": "primary",
+                  "column": "computed_value",
+                  "label": " "
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 24,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Deployment CPU usage",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_cpu_usage_seconds_total IS NOT NULL AND labels.pod IS NOT NULL\n| STATS value = SUM(RATE(metrics.container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.pod\n| KEEP time_bucket, `labels.pod`, value\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "value",
+                  "label": "Deployment CPU usage",
+                  "format": {
+                    "type": "number",
+                    "decimals": 3
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.pod"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "right",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "cores",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 36,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Containers CPU usage",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_cpu_usage_seconds_total IS NOT NULL AND labels.container IS NOT NULL AND labels.container != \"POD\"\n| STATS value = SUM(RATE(metrics.container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.pod, labels.container\n| EVAL series_group = CONCAT(COALESCE(TO_STRING(`labels.pod`), \"\"), \" / \", COALESCE(TO_STRING(`labels.container`), \"\"))\n| KEEP time_bucket, `labels.pod`, `labels.container`, value, series_group\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "value",
+                  "label": "Containers CPU usage",
+                  "format": {
+                    "type": "number",
+                    "decimals": 3
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "series_group"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "right",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "cores",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 48,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "All processes CPU usage",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_cpu_usage_seconds_total IS NOT NULL AND labels.id IS NOT NULL AND labels.id != \"/\"\n| STATS value = SUM(RATE(metrics.container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.id\n| KEEP time_bucket, `labels.id`, value\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "value",
+                  "label": "All processes CPU usage",
+                  "format": {
+                    "type": "number",
+                    "decimals": 3,
+                    "suffix": "%"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.id"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "All processes CPU usage",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 60,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Deployment memory usage",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_memory_working_set_bytes IS NOT NULL AND labels.pod IS NOT NULL\n| STATS value = SUM(LAST_OVER_TIME(metrics.container_memory_working_set_bytes)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.pod\n| KEEP time_bucket, `labels.pod`, value\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "value",
+                  "label": "Deployment memory usage",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.pod"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "right",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 72,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "All processes memory usage",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE metrics.container_memory_working_set_bytes IS NOT NULL AND labels.id IS NOT NULL AND labels.id != \"/\"\n| STATS value = SUM(LAST_OVER_TIME(metrics.container_memory_working_set_bytes)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.id\n| KEEP time_bucket, `labels.id`, value\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "value",
+                  "label": "All processes memory usage",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.id"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 84,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "Deployment network I/O",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE labels.pod IS NOT NULL AND (metrics.container_network_receive_bytes_total IS NOT NULL OR metrics.container_network_transmit_bytes_total IS NOT NULL)\n| STATS Received = SUM(RATE(metrics.container_network_receive_bytes_total)), Sent = 0 - SUM(RATE(metrics.container_network_transmit_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.pod\n| KEEP time_bucket, `labels.pod`, Received, Sent\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Received",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2,
+                    "suffix": "/s"
+                  }
+                },
+                {
+                  "column": "Sent",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2,
+                    "suffix": "/s"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.pod"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "right",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      },
+      {
+        "grid": {
+          "x": 0,
+          "y": 96,
+          "w": 48,
+          "h": 12
+        },
+        "type": "vis",
+        "config": {
+          "type": "xy",
+          "title": "All processes network I/O",
+          "layers": [
+            {
+              "type": "line",
+              "data_source": {
+                "type": "esql",
+                "query": "TS metrics-k8s.prometheus-default\n| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend\n| WHERE (?Deployment == \"\" OR ?Deployment == \".*\" OR STARTS_WITH(TO_STRING(labels.pod), TO_STRING(?Deployment)))\n| WHERE labels.id IS NOT NULL AND labels.id != \"/\" AND (metrics.container_network_receive_bytes_total IS NOT NULL OR metrics.container_network_transmit_bytes_total IS NOT NULL)\n| STATS Received = SUM(RATE(metrics.container_network_receive_bytes_total)), Sent = 0 - SUM(RATE(metrics.container_network_transmit_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), labels.id\n| KEEP time_bucket, `labels.id`, Received, Sent\n| SORT time_bucket ASC"
+              },
+              "x": {
+                "column": "time_bucket",
+                "label": "Time"
+              },
+              "y": [
+                {
+                  "column": "Received",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2,
+                    "suffix": "/s"
+                  }
+                },
+                {
+                  "column": "Sent",
+                  "format": {
+                    "type": "bytes",
+                    "decimals": 2,
+                    "suffix": "/s"
+                  }
+                }
+              ],
+              "breakdown_by": {
+                "column": "labels.id"
+              }
+            }
+          ],
+          "legend": {
+            "visibility": "visible",
+            "placement": "outside",
+            "position": "bottom",
+            "layout": {
+              "type": "grid",
+              "truncate": {
+                "enabled": true,
+                "max_lines": 1
+              }
+            }
+          },
+          "axis": {
+            "y": {
+              "title": {
+                "text": "Bytes",
+                "visible": true
+              }
+            },
+            "x": {
+              "scale": "temporal"
+            }
+          }
+        }
+      }
+    ],
+    "description": "Monitors Kubernetes deployments in cluster using Prometheus. Shows overall cluster CPU / Memory of deployments, replicas in each deployment. Uses Kube state metrics and cAdvisor metrics ",
+    "pinned_panels": [
+      {
+        "type": "esql_control",
+        "config": {
+          "control_type": "VALUES_FROM_QUERY",
+          "title": "Deployment",
+          "variable_name": "Deployment",
+          "variable_type": "values",
+          "esql_query": "FROM metrics-k8s.prometheus-default | WHERE `metrics.kube_deployment_status_replicas` IS NOT NULL AND `labels.deployment` IS NOT NULL | STATS count = COUNT(*) BY `labels.deployment` | EVAL options = MV_APPEND(\".*\", `labels.deployment`) | MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options | RENAME options AS `labels.deployment` | SORT `labels.deployment` ASC | LIMIT 1000",
+          "selected_options": [],
+          "single_select": true
+        }
+      },
+      {
+        "type": "esql_control",
+        "config": {
+          "control_type": "VALUES_FROM_QUERY",
+          "title": "Node",
+          "variable_name": "Node",
+          "variable_type": "values",
+          "esql_query": "FROM metrics-k8s.prometheus-default | WHERE `metrics.machine_cpu_cores` IS NOT NULL AND `labels.instance` IS NOT NULL | STATS count = COUNT(*) BY `labels.instance` | EVAL options = MV_APPEND(\".*\", `labels.instance`) | MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options | RENAME options AS `labels.instance` | SORT `labels.instance` ASC | LIMIT 1000",
+          "selected_options": [],
+          "single_select": true
+        }
+      }
+    ],
+    "tags": [
+      "kubernetes"
+    ],
+    "time_range": {
+      "from": "now-30m",
+      "to": "now",
+      "mode": "relative"
+    },
+    "refresh_interval": {
+      "pause": false,
+      "value": 10000
+    }
+  },
+  "mapping": {
+    "mapped": 16,
+    "unmapped": 0,
+    "sections": 1,
+    "controls": 2,
+    "reasons": {}
+  }
+}
