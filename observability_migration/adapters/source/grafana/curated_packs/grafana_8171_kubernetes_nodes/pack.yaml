@@ -103,7 +103,7 @@ panel:
         | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
         | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL
         | STATS Received = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
-        | KEEP time_bucket, `labels.device`, Received
+        | KEEP time_bucket, `{{label:device}}`, Received
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Network Transmitted"
@@ -115,7 +115,7 @@ panel:
         | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
         | WHERE {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS Transmitted = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
-        | KEEP time_bucket, `labels.device`, Transmitted
+        | KEEP time_bucket, `{{label:device}}`, Transmitted
         | SORT time_bucket ASC
       status_override: migrated
 

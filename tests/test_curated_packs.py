@@ -5317,7 +5317,8 @@ def test_8171_network_uses_esql_by_device_not_native_promql_grok():
         assert "GROK" not in query
         assert "_timeseries" not in query
         assert "time_bucket" in query
-        assert "labels.device" in query
+        # prometheus_native → labels.device; otel default → bare device.
+        assert "labels.device" in query or "`device`" in query
         assert "?server" in query
         assert '"lo"' in query
     assert "node_network_receive_bytes_total" in recv_query
@@ -5326,8 +5327,8 @@ def test_8171_network_uses_esql_by_device_not_native_promql_grok():
     assert (xmit_panel.get("esql") or {}).get("type") == "line"
     recv_bd = ((recv_panel.get("esql") or {}).get("breakdown") or {}).get("field")
     xmit_bd = ((xmit_panel.get("esql") or {}).get("breakdown") or {}).get("field")
-    assert recv_bd == "labels.device"
-    assert xmit_bd == "labels.device"
+    assert recv_bd in {"labels.device", "device"}
+    assert xmit_bd in {"labels.device", "device"}
 
 
 def test_8171_does_not_override_memory_usage_by_title():
