@@ -476,10 +476,28 @@ Update `fidelity_manifest.yaml` with classifications.
 
 ### Step 3 — Build Pack
 
-Author `pack.yaml`:
+Author `pack.yaml` in **canonical** names, not a single profile's physical
+fields. The Grafana schema resolver maps those names onto the operator's
+`--field-profile` (`prometheus_native` → `labels.<x>` / `metrics.<m>`;
+`otel` → OTel candidates / bare metrics; `prometheus_metrics` →
+`prometheus.labels.<x>` / `prometheus.metrics.<m>`; `prometheus_remote_write`
+→ `prometheus.labels.<x>` / `prometheus.<m>.{value,counter,rate}`;
+`passthrough` → source-faithful labels via `source_label_names`).
+
 - `metric_kinds`: classify all metrics appearing in the dashboard
-- `label_candidates`: map Grafana template variables to OTel field names
+- `label_rewrites`: source spelling → canonical (`pod_name: pod`). Do not
+  target `labels.*`.
+- `label_candidates`: only for labels **not** in the built-in Prometheus→OTel
+  map, and only OTel/bare spellings (never `labels.*` — that leaks under otel).
+- `source_label_names`: canonical → original source spelling (passthrough).
+- `controls.field_overrides`: canonical label (`Deployment: deployment`).
+- `metric_map` targets: bare logical metric names.
+- Hand-written `esql_query` grouping columns: `` `{{label:x}}` ``, not
+  `` `labels.x` ``.
 - `panel.type_map`: map any legacy/unusual panel types
+
+A pack that hardcodes `labels.*` / `metrics.*` / `prometheus.*` is not
+portable. Gate new packs with `scripts/run_cross_profile_corpus.py`.
 
 Author `plugin.py` if needed:
 - Formula panels that require post-processing

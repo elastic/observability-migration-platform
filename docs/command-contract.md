@@ -876,7 +876,9 @@ customization:
   always wins on collision. If Grafana stripped `gnetId` on copy/import, an
   exact title match still selects the pack — tags are not required when the
   dashboard has none. Pass `--no-curated-packs` to skip all curated packs
-  and use only the base rule pack.
+  and use only the base rule pack. Bundled packs author canonical field
+  names; emitted labels, controls, grouping columns, and `metric_map`
+  targets follow the active `--field-profile` (including `passthrough`).
 - Datadog: YAML `--field-profile path.yaml` for a full custom profile
   (`metric_index`, `tag_map`, prefixes, embedded `metric_map`). `--metric-map-file`
   still overrides embedded `metric_map` entries for duplicate keys.

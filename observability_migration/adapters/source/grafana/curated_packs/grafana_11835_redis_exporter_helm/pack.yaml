@@ -35,32 +35,10 @@ query:
     redis_db_keys: gauge
     redis_db_keys_expiring: gauge
 
-  # --- Prometheus label → OTel/Elastic field candidates -----------------
-  # Listed in resolution priority order (first match wins).
-  # prometheus_native (labels.<name>) first: offline migrations fall through
-  # to the FIRST candidate without probing the target, so an OTel-first
-  # order silently emits the wrong field for a Prometheus scrape deployment.
-  label_candidates:
-    instance:
-      - labels.instance     # prometheus_native (primary for redis_exporter)
-      - service.instance.id # OTel ECS mode
-      - host.name
-    job:
-      - labels.job          # prometheus_native
-      - service.name        # OTel ECS mode
-    namespace:
-      - labels.namespace    # prometheus_native
-      - service.namespace   # OTel ECS mode
-      - namespace
-    db:
-      - labels.db
-      - db
-    pod:
-      - labels.pod       # prometheus_native (helm chart scrapes use {pod=...})
-      - k8s.pod.name     # OTel ECS
-    cmd:
-      - labels.cmd
-      - cmd
+  # redis_exporter / helm-chart labels (instance, job, namespace, pod, db, cmd)
+  # are authored with their canonical names; the resolver namespaces them per
+  # --field-profile (labels.*, prometheus.labels.*, or the OTel spelling), so
+  # the pack stays portable and never hardcodes a field layout.
 
 panel:
   query_overrides:

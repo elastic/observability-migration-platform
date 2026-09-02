@@ -10,6 +10,9 @@
 # real data only when that target telemetry exists; otherwise they are an
 # honest field/data gap, not a translator bug.
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 12485
 gnet_revision: 1

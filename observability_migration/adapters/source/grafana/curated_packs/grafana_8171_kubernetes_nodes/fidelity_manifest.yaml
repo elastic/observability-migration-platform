@@ -7,6 +7,9 @@
 # PERFECT     = same information as Grafana on node_exporter 0.16+.
 # APPROXIMATE = documented improvement (CPU Busy title, real disk I/O).
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 8171
 gnet_revision: 1

@@ -36,15 +36,6 @@
 query:
   metrics_dataset_filter: "prometheus"
 
-  label_rewrites:
-    node: labels.node
-    namespace: labels.namespace
-    pod: labels.pod
-    deployment: labels.deployment
-    phase: labels.phase
-    condition: labels.condition
-    resource: labels.resource
-
   # `nodename` is not a modern node_filesystem label; dropping the matcher lets
   # the Disk panels resolve instead of filtering to empty.
   ignored_labels:
@@ -89,14 +80,6 @@ query:
     node_filesystem_size: node_filesystem_size_bytes
     node_filesystem_free: node_filesystem_free_bytes
     kube_pod_container_status_restarts: kube_pod_container_status_restarts_total
-
-  label_candidates:
-    node:
-      - labels.node
-    namespace:
-      - labels.namespace
-    resource:
-      - labels.resource
 
 panel:
   query_overrides:
@@ -181,7 +164,7 @@ panel:
         | WHERE (MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{control:namespace}}))
         | WHERE {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
         | STATS replicas = MAX(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}})) BY {{label:deployment}}
-        | KEEP `labels.deployment`, replicas
+        | KEEP `{{label:deployment}}`, replicas
         | SORT replicas DESC
 
     # Absolute request tiles still use the old per-resource metric names

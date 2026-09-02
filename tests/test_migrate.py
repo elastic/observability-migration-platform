@@ -5499,7 +5499,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         by_title = {panel.title: panel for panel in result.panel_results}
         query = by_title["Network Traffic Basic"].esql_query
 
-        self.assertIn("labels.device", query)
+        # {{label:device}} resolves to labels.device under prometheus_native and
+        # to bare device under the default/otel profile (this test's field caps).
+        self.assertTrue(
+            "labels.device" in query or "`device`" in query,
+            query,
+        )
         self.assertIn('| EVAL trans = (-1 * (trans * 8))', query)
 
     def test_multi_target_legend_placeholder_preserves_shared_device_grouping(self):

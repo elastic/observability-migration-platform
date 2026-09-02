@@ -7,6 +7,9 @@
 # Layout: Grafana 24-col → Kibana 48-col (2× scale on x and w; h scaled for readability)
 # Fidelity: PERFECT = 100% semantic parity | APPROXIMATE = documented delta
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 763
 gnet_revision: 6

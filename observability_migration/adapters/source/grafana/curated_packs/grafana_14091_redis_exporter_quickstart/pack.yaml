@@ -47,21 +47,7 @@ query:
   metric_map:
     redis_memory_fragmentation_ratio: redis_mem_fragmentation_ratio
 
-  # --- Prometheus label → Elastic field candidates ----------------------
-  # prometheus_native (``labels.<name>``) first: offline migrations fall
-  # through to the FIRST candidate without probing the target, so an
-  # OTel-first order silently emits the wrong field for a Prometheus scrape.
-  label_candidates:
-    instance:
-      - labels.instance     # prometheus_native (primary for redis_exporter)
-      - service.instance.id # OTel ECS mode
-      - host.name
-    job:
-      - labels.job
-      - service.name
-    db:
-      - labels.db
-      - db
-    cmd:
-      - labels.cmd
-      - cmd
+  # redis_exporter labels (instance, job, db, cmd) are authored with their
+  # canonical names; the resolver namespaces them per --field-profile
+  # (labels.*, prometheus.labels.*, or the OTel spelling), so the pack stays
+  # portable and never hardcodes a field layout.

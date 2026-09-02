@@ -870,11 +870,9 @@ def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
     assert "IRATE(" in query
     assert "TBUCKET(20" in query
     assert "TBUCKET(100" not in query
-    assert "labels.interrupt" in query
-    assert "labels.cpu" in query
-    assert 'CONCAT(COALESCE(TO_STRING(labels.interrupt)' in query or (
-        "labels.interrupt" in query and "CPU" in query
-    )
+    assert "interrupt" in query
+    assert "cpu" in query
+    assert "CPU" in query
     assert '"type"' not in query
     assert '"info"' not in query
     assert "GROK" not in query
@@ -965,7 +963,11 @@ def test_resolve_pack_label_candidates_from_curated():
     dashboard = {"gnetId": 763, "title": "Redis...", "tags": ["redis"]}
     base = RulePackConfig()
     resolved = resolve_pack_for_dashboard(dashboard, base)
-    assert "service.instance.id" in resolved.label_candidates.get("instance", [])
+    # 763 authors canonical label names; the resolver maps `instance` to its
+    # OTel spelling under the otel profile (the pack no longer hardcodes any
+    # labels.* candidate — that would leak under otel).
+    r = SchemaResolver(resolved, field_profile="otel")
+    assert r.resolve_label("instance") == "service.instance.id"
 
 
 def test_resolve_pack_no_gnet_id_uses_title_fallback():
@@ -1240,7 +1242,7 @@ def test_resolve_pack_7362_pins_untyped_status_counters_and_processlist_map():
     entry = (resolved.metric_map or {}).get("mysql_info_schema_threads")
     target = getattr(entry, "target", entry)
     assert target == "mysql_info_schema_processlist_threads"
-    assert resolved.control_field_overrides.get("host") == "labels.instance"
+    assert resolved.control_field_overrides.get("host") == "instance"
     titles = {o.get("title_match") for o in resolved.panel_query_overrides}
     assert "Process States" in titles
     assert "MySQL Query Cache Activity" in titles
@@ -1360,8 +1362,8 @@ def test_resolve_pack_9628_ignores_helm_release_and_pins_memory_gauges():
     assert resolved.metric_kinds.get("process_resident_memory_bytes") == "gauge"
     assert resolved.metric_kinds.get("process_virtual_memory_bytes") == "gauge"
     assert resolved.metric_kinds.get("pg_stat_database_xact_commit") == "counter"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("datname") == "labels.datname"
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    assert resolved.control_field_overrides.get("datname") == "datname"
     titles = {o.get("title_match") for o in resolved.panel_query_overrides}
     assert "Average Memory Usage" in titles
     assert "Start Time" in titles
@@ -1449,7 +1451,7 @@ def test_9628_start_time_override_does_not_yellow_absent_postmaster_metric():
 
 def test_9628_version_metric_displays_version_label_not_static_one():
     """The Version tile must display the PostgreSQL version label
-    (``labels.short_version``), not the numeric ``pg_static=1``. The metric
+    (canonical ``short_version``), not the numeric ``pg_static=1``. The metric
     panel binds the label as a breakdown so the version string is visible
     (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
     dashboard = {"gnetId": 9628, "title": "PostgreSQL Database", "tags": ["postgres"]}
@@ -1478,8 +1480,8 @@ def test_9628_version_metric_displays_version_label_not_static_one():
     )
     esql = yaml_panel.get("esql") or {}
     assert esql.get("type") == "metric"
-    assert (esql.get("breakdown") or {}).get("field") == "labels.short_version"
-    assert "labels.short_version" in (esql.get("query") or "")
+    assert (esql.get("breakdown") or {}).get("field") == "short_version"
+    assert "short_version" in (esql.get("query") or "")
 
 
 def test_9628_start_time_metric_has_duration_format():
@@ -1515,7 +1517,7 @@ def test_9628_start_time_metric_has_duration_format():
 
 def test_7362_cpu_system_panel_surfaces_cross_host_approximation():
     """The 7362 CPU Usage / Load override aggregates across every node exporter
-    (``COUNT_DISTINCT(labels.cpu)`` is global; hosts reuse CPU IDs), which can
+    (``COUNT_DISTINCT`` of the cpu label is global; hosts reuse CPU IDs), which can
     exceed 100%. It must surface an approximation warning and downgrade instead
     of reporting green (PR #369 follow-up, giorgi-imerlishvili-elastic)."""
     dashboard = {"gnetId": 7362, "title": "MySQL Overview", "tags": ["mysql"]}
@@ -1714,8 +1716,8 @@ def test_resolve_pack_14114_pins_counters_and_bgwriter_map():
     entry = (resolved.metric_map or {}).get("pg_stat_bgwriter_buffers_alloc")
     target = getattr(entry, "target", entry)
     assert target == "pg_stat_bgwriter_buffers_alloc_total"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("db") == "labels.datname"
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    assert resolved.control_field_overrides.get("db") == "datname"
 
 
 def test_14114_buffers_override_uses_total_suffix_offline():
@@ -1845,8 +1847,8 @@ def test_resolve_pack_12485_pins_kinds_renames_and_controls():
         entry = (resolved.metric_map or {}).get(src)
         assert getattr(entry, "target", entry) == tgt, src
     # Controls keyed by the dashboard's capitalised variable names.
-    assert resolved.control_field_overrides.get("Instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("Database") == "labels.datname"
+    assert resolved.control_field_overrides.get("Instance") == "instance"
+    assert resolved.control_field_overrides.get("Database") == "datname"
 
 
 def test_12485_database_size_renamed_offline():
@@ -1898,7 +1900,7 @@ def test_12485_activity_count_is_gauge_not_rated():
     assert "pg_stat_activity_count" in query
     # gauge → SUM, never RATE/IRATE (the whole point of forcing the _count gauge).
     assert "RATE(" not in query.upper()
-    assert "labels.state" in query
+    assert "state" in query
 
 
 def test_12485_instance_and_database_controls_rewritten():
@@ -2235,7 +2237,7 @@ def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
     )
     assert global_result.status in {"migrated", "migrated_with_warnings"}, global_result.reasons
     global_query = (global_yaml.get("esql") or {}).get("query") or ""
-    assert "labels.datname" in global_query
+    assert "datname" in global_query
     assert "?Database" not in global_query
     assert "LAST(value, step)" not in global_query
 
@@ -2249,7 +2251,7 @@ def test_12485_deadlocks_override_legends_by_datname_and_scopes_database():
     )
     assert db_result.status in {"migrated", "migrated_with_warnings"}, db_result.reasons
     db_query = (db_yaml.get("esql") or {}).get("query") or ""
-    assert "labels.datname" in db_query
+    assert "datname" in db_query
     assert "?Database" in db_query
 
 
@@ -2314,7 +2316,7 @@ def test_14114_numbackends_override_drops_name_breakdown():
         "tags": ["postgres"],
     }
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
-    resolver = SchemaResolver(resolved)
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     panel = {
         "id": 6,
         "type": "graph",
@@ -2341,10 +2343,8 @@ def test_14114_numbackends_override_drops_name_breakdown():
     assert "connections =" in query
     assert "__name__" not in query
     assert "GROK" not in query
-    assert "labels.datname" in query
     # Source is one series per (instance, datname); grouping only by datname
     # would MAX-collapse two exporters that share a database name.
-    assert "labels.instance" in query
     stats_line = next(
         line for line in query.splitlines() if "STATS connections" in line
     )
@@ -2364,13 +2364,15 @@ def test_14114_numbackends_override_drops_name_breakdown():
 
 
 def test_prometheus_native_label_candidates_come_first_in_redis_packs():
-    """Offline runs take the FIRST candidate without probing the target.
+    """Offline prometheus_native runs must emit labels.<name> for every pack.
 
-    All three Redis packs describe Prometheus scrapes, so labels.<name> must lead;
-    an OTel-first order silently emits service.name / db.name for a
-    prometheus_native deployment (observed on 18405/18406 before this was fixed).
+    These packs describe Prometheus scrapes. They author canonical label names
+    and the resolver namespaces them to the prometheus_native layout
+    (labels.<name>) offline, so a Prometheus scrape deployment gets the correct
+    field without probing the target (previously guaranteed by pinning a
+    labels.* candidate first, which leaked under otel).
     """
-    expected_first = {
+    expected_native = {
         763: [("instance", "labels.instance"), ("job", "labels.job")],
         18405: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
         18406: [("cluster", "labels.cluster"), ("bdb", "labels.bdb")],
@@ -2381,25 +2383,32 @@ def test_prometheus_native_label_candidates_come_first_in_redis_packs():
         14114: [("instance", "labels.instance"), ("job", "labels.job")],
         12485: [("instance", "labels.instance"), ("job", "labels.job")],
     }
-    for gnet_id, pairs in expected_first.items():
+    for gnet_id, pairs in expected_native.items():
         resolved = resolve_pack_for_dashboard(
             {"gnetId": gnet_id, "title": "", "tags": []}, RulePackConfig()
         )
-        for label, first in pairs:
-            candidates = (resolved.label_candidates or {}).get(label)
-            assert candidates, f"{gnet_id}: no candidates for {label}"
-            assert candidates[0] == first, (
-                f"{gnet_id}: {label} resolves to {candidates[0]} offline, expected {first}"
+        r = SchemaResolver(resolved, field_profile="prometheus_native")
+        for label, native in pairs:
+            got = r.resolve_label(label)
+            assert got == native, (
+                f"{gnet_id}: {label} resolves to {got} under prometheus_native, "
+                f"expected {native}"
             )
 
 
-def test_763_pack_pins_labels_instance_for_queries_and_controls():
+def test_763_pack_authors_canonical_instance_for_queries_and_controls():
     resolved = resolve_pack_for_dashboard(
         {"gnetId": 763, "title": "Redis...", "tags": ["redis"]},
         RulePackConfig(),
     )
-    assert resolved.label_rewrites.get("instance") == "labels.instance"
-    assert resolved.control_field_overrides.get("instance") == "labels.instance"
+    # Canonical authoring: no hardcoded labels.* rewrite, and the control
+    # override is the canonical label name. The resolver namespaces per profile.
+    assert "instance" not in resolved.label_rewrites
+    assert resolved.control_field_overrides.get("instance") == "instance"
+    r_native = SchemaResolver(resolved, field_profile="prometheus_native")
+    assert r_native.resolve_control_field("instance") == "labels.instance"
+    r_otel = SchemaResolver(resolved, field_profile="otel")
+    assert r_otel.resolve_control_field("instance") == "service.instance.id"
 
 
 # ---------------------------------------------------------------------------
@@ -2494,7 +2503,11 @@ def test_763_curated_pack_preserves_namespace_and_instance_controls():
     instance_control = next(control for control in controls if control.get("variable_name") == "instance")
     assert namespace_control.get("label") == "namespace"
     assert "redis_up IS NOT NULL" in str(namespace_control.get("query") or "")
-    assert "labels.namespace" in str(namespace_control.get("query") or "")
+    # Canonical authoring: the control resolves the `namespace` label per
+    # profile (bare offline / OTel-shaped default; labels.namespace under
+    # prometheus_native). Assert the resolved field is bound, not a hardcoded
+    # labels.* spelling.
+    assert "namespace IS NOT NULL" in str(namespace_control.get("query") or "")
     assert instance_control.get("label") == "instance"
     assert "redis_up IS NOT NULL" in str(instance_control.get("query") or "")
     assert "?namespace" in str(instance_control.get("query") or "")
@@ -3948,8 +3961,10 @@ def test_763_hits_misses_panel_uses_curated_override():
     assert "AVG(IRATE(" in query
     assert "redis_keyspace_hits_total" in query
     assert "redis_keyspace_misses_total" in query
-    assert "labels.instance" in query
-    assert "| KEEP time_bucket, `labels.instance`, hits, misses" in query
+    # Canonical authoring: the grouping label resolves per profile; under the
+    # default offline profile it emits the bare `instance` spelling (native
+    # byte-identity to labels.instance is guarded by the cross-profile gate).
+    assert "| KEEP time_bucket, `instance`, hits, misses" in query
 
 
 def test_763_average_time_spent_panel_uses_curated_override():
@@ -3976,7 +3991,7 @@ def test_763_average_time_spent_panel_uses_curated_override():
     query = yaml_panel["esql"].get("query", "")
     assert "@timestamp >= ?_tstart" in query
     assert "TBUCKET(2 minute)" in query
-    assert "labels.cmd" in query
+    assert "| KEEP time_bucket, `cmd`, computed_value" in query
     assert "computed_value" in query
     assert "redis_commands_duration_seconds_total" in query
     assert "redis_commands_total" in query
@@ -4007,7 +4022,7 @@ def test_763_total_time_spent_panel_uses_curated_override():
     query = yaml_panel["esql"].get("query", "")
     assert "@timestamp >= ?_tstart" in query
     assert "TBUCKET(2 minute)" in query
-    assert "labels.cmd" in query
+    assert "| KEEP time_bucket, `cmd`, redis_commands_duration_seconds_total" in query
     assert "redis_commands_duration_seconds_total" in query
     assert "SUM(IRATE(" in query
 
@@ -4241,9 +4256,13 @@ def test_315_classifies_cadvisor_counters_and_gauges():
 
 def test_315_rewrites_pre_116_labels_and_ignores_dead_matchers():
     resolved, _ = _resolve_315()
-    assert resolved.label_rewrites["pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["container_name"] == "labels.container"
-    assert resolved.label_rewrites["id"] == "labels.id"
+    # label_rewrites are source→canonical; the resolver namespaces per profile.
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["container_name"] == "container"
+    assert "id" not in resolved.label_rewrites  # identity rewrite dropped
+    # Passthrough restores the source-faithful pre-1.16 spellings.
+    assert resolved.source_label_names["pod"] == "pod_name"
+    assert resolved.source_label_names["container"] == "container_name"
     assert "kubernetes_io_hostname" in resolved.ignored_labels
     assert "image" in resolved.ignored_labels
     # systemd/rkt labels must NOT be ignored (those panels degrade to empty).
@@ -4279,7 +4298,7 @@ def test_315_pods_cpu_panel_groups_by_pod_without_dead_matchers():
     )
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     assert "RATE(container_cpu_usage_seconds_total)" in query
     # Dead selector labels must be stripped, not filtered on.
     assert "kubernetes_io_hostname" not in query
@@ -4324,8 +4343,8 @@ def test_315_containers_override_keeps_k8s_series_and_discloses_drop():
     )
     assert result.status == "migrated_with_warnings"
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "labels.pod" in query and "labels.container" in query
-    assert 'labels.container != "POD"' in query
+    assert "k8s.pod.name" in query and "k8s.container.name" in query
+    assert 'k8s.container.name != "POD"' in query
     # The dropped-runtime disclosure must surface as a warning.
     assert any("docker" in r or "rkt" in r for r in result.reasons)
 
@@ -4366,7 +4385,7 @@ def test_315_system_services_panel_degrades_to_empty_not_aggregate():
     # collapse into a single misleading aggregate (a BY grouping is retained).
     assert "systemd_service_name" not in query
     assert '"__systemd_service__"' in query
-    assert "labels.container" in query
+    assert "k8s.container.name" in query
     assert "RATE(container_cpu_usage_seconds_total)" in query
 
 
@@ -4401,18 +4420,19 @@ def test_315_pods_memory_override_groups_by_pod_last_over_time():
     # Gauge → LAST_OVER_TIME (no illegal SUM(MAX(...)) nested aggregate), grouped
     # by pod with the breakdown accessor aligned to the ES|QL output column.
     assert "LAST_OVER_TIME(container_memory_working_set_bytes)" in query
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     # Root cgroup (id=/) has no pod label; the override excludes it.
-    assert "labels.pod IS NOT NULL" in query
+    assert "k8s.pod.name IS NOT NULL" in query
 
 
 def test_315_pods_panels_breakdown_accessor_matches_query_column():
-    """Curated ES|QL keeps the Lens breakdown on labels.pod, not phantom pod_name.
+    """Curated ES|QL keeps the Lens breakdown on the resolved pod field.
 
     The native PROMQL DSL path leaves the breakdown accessor bound to the
-    pre-rewrite ``pod_name`` (Lens "invalid column" after pod_name ->
-    labels.pod). The override must emit ``labels.pod`` as an actual query
-    output column and never reference the bare ``pod_name``.
+    pre-rewrite ``pod_name`` (Lens "invalid column" after the pod_name -> pod
+    rewrite). The override must emit the resolved pod field (here the otel
+    ``k8s.pod.name``) as an actual query output column and never reference the
+    bare ``pod_name``.
     """
     resolved, resolver = _resolve_315()
     for title, expr in (
@@ -4444,7 +4464,7 @@ def test_315_pods_panels_breakdown_accessor_matches_query_column():
         assert result.status in {"migrated", "migrated_with_warnings"}
         esql = yaml_panel.get("esql") or {}
         query = esql.get("query") or ""
-        assert "`labels.pod`" in query, f"{title}: {query}"
+        assert "`k8s.pod.name`" in query, f"{title}: {query}"
         # No bare pre-rewrite label token as a standalone identifier.
         assert "pod_name" not in query, f"{title} leaked pod_name: {query}"
 
@@ -4487,7 +4507,7 @@ def test_315_pods_network_override_names_received_and_sent():
     assert "Received =" in query
     assert "Sent =" in query
     assert "value_B" not in query
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
 
 
 def test_315_all_processes_override_groups_by_cgroup_id():
@@ -4517,9 +4537,10 @@ def test_315_all_processes_override_groups_by_cgroup_id():
     )
     assert result.status in {"migrated", "migrated_with_warnings"}
     query = (yaml_panel.get("esql") or {}).get("query") or ""
-    assert "`labels.id`" in query
-    assert 'labels.id != "/"' in query
-    assert "labels.id IS NOT NULL" in query
+    # cgroup `id` has no otel candidate, so it resolves to the bare `id`.
+    assert "`id`" in query
+    assert 'id != "/"' in query
+    assert "id IS NOT NULL" in query
 
 
 # ---------------------------------------------------------------------------
@@ -4594,7 +4615,7 @@ def test_6417_cluster_cpu_usage_reshapes_resource_split():
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     # The old per-resource metric name is reshaped to the resource= label form.
     assert "kube_node_status_allocatable" in query
-    assert 'labels.resource == "cpu"' in query
+    assert 'resource == "cpu"' in query
     assert "kube_pod_container_resource_requests" in query
 
 
@@ -4655,7 +4676,7 @@ def test_6417_deployment_table_groups_by_deployment():
     }
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
-    assert "labels.deployment" in query
+    assert "k8s.deployment.name" in query
     assert "MV_CONTAINS(TO_STRING(?namespace)" in query
 
 
@@ -4679,7 +4700,7 @@ def test_6417_cluster_cpu_usage_binds_node_control():
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "MV_CONTAINS(TO_STRING(?node)" in query
-    assert "labels.node" in query
+    assert "k8s.node.name" in query
 
 
 def test_6417_cpu_requested_reshapes_resource_split():
@@ -4701,7 +4722,7 @@ def test_6417_cpu_requested_reshapes_resource_split():
     result, query = _translate_6417(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "kube_pod_container_resource_requests" in query
-    assert 'labels.resource == "cpu"' in query
+    assert 'resource == "cpu"' in query
     assert "kube_pod_container_resource_requests_cpu_cores" not in query
 
 
@@ -4800,10 +4821,15 @@ def test_741_registry_entry_present():
 
 def test_741_rewrites_heapster_labels_and_keeps_node_instance():
     resolved, _ = _resolve_741()
-    assert resolved.label_rewrites["pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["io_kubernetes_pod_name"] == "labels.pod"
-    assert resolved.label_rewrites["io_kubernetes_container_name"] == "labels.container"
-    assert resolved.label_rewrites["kubernetes_io_hostname"] == "labels.instance"
+    # label_rewrites are source→canonical; the resolver namespaces per profile.
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["io_kubernetes_pod_name"] == "pod"
+    assert resolved.label_rewrites["io_kubernetes_container_name"] == "container"
+    assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
+    # Passthrough restores the source-faithful Heapster spellings.
+    assert resolved.source_label_names["pod"] == "pod_name"
+    assert resolved.source_label_names["container"] == "container_name"
+    assert resolved.source_label_names["instance"] == "kubernetes_io_hostname"
     assert "image" in resolved.ignored_labels
     assert "name" in resolved.ignored_labels
     assert "kubernetes_io_hostname" not in resolved.ignored_labels
@@ -4830,7 +4856,7 @@ def test_741_deployment_cpu_graph_prefix_binds_and_groups_by_pod():
     }
     result, query, _ = _translate_741(panel, section_title="Deployment CPU usage")
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
-    assert "labels.pod" in query
+    assert "k8s.pod.name" in query
     assert "STARTS_WITH" in query and "?Deployment" in query
     assert "pod_name" not in query
     assert "io_kubernetes" not in query
@@ -4859,7 +4885,7 @@ def test_741_kpi_ratio_uses_deployment_prefix_and_node_instance():
     assert "machine_memory_bytes" in query
     assert "STARTS_WITH" in query and "?Deployment" in query
     assert "?Node" in query
-    assert "labels.instance" in query
+    assert "service.instance.id" in query
 
 
 def test_741_used_memory_panel_id_disambiguates_duplicate_title():
@@ -4999,8 +5025,8 @@ def test_741_containers_override_keeps_k8s_series_and_discloses_drop():
     }
     result, query, _ = _translate_741(panel)
     assert result.status == "migrated_with_warnings"
-    assert "labels.pod" in query and "labels.container" in query
-    assert 'labels.container != "POD"' in query
+    assert "k8s.pod.name" in query and "k8s.container.name" in query
+    assert 'k8s.container.name != "POD"' in query
     assert any("docker" in r or "rkt" in r for r in result.reasons)
 
 
@@ -5206,8 +5232,9 @@ def test_8171_idle_cpu_override_is_busy_by_cpu():
     result, query, _ = _translate_8171(panel)
     assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
     assert "Busy =" in query or "Busy =" in query.replace(" ", " ")
-    assert "labels.cpu" in query
-    assert 'labels.mode == "idle"' in query or "{{label:mode}}" in query
+    # cpu / mode have no otel candidate, so they resolve to the bare name.
+    assert "`cpu`" in query
+    assert 'mode == "idle"' in query or "{{label:mode}}" in query
     assert "?server" in query
 
 
@@ -5290,7 +5317,8 @@ def test_8171_network_uses_esql_by_device_not_native_promql_grok():
         assert "GROK" not in query
         assert "_timeseries" not in query
         assert "time_bucket" in query
-        assert "labels.device" in query
+        # prometheus_native → labels.device; otel default → bare device.
+        assert "labels.device" in query or "`device`" in query
         assert "?server" in query
         assert '"lo"' in query
     assert "node_network_receive_bytes_total" in recv_query
@@ -5299,8 +5327,8 @@ def test_8171_network_uses_esql_by_device_not_native_promql_grok():
     assert (xmit_panel.get("esql") or {}).get("type") == "line"
     recv_bd = ((recv_panel.get("esql") or {}).get("breakdown") or {}).get("field")
     xmit_bd = ((xmit_panel.get("esql") or {}).get("breakdown") or {}).get("field")
-    assert recv_bd == "labels.device"
-    assert xmit_bd == "labels.device"
+    assert recv_bd in {"labels.device", "device"}
+    assert xmit_bd in {"labels.device", "device"}
 
 
 def test_8171_does_not_override_memory_usage_by_title():

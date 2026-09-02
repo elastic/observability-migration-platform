@@ -49,12 +49,6 @@ query:
     node_filesystem_size_bytes: gauge
     node_filesystem_free_bytes: gauge
 
-  label_rewrites:
-    instance: labels.instance
-    cpu: labels.cpu
-    device: labels.device
-    mode: labels.mode
-
   # Grafana Disk I/O read/written series are NFS-server counters. Emit the
   # real node disk byte counters instead. Targets are bare logical metric
   # names; the resolver namespaces them by the active field profile.
@@ -62,20 +56,10 @@ query:
     node_nfsd_disk_bytes_read_total: node_disk_read_bytes_total
     node_nfsd_disk_bytes_written_total: node_disk_written_bytes_total
 
-  label_candidates:
-    instance:
-      - labels.instance
-      - service.instance.id
-      - host.name
-    cpu:
-      - labels.cpu
-    device:
-      - labels.device
-
 controls:
   field_overrides:
-    server: labels.instance
-    instance: labels.instance
+    server: instance
+    instance: instance
 
 panel:
   query_overrides:
@@ -91,7 +75,7 @@ panel:
         | STATS idle_rate = AVG(IRATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:cpu}}
         | EVAL Busy = 100 * (1 - idle_rate)
         | WHERE Busy IS NOT NULL
-        | KEEP time_bucket, `labels.cpu`, Busy
+        | KEEP time_bucket, `{{label:cpu}}`, Busy
         | SORT time_bucket ASC
       status_override: migrated
     # Name Read/Written/IO time so the Lens legend is not leftover metric names.
@@ -119,7 +103,7 @@ panel:
         | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
         | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL
         | STATS Received = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
-        | KEEP time_bucket, `labels.device`, Received
+        | KEEP time_bucket, `{{label:device}}`, Received
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Network Transmitted"
@@ -131,7 +115,7 @@ panel:
         | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
         | WHERE {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS Transmitted = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
-        | KEEP time_bucket, `labels.device`, Transmitted
+        | KEEP time_bucket, `{{label:device}}`, Transmitted
         | SORT time_bucket ASC
       status_override: migrated
 

@@ -80,6 +80,10 @@ native-payload/upload path. Treat this repository as the single source of truth.
   `verifier.corpus_manifest` (top dashboards + long-tail + datasource quotas +
   bug seeds) over an unpinned "top N today" sample. Use small deterministic PR
   gates and larger/nightly corpus gates.
+- Curated Grafana packs MUST author canonical field/label names and never
+  hardcode `labels.*` / `metrics.*` / `prometheus.*` target spellings; the
+  resolver namespaces per `--field-profile`. New packs are verified by the
+  cross-profile leakage gate (`scripts/run_cross_profile_corpus.py`).
 - Skills live in both `.claude/skills/` and `.cursor/skills/` — edit both copies in lockstep (see the mirroring rule in `AGENTS.md` for the `.claude`↔`.cursor` path-prefix caveat).
 
 ## Commit Workflow

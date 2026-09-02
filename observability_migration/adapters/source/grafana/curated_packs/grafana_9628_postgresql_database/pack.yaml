@@ -28,13 +28,13 @@ query:
     - release
     - kubernetes_namespace
 
-  label_rewrites:
-    instance: labels.instance
-    job: labels.job
-    datname: labels.datname
-    state: labels.state
-    mode: labels.mode
-    short_version: labels.short_version
+  # Source→canonical only. Profile namespacing is applied by the resolver.
+  # short_version is not in PROM_TO_OTEL_CANDIDATES; keep it canonical.
+  label_candidates:
+    datname:
+      - datname
+    short_version:
+      - short_version
 
   metric_kinds:
     pg_stat_database_tup_fetched: counter
@@ -80,32 +80,11 @@ query:
   live_optional_metrics:
     - pg_postmaster_start_time_seconds
 
-  label_candidates:
-    instance:
-      - labels.instance
-      - service.instance.id
-      - host.name
-    job:
-      - labels.job
-      - service.name
-    datname:
-      - labels.datname
-      - datname
-    state:
-      - labels.state
-      - state
-    mode:
-      - labels.mode
-      - mode
-    short_version:
-      - labels.short_version
-      - short_version
-
 controls:
   field_overrides:
-    instance: labels.instance
-    datname: labels.datname
-    mode: labels.mode
+    instance: instance
+    datname: datname
+    mode: mode
 
 panel:
   query_overrides:
@@ -117,8 +96,8 @@ panel:
         TS metrics-*
         | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE {{metric:pg_static:gauge}} IS NOT NULL
-        | STATS computed_value = MAX(LAST_OVER_TIME({{metric:pg_static:gauge}})) BY labels.short_version
-        | KEEP labels.short_version, computed_value
+        | STATS computed_value = MAX(LAST_OVER_TIME({{metric:pg_static:gauge}})) BY {{label:short_version}}
+        | KEEP {{label:short_version}}, computed_value
       status_override: migrated
     # postgres_exporter v0.15 no longer exports pg_postmaster_start_time_seconds.
     # process_start_time_seconds is the exporter process start (same scrape

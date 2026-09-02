@@ -26,22 +26,15 @@ query:
     bdb_no_of_keys: gauge
     bdb_conns: gauge
 
-  # --- Prometheus label → OTel/Elastic field candidates -----------------
-  # Listed in resolution priority order (first match wins). Redis Enterprise
-  # exposes a Prometheus endpoint, so the prometheus_native layout
-  # (``labels.<name>``) is the primary target and must come first: offline
-  # migrations (no ``--es-url``) fall through to the FIRST candidate without
-  # probing, so an OTel-first order silently emits ``service.name`` for a
-  # prometheus_native deployment. In live mode the source-faithful shortcut in
-  # SchemaResolver already returns ``labels.<name>``, so this ordering only
-  # changes the offline path -- which is exactly where it was wrong.
+  # --- label authoring ---------------------------------------------------
+  # Redis Enterprise labels are authored with canonical names; the resolver
+  # namespaces them per --field-profile (labels.*, prometheus.labels.*, or the
+  # OTel spelling). ``cluster`` is a built-in canonical label, so it needs no
+  # candidate entry. ``bdb`` is not a built-in canonical, so pin its OTel
+  # spelling (``db.name``) — never a ``labels.*`` layout — for the otel profile.
   label_candidates:
-    cluster:
-      - labels.cluster     # prometheus_native (primary for Redis Enterprise)
-      - service.name       # OTel ECS mode
     bdb:
-      - labels.bdb         # prometheus_native
-      - db.name            # OTel ECS mode
+      - db.name            # OTel ECS mode; native/prometheus profiles namespace canonically
 
 panel:
   query_overrides:
@@ -53,5 +46,5 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | STATS value = MAX(LAST_OVER_TIME(metrics.bdb_used_memory)) / MAX(LAST_OVER_TIME(metrics.bdb_memory_limit))
+        | STATS value = MAX(LAST_OVER_TIME({{metric:bdb_used_memory:gauge}})) / MAX(LAST_OVER_TIME({{metric:bdb_memory_limit:gauge}}))
       status_override: migrated

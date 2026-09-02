@@ -11,19 +11,10 @@
 query:
   metrics_dataset_filter: "prometheus"
 
-  # This pack targets Prometheus-native redis_exporter scrapes. In mixed ECS /
-  # compatibility layouts the live resolver can see both bare helper fields
-  # (instance, namespace, db, cmd) and the source-faithful labels.* fields.
-  # The bare helpers are sufficient for some probes but they produced a Kibana
-  # render mismatch on dashboard 763, while the labels.* path renders cleanly
-  # on the closely related helm dashboard 11835. Pin the source labels here so
-  # the curated dashboard stays stable instead of following field-caps tie-breaks.
-  label_rewrites:
-    instance: labels.instance
-    namespace: labels.namespace
-    job: labels.job
-    cmd: labels.cmd
-    db: labels.db
+  # redis_exporter labels (instance, namespace, job, db, cmd) are authored with
+  # their canonical names. Profile namespacing (labels.*, prometheus.labels.*,
+  # OTel spellings) is applied by the resolver per --field-profile — the pack
+  # never hardcodes a layout, so it stays portable across field profiles.
 
   # --- counter / gauge classification -----------------------------------
   # Counters: have rate()/irate() applied in the source PromQL expressions.
@@ -45,38 +36,10 @@ query:
     redis_db_keys: gauge
     redis_db_keys_expiring: gauge
 
-  # --- Prometheus label → OTel/Elastic field candidates -----------------
-  # Listed in resolution priority order (first match wins).
-  # prometheus_native layout (default for redis_exporter scrapes) stores all
-  # Prometheus labels under labels.<name>.  Those candidates are listed first
-  # so offline migrations produce the correct field name without needing a
-  # live ES field-caps probe.  In live mode the source-faithful shortcut in
-  # SchemaResolver already returns labels.<name> for prometheus_native indices,
-  # so these candidates only matter for the offline fallback path.
-  label_candidates:
-    instance:
-      - labels.instance     # prometheus_native (primary for redis_exporter)
-      - service.instance.id # OTel ECS mode
-      - service.node.name   # OTel ECS mode: prometheus `instance` label -> service.node.name
-      - host.name
-    job:
-      - labels.job          # prometheus_native
-      - service.name        # OTel ECS mode
-    namespace:
-      - labels.namespace    # prometheus_native
-      - service.namespace   # OTel ECS mode
-      - namespace           # OTel ECS mode: prometheus `namespace` label stored as top-level field
-    cmd:
-      - labels.cmd
-      - cmd                 # OTel ECS mode: stored as top-level field
-    db:
-      - labels.db
-      - db
-
 controls:
   field_overrides:
-    instance: labels.instance
-    namespace: labels.namespace
+    instance: instance
+    namespace: namespace
 
 panel:
   query_overrides:
@@ -116,8 +79,8 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_keyspace_hits_total:counter}} IS NOT NULL OR {{metric:redis_keyspace_misses_total:counter}} IS NOT NULL
-        | STATS hits = AVG(IRATE({{metric:redis_keyspace_hits_total:counter}})), misses = AVG(IRATE({{metric:redis_keyspace_misses_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.instance
-        | KEEP time_bucket, `labels.instance`, hits, misses
+        | STATS hits = AVG(IRATE({{metric:redis_keyspace_hits_total:counter}})), misses = AVG(IRATE({{metric:redis_keyspace_misses_total:counter}})) BY time_bucket = TBUCKET(2 minute), {{label:instance}}
+        | KEEP time_bucket, `{{label:instance}}`, hits, misses
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Average Time Spent by Command / sec"
@@ -126,9 +89,9 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL OR {{metric:redis_commands_total:counter}} IS NOT NULL
-        | STATS dur = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})), cnt = SUM(IRATE({{metric:redis_commands_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
+        | STATS dur = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})), cnt = SUM(IRATE({{metric:redis_commands_total:counter}})) BY time_bucket = TBUCKET(2 minute), {{label:cmd}}
         | EVAL computed_value = (dur / cnt)
-        | KEEP time_bucket, `labels.cmd`, computed_value
+        | KEEP time_bucket, `{{label:cmd}}`, computed_value
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Total Time Spent by Command / sec"
@@ -137,8 +100,8 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (MV_CONTAINS(TO_STRING(?instance), ".*") OR MV_CONTAINS(TO_STRING(?instance), {{control:instance}}))
         | WHERE {{metric:redis_commands_duration_seconds_total:counter}} IS NOT NULL
-        | STATS redis_commands_duration_seconds_total = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})) BY time_bucket = TBUCKET(2 minute), labels.cmd
-        | KEEP time_bucket, `labels.cmd`, redis_commands_duration_seconds_total
+        | STATS redis_commands_duration_seconds_total = SUM(IRATE({{metric:redis_commands_duration_seconds_total:counter}})) BY time_bucket = TBUCKET(2 minute), {{label:cmd}}
+        | KEEP time_bucket, `{{label:cmd}}`, redis_commands_duration_seconds_total
         | SORT time_bucket ASC
       status_override: migrated
   layout_overrides:

@@ -7,6 +7,9 @@
 # Source: oliver006/redis_exporter via helm stable/redis-ha chart (Prometheus scrape)
 # Layout: Grafana 24-col → Kibana 48-col (2× scale)
 
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
 schema_version: 1
 gnet_id: 11835
 # gnet_revision 4 (previously pinned here and in registry.yaml) does not

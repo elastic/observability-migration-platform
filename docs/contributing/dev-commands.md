@@ -82,6 +82,10 @@ through the real pipeline; `tests/test_canary.py` validates the registry-driven
 kitchen-sink canary against `docs/dashboards/schema.json`. The fidelity ratchet
 runs as an e2e gate (`tests/e2e/test_fidelity_ratchet.py`) against committed
 baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
+Grafana curated-pack field-profile portability is gated by
+`tests/test_field_profile_portability.py` (leakage linter + per-pack migrate)
+and `scripts/run_cross_profile_corpus.py` (community corpus × every
+`--field-profile`; see `docs/contributing/dev-commands.md`).
 
 Examples:
 
@@ -106,6 +110,13 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_gate \
   --max-fail 0 \
   --max-error 0 \
   --max-shape-pass 25
+
+# Field-profile portability: migrate DIR under every --field-profile, fail on
+# leaked namespaces (e.g. labels.* under otel) or a feasibility drop vs native.
+# Optional --baseline-native DIR of saved prometheus_native *.native.json goldens.
+PYTHONPATH=. .venv/bin/python scripts/run_cross_profile_corpus.py \
+  --input-dir /tmp/community \
+  --index 'metrics-*'
 
 # PM benchmark-history gate. Compare the latest run to the most recent
 # compatible different CLI hash (same G/D config and schema-discovery class).

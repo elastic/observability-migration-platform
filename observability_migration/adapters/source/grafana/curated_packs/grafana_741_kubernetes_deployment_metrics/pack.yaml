@@ -23,7 +23,7 @@
 #           `^$Deployment$` exact matchers, control synthesis.
 #   Pack:   pre-1.16 label bridge, Deployment prefix ES|QL, k8s-only container
 #           series, Received/Sent network names, cgroup-id All-processes,
-#           plugin.py populate rewrites, Node via labels.instance.
+#           plugin.py populate rewrites, Node via canonical instance.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -38,43 +38,33 @@ query:
     kube_deployment_status_replicas: gauge
     kube_deployment_status_replicas_available: gauge
 
+  # Source→canonical only. Profile namespacing (labels.*, prometheus.labels.*,
+  # OTel k8s.*) is applied by the resolver per --field-profile.
   label_rewrites:
-    pod_name: labels.pod
-    io_kubernetes_pod_name: labels.pod
-    io_kubernetes_container_name: labels.container
-    container_name: labels.container
-    namespace: labels.namespace
-    pod: labels.pod
-    container: labels.container
-    deployment: labels.deployment
-    id: labels.id
-    kubernetes_io_hostname: labels.instance
-    instance: labels.instance
+    pod_name: pod
+    io_kubernetes_pod_name: pod
+    io_kubernetes_container_name: container
+    container_name: container
+    kubernetes_io_hostname: instance
+
+  # Passthrough emits the source-faithful Heapster/cAdvisor label spellings.
+  source_label_names:
+    pod: pod_name
+    container: container_name
+    instance: kubernetes_io_hostname
 
   # Dead cAdvisor selector labels. Do NOT ignore kubernetes_io_hostname — it
-  # is rewritten to labels.instance so $Node actually filters.
+  # is rewritten to the canonical `instance` so $Node actually filters.
   ignored_labels:
     - image
     - name
 
-  label_candidates:
-    pod:
-      - labels.pod
-    container:
-      - labels.container
-    deployment:
-      - labels.deployment
-    instance:
-      - labels.instance
-    id:
-      - labels.id
-
 controls:
   field_overrides:
-    Deployment: labels.deployment
-    deployment: labels.deployment
-    Node: labels.instance
-    node: labels.instance
+    Deployment: deployment
+    deployment: deployment
+    Node: instance
+    node: instance
 
 panel:
   query_overrides:
@@ -203,7 +193,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:pod}} IS NOT NULL
         | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
-        | KEEP time_bucket, `labels.pod`, value
+        | KEEP time_bucket, `{{label:pod}}`, value
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Deployment memory usage"
@@ -214,7 +204,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:pod}} IS NOT NULL
         | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
-        | KEEP time_bucket, `labels.pod`, value
+        | KEEP time_bucket, `{{label:pod}}`, value
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "Deployment network I/O"
@@ -224,7 +214,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{label:pod}} IS NOT NULL AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
         | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
-        | KEEP time_bucket, `labels.pod`, Received, Sent
+        | KEEP time_bucket, `{{label:pod}}`, Received, Sent
         | SORT time_bucket ASC
       status_override: migrated
 
@@ -237,7 +227,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
         | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
-        | KEEP time_bucket, `labels.pod`, `labels.container`, value
+        | KEEP time_bucket, `{{label:pod}}`, `{{label:container}}`, value
         | SORT time_bucket ASC
 
     # --- All-processes: group by cgroup id ----------------------------------
@@ -248,7 +238,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
         | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
-        | KEEP time_bucket, `labels.id`, value
+        | KEEP time_bucket, `{{label:id}}`, value
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "All processes memory usage"
@@ -258,7 +248,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
         | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
-        | KEEP time_bucket, `labels.id`, value
+        | KEEP time_bucket, `{{label:id}}`, value
         | SORT time_bucket ASC
       status_override: migrated
     - title_match: "All processes network I/O"
@@ -268,7 +258,7 @@ panel:
         | WHERE (?Deployment == "" OR ?Deployment == ".*" OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(?Deployment)))
         | WHERE {{label:id}} IS NOT NULL AND {{label:id}} != "/" AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
         | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
-        | KEEP time_bucket, `labels.id`, Received, Sent
+        | KEEP time_bucket, `{{label:id}}`, Received, Sent
         | SORT time_bucket ASC
       status_override: migrated
 
