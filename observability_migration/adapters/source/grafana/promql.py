@@ -2925,6 +2925,65 @@ def _join_rhs_not_plain_selector_reason(right_frag):
     )
 
 
+_COMPARISON_OPERATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
+
+# Operators the closing guard below hands on instead of refusing. Only ``or``
+# qualifies: unlike ``and``/``unless`` it has established reductions the later
+# stages own -- the Grafana same-metric range-window fallback
+# (``max_over_time(M[$interval]) or max_over_time(M[5m])``) and the live-absent
+# operand drop in ``colocated_binary_agg_plan`` -- both of which need a resolver
+# that parse time does not have.
+#
+# This is an allowlist rather than a list of refused operators so an operator
+# nobody enumerated fails closed. A deny-list silently omitted ``atan2``, which
+# reintroduced exactly the mistranslation the guard exists to stop.
+_AGG_OVER_BINARY_DEFERRED_OPS = frozenset({"or"})
+
+
+def _agg_over_binary_not_feasible_reason(outer_agg, op):
+    """Explain why ``agg(A <op> B)`` has no honest ES|QL rendering.
+
+    PromQL evaluates the inner operator per matching series pair *before* the
+    aggregation reduces them, and matching is on the operands' full label set.
+    ES|QL has no equivalent stage, so unless a dedicated rewrite applies the
+    only faithful answer is to refuse.
+    """
+    agg = outer_agg or "aggregation"
+    op = (op or "").strip()
+    if not op:
+        return (
+            f"Aggregating over an unrecognised PromQL binary expression ({agg}(A op B)) "
+            "cannot be expressed accurately in ES|QL; the operands must be matched on "
+            "their full label set before the aggregation reduces them"
+        )
+    if op.lower() in _SET_OPERATORS:
+        return (
+            f"PromQL set operator '{op.lower()}' inside an aggregation "
+            f"({agg}(A {op.lower()} B)) has no honest ES|QL translation; it selects which "
+            "series survive by matching the operands on their full label set before "
+            f"{agg}() reduces them, so the operand cannot be dropped without changing "
+            "the result; marked not_feasible"
+        )
+    if op in _COMPARISON_OPERATORS:
+        return (
+            f"PromQL comparison '{op}' between two time-series inside an aggregation "
+            f"({agg}(A {op} B)) filters one series by another and has no honest ES|QL "
+            "translation; compare against a scalar threshold instead of a second "
+            "series; marked not_feasible"
+        )
+    if op in {"*", "/"}:
+        return (
+            f"Aggregating over a per-element {op} between two time-series "
+            f"({agg}(A {op} B)) cannot be expressed accurately in ES|QL; "
+            "rewrite as a ratio of aggregates if the series are label-aligned"
+        )
+    return (
+        f"Aggregating over a per-element {op} between two time-series "
+        f"({agg}(A {op} B)) cannot be expressed accurately in ES|QL; the operands "
+        "must be matched on their full label set before the aggregation reduces them"
+    )
+
+
 def _ast_aggregate_fragment(node, expr):
     child = _ast_from_node(node.expr, _ast_node_expr(node.expr))
     frag = _copy_fragment_summary(_new_fragment(expr), child)
@@ -3131,8 +3190,8 @@ def _ast_aggregate_fragment(node, expr):
     # Handle aggregation over a binary expression between two time-series.
     # SUM is linear so sum(A ± B) = sum(A) ± sum(B); push the aggregation
     # down to each operand and return a binary_expr the pipeline can handle.
-    # Division and multiplication are not linear: sum(A/B) ≠ sum(A)/sum(B),
-    # so those patterns are marked not_feasible rather than silently dropped.
+    # Every other shape either has a dedicated rewrite below or is refused by
+    # the closing guard, because no rewrite means the operator is dropped.
     if child.family == "binary_expr":
         inner_left = child.extra.get("left_frag")
         inner_right = child.extra.get("right_frag")
@@ -3204,13 +3263,19 @@ def _ast_aggregate_fragment(node, expr):
                     new_binary.group_mode = frag.group_mode
                     new_binary.extra["approximated_agg_over_summary_ratio"] = True
                     return new_binary
-            # Two true time-series operands — multiplication/division is not
-            # linearisable: agg(A op B) ≠ agg(A) op agg(B).
+        # Nothing above could rewrite ``agg(A op B)`` honestly. Refuse instead
+        # of returning a bare ``unknown`` fragment: the generic
+        # ``fragment_extract``/``stats_expression`` fallback rebuilds
+        # ``agg(<first metric leaf>)`` from the fragment's summary fields, which
+        # discards the operator and every other operand and ships a plausible
+        # but wrong number (issue #377). ``colocated_binary_agg_unblock`` clears
+        # this reason again for the arithmetic the co-located renderer can
+        # express exactly, so the refusal only sticks where nothing else can.
+        op_lower = (child.binary_op or "").strip().lower()
+        if op_lower not in _AGG_OVER_BINARY_DEFERRED_OPS and not frag.extra.get("not_feasible_reasons"):
             _append_not_feasible_reason(
                 frag,
-                f"Aggregating over a per-element {child.binary_op} between two time-series "
-                f"({frag.outer_agg}(A {child.binary_op} B)) cannot be expressed accurately in ES|QL; "
-                "rewrite as a ratio of aggregates if the series are label-aligned",
+                _agg_over_binary_not_feasible_reason(frag.outer_agg, child.binary_op),
             )
 
     return frag
