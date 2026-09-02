@@ -274,7 +274,10 @@ that formula, legends Busy by `labels.cpu`, and the layout override renames
 the panel CPU Busy. "Disk I/O" queries `node_nfsd_disk_bytes_*` (NFS
 *server* counters, empty on typical Kubernetes nodes); the pack maps those
 to `node_disk_read_bytes_total` / `node_disk_written_bytes_total` and names
-the series Read / Written / IO time. `$server` stays
+the series Read / Written / IO time. Network Received/Transmitted use curated
+ES|QL (`time_bucket` + `labels.device`, `$server` bound) because native PROMQL
+`GROK _timeseries` + `KEEP step` returns rows at `/_query` but Lens XY shows
+"No results found". `$server` stays
 `label_values(node_boot_time_seconds, instance)`.
 
 Each pack is registered in `curated_packs/registry.yaml` with a

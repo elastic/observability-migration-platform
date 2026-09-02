@@ -5238,6 +5238,65 @@ def test_8171_disk_io_names_read_written_and_uses_node_disk():
     assert "Written =" in query
 
 
+def test_8171_network_uses_esql_by_device_not_native_promql_grok():
+    """Native PROMQL + GROK _timeseries + KEEP step returns rows but Lens XY
+    paints 'No results found'. Pin ES|QL time_bucket + labels.device like CPU Busy.
+    """
+    receive = {
+        "id": 8,
+        "type": "graph",
+        "title": "Network Received",
+        "targets": [
+            {
+                "expr": (
+                    'rate(node_network_receive_bytes_total'
+                    '{instance="$server",device!~"lo"}[5m])'
+                ),
+                "legendFormat": "{{device}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    transmit = {
+        "id": 9,
+        "type": "graph",
+        "title": "Network Transmitted",
+        "targets": [
+            {
+                "expr": (
+                    'rate(node_network_transmit_bytes_total'
+                    '{instance="$server",device!~"lo"}[5m])'
+                ),
+                "legendFormat": "{{device}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 7},
+    }
+    recv_result, recv_query, recv_panel = _translate_8171(receive)
+    xmit_result, xmit_query, xmit_panel = _translate_8171(transmit)
+    assert recv_result.status in {"migrated", "migrated_with_warnings"}, recv_result.reasons
+    assert xmit_result.status in {"migrated", "migrated_with_warnings"}, xmit_result.reasons
+    for query in (recv_query, xmit_query):
+        assert query.strip().startswith("TS ")
+        assert "PROMQL " not in query
+        assert "GROK" not in query
+        assert "_timeseries" not in query
+        assert "time_bucket" in query
+        assert "labels.device" in query
+        assert "?server" in query
+        assert '"lo"' in query
+    assert "node_network_receive_bytes_total" in recv_query
+    assert "node_network_transmit_bytes_total" in xmit_query
+    assert (recv_panel.get("esql") or {}).get("type") == "line"
+    assert (xmit_panel.get("esql") or {}).get("type") == "line"
+    recv_bd = ((recv_panel.get("esql") or {}).get("breakdown") or {}).get("field")
+    xmit_bd = ((xmit_panel.get("esql") or {}).get("breakdown") or {}).get("field")
+    assert recv_bd == "labels.device"
+    assert xmit_bd == "labels.device"
+
+
 def test_8171_does_not_override_memory_usage_by_title():
     resolved, _ = _resolve_8171()
     query_titles = {item["title_match"] for item in resolved.panel_query_overrides}

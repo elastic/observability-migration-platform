@@ -37,7 +37,9 @@ translates each from panel type.
 Pipeline already handles irate/rate, memory used subtraction, stacked graph,
 `instance="$server"` parameterization, `device!~"lo"` / `device!="rootfs"`.
 The pack pins metric_kinds + instance/cpu/device labels, maps nfsd → disk,
-and emits the CPU Busy / Disk I/O ES|QL overrides.
+emits the CPU Busy / Disk I/O ES|QL overrides, and forces Network
+Received/Transmitted onto ES|QL `time_bucket` + `labels.device` (native PROMQL
+`GROK _timeseries` + `KEEP step` returns rows but Lens XY stays empty).
 
 ## Fidelity
 

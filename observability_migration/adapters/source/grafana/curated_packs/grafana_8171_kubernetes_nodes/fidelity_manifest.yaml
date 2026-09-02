@@ -31,10 +31,10 @@ panels:
     notes: "(size-free)/size with device!=rootfs. Same-bucket ratio; PERFECT under native PROMQL."
   - title: "Network Received"
     fidelity: PERFECT
-    notes: "rate(node_network_receive_bytes_total) by device, lo excluded."
+    notes: "rate(node_network_receive_bytes_total) by device, lo excluded. Curated ES|QL (time_bucket + labels.device) because native PROMQL GROK _timeseries + KEEP step is empty in Lens XY."
   - title: "Network Transmitted"
     fidelity: PERFECT
-    notes: "rate(node_network_transmit_bytes_total) by device, lo excluded."
+    notes: "rate(node_network_transmit_bytes_total) by device, lo excluded. Same ES|QL override as Network Received."
 
 summary:
   total_panels: 8

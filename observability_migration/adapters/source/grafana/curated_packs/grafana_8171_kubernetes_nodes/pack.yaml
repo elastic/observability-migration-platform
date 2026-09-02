@@ -23,7 +23,8 @@
 #           Memory Usage graph, singlestat percent gauges, $server exact
 #           instance matcher, device!~"lo" / device!="rootfs" filters.
 #   Pack:   metric_kinds, instance label pin, nfsd→disk metric_map, CPU Busy
-#           per-cpu ES|QL + title rename, Disk I/O named series.
+#           per-cpu ES|QL + title rename, Disk I/O named series, Network
+#           Received/Transmitted ES|QL (native PROMQL GROK+step is empty in Lens).
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -104,6 +105,34 @@ panel:
         | STATS Read = SUM(RATE({{metric:node_disk_read_bytes_total:counter}})), Written = SUM(RATE({{metric:node_disk_written_bytes_total:counter}})), `IO time` = SUM(RATE({{metric:node_disk_io_time_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
         | KEEP time_bucket, Read, Written, `IO time`
         | SORT time_bucket ASC
+    # Native PROMQL + GROK _timeseries + KEEP step returns rows at /_query, but
+    # Lens XY paints "No results found" (x=step vs working time_bucket panels).
+    # Force the same ES|QL shape as CPU Busy, and keep $server — the ES|QL
+    # fallthrough drops the instance matcher.
+    - title_match: "Network Received"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?server == "" OR ({{label:instance}} RLIKE ?server OR ({{label:instance}} IS NULL AND "" RLIKE ?server)))
+        | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
+        | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL
+        | STATS Received = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | KEEP time_bucket, `labels.device`, Received
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Network Transmitted"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?server == "" OR ({{label:instance}} RLIKE ?server OR ({{label:instance}} IS NULL AND "" RLIKE ?server)))
+        | WHERE (NOT ({{label:device}} RLIKE "lo") OR ({{label:device}} IS NULL AND NOT ("" RLIKE "lo")))
+        | WHERE {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS Transmitted = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | KEEP time_bucket, `labels.device`, Transmitted
+        | SORT time_bucket ASC
+      status_override: migrated
 
   layout_overrides:
     - title_match: "Idle CPU"
