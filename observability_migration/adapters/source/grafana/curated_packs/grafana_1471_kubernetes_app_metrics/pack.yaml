@@ -1,0 +1,315 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 1471
+# https://grafana.com/grafana/dashboards/1471-kubernetes-apps/
+#
+# Source: community "Kubernetes App Metrics".
+# Revision 1. schemaVersion 14 (old `rows[]` layout), 13 leaf panels.
+# Variables: $namespace, $container (container_name; also used as HTTP `app`).
+# Metric family: cAdvisor container_* + container_spec_* AND app HTTP
+# (http_requests_total / nginx_http_* / haproxy_backend_http_*).
+#
+# Authored against a pre-1.16 cAdvisor + Heapster-era label lineage:
+#   - container_name / pod_name           -> modern container / pod
+#   - kubernetes_io_hostname              -> instance
+#   - kubernetes_namespace (HTTP metrics) -> namespace
+#   - app="$container"                    -> HTTP series keyed by app=container
+#
+# Native PROMQL LAST/GROK step is empty in Lens on prometheus_native ingest, so
+# every panel is curated ES|QL. nginx/haproxy are live_optional so a native-only
+# scrape still renders the remaining series.
+#
+# Engine vs pack split:
+#   Engine: irate/rate, rows[] → sections, single-panel-row flatten, control
+#           synthesis, histogram_quantile → PERCENTILE disclosure.
+#   Pack:   Heapster label bridge, control populate rewrite, HTTP named series
+#           (native/nginx/haproxy, nginx restored), ratio ES|QL, per-pod
+#           breakdown on pod not (id,pod_name), LAST_OVER_TIME gauges.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    http_requests_total: counter
+    nginx_http_requests_total: counter
+    haproxy_backend_http_responses_total: counter
+    http_request_duration_seconds_bucket: counter
+    nginx_http_request_duration_seconds_bucket: counter
+    http_request_duration_seconds: gauge
+    nginx_http_request_duration_seconds: gauge
+    container_cpu_usage_seconds_total: counter
+    container_cpu_system_seconds_total: counter
+    container_cpu_user_seconds_total: counter
+    container_memory_usage_bytes: gauge
+    container_spec_cpu_shares: gauge
+    container_spec_cpu_quota: gauge
+    container_spec_cpu_period: gauge
+    container_spec_memory_limit_bytes: gauge
+
+  label_rewrites:
+    container_name: container
+    pod_name: pod
+    kubernetes_io_hostname: instance
+    kubernetes_namespace: namespace
+
+  source_label_names:
+    container: container_name
+    pod: pod_name
+    instance: kubernetes_io_hostname
+
+  live_optional_metrics:
+    - nginx_http_requests_total
+    - haproxy_backend_http_responses_total
+    - nginx_http_request_duration_seconds
+    - nginx_http_request_duration_seconds_bucket
+    - http_request_duration_seconds_bucket
+
+controls:
+  field_overrides:
+    namespace: namespace
+    container: container
+
+panel:
+  query_overrides:
+    - title_match: "Request rate"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:app}} RLIKE ?container OR ({{label:app}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:http_requests_total:counter}} IS NOT NULL OR {{metric:nginx_http_requests_total:counter}} IS NOT NULL OR {{metric:haproxy_backend_http_responses_total:counter}} IS NOT NULL
+        | EVAL series = CASE(
+            {{metric:http_requests_total:counter}} IS NOT NULL AND ({{label:handler}} != "prometheus" OR {{label:handler}} IS NULL), CONCAT("native | ", COALESCE(TO_STRING({{label:code}}), "unknown")),
+            {{metric:nginx_http_requests_total:counter}} IS NOT NULL, CONCAT("nginx | ", COALESCE(TO_STRING({{label:status}}), "unknown")),
+            {{metric:haproxy_backend_http_responses_total:counter}} IS NOT NULL, CONCAT("haproxy | ", COALESCE(TO_STRING({{label:code}}), "unknown")),
+            NULL)
+        | WHERE series IS NOT NULL
+        | STATS native = SUM(IRATE({{metric:http_requests_total:counter}})), nginx = SUM(IRATE({{metric:nginx_http_requests_total:counter}})), haproxy = SUM(IRATE({{metric:haproxy_backend_http_responses_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), series
+        | EVAL rate = COALESCE(native, 0) + COALESCE(nginx, 0) + COALESCE(haproxy, 0)
+        | KEEP time_bucket, series, rate
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Error rate"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:app}} RLIKE ?container OR ({{label:app}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:http_requests_total:counter}} IS NOT NULL OR {{metric:nginx_http_requests_total:counter}} IS NOT NULL OR {{metric:haproxy_backend_http_responses_total:counter}} IS NOT NULL
+        | STATS native_5xx = SUM(CASE(({{label:handler}} != "prometheus" OR {{label:handler}} IS NULL) AND {{label:code}} RLIKE "5[0-9]+", IRATE({{metric:http_requests_total:counter}}), NULL)), native_all = SUM(CASE(({{label:handler}} != "prometheus" OR {{label:handler}} IS NULL), IRATE({{metric:http_requests_total:counter}}), NULL)), nginx_5xx = SUM(CASE({{label:status}} RLIKE "5[0-9]+", IRATE({{metric:nginx_http_requests_total:counter}}), NULL)), nginx_all = SUM(IRATE({{metric:nginx_http_requests_total:counter}})), haproxy_5xx = SUM(CASE({{label:code}} == "5xx", IRATE({{metric:haproxy_backend_http_responses_total:counter}}), NULL)), haproxy_all = SUM(IRATE({{metric:haproxy_backend_http_responses_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL Native = CASE(native_all > 0, native_5xx / native_all, NULL)
+        | EVAL Nginx = CASE(nginx_all > 0, nginx_5xx / nginx_all, NULL)
+        | EVAL HAProxy = CASE(haproxy_all > 0, haproxy_5xx / haproxy_all, NULL)
+        | KEEP time_bucket, Native, Nginx, HAProxy
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Response time percentiles"
+      kibana_type_override: line
+      approximation_note: "Grafana histogram_quantile on *_bucket series; Kibana plots PERCENTILE of the duration gauge (t-digest scrape samples, not Prometheus bucket interpolation)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:app}} RLIKE ?container OR ({{label:app}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:http_request_duration_seconds:gauge}} IS NOT NULL OR {{metric:nginx_http_request_duration_seconds:gauge}} IS NOT NULL OR {{metric:http_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS native_p99 = PERCENTILE({{metric:http_request_duration_seconds:gauge}}, 99), native_p90 = PERCENTILE({{metric:http_request_duration_seconds:gauge}}, 90), native_p50 = PERCENTILE({{metric:http_request_duration_seconds:gauge}}, 50), nginx_p99 = PERCENTILE({{metric:nginx_http_request_duration_seconds:gauge}}, 99), nginx_p90 = PERCENTILE({{metric:nginx_http_request_duration_seconds:gauge}}, 90), nginx_p50 = PERCENTILE({{metric:nginx_http_request_duration_seconds:gauge}}, 50) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, native_p99, native_p90, native_p50, nginx_p99, nginx_p90, nginx_p50
+        | SORT time_bucket ASC
+    - title_match: "Number of pods"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS pods = COUNT_DISTINCT({{label:pod}}), hosts = COUNT_DISTINCT({{label:instance}}) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, pods, hosts
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Cpu usage (relative to request)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_cpu_system_seconds_total:counter}} IS NOT NULL OR {{metric:container_cpu_user_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_shares:gauge}} IS NOT NULL
+        | STATS system_cpu = SUM(IRATE({{metric:container_cpu_system_seconds_total:counter}})), user_cpu = SUM(IRATE({{metric:container_cpu_user_seconds_total:counter}})), shares = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_shares:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL system = CASE(shares > 0, system_cpu / (shares / 1024.0), NULL)
+        | EVAL user = CASE(shares > 0, user_cpu / (shares / 1024.0), NULL)
+        | KEEP time_bucket, system, user
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Cpu usage (relative to limit)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL
+        | STATS used = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), quota = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_quota:gauge}})), period = MAX(LAST_OVER_TIME({{metric:container_spec_cpu_period:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL actual = CASE(quota > 0 AND period > 0, used / (quota / period), NULL)
+        | KEEP time_bucket, actual
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Memory usage (relative to limit)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL
+        | STATS used = SUM(LAST_OVER_TIME({{metric:container_memory_usage_bytes:gauge}})), total = SUM(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL actual = CASE(total > 0, used / total, NULL)
+        | KEEP time_bucket, actual
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Cpu usage (per pod)"
+      kibana_type_override: line
+      approximation_note: "Dropped the Grafana limit/request reference lines (Lens XY has one breakdown). Per-pod CPU is grouped by pod rather than (id, pod_name)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD" AND {{label:pod}} IS NOT NULL
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL OR {{metric:container_spec_cpu_period:gauge}} IS NOT NULL OR {{metric:container_spec_cpu_shares:gauge}} IS NOT NULL OR {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL
+        | STATS CPU = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, CPU
+        | SORT time_bucket ASC
+    - title_match: "Memory usage (per pod)"
+      kibana_type_override: line
+      approximation_note: "Dropped the Grafana per-pod memory limit reference line (Lens XY has one breakdown). Grouped by pod rather than (id, pod_name)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD" AND {{label:pod}} IS NOT NULL
+        | WHERE {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL
+        | STATS Memory = SUM(LAST_OVER_TIME({{metric:container_memory_usage_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, Memory
+        | SORT time_bucket ASC
+    - title_match: "Cpu usage (avg per pod)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_shares:gauge}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL OR {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL
+        | STATS cpu = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), quota = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_quota:gauge}})), period = MAX(LAST_OVER_TIME({{metric:container_spec_cpu_period:gauge}})), shares = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_shares:gauge}})), pods = COUNT_DISTINCT({{label:pod}}) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL actual = CASE(pods > 0, cpu / pods, NULL)
+        | EVAL `limit` = CASE(pods > 0 AND period > 0, (quota / period) / pods, NULL)
+        | EVAL request = CASE(pods > 0, (shares / 1024.0) / pods, NULL)
+        | KEEP time_bucket, actual, `limit`, request
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Memory usage (avg per pod)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL
+        | STATS used = SUM(LAST_OVER_TIME({{metric:container_memory_usage_bytes:gauge}})), total = SUM(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})), pods = COUNT_DISTINCT({{label:pod}}) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL actual = CASE(pods > 0, used / pods, NULL)
+        | EVAL `limit` = CASE(pods > 0, total / pods, NULL)
+        | KEEP time_bucket, actual, `limit`
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Cpu usage (total)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_shares:gauge}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL
+        | STATS actual = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), quota = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_quota:gauge}})), period = MAX(LAST_OVER_TIME({{metric:container_spec_cpu_period:gauge}})), shares = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_shares:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL `limit` = CASE(period > 0, quota / period, NULL)
+        | EVAL request = shares / 1024.0
+        | KEEP time_bucket, actual, `limit`, request
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Memory usage (total)"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?container == "" OR ({{label:container}} RLIKE ?container OR ({{label:container}} IS NULL AND "" RLIKE ?container)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:container}} != "POD"
+        | WHERE {{metric:container_memory_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL
+        | STATS actual = SUM(LAST_OVER_TIME({{metric:container_memory_usage_bytes:gauge}})), `limit` = SUM(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, actual, `limit`
+        | SORT time_bucket ASC
+      status_override: migrated
+
+  layout_overrides:
+    - title_match: "Request rate"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 16}
+    - title_match: "Error rate"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 16}
+    - title_match: "Response time percentiles"
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 16}
+    - title_match: "Number of pods"
+      hide_title: false
+      size: {w: 48, h: 12}
+    - title_match: "Cpu usage (relative to request)"
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+    - title_match: "Usage relative to limit"
+      collapsed: true
+    - title_match: "Cpu usage (relative to limit)"
+      hide_title: false
+      size: {w: 24, h: 14}
+    - title_match: "Memory usage (relative to limit)"
+      hide_title: false
+      size: {w: 24, h: 14}
+    - title_match: "Usage per pod"
+      collapsed: true
+    - title_match: "Cpu usage (per pod)"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+    - title_match: "Memory usage (per pod)"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+    - title_match: "Usage per pod (average)"
+      collapsed: true
+    - title_match: "Cpu usage (avg per pod)"
+      hide_title: false
+      size: {w: 24, h: 14}
+    - title_match: "Memory usage (avg per pod)"
+      hide_title: false
+      size: {w: 24, h: 14}
+    - title_match: "Usage total"
+      collapsed: true
+    - title_match: "Cpu usage (total)"
+      hide_title: false
+      size: {w: 24, h: 14}
+    - title_match: "Memory usage (total)"
+      hide_title: false
+      size: {w: 24, h: 14}

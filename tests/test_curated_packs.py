@@ -180,7 +180,7 @@ def test_registry_pins_match_community_corpus_when_revision_aligns():
         for entry in corpus["dashboards"]
     }
     # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
-    new_pack_ids = {7362, 9628, 14114, 12485, 315, 6417, 741, 8171}
+    new_pack_ids = {7362, 9628, 14114, 12485, 315, 6417, 741, 8171, 3831, 1471}
     mismatches = []
     for entry in load_curated_registry():
         gnet_id = int(entry["gnet_id"])
@@ -5351,3 +5351,532 @@ def test_8171_layout_renames_idle_cpu_to_cpu_busy():
     ]
     _apply_panel_layout_overrides_recursively(panels, resolved.panel_layout_overrides)
     assert panels[0]["title"] == "CPU Busy"
+
+
+# ---------------------------------------------------------------------------
+# Grafana 3831 — Kubernetes Cluster Autoscaler
+# ---------------------------------------------------------------------------
+
+
+def _resolve_3831():
+    dashboard = {
+        "gnetId": 3831,
+        "title": "Kubernetes Cluster Autoscaler (via Prometheus)",
+        "tags": ["prometheus"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_3831(panel, *, section_title=""):
+    resolved, resolver = _resolve_3831()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title=section_title,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_3831_registry_entry_present():
+    entry = find_curated_pack(gnet_id=3831, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_3831_kubernetes_autoscaler"
+    assert entry["gnet_revision"] == 1
+
+
+def test_3831_finds_by_title_fallback():
+    entry = find_curated_pack(
+        gnet_id=None,
+        title="Kubernetes Cluster Autoscaler (via Prometheus)",
+        tags=[],
+    )
+    assert entry is not None
+    assert entry["gnet_id"] == 3831
+
+
+def test_3831_classifies_autoscaler_metric_kinds():
+    resolved, _ = _resolve_3831()
+    assert resolved.metric_kinds["cluster_autoscaler_nodes_count"] == "gauge"
+    assert resolved.metric_kinds["cluster_autoscaler_last_activity"] == "gauge"
+    assert resolved.metric_kinds["cluster_autoscaler_evicted_pods_total"] == "counter"
+    assert resolved.metric_kinds["cluster_autoscaler_scaled_up_nodes_total"] == "counter"
+    assert resolved.metric_kinds["cluster_autoscaler_scaled_down_nodes_total"] == "counter"
+
+
+def test_3831_nodes_available_is_ready_over_total_ratio():
+    panel = {
+        "id": 6,
+        "type": "singlestat",
+        "title": "Nodes available",
+        "format": "percent",
+        "targets": [
+            {
+                "expr": (
+                    'sum(cluster_autoscaler_nodes_count{state="ready"})'
+                    "/sum(cluster_autoscaler_nodes_count)*100"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+    }
+    result, query, yaml_panel = _translate_3831(panel, section_title="Info")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "cluster_autoscaler_nodes_count" in query
+    assert 'state == "ready"' in query or 'state` == "ready"' in query
+    assert "computed_value" in query
+    assert "* 100" in query
+    assert yaml_panel.get("esql", {}).get("type") == "gauge"
+
+
+def test_3831_last_scaledown_uses_date_diff_not_promql_time():
+    panel = {
+        "id": 7,
+        "type": "singlestat",
+        "title": "Last scaleDown activity",
+        "format": "s",
+        "targets": [
+            {
+                "expr": 'sum(time()-cluster_autoscaler_last_activity{activity="scaleDown"})',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+    }
+    result, query, _ = _translate_3831(panel, section_title="Info")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "DATE_DIFF" in query
+    assert "scaleDown" in query
+    assert "PROMQL" not in query
+    assert "cluster_autoscaler_last_activity" in query
+
+
+def test_3831_pod_activity_names_evicted_and_unscheduled():
+    panel = {
+        "id": 11,
+        "type": "graph",
+        "title": "Pod activity",
+        "targets": [
+            {
+                "expr": "sum(cluster_autoscaler_evicted_pods_total)",
+                "legendFormat": "evicted pods",
+                "refId": "A",
+            },
+            {
+                "expr": "sum(cluster_autoscaler_unschedulable_pods_count)",
+                "legendFormat": "unscheduled pods",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    result, query, _ = _translate_3831(panel, section_title="Activity")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "`evicted pods`" in query or "evicted pods" in query
+    assert "`unscheduled pods`" in query or "unscheduled pods" in query
+    assert "LAST_OVER_TIME" in query
+    assert "RATE(" not in query
+
+
+def test_3831_cluster_direction_subtracts_scale_down():
+    panel = {
+        "id": 13,
+        "type": "singlestat",
+        "title": "Cluster direction?",
+        "targets": [
+            {
+                "expr": (
+                    "sum(cluster_autoscaler_scaled_up_nodes_total)"
+                    "-sum(cluster_autoscaler_scaled_down_nodes_total)"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+    }
+    result, query, _ = _translate_3831(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "cluster_autoscaler_scaled_up_nodes_total" in query
+    assert "cluster_autoscaler_scaled_down_nodes_total" in query
+    assert "scaled_up - scaled_down" in query or "computed_value" in query
+    assert "PROMQL" not in query
+
+
+def test_3831_layout_renames_kpi_titles():
+    resolved, _ = _resolve_3831()
+    panels = [
+        {
+            "title": "Is cluster safe to scale?",
+            "esql": {"type": "gauge", "query": "FROM metrics-*"},
+            "position": {"x": 16, "y": 0},
+            "size": {"w": 8, "h": 8},
+        },
+        {
+            "title": "Cluster direction?",
+            "esql": {
+                "type": "metric",
+                "query": "FROM metrics-*",
+                "primary": {"field": "computed_value"},
+            },
+            "position": {"x": 32, "y": 0},
+            "size": {"w": 16, "h": 12},
+        },
+    ]
+    _apply_panel_layout_overrides_recursively(panels, resolved.panel_layout_overrides)
+    assert panels[0]["title"] == "Safe to autoscale"
+    assert panels[1]["title"] == "Net scaled nodes"
+    assert panels[0]["size"]["h"] == 10
+    assert panels[1]["size"]["w"] == 12
+    assert panels[1]["position"]["y"] == 2
+    assert panels[1]["esql"]["primary"]["label"] == " "
+
+
+def test_3831_kpi_row_fills_48_cols():
+    resolved, _ = _resolve_3831()
+    by_title = {item["title_match"]: item for item in resolved.panel_layout_overrides}
+    xs = [
+        by_title[name]["position"]["x"]
+        for name in (
+            "Total nodes",
+            "Nodes available",
+            "Is cluster safe to scale?",
+            "Number of unscheduled pods",
+            "Last scaleDown activity",
+            "Last autoscale activity",
+        )
+    ]
+    assert xs == [0, 8, 16, 24, 32, 40]
+
+
+# ---------------------------------------------------------------------------
+# Grafana 1471 — Kubernetes App Metrics
+# ---------------------------------------------------------------------------
+
+
+def _resolve_1471():
+    dashboard = {
+        "gnetId": 1471,
+        "title": "Kubernetes App Metrics",
+        "tags": [],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_1471(panel, *, section_title=""):
+    resolved, resolver = _resolve_1471()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title=section_title,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_1471_registry_entry_present():
+    entry = find_curated_pack(gnet_id=1471, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_1471_kubernetes_app_metrics"
+    assert entry["gnet_revision"] == 1
+
+
+def test_1471_finds_by_title_fallback():
+    entry = find_curated_pack(gnet_id=None, title="Kubernetes App Metrics", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 1471
+
+
+def test_1471_rewrites_heapster_and_http_labels():
+    resolved, _ = _resolve_1471()
+    assert resolved.label_rewrites["container_name"] == "container"
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
+    assert resolved.label_rewrites["kubernetes_namespace"] == "namespace"
+    assert resolved.source_label_names["container"] == "container_name"
+    assert resolved.metric_kinds["container_memory_usage_bytes"] == "gauge"
+    assert resolved.metric_kinds["http_requests_total"] == "counter"
+    assert "nginx_http_requests_total" in resolved.live_optional_metrics
+
+
+def test_1471_request_rate_keeps_nginx_and_binds_app():
+    panel = {
+        "id": 3,
+        "type": "graph",
+        "title": "Request rate",
+        "targets": [
+            {
+                "expr": (
+                    'sum(irate(http_requests_total{app="$container", handler!="prometheus",'
+                    ' kubernetes_namespace="$namespace"}[30s])) by (kubernetes_namespace,app,code)'
+                ),
+                "legendFormat": "native | {{code}}",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'sum(irate(nginx_http_requests_total{app="$container",'
+                    ' kubernetes_namespace="$namespace"}[30s])) by (kubernetes_namespace,app,status)'
+                ),
+                "legendFormat": "nginx | {{status}}",
+                "refId": "B",
+            },
+            {
+                "expr": (
+                    'sum(irate(haproxy_backend_http_responses_total{app="$container",'
+                    ' kubernetes_namespace="$namespace"}[30s])) by (app,kubernetes_namespace,code)'
+                ),
+                "legendFormat": "haproxy | {{code}}",
+                "refId": "C",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    result, query, yaml_panel = _translate_1471(panel, section_title="Request rate")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "nginx_http_requests_total" in query
+    assert "haproxy_backend_http_responses_total" in query
+    assert "?container" in query
+    assert "?namespace" in query
+    assert "kubernetes_namespace" not in query
+    assert "PROMQL" not in query
+    # One rate series per Grafana legendFormat ("native | 200"), grouped so
+    # Lens breakdown is `series` rather than a cartesian Native x code legend.
+    assert "BY time_bucket" in query
+    assert "native | " in query
+    breakdown = (yaml_panel.get("esql") or {}).get("breakdown") or {}
+    assert breakdown.get("field") == "series"
+    metrics = (yaml_panel.get("esql") or {}).get("metrics") or []
+    assert [m.get("field") for m in metrics] == ["rate"]
+
+
+def test_1471_error_rate_is_named_5xx_ratio():
+    panel = {
+        "id": 15,
+        "type": "graph",
+        "title": "Error rate",
+        "targets": [
+            {
+                "expr": (
+                    'sum(irate(haproxy_backend_http_responses_total{app="$container",'
+                    ' kubernetes_namespace="$namespace",code="5xx"}[30s]))'
+                    ' / sum(irate(haproxy_backend_http_responses_total{app="$container",'
+                    ' kubernetes_namespace="$namespace"}[30s]))'
+                ),
+                "legendFormat": "haproxy",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 7},
+    }
+    result, query, _ = _translate_1471(panel, section_title="Request rate")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "HAProxy" in query
+    assert "native_5xx" in query or "Native" in query
+    assert 'code == "5xx"' in query or "5[0-9]+" in query
+
+
+def test_1471_response_time_override_is_percentile_not_histogram():
+    panel = {
+        "id": 5,
+        "type": "graph",
+        "title": "Response time percentiles",
+        "targets": [
+            {
+                "expr": (
+                    "histogram_quantile(0.99, sum(rate("
+                    'http_request_duration_seconds_bucket{app="$container",'
+                    ' kubernetes_namespace="$namespace"}[30s])) by (app,kubernetes_namespace,le))'
+                ),
+                "legendFormat": "native | 0.99",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 7},
+    }
+    result, query, yaml_panel = _translate_1471(panel, section_title="Response time")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert result.status != "not_feasible"
+    assert "PERCENTILE" in query
+    assert "native_p99" in query
+    assert "PROMQL" not in query
+    assert yaml_panel.get("esql", {}).get("type") == "line"
+
+
+def test_1471_number_of_pods_uses_canonical_labels():
+    panel = {
+        "id": 7,
+        "type": "graph",
+        "title": "Number of pods",
+        "targets": [
+            {
+                "expr": (
+                    'count(count(container_memory_usage_bytes{container_name="$container",'
+                    ' namespace="$namespace"}) by (pod_name))'
+                ),
+                "legendFormat": "pods",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'count(count(container_memory_usage_bytes{container_name="$container",'
+                    ' namespace="$namespace"}) by (kubernetes_io_hostname))'
+                ),
+                "legendFormat": "hosts",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 7},
+    }
+    result, query, _ = _translate_1471(panel, section_title="Pod count")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "COUNT_DISTINCT" in query
+    assert "k8s.pod.name" in query
+    assert "pod_name" not in query
+    assert "kubernetes_io_hostname" not in query
+    assert "hosts" in query and "pods" in query
+
+
+def test_1471_per_pod_cpu_groups_by_pod_not_cgroup_id():
+    panel = {
+        "id": 13,
+        "type": "graph",
+        "title": "Cpu usage (per pod)",
+        "targets": [
+            {
+                "expr": (
+                    'sum(irate(container_cpu_usage_seconds_total{container_name="$container",'
+                    ' namespace="$namespace"}[30s])) by (id,pod_name)'
+                ),
+                "legendFormat": "{{pod_name}}",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'sum(container_spec_cpu_quota{container_name="$container", namespace="$namespace"}'
+                    " / container_spec_cpu_period{container_name=\"$container\", namespace=\"$namespace\"})"
+                    " by (namespace,container_name) / count(container_memory_usage_bytes"
+                    '{container_name="$container", namespace="$namespace"}) by (namespace,container_name)'
+                ),
+                "legendFormat": "limit",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    result, query, _ = _translate_1471(panel, section_title="Usage per pod")
+    assert result.status == "migrated_with_warnings"
+    assert "k8s.pod.name" in query
+    assert "CPU" in query
+    assert "BY time_bucket" in query
+    assert any("limit" in r.lower() or "breakdown" in r.lower() for r in result.reasons)
+
+
+def test_1471_plugin_rewrites_namespace_and_container_populate():
+    dashboard = {
+        "gnetId": 1471,
+        "title": "Kubernetes App Metrics",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "namespace",
+                    "type": "query",
+                    "query": (
+                        'label_values(container_memory_usage_bytes'
+                        '{namespace=~".+",container_name!="POD"},namespace)'
+                    ),
+                },
+                {
+                    "name": "container",
+                    "type": "query",
+                    "query": (
+                        'label_values(container_memory_usage_bytes'
+                        '{namespace=~"$namespace",container_name!="POD"},container_name)'
+                    ),
+                },
+            ]
+        },
+        "rows": [
+            {
+                "title": "Pod count",
+                "panels": [
+                    {
+                        "id": 7,
+                        "type": "graph",
+                        "title": "Number of pods",
+                        "targets": [
+                            {
+                                "expr": (
+                                    'count(count(container_memory_usage_bytes'
+                                    '{container_name="$container", namespace="$namespace"})'
+                                    " by (pod_name))"
+                                ),
+                                "refId": "A",
+                            }
+                        ],
+                        "span": 12,
+                    }
+                ],
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    by_name = {c.get("variable_name"): c for c in controls}
+    assert "namespace" in by_name, controls
+    assert "container" in by_name, controls
+    ns_q = str(by_name["namespace"].get("query") or "")
+    c_q = str(by_name["container"].get("query") or "")
+    assert "container_name" not in ns_q
+    assert "container_name" not in c_q
+    assert "container_memory_usage_bytes" in ns_q
+    assert "k8s.container.name" in c_q or "container" in c_q
+
+
+def test_1471_memory_total_uses_last_over_time():
+    panel = {
+        "id": 2,
+        "type": "graph",
+        "title": "Memory usage (total)",
+        "targets": [
+            {
+                "expr": (
+                    'sum(container_memory_usage_bytes{container_name="$container",'
+                    ' namespace="$namespace"}) by (namespace,container_name)'
+                ),
+                "legendFormat": "actual",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    'sum(container_spec_memory_limit_bytes{container_name="$container",'
+                    ' namespace="$namespace"}) by (namespace,container_name)'
+                ),
+                "legendFormat": "limit",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    result, query, _ = _translate_1471(panel, section_title="Usage total")
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "LAST_OVER_TIME" in query
+    assert "container_memory_usage_bytes" in query
+    assert "container_spec_memory_limit_bytes" in query
+    assert "`limit`" in query or "limit" in query

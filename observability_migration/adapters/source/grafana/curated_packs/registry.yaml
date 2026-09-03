@@ -163,3 +163,21 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "5d580022bf35bc2cbe42056affd0a1670aa2adb0afd6942f2e642c550a6b29b2"
     description: "Kubernetes Nodes (node_exporter 0.16+) — CPU Busy rename, nfsd→node_disk I/O map, instance-pinned $server"
+
+  - gnet_id: 3831
+    name: grafana_3831_kubernetes_autoscaler
+    title_hint: "Kubernetes Cluster Autoscaler (via Prometheus)"
+    tags_hint: ["prometheus"]
+    path: grafana_3831_kubernetes_autoscaler
+    gnet_revision: 1
+    dashboard_sha256: "fbfc5ff33d138f2a449d4d28b0c0dcd09d351f08a2c78b91e3455d00e2b0b597"
+    description: "Kubernetes Cluster Autoscaler — ES|QL KPIs (time()-last_activity), named activity series, Kibana tile titles"
+
+  - gnet_id: 1471
+    name: grafana_1471_kubernetes_app_metrics
+    title_hint: "Kubernetes App Metrics"
+    tags_hint: []
+    path: grafana_1471_kubernetes_app_metrics
+    gnet_revision: 1
+    dashboard_sha256: "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52"
+    description: "Kubernetes App Metrics — Heapster label remap, $namespace/$container populate, HTTP native/nginx/haproxy series, cAdvisor ratios"

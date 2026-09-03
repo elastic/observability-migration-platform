@@ -1,0 +1,60 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 3831 (Kubernetes Cluster Autoscaler)
+# https://grafana.com/grafana/dashboards/3831-autoscaler/
+#
+# PERFECT     = same information as Grafana on a cluster-autoscaler /metrics scrape.
+# APPROXIMATE = documented Kibana-better title polish; query semantics match.
+
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
+schema_version: 1
+gnet_id: 3831
+gnet_revision: 1
+dashboard_title: "Kubernetes Cluster Autoscaler (via Prometheus)"
+maintainer: "community"
+
+panels:
+  - title: "Total nodes"
+    fidelity: PERFECT
+    notes: "sum(cluster_autoscaler_nodes_count) as a metric tile. Curated ES|QL LAST_OVER_TIME (native PROMQL LAST step is empty in Lens)."
+  - title: "Nodes available"
+    fidelity: PERFECT
+    notes: "ready/total * 100 as a percent gauge (Grafana percent 0-100). Kibana number+% tiles need percent-points, not a 0-1 ratio."
+  - title: "Is cluster safe to scale?"
+    fidelity: APPROXIMATE
+    notes: "0/1 gauge (Grafana value-mapped Yes/No). Layout title Safe to autoscale so the tile fits Kibana chrome. Kibana metric/gauge has no Yes/No value map."
+  - title: "Number of unscheduled pods"
+    fidelity: APPROXIMATE
+    notes: "Same unschedulable_pods_count sum; layout title Unscheduled pods."
+  - title: "Last scaleDown activity"
+    fidelity: PERFECT
+    notes: "time()-last_activity{activity=scaleDown} as DATE_DIFF seconds, duration-formatted. Layout title Since scale-down."
+  - title: "Last autoscale activity"
+    fidelity: PERFECT
+    notes: "Same DATE_DIFF for activity=autoscaling. Layout title Since autoscale."
+  - title: "Pod activity"
+    fidelity: PERFECT
+    notes: "Cumulative evicted pods (counter without rate, matching Grafana) plus unschedulable gauge, named series."
+  - title: "Node activity"
+    fidelity: PERFECT
+    notes: "ready / unready / notStarted node counts as named series."
+  - title: "Autoscaling activity"
+    fidelity: PERFECT
+    notes: "scaled_up_nodes_total (cumulative), unneeded_nodes_count, total nodes — Grafana's mixed cumulative+gauge graph, named series."
+  - title: "Cluster direction?"
+    fidelity: APPROXIMATE
+    notes: "scaled_up_total - scaled_down_total. Layout title Net scaled nodes."
+
+summary:
+  total_panels: 10
+  perfect: 7
+  approximate: 3
+  gap: 0
+  notes: >
+    No dashboard variables. All ten panels are curated ES|QL so they render on
+    prometheus_native ingest (Lens does not paint native PROMQL LAST/GROK step).
+    KPI titles are shortened for Kibana tiles; Safe to autoscale stays 0/1
+    because Kibana has no Grafana value map.
