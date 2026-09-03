@@ -1,0 +1,71 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 1471 (Kubernetes App Metrics)
+# https://grafana.com/grafana/dashboards/1471-kubernetes-apps/
+#
+# PERFECT     = same information as Grafana on modern cAdvisor + app HTTP scrape.
+# APPROXIMATE = documented delta (histogram_quantile, dropped reference lines).
+
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
+schema_version: 1
+gnet_id: 1471
+gnet_revision: 1
+dashboard_title: "Kubernetes App Metrics"
+maintainer: "community"
+
+panels:
+  - title: "Request rate"
+    fidelity: PERFECT
+    notes: "irate of native/nginx/haproxy request counters. Nginx restored (engine dropped it for status vs code grouping). One rate series per source+status (native | 200 / nginx | 500 / haproxy | 2xx) so Lens breaks down on `series` instead of a cartesian source x code legend; $container binds app, $namespace binds namespace."
+  - title: "Error rate"
+    fidelity: PERFECT
+    notes: "5xx / total per native (code=~5xx, handler!=prometheus), nginx (status=~5xx), haproxy (code=5xx) as named series."
+  - title: "Response time percentiles"
+    fidelity: APPROXIMATE
+    notes: "Grafana histogram_quantile on *_bucket; Kibana PERCENTILE of the duration gauge (t-digest scrape samples)."
+  - title: "Number of pods"
+    fidelity: PERFECT
+    notes: "COUNT_DISTINCT(pod) / COUNT_DISTINCT(instance) replacing nested count(count()) by pod_name / kubernetes_io_hostname."
+  - title: "Cpu usage (relative to request)"
+    fidelity: PERFECT
+    notes: "irate(cpu_system|user) / (cpu_shares/1024) as system/user series."
+  - title: "Cpu usage (relative to limit)"
+    fidelity: PERFECT
+    notes: "irate(cpu_usage) / (quota/period). Curated ES|QL; native PROMQL LAST step is empty in Lens."
+  - title: "Memory usage (relative to limit)"
+    fidelity: PERFECT
+    notes: "working memory_usage / spec_memory_limit LAST_OVER_TIME ratio."
+  - title: "Cpu usage (per pod)"
+    fidelity: APPROXIMATE
+    notes: "Per-pod IRATE by labels.pod. Grafana also plotted limit/request reference lines; Lens XY has one breakdown so those lines are dropped."
+  - title: "Memory usage (per pod)"
+    fidelity: APPROXIMATE
+    notes: "Per-pod LAST_OVER_TIME by labels.pod. Limit reference line dropped for the same Lens breakdown reason."
+  - title: "Cpu usage (avg per pod)"
+    fidelity: PERFECT
+    notes: "total CPU / COUNT_DISTINCT(pod) plus per-pod-average limit (quota/period) and request (shares/1024)."
+  - title: "Memory usage (avg per pod)"
+    fidelity: PERFECT
+    notes: "SUM(memory)/COUNT_DISTINCT(pod) and SUM(limit)/COUNT_DISTINCT(pod)."
+  - title: "Cpu usage (total)"
+    fidelity: PERFECT
+    notes: "IRATE cpu plus limit=quota/period and request=shares/1024 as named series."
+  - title: "Memory usage (total)"
+    fidelity: PERFECT
+    notes: "LAST_OVER_TIME memory vs spec limit."
+
+summary:
+  total_panels: 13
+  perfect: 10
+  approximate: 3
+  gap: 0
+  notes: >
+    $namespace / $container populate from container_memory_usage_bytes with
+    canonical container/namespace labels (plugin rewrites container_name).
+    HTTP panels bind $container to app (dashboard convention: app == container
+    name) and $namespace after kubernetes_namespace → namespace. nginx/haproxy
+    series are live_optional. Detailed usage rows stay collapsed like Grafana;
+    Request rate, Error rate, latency, pod count, and usage-vs-request stay open.

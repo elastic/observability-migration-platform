@@ -1,0 +1,185 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 3831
+# https://grafana.com/grafana/dashboards/3831-autoscaler/
+#
+# Source: community "Kubernetes Cluster Autoscaler (via Prometheus)".
+# Revision 1. schemaVersion 14 (old `rows[]` layout), 10 leaf panels, no
+# template variables. Metric family: cluster-autoscaler /metrics.
+#
+# Grafana plots several *_total counters with bare sum() (no rate()), so the
+# graphs are cumulative totals — match that with LAST_OVER_TIME, not RATE.
+# Native PROMQL LAST(value, step) is empty in Lens XY/metric on prometheus_native
+# ingest (same Lens gap as 8171 Network), so every panel is curated ES|QL.
+#
+# Engine vs pack split:
+#   Engine: rows[] → sections, singlestat reducers, "New row" flatten.
+#   Pack:   metric_kinds, ES|QL KPIs (incl. time()-last_activity → DATE_DIFF),
+#           named Activity/Autoscaling series, Kibana-native KPI titles.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    cluster_autoscaler_nodes_count: gauge
+    cluster_autoscaler_cluster_safe_to_autoscale: gauge
+    cluster_autoscaler_unschedulable_pods_count: gauge
+    cluster_autoscaler_last_activity: gauge
+    cluster_autoscaler_unneeded_nodes_count: gauge
+    cluster_autoscaler_evicted_pods_total: counter
+    cluster_autoscaler_scaled_up_nodes_total: counter
+    cluster_autoscaler_scaled_down_nodes_total: counter
+
+panel:
+  query_overrides:
+    - title_match: "Total nodes"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_nodes_count:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_nodes_count:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Nodes available"
+      kibana_type_override: gauge
+      # No primary_format: the query pre-scales ready/total to 0-100 and the
+      # source Grafana `percent` unit already renders number+"%" (percentunit
+      # would imply a 0-1 ratio and double-scale if ever applied to a primary).
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_nodes_count:gauge}} IS NOT NULL
+        | STATS ready = SUM(LAST_OVER_TIME(CASE({{label:state}} == "ready", {{metric:cluster_autoscaler_nodes_count:gauge}}, NULL))), total = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_nodes_count:gauge}}))
+        | EVAL computed_value = CASE(total > 0, ready / total * 100, NULL)
+        | WHERE computed_value IS NOT NULL
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Is cluster safe to scale?"
+      kibana_type_override: gauge
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_cluster_safe_to_autoscale:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_cluster_safe_to_autoscale:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Number of unscheduled pods"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_unschedulable_pods_count:gauge}} IS NOT NULL
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_unschedulable_pods_count:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Last scaleDown activity"
+      primary_format: s
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:activity}} == "scaleDown"
+        | WHERE {{metric:cluster_autoscaler_last_activity:gauge}} IS NOT NULL
+        | STATS last_ts = MAX(LAST_OVER_TIME({{metric:cluster_autoscaler_last_activity:gauge}}))
+        | EVAL computed_value = DATE_DIFF("seconds", TO_DATETIME(last_ts * 1000), NOW())
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Last autoscale activity"
+      primary_format: s
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:activity}} == "autoscaling"
+        | WHERE {{metric:cluster_autoscaler_last_activity:gauge}} IS NOT NULL
+        | STATS last_ts = MAX(LAST_OVER_TIME({{metric:cluster_autoscaler_last_activity:gauge}}))
+        | EVAL computed_value = DATE_DIFF("seconds", TO_DATETIME(last_ts * 1000), NOW())
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Pod activity"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_evicted_pods_total:counter}} IS NOT NULL OR {{metric:cluster_autoscaler_unschedulable_pods_count:gauge}} IS NOT NULL
+        | STATS `evicted pods` = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_evicted_pods_total:counter}})), `unscheduled pods` = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_unschedulable_pods_count:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, `evicted pods`, `unscheduled pods`
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Node activity"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_nodes_count:gauge}} IS NOT NULL
+        | STATS ready = SUM(LAST_OVER_TIME(CASE({{label:state}} == "ready", {{metric:cluster_autoscaler_nodes_count:gauge}}, NULL))), unready = SUM(LAST_OVER_TIME(CASE({{label:state}} == "unready", {{metric:cluster_autoscaler_nodes_count:gauge}}, NULL))), `not started` = SUM(LAST_OVER_TIME(CASE({{label:state}} == "notStarted", {{metric:cluster_autoscaler_nodes_count:gauge}}, NULL))) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, ready, unready, `not started`
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Autoscaling activity"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_scaled_up_nodes_total:counter}} IS NOT NULL OR {{metric:cluster_autoscaler_unneeded_nodes_count:gauge}} IS NOT NULL OR {{metric:cluster_autoscaler_nodes_count:gauge}} IS NOT NULL
+        | STATS `scaled up total` = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_scaled_up_nodes_total:counter}})), `unneeded nodes` = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_unneeded_nodes_count:gauge}})), `total nodes` = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_nodes_count:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, `scaled up total`, `unneeded nodes`, `total nodes`
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Cluster direction?"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_autoscaler_scaled_up_nodes_total:counter}} IS NOT NULL OR {{metric:cluster_autoscaler_scaled_down_nodes_total:counter}} IS NOT NULL
+        | STATS scaled_up = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_scaled_up_nodes_total:counter}})), scaled_down = SUM(LAST_OVER_TIME({{metric:cluster_autoscaler_scaled_down_nodes_total:counter}}))
+        | EVAL computed_value = scaled_up - scaled_down
+        | KEEP computed_value
+      status_override: migrated
+
+  layout_overrides:
+    - title_match: "Total nodes"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 0, y: 0}
+    - title_match: "Nodes available"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 8, y: 0}
+    - title_match: "Is cluster safe to scale?"
+      title: "Safe to autoscale"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 16, y: 0}
+    - title_match: "Number of unscheduled pods"
+      title: "Unscheduled pods"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 24, y: 0}
+    - title_match: "Last scaleDown activity"
+      title: "Since scale-down"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 32, y: 0}
+    - title_match: "Last autoscale activity"
+      title: "Since autoscale"
+      hide_title: false
+      size: {w: 8, h: 10}
+      position: {x: 40, y: 0}
+    - title_match: "Pod activity"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Node activity"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 0}
+    # Flattened off Grafana's placeholder "New row". Top-level items share a
+    # y-order with sections (Info=0, Activity=1), so these must sit at y=2
+    # or they overlap the Info KPIs.
+    - title_match: "Autoscaling activity"
+      hide_title: false
+      size: {w: 36, h: 14}
+      position: {x: 0, y: 2}
+    - title_match: "Cluster direction?"
+      title: "Net scaled nodes"
+      hide_title: false
+      size: {w: 12, h: 14}
+      position: {x: 36, y: 2}

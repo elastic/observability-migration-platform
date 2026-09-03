@@ -280,6 +280,32 @@ ES|QL (`time_bucket` + `labels.device`, `$server` bound) because native PROMQL
 "No results found". `$server` stays
 `label_values(node_boot_time_seconds, instance)`.
 
+The Kubernetes Cluster Autoscaler (3831) pack targets cluster-autoscaler
+`/metrics`. Grafana plots several `*_total` counters with bare `sum()` (no
+`rate()`), so Kibana keeps `LAST_OVER_TIME` cumulative totals rather than
+`RATE`. Every panel is curated ES|QL because native PROMQL `LAST(value, step)`
+is empty in Lens on prometheus_native ingest. `time()-last_activity` becomes
+`DATE_DIFF` seconds. Nodes available is `ready/total * 100` (Grafana percent
+0–100) so the Kibana number+% tile shows 100%, not 1%. The placeholder
+Grafana row `"New row"` flattens to top-level panels placed at `y: 2` after
+the Info and Activity sections. KPI chrome titles are shortened for Kibana
+tiles (Safe to autoscale, Unscheduled pods, Since scale-down/autoscale, Net
+scaled nodes); the 0/1 safe-to-scale gauge has no Yes/No value map.
+
+The Kubernetes App Metrics (1471) pack is a pre-1.16 cAdvisor + app-HTTP mix.
+Heapster labels (`container_name`, `pod_name`, `kubernetes_io_hostname`) and
+HTTP `kubernetes_namespace` rewrite to canonical `container` / `pod` /
+`instance` / `namespace`. `$container` is used both as the cAdvisor container
+and as HTTP `app` (dashboard convention: `app` equals container name). The
+pack plugin rewrites the populate queries off `container_name`. Request rate
+restores the nginx series the engine drops (status vs code grouping) as
+Grafana-style `native | 200` / `nginx | 500` / `haproxy | 2xx` series (one
+Lens breakdown, not a cartesian Native-by-code legend). nginx/haproxy metrics are
+`live_optional`. Per-pod graphs group by `pod` rather than `(id, pod_name)`
+and drop Grafana's limit/request reference lines (Lens XY has one breakdown).
+Response-time panels approximate `histogram_quantile` with `PERCENTILE` of
+the duration gauge.
+
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
 recording the exact grafana.com revision the pack authors read, re-checkable

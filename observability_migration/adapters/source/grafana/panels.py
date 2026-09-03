@@ -11219,15 +11219,16 @@ def _clear_duplicate_inner_title_label(panel: dict) -> None:
         primary = esql.get("primary")
         if isinstance(primary, dict):
             label = str(primary.get("label") or "").strip()
-            if label.casefold() in {title.casefold(), "value", "computed_value"}:
-                # Blank, not omitted: Lens falls back to the field name
-                # (``value`` / ``computed_value``) when the label key is missing.
+            # Blank, not omitted: Lens falls back to the field name
+            # (``value`` / ``computed_value``) when the label key is missing.
+            # Flattened metric tiles often arrive with no label at all.
+            if not label or label.casefold() in {title.casefold(), "value", "computed_value"}:
                 primary["label"] = " "
     elif chart_type == "gauge":
         metric = esql.get("metric")
         if isinstance(metric, dict):
             label = str(metric.get("label") or "").strip()
-            if label.casefold() in {title.casefold(), "value", "computed_value"}:
+            if not label or label.casefold() in {title.casefold(), "value", "computed_value"}:
                 metric["label"] = " "
 
 
