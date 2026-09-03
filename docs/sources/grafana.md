@@ -951,6 +951,21 @@ Use that doc for:
   and warns. `--translation-mode {auto,native,esql}` can override the automatic
   decision when an operator needs to request native PROMQL where supported or
   disable native PROMQL and force ES|QL translation.
+- **Element-wise arithmetic between different metric names uses ES|QL, not
+  native PromQL.** Elasticsearch's `PROMQL` command includes the metric name in
+  the implicit vector-matching key, so `A / B` over two different metrics never
+  matches and returns no rows, where Prometheus aligns the operands on their
+  shared labels. Panels and alert rules of that shape are therefore translated
+  to the ES|QL per-key form (`STATS a = …, b = … BY <labels>, TBUCKET |
+  EVAL result = a / b`) and reported as **migrated with warnings**, carrying the
+  same-bucket approximation warning plus a panel note naming the reason. This
+  covers the operands wrapped in a function too — `rate(A[5m]) / rate(B[5m])`
+  keeps the metric name on this target even though Prometheus drops it. Ratios
+  whose operands are *aggregated* (`sum(A) / sum(B)`, `avg by (ns) (A) / avg by
+  (ns) (B)`), ratios of the *same* metric under two selectors
+  (`rate(http_requests_total{code=~"5.."}[5m]) / rate(http_requests_total[5m])`)
+  and vector-times-scalar arithmetic (`A * 100`) are unaffected and stay
+  native — aggregation drops the metric name, so those operands still match.
 - **Range-vector windows and counter typing.** Passing `--es-url` adds
   validation and schema discovery; it does not change which translation strategy
   a range-vector panel gets. `rate()` / `irate()` / `increase()` stay on the

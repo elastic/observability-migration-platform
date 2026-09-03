@@ -96,6 +96,7 @@ from .promql import (
     _unique_safe_alias,
     collapse_or_for_native_promql,
     grafana_template_var_name,
+    promql_has_unmatchable_distinct_metric_binop,
     promql_literal_value,
     substitute_grafana_range_macros,
     substitute_literal_template_vars,
@@ -2359,6 +2360,29 @@ def _promql_has_nested_aggregation(promql_expr) -> bool:
         return False
 
 
+def _promql_has_unmatchable_vector_match(promql_expr) -> bool:
+    """True when the expression pairs two distinct metric names element-wise.
+
+    Elasticsearch's native ``PROMQL`` command keeps ``__name__`` in the implicit
+    vector-matching key, so ``A / B`` over different metrics silently returns
+    zero rows where Prometheus returns a label-aligned result (issue #376).
+    Such panels must degrade to the ES|QL translator, which computes the same
+    ratio with a per-key ``STATS``/``EVAL`` pipeline and flags the same-bucket
+    approximation, instead of emitting a green panel that renders empty.
+
+    Macros are resolved first so ``rate(foo[$__rate_interval]) /
+    rate(bar[$__rate_interval])`` is analysed in the form the native command is
+    actually built from — the raw shape fails the AST parser.
+    """
+    if not promql_expr or not str(promql_expr).strip():
+        return False
+    try:
+        cleaned = _clean_promql_for_native(promql_expr)
+        return promql_has_unmatchable_distinct_metric_binop(cleaned or promql_expr)
+    except Exception:
+        return False
+
+
 def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
@@ -2390,6 +2414,8 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     if _promql_has_range_on_nonselector(promql_expr):
         return False
     if _promql_has_nested_aggregation(promql_expr):
+        return False
+    if _promql_has_unmatchable_vector_match(promql_expr):
         return False
     return True
 
@@ -2755,6 +2781,14 @@ def _translate_panel_native_promql(
             _append_unique(
                 panel_notes,
                 "Native PROMQL skipped: target does not support PromQL label matcher params yet",
+            )
+        elif _promql_has_unmatchable_vector_match(expr):
+            _append_unique(
+                panel_notes,
+                "Native PROMQL skipped: element-wise arithmetic between different "
+                "metric names cannot match on this target (its implicit "
+                "vector-matching key includes the metric name), so the panel "
+                "migrates as same-bucket ES|QL math instead",
             )
         return None
     # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
