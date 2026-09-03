@@ -5709,6 +5709,9 @@ def test_1471_response_time_override_is_percentile_not_histogram():
     assert "native_p99" in query
     assert "PROMQL" not in query
     assert yaml_panel.get("esql", {}).get("type") == "line"
+
+
+def test_1471_number_of_pods_uses_canonical_labels():
     panel = {
         "id": 7,
         "type": "graph",
@@ -5877,4 +5880,3 @@ def test_1471_memory_total_uses_last_over_time():
     assert "container_memory_usage_bytes" in query
     assert "container_spec_memory_limit_bytes" in query
     assert "`limit`" in query or "limit" in query
-

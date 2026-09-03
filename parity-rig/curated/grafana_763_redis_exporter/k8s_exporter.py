@@ -254,7 +254,7 @@ def render() -> str:
             L.append(f"container_spec_cpu_shares{{{base}}} 256")
             L.append(f"container_spec_cpu_quota{{{base}}} 50000")
             L.append(f"container_spec_cpu_period{{{base}}} 100000")
-            L.append(f"container_spec_memory_limit_bytes{{{base}}} {int(512 * 1024**2)}")
+            L.append(f"container_spec_memory_limit_bytes{{{base}}} {512 * 1024**2}")
 
     # ---- App HTTP metrics for Grafana 1471 (app == container name) ------
     L.append("# HELP http_requests_total Total HTTP requests (native app)")
