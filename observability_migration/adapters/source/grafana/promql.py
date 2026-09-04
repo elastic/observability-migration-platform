@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import NUMERIC_FIELD_TYPES
@@ -2338,6 +2338,16 @@ def _copy_fragment_summary(target, source):
         "start_metric",
         "vector_matching",
         "wrapped_scalar",
+        # Comparison-with-scalar and label_replace/label_join copy the left
+        # summary onto a new fragment. Without these children the issue #434
+        # classifier cannot see a nested ``agg(A or B)`` (``avg(A or B) > 5``,
+        # ``label_replace(sum(A or B), ...)``) and the generic fallback ships
+        # ``agg(<first leaf>)``.
+        "inner_frag",
+        "left_frag",
+        "right_frag",
+        "lr_inner_frag",
+        "lj_inner_frag",
     ):
         if source.extra.get(key) is not None and key not in target.extra:
             target.extra[key] = source.extra[key]
@@ -2350,11 +2360,15 @@ def _iter_fragment_children(frag):
     if not frag:
         return []
     children = []
-    child = frag.extra.get("inner_frag")
-    if isinstance(child, PromQLFragment):
-        children.append(child)
-    for key in ("left_frag", "right_frag"):
-        child = frag.extra.get(key)
+    extra = getattr(frag, "extra", None) or {}
+    for key in (
+        "inner_frag",
+        "left_frag",
+        "right_frag",
+        "lr_inner_frag",
+        "lj_inner_frag",
+    ):
+        child = extra.get(key) if isinstance(extra, dict) else None
         if isinstance(child, PromQLFragment):
             children.append(child)
     if isinstance(frag.binary_rhs, PromQLFragment):
@@ -2493,6 +2507,12 @@ def _ast_call_fragment(node, expr):
             frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), value_frag)
             frag.extra["topk_limit"] = int(limit_frag.scalar_value)
             frag.extra["topk_value_expr"] = value_frag.raw_expr
+            if (
+                getattr(value_frag, "family", "") == "binary_expr"
+                and (getattr(value_frag, "binary_op", "") or "").lower() == "or"
+            ):
+                frag.extra["inner_frag"] = value_frag
+                frag.outer_agg = "topk"
             return frag
 
     if func_name in SUPPORTED_RANGE_FUNCTIONS and len(args) == 1 and type(args[0]).__name__ == "MatrixSelector":
@@ -2940,6 +2960,30 @@ _COMPARISON_OPERATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _AGG_OVER_BINARY_DEFERRED_OPS = frozenset({"or"})
 
 
+def _agg_over_or_not_feasible_reason(outer_agg, operands=()):
+    """Explain why ``agg(A or B)`` cannot keep both operands.
+
+    ``or`` is a set *union*, not a filter: it emits every series of the left
+    operand plus the right operand's series whose label set the left never
+    produced, and only then does the enclosing aggregation reduce them. An
+    aggregation does not distribute over that union -- ``agg(A or B)`` is not
+    ``agg(A) or agg(B)`` -- so the ``COALESCE``/``WHERE ... OR`` rewrites that
+    keep both operands in the *bare* form have nowhere to put the outer
+    aggregation, and every remaining rendering silently drops an operand.
+    """
+    agg = outer_agg or "aggregation"
+    named = [str(name) for name in operands if name]
+    listed = f" ({', '.join(named)})" if named else ""
+    return (
+        f"PromQL set operator 'or' inside an aggregation ({agg}(A or B)) unions the "
+        f"operands' series before {agg}() reduces them, and an aggregation cannot be "
+        f"distributed over that union; ES|QL has no way to keep both operands{listed} "
+        f"inside one {agg}(), so translating it would drop the fallback series without "
+        "saying so; aggregate a single operand, or give each operand its own panel "
+        "series; marked not_feasible"
+    )
+
+
 def _agg_over_binary_not_feasible_reason(outer_agg, op):
     """Explain why ``agg(A <op> B)`` has no honest ES|QL rendering.
 
@@ -2956,6 +3000,10 @@ def _agg_over_binary_not_feasible_reason(outer_agg, op):
             "cannot be expressed accurately in ES|QL; the operands must be matched on "
             "their full label set before the aggregation reduces them"
         )
+    # ``or`` is a union rather than a per-pair filter, so it must not inherit the
+    # "selects which series survive" wording the other set operators use.
+    if op.lower() == "or":
+        return _agg_over_or_not_feasible_reason(outer_agg)
     if op.lower() in _SET_OPERATORS:
         return (
             f"PromQL set operator '{op.lower()}' inside an aggregation "
@@ -3014,6 +3062,15 @@ def _ast_aggregate_fragment(node, expr):
             topk_frag.extra["topk_limit"] = 10
         topk_frag.extra["topk_value_expr"] = child.raw_expr
         topk_frag.extra["topk_sort_asc"] = frag.outer_agg == "bottomk"
+        # Flattening copies the left metric leaf. If the value is an ``or``
+        # union, keep that chain on inner_frag so the issue #434 classifier
+        # can refuse an irreducible drop instead of shipping topk(left only).
+        if (
+            getattr(child, "family", "") == "binary_expr"
+            and (getattr(child, "binary_op", "") or "").lower() == "or"
+        ):
+            topk_frag.extra["inner_frag"] = child
+            topk_frag.outer_agg = frag.outer_agg
         return topk_frag
 
     # quantile(phi, expr) by (..) == ES|QL PERCENTILE(expr, phi*100). Capture the
@@ -6132,6 +6189,112 @@ def _reduce_or_operands(frag, resolver) -> tuple[list, list]:
     return kept, dropped
 
 
+class AggOverOrReduction(NamedTuple):
+    """What is left of the ``or`` chain directly under an ``agg(...)``.
+
+    ``preferred`` is the single operand the established reductions elect, or
+    ``None`` when they cannot elect one -- which means translating the fragment
+    would have to discard an operand. ``dropped_absent`` and
+    ``dropped_fallback`` are the operands each reduction removed, so the caller
+    can disclose them instead of letting them vanish.
+    """
+
+    chain: object
+    preferred: object | None
+    dropped_absent: list
+    dropped_fallback: list
+    survivors: list
+
+
+def _agg_over_or_chain(frag):
+    """The ``or`` chain directly under ``agg(...)``, or ``None``.
+
+    ``_ast_aggregate_fragment`` stashes the aggregation's child on
+    ``extra['inner_frag']``. A child that is an ``or`` binary expression is the
+    shape with no honest single-stage rendering; anything else (including an
+    ``or`` already collapsed at parse time by ``_strip_or_vector_fallback``) is
+    somebody else's problem.
+    """
+    if frag is None or not getattr(frag, "outer_agg", ""):
+        return None
+    extra = getattr(frag, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    inner = extra.get("inner_frag")
+    if inner is None or getattr(inner, "family", "") != "binary_expr":
+        return None
+    if (getattr(inner, "binary_op", "") or "").lower() != "or":
+        return None
+    return inner
+
+
+def agg_over_or_reduction(frag, resolver):
+    """Reduce the ``or`` chain under ``agg(...)``; ``None`` if there is no such chain.
+
+    This is the single definition of "can this ``or`` be reduced to one
+    operand", shared by the classifier that refuses the irreducible case and by
+    ``colocated_binary_agg_plan``, which renders the reduced one. If the two
+    ever disagreed, the classifier would refuse a shape the renderer can express
+    (or wave through a shape it cannot), so they must not compute it twice.
+
+    Deciding this needs a resolver: whether an operand is *absent from the
+    target* is a live-schema question, which is why the refusal cannot live at
+    parse time (issue #434).
+    """
+    chain = _agg_over_or_chain(frag)
+    if chain is None:
+        return None
+    operands = _flatten_or_operands(chain)
+    if not operands:
+        # Malformed chain: nothing to elect, and nothing safe to emit either.
+        return AggOverOrReduction(chain, None, [], [], [])
+    collapsed = _collapse_same_metric_range_fallback_groups(operands)
+    survivors, dropped_absent = _reduce_or_operands(chain, resolver)
+    kept_ids = {id(operand) for operand in collapsed}
+    dropped_fallback = [operand for operand in operands if id(operand) not in kept_ids]
+    preferred = None
+    if len(survivors) == 1:
+        preferred = survivors[0]
+    elif survivors and _operands_are_same_metric_range_fallback(survivors):
+        preferred = survivors[0]
+        dropped_fallback = dropped_fallback + survivors[1:]
+    # Identical ``count(node_a or node_a)`` collapses because simple_metric
+    # identity ignores range_func. That is not a range-window fallback, so
+    # do not disclose it as one. After macros, a real
+    # ``max_over_time(M[$interval]) or max_over_time(M[5m])`` still has a
+    # range shape and keeps the disclosure.
+    if dropped_fallback and not _operands_are_same_metric_range_fallback(operands):
+        dropped_fallback = []
+    return AggOverOrReduction(
+        chain, preferred, dropped_absent, dropped_fallback, survivors
+    )
+
+
+def iter_agg_over_or_reductions(frag, resolver):
+    """Yield ``(fragment, reduction)`` for every ``agg(A or B)`` in *frag*.
+
+    ``agg_over_or_reduction`` looks at one fragment's own inner child. Nested
+    aggregations such as ``sum(count(A or B))`` store the ``or`` on the inner
+    fragment, so a top-only walk would miss it and the generic fallback would
+    rebuild ``agg(<first metric leaf>)`` — the issue #434 silent drop, one
+    wrapping layer down. Walking ``inner_frag`` / ``left_frag`` / ``right_frag``
+    keeps the classifier and the renderer on the same definition of "is this
+    union reducible".
+    """
+    seen: set[int] = set()
+    stack = [frag]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        reduction = agg_over_or_reduction(current, resolver)
+        if reduction is not None:
+            yield current, reduction
+        for child in _iter_fragment_children(current):
+            stack.append(child)
+
+
 def _expr_for_or_collapse_parse(expr: str, rule_pack=None) -> str:
     """Make Grafana range macros parseable without rewriting label matchers.
 
@@ -7277,17 +7440,15 @@ def colocated_binary_agg_plan(frag, resolver, rule_pack):
     # ``sum((rate(A)/rate(B)) or (irate(A)/irate(B)) or cloud_metric)`` lands
     # as unknown+inner OR. Collapse the range-window pair and drop live-absent
     # cloud fallbacks so the remaining ratio can render as co-located arithmetic.
-    if getattr(inner, "family", "") == "binary_expr" and (inner.binary_op or "").lower() == "or":
-        kept, dropped = _reduce_or_operands(inner, resolver)
-        preferred = None
-        if len(kept) == 1 or (kept and _operands_are_same_metric_range_fallback(kept)):
-            preferred = kept[0]
-        if preferred is None:
+    # ``agg_over_or_reduction`` owns that decision; the classifier that refuses
+    # the irreducible chain reads the same result, so a chain this renders is
+    # never one that was refused.
+    reduction = agg_over_or_reduction(frag, resolver)
+    if reduction is not None:
+        if reduction.preferred is None:
             return None
-        extra["inner_frag"] = preferred
-        inner = preferred
-        if dropped:
-            extra["or_chain_dropped_absent"] = True
+        extra["inner_frag"] = reduction.preferred
+        inner = reduction.preferred
     if getattr(inner, "family", "") != "binary_expr":
         return None
     if (inner.binary_op or "").lower() in _SET_OPERATORS:

@@ -63,13 +63,13 @@ queries because the Kibana control applies the filter at dashboard level.
 |--------|-----------|--------|----------|----------|--------|--------------|---------|------|
 | grafana | Diverse Panel Types Test | 11 | 4 | 7 | 0 | 0 | 0 | 1 |
 | grafana | Express Prometheus Middleware | 23 | 1 | 22 | 0 | 0 | 0 | 1 |
-| grafana | Home - Migration Test Lab | 6 | 3 | 2 | 0 | 1 | 0 | 0 |
+| grafana | Home - Migration Test Lab | 6 | 2 | 3 | 0 | 1 | 0 | 0 |
 | grafana | Kubernetes / Views / Global | 26 | 11 | 15 | 0 | 0 | 0 | 4 |
 | grafana | Kitchen Sink Panel Canary | 16 | 9 | 7 | 0 | 0 | 0 | 0 |
 | grafana | Multi Pattern Coverage | 10 | 5 | 4 | 0 | 0 | 1 | 1 |
-| grafana | Node Exporter Full | 117 | 43 | 74 | 0 | 0 | 0 | 16 |
-| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 29 | 11 | 5 | 0 | 0 | 0 |
-| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 9 | 3 | 0 | 0 | 0 | 0 |
+| grafana | Node Exporter Full | 117 | 40 | 77 | 0 | 0 | 0 | 16 |
+| grafana | Prometheus 2.0 (by FUSAKLA) | 45 | 27 | 13 | 5 | 0 | 0 | 0 |
+| grafana | Redis Dashboard for Prometheus Redis Exporter (helm stable/redis-ha) | 12 | 8 | 4 | 0 | 0 | 0 | 0 |
 
 **9 dashboards, 266 panels** audited from `infra/grafana/dashboards/`.
 <!-- /GENERATED:DASHBOARD_SUMMARY -->
@@ -79,8 +79,8 @@ queries because the Kibana control applies the filter at dashboard level.
 
 | Verdict | Count | Meaning |
 |---------|-------|---------|
-| **CORRECT** | 11 | Translation is semantically accurate |
-| **MINOR_ISSUE** | 238 | Translated with approximations — review recommended |
+| **CORRECT** | 10 | Translation is semantically accurate |
+| **MINOR_ISSUE** | 239 | Translated with approximations — review recommended |
 | **EXPECTED_LIMITATION** | 40 | Known unsupported feature — placeholder or skip |
 <!-- /GENERATED:VERDICT_SUMMARY -->
 
@@ -90,20 +90,20 @@ queries because the Kibana control applies the filter at dashboard level.
 | Count | Warning |
 |------:|---------|
 | 56 | Composited multi-label grouping (instance, job) into a single XY breakdown column |
-| 35 | Grafana panel description is not carried into the migrated Kibana panel automatically |
-| 27 | Grafana panel has 1 field override(s); verify visual mappings manually |
-| 22 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
+| 23 | Approximated PromQL arithmetic using same-bucket ES\|QL math |
 | 20 | Counter referenced without rate(); using LAST_OVER_TIME to preserve raw cumulative value |
-| 14 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
+| 15 | PromQL series labels were not retained; output is bucket-level and may collapse multiple source series |
 | 9 | Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead |
-| 7 | Grafana panel has 2 field override(s); verify visual mappings manually |
-| 6 | Grafana panel has 18 field override(s); verify visual mappings manually |
-| 6 | Grafana panel has 19 field override(s); verify visual mappings manually |
-| 5 | Approximated bargauge as bar chart |
 | 5 | Applied Grafana transformation 'calculateField' as ES\|QL rewrite |
 | 5 | Approximated grouped stat panel as summary table |
-| 5 | Grafana panel has 20 field override(s); verify visual mappings manually |
-| 5 | Grafana panel has 17 field override(s); verify visual mappings manually |
+| 5 | Visible panel targets did not expose PromQL-compatible expressions |
+| 5 | Panel queries InfluxQL/Flux (InfluxDB), not PromQL; this migration translates Prometheus queries, so it must be rebuilt against an Elasticsearch data source |
+| 4 | Grafana panel has 2 transformation(s); manual review recommended |
+| 4 | Applied Grafana transformation 'organize' as ES\|QL rewrite |
+| 4 | Approximated nested count(count()) as COUNT_DISTINCT(cpu) |
+| 3 | Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity. |
+| 3 | Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity. |
+| 3 | histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used |
 <!-- /GENERATED:WARNING_PATTERNS -->
 
 ---
@@ -121,7 +121,7 @@ queries because the Kibana control applies the filter at dashboard level.
 | Request Latency Heatmap | `heatmap` → `heatmap` | migrated | **CORRECT** | sum(rate(http_request_duration_seconds_bucket[5m])) by (le) | TS metrics-prometheus-* \| WHERE http_request_duration_seconds_bucket IS NOT NUL... |
 | Traffic Distribution | `piechart` → `pie` | migrated | **MINOR_ISSUE** | sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler) | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
 | Top Endpoints | `barchart` → `bar` | migrated_with_warnings | **CORRECT** | topk(10, sum(rate(http_requests_total[5m])) by (handler)) | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS _bucke... |
-| CPU Usage | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) | TS metrics-prometheus-* \| WHERE mode == "idle" \| WHERE node_cpu_seconds_total ... |
+| CPU Usage | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) | TS metrics-prometheus-* \| WHERE mode == "idle" \| WHERE node_cpu_seconds_total ... |
 | Memory Usage | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 | TS metrics-prometheus-* \| WHERE node_memory_MemAvailable_bytes IS NOT NULL OR n... |
 | Uptime | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | time() - node_boot_time_seconds | FROM metrics-prometheus-* \| WHERE node_boot_time_seconds IS NOT NULL \| STATS s... |
 | Disk Usage per Mount | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | 100 - ((node_filesystem_avail_bytes{mountpoint!~".*pods.*"} / node_filesystem_si... | TS metrics-prometheus-* \| WHERE node_filesystem_avail_bytes IS NOT NULL OR node... |
@@ -149,6 +149,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -177,6 +178,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -193,7 +195,7 @@ sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
 ```
 TS metrics-prometheus-*
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = SUM(RATE(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), le
+| STATS http_request_duration_seconds_bucket = SUM(RATE(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), le
 | SORT time_bucket ASC
 ```
 
@@ -244,6 +246,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -272,6 +275,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -289,7 +293,7 @@ sum(rate(http_requests_total{instance=~"$instance"}[5m])) by (handler)
 ```
 TS metrics-prometheus-*
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), handler
+| STATS http_requests_total = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), handler
 | STATS http_requests_total = LAST(http_requests_total, time_bucket) BY handler
 | KEEP handler, http_requests_total
 ```
@@ -344,6 +348,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=topk backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family topk bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -366,6 +371,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -379,7 +385,7 @@ topk(10, sum(rate(http_requests_total[5m])) by (handler))
 ```
 TS metrics-prometheus-*
 | WHERE http_requests_total IS NOT NULL
-| STATS _bucket_value = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), handler
+| STATS _bucket_value = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), handler
 | SORT time_bucket ASC
 | STATS value = LAST(_bucket_value, time_bucket) BY handler
 | KEEP handler, value
@@ -436,6 +442,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -457,21 +464,22 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE mode == "idle"
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS node_cpu_seconds_total_mode_idle_rate_avg = AVG(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_cpu_seconds_total_mode_idle_rate_avg = AVG(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | EVAL node_cpu_seconds_total_mode_idle_rate_avg_calc = node_cpu_seconds_total_mode_idle_rate_avg * 100
 | EVAL computed_value = (100 - node_cpu_seconds_total_mode_idle_rate_avg_calc)
 | KEEP time_bucket, computed_value
@@ -492,10 +500,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=0, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -527,6 +535,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -548,6 +557,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -562,7 +572,7 @@ TS metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemAvailable_bytes IS NOT NULL OR node_memory_MemTotal_bytes IS NOT NULL
-| STATS node_memory_MemAvailable_bytes = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemAvailable_bytes = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = ((1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -617,6 +627,7 @@ time() - node_boot_time_seconds
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -636,6 +647,7 @@ time() - node_boot_time_seconds
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -700,6 +712,7 @@ FROM metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -721,6 +734,7 @@ FROM metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -733,7 +747,7 @@ FROM metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE node_filesystem_avail_bytes IS NOT NULL OR node_filesystem_size_bytes IS NOT NULL
-| STATS node_filesystem_avail_bytes_mountpoint_pods = AVG(LAST_OVER_TIME(CASE(((NOT (mountpoint RLIKE ".*pods.*") OR (mountpoint IS NULL AND NOT ("" RLIKE ".*pods.*")))), node_filesystem_avail_bytes, NULL), 5m)), node_filesystem_size_bytes = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), mountpoint
+| STATS node_filesystem_avail_bytes_mountpoint_pods = AVG(LAST_OVER_TIME(CASE(((NOT (mountpoint RLIKE ".*pods.*") OR (mountpoint IS NULL AND NOT ("" RLIKE ".*pods.*")))), node_filesystem_avail_bytes, NULL), 5m)), node_filesystem_size_bytes = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), mountpoint
 | EVAL computed_value = (100 - ((node_filesystem_avail_bytes_mountpoint_pods / node_filesystem_size_bytes) * 100))
 | STATS computed_value = LAST(computed_value, time_bucket) BY mountpoint
 | KEEP mountpoint, computed_value
@@ -788,6 +802,7 @@ ALERTS{alertstate="firing"}
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -818,6 +833,7 @@ ALERTS{alertstate="firing"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -834,7 +850,7 @@ ALERTS{alertstate="firing"}
 TS metrics-prometheus-*
 | WHERE alertstate == "firing"
 | WHERE ALERTS IS NOT NULL
-| STATS ALERTS = MAX(LAST_OVER_TIME(ALERTS)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS ALERTS = MAX(LAST_OVER_TIME(ALERTS)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS time_bucket = MAX(time_bucket), ALERTS = MAX(ALERTS)
 | KEEP time_bucket, ALERTS
 | SORT time_bucket ASC
@@ -848,6 +864,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `ALERTS`
+- Semantic losses: Collapsed all series of `ALERTS` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -864,10 +881,15 @@ TS metrics-prometheus-*
 
 - targets: 1
 - field_overrides: 1
+- field_override_properties: 1
+- non_color_field_override_properties: 1
+- actionable_field_override_properties: 1
 
-**Warnings:** Grafana panel has 1 field override(s); verify visual mappings manually; ALERTS{} is a Prometheus meta-metric exposing per-alert label sets; ES|QL aggregation collapses individual alerts into a single value
+**Warnings:** Grafana panel has 1 field override(s) including 1 non-color override property (e.g. stacking, transforms); verify visual mappings manually; ALERTS{} is a Prometheus meta-metric exposing per-alert label sets; ES|QL aggregation collapses individual alerts into a single value; Collapsed all series of `ALERTS` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 field override(s); verify visual mappings manually
+**Semantic losses:** Collapsed all series of `ALERTS` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Notes:** Grafana panel has 1 field override(s) including 1 non-color override property (e.g. stacking, transforms); verify visual mappings manually
 
 **Verdict:** MINOR_ISSUE
 
@@ -887,6 +909,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=logql_stream backend=regex
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family logql_stream bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -904,6 +927,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -976,28 +1000,28 @@ FROM logs-*
 |-------|---------------------|--------|---------|-------------|-----------------|
 | HTTP Requests | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Count by class | `gauge` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(  http_requests_total{instance="$instance",status=~".{1,2}"} or  on() label_... | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS series... |
-| Request duration average by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds_sum IS NOT NULL O... |
-| Request count by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance"} | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
-| Request duration 95th percentile | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
-| Request duration 99th percentile | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
-| Request duration up to 5ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.005"} | TS metrics-prometheus-* \| WHERE le == "0.005" \| WHERE http_request_duration_se... |
-| Request duration up to 10ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.01"} | TS metrics-prometheus-* \| WHERE le == "0.01" \| WHERE http_request_duration_sec... |
-| Request duration up to 25ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.025"} | TS metrics-prometheus-* \| WHERE le == "0.025" \| WHERE http_request_duration_se... |
-| Request duration up to 50ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.05"} | TS metrics-prometheus-* \| WHERE le == "0.05" \| WHERE http_request_duration_sec... |
-| Request duration up to 100ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.1"} | TS metrics-prometheus-* \| WHERE le == "0.1" \| WHERE http_request_duration_seco... |
-| Request duration up to 250ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.25"} | TS metrics-prometheus-* \| WHERE le == "0.25" \| WHERE http_request_duration_sec... |
-| Request duration up to 500ms by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.5"} | TS metrics-prometheus-* \| WHERE le == "0.5" \| WHERE http_request_duration_seco... |
-| Request duration up to 1s by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="1"} | TS metrics-prometheus-* \| WHERE (le == "1" OR le == "1.0") \| WHERE http_reques... |
-| Request duration up to 2.5s by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="2.5"} | TS metrics-prometheus-* \| WHERE le == "2.5" \| WHERE http_request_duration_seco... |
-| Request duration up to 5s by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="5"} | TS metrics-prometheus-* \| WHERE (le == "5" OR le == "5.0") \| WHERE http_reques... |
-| Request duration up to 10s by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="10"} | TS metrics-prometheus-* \| WHERE (le == "10" OR le == "10.0") \| WHERE http_requ... |
-| Request duration up to Infinity by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="+Inf"} | TS metrics-prometheus-* \| WHERE le == "+Inf" \| WHERE http_request_duration_sec... |
-| Request rate | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(http_requests_total{instance="$instance"}[$__rate_interval])) | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
-| 4xx by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"4.."} | TS metrics-prometheus-* \| WHERE status RLIKE "4.." \| WHERE http_requests_total... |
-| 5xx by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"5.."} | TS metrics-prometheus-* \| WHERE status RLIKE "5.." \| WHERE http_requests_total... |
-| 4xx or 5xx by request | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"4.."} or http_requests_total{i... | TS metrics-prometheus-* \| WHERE (status RLIKE "4.." OR status RLIKE "5..") \| W... |
-| Instance CPU usage | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | ((sum(process_cpu_seconds_total{instance="$instance"}) - avg(rate(node_cpu_secon... | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL OR node_c... |
-| Instance RAM usage | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(process_resident_memory_bytes{instance="$instance"}) / sum(node_memory_MemTo... | TS metrics-prometheus-* \| WHERE process_resident_memory_bytes IS NOT NULL OR no... |
+| Request duration average by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds_sum IS NOT NULL O... |
+| Request count by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance"} | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
+| Request duration 95th percentile | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
+| Request duration 99th percentile | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu... | TS metrics-prometheus-* \| WHERE http_request_duration_seconds IS NOT NULL \| ST... |
+| Request duration up to 5ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.005"} | TS metrics-prometheus-* \| WHERE le == "0.005" \| WHERE http_request_duration_se... |
+| Request duration up to 10ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.01"} | TS metrics-prometheus-* \| WHERE le == "0.01" \| WHERE http_request_duration_sec... |
+| Request duration up to 25ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.025"} | TS metrics-prometheus-* \| WHERE le == "0.025" \| WHERE http_request_duration_se... |
+| Request duration up to 50ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.05"} | TS metrics-prometheus-* \| WHERE le == "0.05" \| WHERE http_request_duration_sec... |
+| Request duration up to 100ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.1"} | TS metrics-prometheus-* \| WHERE le == "0.1" \| WHERE http_request_duration_seco... |
+| Request duration up to 250ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.25"} | TS metrics-prometheus-* \| WHERE le == "0.25" \| WHERE http_request_duration_sec... |
+| Request duration up to 500ms by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="0.5"} | TS metrics-prometheus-* \| WHERE le == "0.5" \| WHERE http_request_duration_seco... |
+| Request duration up to 1s by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="1"} | TS metrics-prometheus-* \| WHERE (le == "1" OR le == "1.0") \| WHERE http_reques... |
+| Request duration up to 2.5s by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="2.5"} | TS metrics-prometheus-* \| WHERE le == "2.5" \| WHERE http_request_duration_seco... |
+| Request duration up to 5s by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="5"} | TS metrics-prometheus-* \| WHERE (le == "5" OR le == "5.0") \| WHERE http_reques... |
+| Request duration up to 10s by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="10"} | TS metrics-prometheus-* \| WHERE (le == "10" OR le == "10.0") \| WHERE http_requ... |
+| Request duration up to Infinity by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_request_duration_seconds_bucket{instance="$instance",le="+Inf"} | TS metrics-prometheus-* \| WHERE le == "+Inf" \| WHERE http_request_duration_sec... |
+| Request rate | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(http_requests_total{instance="$instance"}[$__rate_interval])) | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
+| 4xx by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"4.."} | TS metrics-prometheus-* \| WHERE status RLIKE "4.." \| WHERE http_requests_total... |
+| 5xx by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"5.."} | TS metrics-prometheus-* \| WHERE status RLIKE "5.." \| WHERE http_requests_total... |
+| 4xx or 5xx by request | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | http_requests_total{instance="$instance",status=~"4.."} or http_requests_total{i... | TS metrics-prometheus-* \| WHERE (status RLIKE "4.." OR status RLIKE "5..") \| W... |
+| Instance CPU usage | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | ((sum(process_cpu_seconds_total{instance="$instance"}) - avg(rate(node_cpu_secon... | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL OR node_c... |
+| Instance RAM usage | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(process_resident_memory_bytes{instance="$instance"}) / sum(node_memory_MemTo... | TS metrics-prometheus-* \| WHERE process_resident_memory_bytes IS NOT NULL OR no... |
 
 <details>
 <summary>Detailed traces (23 panels)</summary>
@@ -1039,6 +1063,7 @@ sum(
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1068,6 +1093,7 @@ sum(
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -1082,7 +1108,7 @@ sum(
 ```
 TS metrics-prometheus-*
 | WHERE http_requests_total IS NOT NULL
-| STATS series_0xx = SUM(LAST_OVER_TIME(CASE((status RLIKE ".{1,2}"), http_requests_total, NULL), 5m)), series_1xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "1.."), http_requests_total, NULL), 5m)), series_2xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "2.."), http_requests_total, NULL), 5m)), series_3xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "3.."), http_requests_total, NULL), 5m)), series_4xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "4.."), http_requests_total, NULL), 5m)), series_5xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "5.."), http_requests_total, NULL), 5m)), Total = SUM(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS series_0xx = SUM(LAST_OVER_TIME(CASE((status RLIKE ".{1,2}"), http_requests_total, NULL), 5m)), series_1xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "1.."), http_requests_total, NULL), 5m)), series_2xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "2.."), http_requests_total, NULL), 5m)), series_3xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "3.."), http_requests_total, NULL), 5m)), series_4xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "4.."), http_requests_total, NULL), 5m)), series_5xx = SUM(LAST_OVER_TIME(CASE((status RLIKE "5.."), http_requests_total, NULL), 5m)), Total = SUM(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS series_0xx = MAX(series_0xx), series_1xx = MAX(series_1xx), series_2xx = MAX(series_2xx), series_3xx = MAX(series_3xx), series_4xx = MAX(series_4xx), series_5xx = MAX(series_5xx), Total = MAX(Total)
 | KEEP series_0xx, series_1xx, series_2xx, series_3xx, series_4xx, series_5xx, Total
 ```
@@ -1135,6 +1161,7 @@ http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1156,20 +1183,21 @@ http_request_duration_seconds_sum{instance="$instance"} / http_request_duration_
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE http_request_duration_seconds_sum IS NOT NULL OR http_request_duration_seconds_count IS NOT NULL
-| STATS http_request_duration_seconds_sum_instance = MAX(LAST_OVER_TIME(http_request_duration_seconds_sum)), http_request_duration_seconds_count_instance = MAX(LAST_OVER_TIME(http_request_duration_seconds_count)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_sum_instance = MAX(LAST_OVER_TIME(http_request_duration_seconds_sum)), http_request_duration_seconds_count_instance = MAX(LAST_OVER_TIME(http_request_duration_seconds_count)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL computed_value = (http_request_duration_seconds_sum_instance / http_request_duration_seconds_count_instance)
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | KEEP time_bucket, method, path, status, computed_value, legend
@@ -1190,10 +1218,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=12, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1225,6 +1253,7 @@ http_requests_total{instance="$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1255,20 +1284,21 @@ http_requests_total{instance="$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = MAX(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_requests_total = MAX(LAST_OVER_TIME(http_requests_total)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1286,10 +1316,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=12, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1321,6 +1351,7 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1347,20 +1378,21 @@ histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE http_request_duration_seconds IS NOT NULL
-| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 95) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), job
+| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 95) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), job
 | SORT time_bucket ASC
 ```
 
@@ -1379,10 +1411,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=24, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1414,6 +1446,7 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=histogram_quantile backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1440,20 +1473,21 @@ histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bu
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE http_request_duration_seconds IS NOT NULL
-| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 99) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), job
+| STATS http_request_duration_seconds = PERCENTILE(http_request_duration_seconds, 99) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), job
 | SORT time_bucket ASC
 ```
 
@@ -1472,10 +1506,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=24, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1507,6 +1541,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1537,21 +1572,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.005"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.005"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1569,10 +1605,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=36, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1604,6 +1640,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1634,21 +1671,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.01"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.01"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1666,10 +1704,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=36, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1701,6 +1739,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1731,21 +1770,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.025"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.025"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1763,10 +1803,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=48, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1798,6 +1838,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1828,21 +1869,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.05"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.05"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1860,10 +1902,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=48, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1895,6 +1937,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -1925,21 +1968,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.1"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.1"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -1957,10 +2001,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=60, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -1992,6 +2036,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2022,21 +2067,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.25"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.25"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -2054,10 +2100,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=60, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -2089,6 +2135,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2119,21 +2166,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="0.5"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "0.5"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -2151,10 +2199,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=72, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -2186,6 +2234,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2216,21 +2265,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="1"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (le == "1" OR le == "1.0")
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -2248,10 +2298,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=72, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -2283,6 +2333,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2313,21 +2364,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="2.5"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE le == "2.5"
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -2345,10 +2397,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=84, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -2380,6 +2432,7 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2410,21 +2463,22 @@ http_request_duration_seconds_bucket{instance="$instance",le="5"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (le == "5" OR le == "5.0")
 | WHERE http_request_duration_seconds_bucket IS NOT NULL
-| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), method, path, status
+| STATS http_request_duration_seconds_bucket = MAX(LAST_OVER_TIME(http_request_duration_seconds_bucket)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), method, path, status
 | EVAL legend = CONCAT(COALESCE(TO_STRING(method), ""), " ", COALESCE(TO_STRING(path), ""), " - ", COALESCE(TO_STRING(status), ""))
 | SORT time_bucket ASC
 ```
@@ -2442,10 +2496,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=84, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -2484,7 +2538,7 @@ TS metrics-prometheus-*
 | Scrape Duration by Job | `timeseries` → `line` | migrated | **CORRECT** | scrape_duration_seconds | TS metrics-prometheus-* \| WHERE scrape_duration_seconds IS NOT NULL \| STATS sc... |
 | Memory Usage % | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 | TS metrics-prometheus-* \| WHERE node_memory_MemAvailable_bytes IS NOT NULL OR n... |
 | Top Metrics by Series Count | `bargauge` → `markdown` | not_feasible | **EXPECTED_LIMITATION** | topk(10, count by (__name__)({__name__=~".+"})) | — |
-| Target Health Status | `table` → `datatable` | migrated | **CORRECT** | up | TS metrics-prometheus-* \| WHERE up IS NOT NULL \| STATS up = MAX(LAST_OVER_TIME... |
+| Target Health Status | `table` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | up | TS metrics-prometheus-* \| WHERE up IS NOT NULL \| STATS up = MAX(LAST_OVER_TIME... |
 
 <details>
 <summary>Detailed traces (5 panels)</summary>
@@ -2505,6 +2559,7 @@ count(up == 1)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2534,6 +2589,7 @@ count(up == 1)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -2594,6 +2650,7 @@ scrape_duration_seconds
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2624,6 +2681,7 @@ scrape_duration_seconds
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -2637,7 +2695,7 @@ scrape_duration_seconds
 ```
 TS metrics-prometheus-*
 | WHERE scrape_duration_seconds IS NOT NULL
-| STATS scrape_duration_seconds = MAX(LAST_OVER_TIME(scrape_duration_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS scrape_duration_seconds = MAX(LAST_OVER_TIME(scrape_duration_seconds)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | SORT time_bucket ASC
 ```
 
@@ -2684,6 +2742,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2705,6 +2764,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -2719,7 +2779,7 @@ TS metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemAvailable_bytes IS NOT NULL OR node_memory_MemTotal_bytes IS NOT NULL
-| STATS node_memory_MemAvailable_bytes = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemAvailable_bytes = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = ((1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -2774,6 +2834,7 @@ topk(10, count by (__name__)({__name__=~".+"}))
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=unknown backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails` → PromQL metric-name introspection via __name__ requires manual redesign
 
 **Query IR:**
@@ -2822,6 +2883,7 @@ up
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2852,6 +2914,7 @@ up
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -2867,7 +2930,7 @@ up
 ```
 TS metrics-prometheus-*
 | WHERE up IS NOT NULL
-| STATS up = MAX(LAST_OVER_TIME(up)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS up = MAX(LAST_OVER_TIME(up)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS time_bucket = MAX(time_bucket), up = MAX(up)
 | KEEP time_bucket, up
 | SORT time_bucket ASC
@@ -2881,6 +2944,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `up`
+- Semantic losses: Collapsed all series of `up` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -2897,7 +2961,11 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Verdict:** CORRECT
+**Warnings:** Collapsed all series of `up` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Semantic losses:** Collapsed all series of `up` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Verdict:** MINOR_ISSUE
 
 </details>
 
@@ -2913,32 +2981,32 @@ TS metrics-prometheus-*
 | Resources | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Kubernetes | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Network | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Global CPU  Usage | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE kube_pod_container_resource_requests IS NOT NUL... |
-| Global RAM Usage | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
+| Global CPU  Usage | `bargauge` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE kube_pod_container_resource_requests IS NOT NUL... |
+| Global RAM Usage | `bargauge` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
 | Nodes | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count by (node) (kube_node_info{cluster="$cluster"})) | FROM metrics-prometheus-* \| WHERE kube_node_info IS NOT NULL \| STATS kube_node... |
-| Kubernetes Resource Count | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_namespace_labels{cluster="$cluster"}) \|\|\| sum(kube_pod_container_sta... | TS metrics-prometheus-* \| WHERE kube_namespace_labels IS NOT NULL OR kube_pod_c... |
+| Kubernetes Resource Count | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_namespace_labels{cluster="$cluster"}) \|\|\| sum(kube_pod_container_sta... | TS metrics-prometheus-* \| WHERE kube_namespace_labels IS NOT NULL OR kube_pod_c... |
 | Namespaces | `stat` → `metric` | migrated | **MINOR_ISSUE** | count(kube_namespace_created{cluster="$cluster"}) | FROM metrics-prometheus-* \| WHERE kube_namespace_created IS NOT NULL \| STATS s... |
 | CPU Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_cpu_seconds_total{mode!~"idle\|iowait\|steal", cluster="$cluster",... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL OR windows_c... |
 | RAM Usage | `stat` → `datatable` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| STATS node_memory_MemTotal_bytes_cluster_job_sum_Real... |
 | Running Pods | `stat` → `metric` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_phase{phase="Running", cluster="$cluster"}) | TS metrics-prometheus-* \| WHERE phase == "Running" \| WHERE kube_pod_status_pha... |
-| Cluster CPU Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE (NOT (mode RLIKE "idle\|iowait\|steal") OR (mod... |
-| Cluster Memory Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| CPU Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
-| Memory Utilization by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
-| CPU Utilization by instance | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE (NOT (mode RLIKE "idle\|iowait\|steal") OR (mod... |
-| Memory Utilization by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| CPU Throttled seconds by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
-| CPU Core Throttled by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_cpu_core_throttles_total{cluster="$cluster", job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_cpu_core_throttles_total IS NOT NULL \| ST... |
-| Kubernetes Pods QoS classes | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_status_qos_class{cluster="$cluster"}) by (qos_class) \|\|\| sum(kub... | TS metrics-prometheus-* \| WHERE kube_pod_status_qos_class IS NOT NULL OR kube_p... |
-| Kubernetes Pods Status Reason | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_reason{cluster="$cluster"}) by (reason) | TS metrics-prometheus-* \| WHERE kube_pod_status_reason IS NOT NULL \| STATS kub... |
-| OOM Events by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(container_oom_events_total{cluster="$cluster"}[$__rate_interval])) ... | TS metrics-prometheus-* \| WHERE container_oom_events_total IS NOT NULL \| STATS... |
-| Container Restarts by namespace | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(increase(kube_pod_container_status_restarts_total{cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_restarts_total IS NOT... |
-| Global Network Utilization by device | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc).*", cluster=... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "(veth\|azv\|lxc).*") OR (de... |
-| Network Saturation - Packets dropped | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_drop_total{cluster="$cluster", job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
-| Network Received by namespace | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_network_receive_bytes_total{cluster="$cluster"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE container_network_receive_bytes_total IS NOT NU... |
-| Total Network Received (with all virtual devices) by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{cluster="$cluster", job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
-| Network Received (without loopback)  by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc\|lo).*", clus... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
-| Network Received (loopback only) by instance | `timeseries` → `line` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device="lo", cluster="$cluster", job="... | TS metrics-prometheus-* \| WHERE device == "lo" \| WHERE node_network_receive_by... |
+| Cluster CPU Utilization | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE (NOT (mode RLIKE "idle\|iowait\|steal") OR (mod... |
+| Cluster Memory Utilization | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
+| CPU Utilization by namespace | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
+| Memory Utilization by namespace | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
+| CPU Utilization by instance | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle\|iowait\|ste... | TS metrics-prometheus-* \| WHERE (NOT (mode RLIKE "idle\|iowait\|steal") OR (mod... |
+| Memory Utilization by instance | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
+| CPU Throttled seconds by namespace | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"... | TS metrics-prometheus-* \| WHERE (image != "" OR (image IS NULL AND "" != "")) \... |
+| CPU Core Throttled by instance | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(node_cpu_core_throttles_total{cluster="$cluster", job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_cpu_core_throttles_total IS NOT NULL \| ST... |
+| Kubernetes Pods QoS classes | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(kube_pod_status_qos_class{cluster="$cluster"}) by (qos_class) \|\|\| sum(kub... | TS metrics-prometheus-* \| WHERE kube_pod_status_qos_class IS NOT NULL OR kube_p... |
+| Kubernetes Pods Status Reason | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(kube_pod_status_reason{cluster="$cluster"}) by (reason) | TS metrics-prometheus-* \| WHERE kube_pod_status_reason IS NOT NULL \| STATS kub... |
+| OOM Events by namespace | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(increase(container_oom_events_total{cluster="$cluster"}[$__rate_interval])) ... | TS metrics-prometheus-* \| WHERE container_oom_events_total IS NOT NULL \| STATS... |
+| Container Restarts by namespace | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(increase(kube_pod_container_status_restarts_total{cluster="$cluster"}[$__rat... | TS metrics-prometheus-* \| WHERE kube_pod_container_status_restarts_total IS NOT... |
+| Global Network Utilization by device | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc).*", cluster=... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "(veth\|azv\|lxc).*") OR (de... |
+| Network Saturation - Packets dropped | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(node_network_receive_drop_total{cluster="$cluster", job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
+| Network Received by namespace | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(rate(container_network_receive_bytes_total{cluster="$cluster"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE container_network_receive_bytes_total IS NOT NU... |
+| Total Network Received (with all virtual devices) by instance | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{cluster="$cluster", job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Network Received (without loopback)  by instance | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device!~"(veth\|azv\|lxc\|lo).*", clus... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Network Received (loopback only) by instance | `timeseries` → `area` | migrated | **MINOR_ISSUE** | sum(rate(node_network_receive_bytes_total{device="lo", cluster="$cluster", job="... | TS metrics-prometheus-* \| WHERE device == "lo" \| WHERE node_network_receive_by... |
 
 <details>
 <summary>Detailed traces (26 panels)</summary>
@@ -2959,6 +3027,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -2980,6 +3049,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -2987,21 +3057,21 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
-**Translated (bar):**
+**Translated (metric):**
 
 ```
 TS metrics-prometheus-*
 | WHERE kube_pod_container_resource_requests IS NOT NULL OR machine_cpu_cores IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL
-| STATS kube_pod_container_resource_requests_Requests_lhs = SUM(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL)), machine_cpu_cores_Requests_rhs = SUM(machine_cpu_cores), kube_pod_container_resource_limits_Limits_lhs = SUM(CASE((resource == "cpu"), kube_pod_container_resource_limits, NULL)), machine_cpu_cores_Limits_rhs = SUM(machine_cpu_cores) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS kube_pod_container_resource_requests_Requests_lhs = SUM(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL)), machine_cpu_cores_Requests_rhs = SUM(machine_cpu_cores), kube_pod_container_resource_limits_Limits_lhs = SUM(CASE((resource == "cpu"), kube_pod_container_resource_limits, NULL)), machine_cpu_cores_Limits_rhs = SUM(machine_cpu_cores) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | EVAL Requests = (kube_pod_container_resource_requests_Requests_lhs / machine_cpu_cores_Requests_rhs)
 | EVAL Limits = (kube_pod_container_resource_limits_Limits_lhs / machine_cpu_cores_Limits_rhs)
 | STATS Requests = MAX(Requests), Limits = MAX(Limits)
 | KEEP Requests, Limits
 | EVAL __labels = MV_APPEND("Requests", "Limits"), __values = MV_APPEND(COALESCE(TO_STRING(Requests), ""), COALESCE(TO_STRING(Limits), ""))
-| EVAL __pairs = MV_ZIP(__labels, __values, "~")
+| EVAL __pairs = MV_ZIP(__labels, __values, "\t")
 | MV_EXPAND __pairs
-| EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
-| KEEP label, value
+| EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), gauge_value = (TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))) * 100
+| KEEP label, gauge_value
 | SORT label ASC
 ```
 
@@ -3014,14 +3084,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `Requests`
-- Semantic losses: Dropped variable-driven label filters during migration, Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific), Approximated bargauge as bar chart
+- Semantic losses: Dropped variable-driven label filters during migration, Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific), Approximated bargauge as metric tiles
 
 **Visual IR:**
 
-- Kibana type: `bar`
+- Kibana type: `metric`
 - Layout: x=0, y=0, w=12, h=16
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, primary, breakdown, styling
 
 **Operational IR:**
 
@@ -3032,9 +3102,9 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as metric tiles
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as bar chart
+**Semantic losses:** Dropped variable-driven label filters during migration; Dropped 2 incompatible target(s); showing 2 mergeable targets (1 of the dropped targets are Windows-specific); Approximated bargauge as metric tiles
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3056,6 +3126,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3077,6 +3148,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3084,12 +3156,12 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
-**Translated (bar):**
+**Translated (metric):**
 
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL OR windows_memory_available_bytes IS NOT NULL OR windows_memory_cache_bytes IS NOT NULL OR windows_os_visible_memory_bytes IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR machine_memory_bytes IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL
-| STATS node_memory_MemTotal_bytes_Real_Linux_lhs_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Real_Linux_lhs_rhs = SUM(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes_Real_Linux_rhs = SUM(node_memory_MemTotal_bytes), windows_memory_available_bytes_Real_Windows_lhs_lhs = SUM(windows_memory_available_bytes), windows_memory_cache_bytes_Real_Windows_lhs_rhs = SUM(windows_memory_cache_bytes), windows_os_visible_memory_bytes_Real_Windows_rhs = SUM(windows_os_visible_memory_bytes), kube_pod_container_resource_requests_Requests_lhs = SUM(CASE((resource == "memory"), kube_pod_container_resource_requests, NULL)), machine_memory_bytes_Requests_rhs = SUM(machine_memory_bytes), kube_pod_container_resource_limits_Limits_lhs = SUM(CASE((resource == "memory"), kube_pod_container_resource_limits, NULL)), machine_memory_bytes_Limits_rhs = SUM(machine_memory_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemTotal_bytes_Real_Linux_lhs_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Real_Linux_lhs_rhs = SUM(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes_Real_Linux_rhs = SUM(node_memory_MemTotal_bytes), windows_memory_available_bytes_Real_Windows_lhs_lhs = SUM(windows_memory_available_bytes), windows_memory_cache_bytes_Real_Windows_lhs_rhs = SUM(windows_memory_cache_bytes), windows_os_visible_memory_bytes_Real_Windows_rhs = SUM(windows_os_visible_memory_bytes), kube_pod_container_resource_requests_Requests_lhs = SUM(CASE((resource == "memory"), kube_pod_container_resource_requests, NULL)), machine_memory_bytes_Requests_rhs = SUM(machine_memory_bytes), kube_pod_container_resource_limits_Limits_lhs = SUM(CASE((resource == "memory"), kube_pod_container_resource_limits, NULL)), machine_memory_bytes_Limits_rhs = SUM(machine_memory_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL Real_Linux = ((node_memory_MemTotal_bytes_Real_Linux_lhs_lhs - node_memory_MemAvailable_bytes_Real_Linux_lhs_rhs) / node_memory_MemTotal_bytes_Real_Linux_rhs)
 | EVAL Real_Windows = ((windows_memory_available_bytes_Real_Windows_lhs_lhs + windows_memory_cache_bytes_Real_Windows_lhs_rhs) / windows_os_visible_memory_bytes_Real_Windows_rhs)
 | EVAL Requests = (kube_pod_container_resource_requests_Requests_lhs / machine_memory_bytes_Requests_rhs)
@@ -3098,10 +3170,10 @@ TS metrics-prometheus-*
 | EVAL Real = CASE((CASE(Real_Linux IS NOT NULL, 1, 0) + CASE(Real_Windows IS NOT NULL, 1, 0)) > 0, (COALESCE(Real_Linux, 0) + COALESCE(Real_Windows, 0)) / (CASE(Real_Linux IS NOT NULL, 1, 0) + CASE(Real_Windows IS NOT NULL, 1, 0)), NULL)
 | KEEP Requests, Limits, Real
 | EVAL __labels = MV_APPEND(MV_APPEND("Requests", "Limits"), "Real"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(Requests), ""), COALESCE(TO_STRING(Limits), "")), COALESCE(TO_STRING(Real), ""))
-| EVAL __pairs = MV_ZIP(__labels, __values, "~")
+| EVAL __pairs = MV_ZIP(__labels, __values, "\t")
 | MV_EXPAND __pairs
-| EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
-| KEEP label, value
+| EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), gauge_value = (TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))) * 100
+| KEEP label, gauge_value
 | SORT label ASC
 ```
 
@@ -3114,14 +3186,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `Requests`
-- Semantic losses: Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated bargauge as metric tiles
 
 **Visual IR:**
 
-- Kibana type: `bar`
+- Kibana type: `metric`
 - Layout: x=12, y=0, w=12, h=16
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, primary, breakdown, styling
 
 **Operational IR:**
 
@@ -3132,9 +3204,9 @@ TS metrics-prometheus-*
 - targets: 4
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite; Approximated bargauge as bar chart
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite; Approximated bargauge as metric tiles
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as metric tiles
 
 **Notes:** Grafana panel has 2 transformation(s); manual review recommended
 
@@ -3156,6 +3228,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3183,6 +3256,7 @@ count(count by (node) (kube_node_info{cluster="$cluster"}))
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3245,6 +3319,7 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3274,20 +3349,21 @@ sum(kube_namespace_labels{cluster="$cluster"}) ||| sum(kube_pod_container_status
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE kube_namespace_labels IS NOT NULL OR kube_pod_container_status_running IS NOT NULL OR kube_pod_status_phase IS NOT NULL OR kube_service_info IS NOT NULL OR kube_endpoint_info IS NOT NULL OR kube_ingress_info IS NOT NULL OR kube_deployment_labels IS NOT NULL OR kube_statefulset_labels IS NOT NULL OR kube_daemonset_labels IS NOT NULL OR kube_persistentvolumeclaim_info IS NOT NULL OR kube_hpa_labels IS NOT NULL OR kube_configmap_info IS NOT NULL OR kube_secret_info IS NOT NULL OR kube_networkpolicy_labels IS NOT NULL OR kube_node_info IS NOT NULL
-| STATS Namespaces = SUM(kube_namespace_labels), Running_Containers = SUM(kube_pod_container_status_running), Running_Pods = SUM(CASE((phase == "Running"), kube_pod_status_phase, NULL)), Services = SUM(kube_service_info), Endpoints = SUM(kube_endpoint_info), Ingresses = SUM(kube_ingress_info), Deployments = SUM(kube_deployment_labels), Statefulsets = SUM(kube_statefulset_labels), Daemonsets = SUM(kube_daemonset_labels), Persistent_Volume_Claims = SUM(kube_persistentvolumeclaim_info), Horizontal_Pod_Autoscalers = SUM(kube_hpa_labels), Configmaps = SUM(kube_configmap_info), Secrets = SUM(kube_secret_info), Network_Policies = SUM(kube_networkpolicy_labels), Nodes = COUNT_DISTINCT(node) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS Namespaces = SUM(kube_namespace_labels), Running_Containers = SUM(kube_pod_container_status_running), Running_Pods = SUM(CASE((phase == "Running"), kube_pod_status_phase, NULL)), Services = SUM(kube_service_info), Endpoints = SUM(kube_endpoint_info), Ingresses = SUM(kube_ingress_info), Deployments = SUM(kube_deployment_labels), Statefulsets = SUM(kube_statefulset_labels), Daemonsets = SUM(kube_daemonset_labels), Persistent_Volume_Claims = SUM(kube_persistentvolumeclaim_info), Horizontal_Pod_Autoscalers = SUM(kube_hpa_labels), Configmaps = SUM(kube_configmap_info), Secrets = SUM(kube_secret_info), Network_Policies = SUM(kube_networkpolicy_labels), Nodes = COUNT_DISTINCT(node) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | KEEP time_bucket, Namespaces, Running_Containers, Running_Pods, Services, Endpoints, Ingresses, Deployments, Statefulsets, Daemonsets, Persistent_Volume_Claims, Horizontal_Pod_Autoscalers, Configmaps, Secrets, Network_Policies, Nodes
 | SORT time_bucket ASC
 ```
@@ -3306,10 +3382,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=28, y=0, w=20, h=24
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -3341,6 +3417,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3370,6 +3447,7 @@ count(kube_namespace_created{cluster="$cluster"})
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3431,6 +3509,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3459,6 +3538,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3470,7 +3550,7 @@ sum(rate(node_cpu_seconds_total{mode!~"idle|iowait|steal", cluster="$cluster", j
 ```
 TS metrics-prometheus-*
 | WHERE node_cpu_seconds_total IS NOT NULL OR windows_cpu_time_total IS NOT NULL OR kube_pod_container_resource_requests IS NOT NULL OR kube_pod_container_resource_limits IS NOT NULL OR machine_cpu_cores IS NOT NULL
-| STATS Real_Linux = SUM(CASE(((NOT (mode RLIKE "idle|iowait|steal") OR (mode IS NULL AND NOT ("" RLIKE "idle|iowait|steal")))), RATE(node_cpu_seconds_total), NULL)), Real_Windows = SUM(CASE(((mode != "idle" OR (mode IS NULL AND "" != "idle"))), RATE(windows_cpu_time_total), NULL)), Requests = SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL), 5m)), Limits = SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_limits, NULL), 5m)), Total = SUM(CASE(true, LAST_OVER_TIME(machine_cpu_cores, 5m), NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS Real_Linux = SUM(CASE(((NOT (mode RLIKE "idle|iowait|steal") OR (mode IS NULL AND NOT ("" RLIKE "idle|iowait|steal")))), RATE(node_cpu_seconds_total), NULL)), Real_Windows = SUM(CASE(((mode != "idle" OR (mode IS NULL AND "" != "idle"))), RATE(windows_cpu_time_total), NULL)), Requests = SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_requests, NULL), 5m)), Limits = SUM(LAST_OVER_TIME(CASE((resource == "cpu"), kube_pod_container_resource_limits, NULL), 5m)), Total = SUM(CASE(true, LAST_OVER_TIME(machine_cpu_cores, 5m), NULL)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | STATS Real_Linux = MAX(Real_Linux), Real_Windows = MAX(Real_Windows), Requests = MAX(Requests), Limits = MAX(Limits), Total = MAX(Total)
 | EVAL Real = COALESCE(Real_Linux, 0) + COALESCE(Real_Windows, 0)
 | KEEP Requests, Limits, Total, Real
@@ -3529,6 +3609,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3550,6 +3631,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3560,7 +3642,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 
 ```
 TS metrics-prometheus-*
-| STATS node_memory_MemTotal_bytes_cluster_job_sum_Real_Linux = SUM(CASE((node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL), node_memory_MemTotal_bytes, NULL)), node_memory_MemAvailable_bytes_cluster_job_sum_Real_Linux = SUM(CASE((node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL), node_memory_MemAvailable_bytes, NULL)), computed_value_Real_Windows = SUM(CASE((windows_os_visible_memory_bytes IS NOT NULL) and (windows_memory_available_bytes IS NOT NULL) and (windows_memory_cache_bytes IS NOT NULL), ((windows_os_visible_memory_bytes - windows_memory_available_bytes) - windows_memory_cache_bytes), NULL)), kube_pod_container_resource_requests_Requests = SUM(CASE((resource == "memory") and (kube_pod_container_resource_requests IS NOT NULL), kube_pod_container_resource_requests, NULL)), kube_pod_container_resource_limits_Limits = SUM(CASE((resource == "memory") and (kube_pod_container_resource_limits IS NOT NULL), kube_pod_container_resource_limits, NULL)), machine_memory_bytes_Total = SUM(CASE((machine_memory_bytes IS NOT NULL), machine_memory_bytes, NULL)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemTotal_bytes_cluster_job_sum_Real_Linux = SUM(CASE((node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL), node_memory_MemTotal_bytes, NULL)), node_memory_MemAvailable_bytes_cluster_job_sum_Real_Linux = SUM(CASE((node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL), node_memory_MemAvailable_bytes, NULL)), computed_value_Real_Windows = SUM(CASE((windows_os_visible_memory_bytes IS NOT NULL) and (windows_memory_available_bytes IS NOT NULL) and (windows_memory_cache_bytes IS NOT NULL), ((windows_os_visible_memory_bytes - windows_memory_available_bytes) - windows_memory_cache_bytes), NULL)), kube_pod_container_resource_requests_Requests = SUM(CASE((resource == "memory") and (kube_pod_container_resource_requests IS NOT NULL), kube_pod_container_resource_requests, NULL)), kube_pod_container_resource_limits_Limits = SUM(CASE((resource == "memory") and (kube_pod_container_resource_limits IS NOT NULL), kube_pod_container_resource_limits, NULL)), machine_memory_bytes_Total = SUM(CASE((machine_memory_bytes IS NOT NULL), machine_memory_bytes, NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL Real_Linux = (node_memory_MemTotal_bytes_cluster_job_sum_Real_Linux - node_memory_MemAvailable_bytes_cluster_job_sum_Real_Linux)
 | EVAL Real_Windows = computed_value_Real_Windows
 | EVAL Requests = kube_pod_container_resource_requests_Requests
@@ -3599,7 +3681,7 @@ TS metrics-prometheus-*
 - targets: 5
 - transformations: 2
 
-**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Fused multi-target panel from independently translated ES|QL queries; Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align); Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite
+**Warnings:** Grafana panel has 2 transformation(s); manual review recommended; Per-element arithmetic between co-located metrics evaluated per document before aggregation (exact for Prometheus layouts that store one document per label-set; PromQL's all-label matching guarantees the operands align); Applied Grafana transformation 'calculateField' as ES|QL rewrite; Applied Grafana transformation 'organize' as ES|QL rewrite; Approximated grouped stat panel as summary table
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated grouped stat panel as summary table
 
@@ -3623,6 +3705,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3652,6 +3735,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -3664,7 +3748,7 @@ sum(kube_pod_status_phase{phase="Running", cluster="$cluster"})
 TS metrics-prometheus-*
 | WHERE phase == "Running"
 | WHERE kube_pod_status_phase IS NOT NULL
-| STATS kube_pod_status_phase = SUM(kube_pod_status_phase) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS kube_pod_status_phase = SUM(kube_pod_status_phase) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS kube_pod_status_phase = LAST(kube_pod_status_phase, time_bucket)
 | KEEP kube_pod_status_phase
 ```
@@ -3715,6 +3799,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3742,21 +3827,22 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (NOT (mode RLIKE "idle|iowait|steal") OR (mode IS NULL AND NOT ("" RLIKE "idle|iowait|steal")))
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, cpu
+| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance, cpu
 | STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket
 | SORT time_bucket ASC
 ```
@@ -3777,10 +3863,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=0, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -3815,6 +3901,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3836,20 +3923,21 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL OR windows_os_visible_memory_bytes IS NOT NULL OR windows_memory_available_bytes IS NOT NULL
-| STATS node_memory_MemTotal_bytes_Linux_lhs_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Linux_lhs_rhs = SUM(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes_Linux_rhs = SUM(node_memory_MemTotal_bytes), windows_os_visible_memory_bytes_Windows_lhs_lhs = SUM(windows_os_visible_memory_bytes), windows_memory_available_bytes_Windows_lhs_rhs = SUM(windows_memory_available_bytes), windows_os_visible_memory_bytes_Windows_rhs = SUM(windows_os_visible_memory_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemTotal_bytes_Linux_lhs_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Linux_lhs_rhs = SUM(node_memory_MemAvailable_bytes), node_memory_MemTotal_bytes_Linux_rhs = SUM(node_memory_MemTotal_bytes), windows_os_visible_memory_bytes_Windows_lhs_lhs = SUM(windows_os_visible_memory_bytes), windows_memory_available_bytes_Windows_lhs_rhs = SUM(windows_memory_available_bytes), windows_os_visible_memory_bytes_Windows_rhs = SUM(windows_os_visible_memory_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL Linux = ((node_memory_MemTotal_bytes_Linux_lhs_lhs - node_memory_MemAvailable_bytes_Linux_lhs_rhs) / node_memory_MemTotal_bytes_Linux_rhs)
 | EVAL Windows = ((windows_os_visible_memory_bytes_Windows_lhs_lhs - windows_memory_available_bytes_Windows_lhs_rhs) / windows_os_visible_memory_bytes_Windows_rhs)
 | EVAL Memory_usage_in = CASE((CASE(Linux IS NOT NULL, 1, 0) + CASE(Windows IS NOT NULL, 1, 0)) > 0, (COALESCE(Linux, 0) + COALESCE(Windows, 0)) / (CASE(Linux IS NOT NULL, 1, 0) + CASE(Windows IS NOT NULL, 1, 0)), NULL)
@@ -3871,10 +3959,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=0, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -3911,6 +3999,7 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -3932,21 +4021,22 @@ sum(rate(container_cpu_usage_seconds_total{image!="", cluster="$cluster"}[$__rat
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (image != "" OR (image IS NULL AND "" != ""))
 | WHERE container_cpu_usage_seconds_total IS NOT NULL
-| STATS container_cpu_usage_seconds_total_image_rate_sum = SUM(RATE(container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), namespace
+| STATS container_cpu_usage_seconds_total_image_rate_sum = SUM(RATE(container_cpu_usage_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), namespace
 | EVAL computed_value = container_cpu_usage_seconds_total_image_rate_sum
 | KEEP time_bucket, namespace, computed_value
 | SORT time_bucket ASC
@@ -3966,10 +4056,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=12, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -4003,6 +4093,7 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4024,21 +4115,22 @@ sum(container_memory_working_set_bytes{image!="", cluster="$cluster"}) by (names
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (image != "" OR (image IS NULL AND "" != ""))
 | WHERE container_memory_working_set_bytes IS NOT NULL
-| STATS container_memory_working_set_bytes_image_sum = SUM(container_memory_working_set_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), namespace
+| STATS container_memory_working_set_bytes_image_sum = SUM(container_memory_working_set_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), namespace
 | EVAL computed_value = container_memory_working_set_bytes_image_sum
 | KEEP time_bucket, namespace, computed_value
 | SORT time_bucket ASC
@@ -4058,10 +4150,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=12, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -4093,6 +4185,7 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4120,21 +4213,22 @@ avg(sum by (instance, cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (NOT (mode RLIKE "idle|iowait|steal") OR (mode IS NULL AND NOT ("" RLIKE "idle|iowait|steal")))
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, cpu
+| STATS inner_val = SUM(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance, cpu
 | STATS node_cpu_seconds_total_avg = AVG(inner_val) BY time_bucket
 | SORT time_bucket ASC
 ```
@@ -4156,10 +4250,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=24, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -4191,6 +4285,7 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4212,20 +4307,21 @@ sum(node_memory_MemTotal_bytes{cluster="$cluster", job="$job"} - node_memory_Mem
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_MemAvailable_bytes IS NOT NULL OR windows_os_visible_memory_bytes IS NOT NULL OR windows_memory_available_bytes IS NOT NULL
-| STATS node_memory_MemTotal_bytes_Linux_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Linux_rhs = SUM(node_memory_MemAvailable_bytes), windows_os_visible_memory_bytes_Windows_lhs = SUM(windows_os_visible_memory_bytes), windows_memory_available_bytes_Windows_rhs = SUM(windows_memory_available_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS node_memory_MemTotal_bytes_Linux_lhs = SUM(node_memory_MemTotal_bytes), node_memory_MemAvailable_bytes_Linux_rhs = SUM(node_memory_MemAvailable_bytes), windows_os_visible_memory_bytes_Windows_lhs = SUM(windows_os_visible_memory_bytes), windows_memory_available_bytes_Windows_rhs = SUM(windows_memory_available_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | EVAL instance = (node_memory_MemTotal_bytes_Linux_lhs - node_memory_MemAvailable_bytes_Linux_rhs)
 | EVAL instance_Windows = (windows_os_visible_memory_bytes_Windows_lhs - windows_memory_available_bytes_Windows_rhs)
 | KEEP time_bucket, instance, instance_Windows
@@ -4247,10 +4343,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=24, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -4280,6 +4376,7 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4308,21 +4405,22 @@ sum(rate(container_cpu_cfs_throttled_seconds_total{image!="", cluster="$cluster"
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (image != "" OR (image IS NULL AND "" != ""))
 | WHERE container_cpu_cfs_throttled_seconds_total IS NOT NULL
-| STATS container_cpu_cfs_throttled_seconds_total = SUM(RATE(container_cpu_cfs_throttled_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), namespace
+| STATS container_cpu_cfs_throttled_seconds_total = SUM(RATE(container_cpu_cfs_throttled_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), namespace
 | WHERE container_cpu_cfs_throttled_seconds_total > 0
 | SORT time_bucket ASC
 ```
@@ -4344,10 +4442,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=36, w=24, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -4357,8 +4455,6 @@ TS metrics-prometheus-*
 
 - targets: 1
 - has_description: True
-
-**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -4418,6 +4514,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4447,6 +4544,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4460,7 +4558,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_memory_used_bytes IS NOT NULL
-| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -4512,6 +4610,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4541,6 +4640,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4554,7 +4654,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_memory_used_bytes IS NOT NULL
-| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -4606,6 +4706,7 @@ sum(redis_connected_clients{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4635,6 +4736,7 @@ sum(redis_connected_clients{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4646,7 +4748,7 @@ sum(redis_connected_clients{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_connected_clients IS NOT NULL
-| STATS redis_connected_clients = SUM(redis_connected_clients) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_connected_clients = SUM(redis_connected_clients) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | STATS redis_connected_clients = LAST(redis_connected_clients, time_bucket) BY instance
 | KEEP instance, redis_connected_clients
 ```
@@ -4701,6 +4803,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4730,6 +4833,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4741,7 +4845,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | STATS redis_db_keys = LAST(redis_db_keys, time_bucket) BY instance
 | KEEP instance, redis_db_keys
 ```
@@ -4796,6 +4900,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4825,6 +4930,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4839,7 +4945,7 @@ sum(redis_memory_used_bytes{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_memory_used_bytes IS NOT NULL
-| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_memory_used_bytes = SUM(redis_memory_used_bytes) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | STATS redis_memory_used_bytes = LAST(redis_memory_used_bytes, time_bucket) BY instance
 | KEEP instance, redis_memory_used_bytes
 ```
@@ -4894,6 +5000,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -4923,6 +5030,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -4935,7 +5043,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | STATS redis_db_keys = LAST(redis_db_keys, time_bucket) BY instance
 | KEEP instance, redis_db_keys
 ```
@@ -4990,6 +5098,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5019,6 +5128,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5034,7 +5144,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5086,6 +5196,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5115,6 +5226,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5130,7 +5242,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5182,6 +5294,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5211,6 +5324,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5226,7 +5340,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5278,6 +5392,7 @@ sum(redis_commands_processed_total{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5307,6 +5422,7 @@ sum(redis_commands_processed_total{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5323,7 +5439,7 @@ sum(redis_commands_processed_total{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_commands_processed_total IS NOT NULL
-| STATS redis_commands_processed_total = SUM(LAST_OVER_TIME(redis_commands_processed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_commands_processed_total = SUM(LAST_OVER_TIME(redis_commands_processed_total)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5377,6 +5493,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5406,6 +5523,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5423,7 +5541,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | STATS redis_db_keys = LAST(redis_db_keys, time_bucket) BY instance
 | KEEP instance, redis_db_keys
 ```
@@ -5476,6 +5594,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5505,6 +5624,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5522,7 +5642,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5574,6 +5694,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5603,6 +5724,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5616,7 +5738,7 @@ sum(redis_db_keys{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5668,6 +5790,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5697,6 +5820,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5710,7 +5834,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_up IS NOT NULL
-| STATS redis_up = SUM(redis_up) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_up = SUM(redis_up) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5764,6 +5888,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5793,6 +5918,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5806,7 +5932,7 @@ sum(redis_up{instance=~"$instance"}) by (instance)
 ```
 TS metrics-prometheus-*
 | WHERE redis_up IS NOT NULL
-| STATS redis_up = SUM(redis_up) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_up = SUM(redis_up) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -5892,6 +6018,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -5920,6 +6047,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -5934,7 +6062,7 @@ sum(rate(http_requests_total{status=~"2.."}[5m])) by (service, route)
 TS metrics-prometheus-*
 | WHERE status RLIKE "2.."
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), service, route
+| STATS http_requests_total = SUM(RATE(http_requests_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), service, route
 | EVAL legend = CONCAT(COALESCE(TO_STRING(service), ""), " / ", COALESCE(TO_STRING(route), ""))
 | SORT time_bucket ASC
 ```
@@ -5986,6 +6114,7 @@ avg(queue_depth)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6015,6 +6144,7 @@ avg(queue_depth)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6027,7 +6157,7 @@ avg(queue_depth)
 ```
 TS metrics-prometheus-*
 | WHERE queue_depth IS NOT NULL
-| STATS queue_depth = AVG(queue_depth) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS queue_depth = AVG(queue_depth) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS queue_depth = LAST(queue_depth, time_bucket)
 | KEEP queue_depth
 | EVAL _gauge_min = 0, _gauge_max = 500, _gauge_goal = 300
@@ -6081,6 +6211,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6109,6 +6240,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6122,7 +6254,7 @@ rate(frontend_requests_total[5m]) ||| rate(worker_jobs_total[5m])
 ```
 TS metrics-prometheus-*
 | WHERE frontend_requests_total IS NOT NULL OR worker_jobs_total IS NOT NULL
-| STATS frontend = RATE(frontend_requests_total), worker = RATE(worker_jobs_total) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS frontend = RATE(frontend_requests_total), worker = RATE(worker_jobs_total) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | KEEP time_bucket, frontend, worker
 | SORT time_bucket ASC
 ```
@@ -6172,6 +6304,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6200,6 +6333,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6212,7 +6346,7 @@ rate(api_requests_total[5m]) ||| avg(node_load1) ||| histogram_quantile(0.95, ra
 
 ```
 TS metrics-prometheus-*
-| STATS api_requests_total_A = CASE((api_requests_total IS NOT NULL), RATE(api_requests_total), NULL), node_load1_B = AVG(CASE((node_load1 IS NOT NULL), node_load1, NULL)), api_request_duration_seconds_C = PERCENTILE(CASE((api_request_duration_seconds IS NOT NULL), api_request_duration_seconds, NULL), 95) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS api_requests_total_A = CASE((api_requests_total IS NOT NULL), RATE(api_requests_total), NULL), node_load1_B = AVG(CASE((node_load1 IS NOT NULL), node_load1, NULL)), api_request_duration_seconds_C = PERCENTILE(CASE((api_request_duration_seconds IS NOT NULL), api_request_duration_seconds, NULL), 95) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | EVAL api = api_requests_total_A
 | EVAL load = node_load1_B
 | EVAL p95 = api_request_duration_seconds_C
@@ -6248,7 +6382,7 @@ TS metrics-prometheus-*
 
 - targets: 3
 
-**Warnings:** Fused multi-target panel from independently translated ES|QL queries; histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
+**Warnings:** histogram_quantile target field type could not be determined; assumed exponential_histogram and emitted PERCENTILE(). If the field is a classic histogram, pin the mapping or re-run with field capabilities so TO_TDIGEST() is used; histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
 **Semantic losses:** histogram_quantile translated to an ES|QL PERCENTILE() aggregation; this is approximate — PERCENTILE uses t-digest, which treats histogram buckets as point masses rather than interpolating within them as Prometheus does, so results can diverge noticeably when traffic concentrates in a few wide buckets (the common latency shape). Prefer a target on ES >= 9.5 (native histogram_quantile) for exact results.
 
@@ -6312,6 +6446,7 @@ sum(kube_pod_info) by (pod)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6341,6 +6476,7 @@ sum(kube_pod_info) by (pod)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6352,7 +6488,7 @@ sum(kube_pod_info) by (pod)
 ```
 TS metrics-prometheus-*
 | WHERE kube_pod_info IS NOT NULL
-| STATS kube_pod_info = SUM(kube_pod_info) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), pod
+| STATS kube_pod_info = SUM(kube_pod_info) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), pod
 | STATS kube_pod_info = LAST(kube_pod_info, time_bucket) BY pod
 | KEEP pod, kube_pod_info
 ```
@@ -6407,6 +6543,7 @@ avg(slo_burn_rate)
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6436,6 +6573,7 @@ avg(slo_burn_rate)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6450,7 +6588,7 @@ avg(slo_burn_rate)
 ```
 TS metrics-prometheus-*
 | WHERE slo_burn_rate IS NOT NULL
-| STATS slo_burn_rate = AVG(slo_burn_rate) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS slo_burn_rate = AVG(slo_burn_rate) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS slo_burn_rate = LAST(slo_burn_rate, time_bucket)
 | KEEP slo_burn_rate
 | EVAL _gauge_min = 0, _gauge_max = 100, _gauge_goal = 2
@@ -6499,6 +6637,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=logql_stream backend=regex
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family logql_stream bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6516,6 +6655,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6603,7 +6743,7 @@ FROM logs-*
 | Network Sockstat | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Network Netstat | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
 | Node Exporter | `row` → `section` | skipped | **EXPECTED_LIMITATION** | — | — |
-| Pressure | `bargauge` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra... | TS metrics-prometheus-* \| WHERE node_pressure_cpu_waiting_seconds_total IS NOT ... |
+| Pressure | `bargauge` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra... | TS metrics-prometheus-* \| WHERE node_pressure_cpu_waiting_seconds_total IS NOT ... |
 | CPU Busy | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | 100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle", instance="$node"}[$__rat... | TS metrics-prometheus-* \| WHERE mode == "idle" \| WHERE node_cpu_seconds_total ... |
 | Sys Load | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_cpu_seconds_tota... |
 | RAM Used | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | (1 - (node_memory_MemAvailable_bytes{instance="$node", job="$job"} / node_memory... | TS metrics-prometheus-* \| WHERE node_memory_MemAvailable_bytes IS NOT NULL OR n... |
@@ -6611,114 +6751,114 @@ FROM logs-*
 | Root FS Used | `gauge` → `gauge` | migrated_with_warnings | **MINOR_ISSUE** | 100 - ((node_filesystem_avail_bytes{instance="$node",job="$job",mountpoint="/",f... | TS metrics-prometheus-* \| WHERE mountpoint == "/" \| WHERE (fstype != "rootfs" ... |
 | CPU Cores | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu)) | FROM metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL \| STATS n... |
 | Uptime | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance... | TS metrics-prometheus-* \| WHERE node_time_seconds IS NOT NULL OR node_boot_time... |
-| RootFS Total | `stat` → `metric` | migrated | **MINOR_ISSUE** | node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r... | TS metrics-prometheus-* \| WHERE mountpoint == "/" \| WHERE (fstype != "rootfs" ... |
-| RAM Total | `stat` → `metric` | migrated | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL \| STATS... |
-| SWAP Total | `stat` → `metric` | migrated | **MINOR_ISSUE** | node_memory_SwapTotal_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_SwapTotal_bytes IS NOT NULL \| STAT... |
+| RootFS Total | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r... | TS metrics-prometheus-* \| WHERE mountpoint == "/" \| WHERE (fstype != "rootfs" ... |
+| RAM Total | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL \| STATS... |
+| SWAP Total | `stat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_SwapTotal_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_SwapTotal_bytes IS NOT NULL \| STAT... |
 | CPU Basic | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL \| STATS nod... |
 | Memory Basic | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} \|\|\| node_memory_MemTo... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| Network Traffic Basic | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
-| Disk Space Used Basic | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | 100 - ((node_filesystem_avail_bytes{instance="$node",job="$job",device!~'rootfs'... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
+| Network Traffic Basic | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Disk Space Used Basic | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | 100 - ((node_filesystem_avail_bytes{instance="$node",job="$job",device!~'rootfs'... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
 | CPU | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__... | TS metrics-prometheus-* \| WHERE node_cpu_seconds_total IS NOT NULL \| STATS nod... |
 | Memory Stack | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_MemTotal_bytes{instance="$node",job="$job"} - node_memory_MemFree_by... | TS metrics-prometheus-* \| WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_... |
-| Network Traffic | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
-| Disk Space Used | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_filesystem_size_bytes{instance="$node",job="$job",device!~'rootfs'} - node_... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
-| Disk IOps | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
-| I/O Usage Read / Write | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job",device=~"$diskdevic... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
-| I/O Utilization | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL \| ... |
-| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated_with_warnings | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator_A = SUM(CASE((mode == "user"), IRATE(... |
+| Network Traffic | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_bytes_total IS NOT NULL OR... |
+| Disk Space Used | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_filesystem_size_bytes{instance="$node",job="$job",device!~'rootfs'} - node_... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
+| Disk IOps | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
+| I/O Usage Read / Write | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job",device=~"$diskdevic... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
+| I/O Utilization | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job",device=~"$disk... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL \| ... |
+| CPU spent seconds in guests (VMs) | `timeseries` → `bar` | migrated | **MINOR_ISSUE** | sum by(instance) (irate(node_cpu_guest_seconds_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| STATS numerator_A = SUM(CASE((mode == "user"), IRATE(... |
 | Memory Active / Inactive | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_bytes{instance="$node",job="$job"} \|\|\| node_memory_Activ... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_bytes IS NOT NULL OR node_... |
-| Memory Committed | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Committed_AS_bytes{instance="$node",job="$job"} \|\|\| node_memory_C... | TS metrics-prometheus-* \| WHERE node_memory_Committed_AS_bytes IS NOT NULL OR n... |
+| Memory Committed | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Committed_AS_bytes{instance="$node",job="$job"} \|\|\| node_memory_C... | TS metrics-prometheus-* \| WHERE node_memory_Committed_AS_bytes IS NOT NULL OR n... |
 | Memory Active / Inactive Detail | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Inactive_file_bytes{instance="$node",job="$job"} \|\|\| node_memory_... | TS metrics-prometheus-* \| WHERE node_memory_Inactive_file_bytes IS NOT NULL OR ... |
-| Memory Writeback and Dirty | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Writeback_bytes{instance="$node",job="$job"} \|\|\| node_memory_Writ... | TS metrics-prometheus-* \| WHERE node_memory_Writeback_bytes IS NOT NULL OR node... |
-| Memory Shared and Mapped | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Mapped_bytes{instance="$node",job="$job"} \|\|\| node_memory_Shmem_b... | TS metrics-prometheus-* \| WHERE node_memory_Mapped_bytes IS NOT NULL OR node_me... |
+| Memory Writeback and Dirty | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Writeback_bytes{instance="$node",job="$job"} \|\|\| node_memory_Writ... | TS metrics-prometheus-* \| WHERE node_memory_Writeback_bytes IS NOT NULL OR node... |
+| Memory Shared and Mapped | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Mapped_bytes{instance="$node",job="$job"} \|\|\| node_memory_Shmem_b... | TS metrics-prometheus-* \| WHERE node_memory_Mapped_bytes IS NOT NULL OR node_me... |
 | Memory Slab | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_SUnreclaim_bytes{instance="$node",job="$job"} \|\|\| node_memory_SRe... | TS metrics-prometheus-* \| WHERE node_memory_SUnreclaim_bytes IS NOT NULL OR nod... |
-| Memory Vmalloc | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_VmallocChunk_bytes{instance="$node",job="$job"} \|\|\| node_memory_V... | TS metrics-prometheus-* \| WHERE node_memory_VmallocChunk_bytes IS NOT NULL OR n... |
-| Memory Bounce | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Bounce_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_Bounce_bytes IS NOT NULL \| STATS n... |
-| Memory Anonymous | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_AnonHugePages_bytes{instance="$node",job="$job"} \|\|\| node_memory_... | TS metrics-prometheus-* \| WHERE node_memory_AnonHugePages_bytes IS NOT NULL OR ... |
-| Memory Kernel / CPU | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_KernelStack_bytes{instance="$node",job="$job"} \|\|\| node_memory_Pe... | TS metrics-prometheus-* \| WHERE node_memory_KernelStack_bytes IS NOT NULL OR no... |
-| Memory HugePages Counter | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_HugePages_Free{instance="$node",job="$job"} \|\|\| node_memory_HugeP... | TS metrics-prometheus-* \| WHERE node_memory_HugePages_Free IS NOT NULL OR node_... |
-| Memory HugePages Size | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_HugePages_Total{instance="$node",job="$job"} \|\|\| node_memory_Huge... | TS metrics-prometheus-* \| WHERE node_memory_HugePages_Total IS NOT NULL OR node... |
-| Memory DirectMap | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_DirectMap1G_bytes{instance="$node",job="$job"} \|\|\| node_memory_Di... | TS metrics-prometheus-* \| WHERE node_memory_DirectMap1G_bytes IS NOT NULL OR no... |
-| Memory Unevictable and MLocked | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Unevictable_bytes{instance="$node",job="$job"} \|\|\| node_memory_Ml... | TS metrics-prometheus-* \| WHERE node_memory_Unevictable_bytes IS NOT NULL OR no... |
-| Memory NFS | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_NFS_Unstable_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_NFS_Unstable_bytes IS NOT NULL \| S... |
-| Memory Pages In / Out | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_pgpgin{instance="$node",job="$job"}[$__rate_interval]) \|\|\| ... | TS metrics-prometheus-* \| WHERE node_vmstat_pgpgin IS NOT NULL OR node_vmstat_p... |
-| Memory Pages Swap In / Out | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_pswpin{instance="$node",job="$job"}[$__rate_interval]) \|\|\| ... | TS metrics-prometheus-* \| WHERE node_vmstat_pswpin IS NOT NULL OR node_vmstat_p... |
+| Memory Vmalloc | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_VmallocChunk_bytes{instance="$node",job="$job"} \|\|\| node_memory_V... | TS metrics-prometheus-* \| WHERE node_memory_VmallocChunk_bytes IS NOT NULL OR n... |
+| Memory Bounce | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Bounce_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_Bounce_bytes IS NOT NULL \| STATS n... |
+| Memory Anonymous | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_AnonHugePages_bytes{instance="$node",job="$job"} \|\|\| node_memory_... | TS metrics-prometheus-* \| WHERE node_memory_AnonHugePages_bytes IS NOT NULL OR ... |
+| Memory Kernel / CPU | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_KernelStack_bytes{instance="$node",job="$job"} \|\|\| node_memory_Pe... | TS metrics-prometheus-* \| WHERE node_memory_KernelStack_bytes IS NOT NULL OR no... |
+| Memory HugePages Counter | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_HugePages_Free{instance="$node",job="$job"} \|\|\| node_memory_HugeP... | TS metrics-prometheus-* \| WHERE node_memory_HugePages_Free IS NOT NULL OR node_... |
+| Memory HugePages Size | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_HugePages_Total{instance="$node",job="$job"} \|\|\| node_memory_Huge... | TS metrics-prometheus-* \| WHERE node_memory_HugePages_Total IS NOT NULL OR node... |
+| Memory DirectMap | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_DirectMap1G_bytes{instance="$node",job="$job"} \|\|\| node_memory_Di... | TS metrics-prometheus-* \| WHERE node_memory_DirectMap1G_bytes IS NOT NULL OR no... |
+| Memory Unevictable and MLocked | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_Unevictable_bytes{instance="$node",job="$job"} \|\|\| node_memory_Ml... | TS metrics-prometheus-* \| WHERE node_memory_Unevictable_bytes IS NOT NULL OR no... |
+| Memory NFS | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_memory_NFS_Unstable_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_memory_NFS_Unstable_bytes IS NOT NULL \| S... |
+| Memory Pages In / Out | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_pgpgin{instance="$node",job="$job"}[$__rate_interval]) \|\|\| ... | TS metrics-prometheus-* \| WHERE node_vmstat_pgpgin IS NOT NULL OR node_vmstat_p... |
+| Memory Pages Swap In / Out | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_pswpin{instance="$node",job="$job"}[$__rate_interval]) \|\|\| ... | TS metrics-prometheus-* \| WHERE node_vmstat_pswpin IS NOT NULL OR node_vmstat_p... |
 | Memory Page Faults | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_pgfault{instance="$node",job="$job"}[$__rate_interval]) \|\|\|... | TS metrics-prometheus-* \| WHERE node_vmstat_pgfault IS NOT NULL OR node_vmstat_... |
-| OOM Killer | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_oom_kill{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_vmstat_oom_kill IS NOT NULL \| STATS node_... |
-| Time Synchronized Drift | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_estimated_error_seconds{instance="$node",job="$job"} \|\|\| node_time... | TS metrics-prometheus-* \| WHERE node_timex_estimated_error_seconds IS NOT NULL ... |
-| Time PLL Adjust | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_loop_time_constant{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_timex_loop_time_constant IS NOT NULL \| ST... |
-| Time Synchronized Status | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_sync_status{instance="$node",job="$job"} \|\|\| node_timex_frequency_... | TS metrics-prometheus-* \| WHERE node_timex_sync_status IS NOT NULL OR node_time... |
-| Time Misc | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_tick_seconds{instance="$node",job="$job"} \|\|\| node_timex_tai_offse... | TS metrics-prometheus-* \| WHERE node_timex_tick_seconds IS NOT NULL OR node_tim... |
-| Processes Status | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_procs_blocked{instance="$node",job="$job"} \|\|\| node_procs_running{instan... | TS metrics-prometheus-* \| WHERE node_procs_blocked IS NOT NULL OR node_procs_ru... |
+| OOM Killer | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_vmstat_oom_kill{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_vmstat_oom_kill IS NOT NULL \| STATS node_... |
+| Time Synchronized Drift | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_estimated_error_seconds{instance="$node",job="$job"} \|\|\| node_time... | TS metrics-prometheus-* \| WHERE node_timex_estimated_error_seconds IS NOT NULL ... |
+| Time PLL Adjust | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_loop_time_constant{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_timex_loop_time_constant IS NOT NULL \| ST... |
+| Time Synchronized Status | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_sync_status{instance="$node",job="$job"} \|\|\| node_timex_frequency_... | TS metrics-prometheus-* \| WHERE node_timex_sync_status IS NOT NULL OR node_time... |
+| Time Misc | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_timex_tick_seconds{instance="$node",job="$job"} \|\|\| node_timex_tai_offse... | TS metrics-prometheus-* \| WHERE node_timex_tick_seconds IS NOT NULL OR node_tim... |
+| Processes Status | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_procs_blocked{instance="$node",job="$job"} \|\|\| node_procs_running{instan... | TS metrics-prometheus-* \| WHERE node_procs_blocked IS NOT NULL OR node_procs_ru... |
 | Processes State | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_processes_state{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_processes_state IS NOT NULL \| STATS node_... |
-| Processes  Forks | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_forks_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_forks_total IS NOT NULL \| STATS node_fork... |
-| Processes Memory | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(process_virtual_memory_bytes{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE process_virtual_memory_bytes IS NOT NULL OR pro... |
-| PIDs Number and Limit | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_processes_pids{instance="$node",job="$job"} \|\|\| node_processes_max_proce... | TS metrics-prometheus-* \| WHERE node_processes_pids IS NOT NULL OR node_process... |
-| Process schedule stats Running / Waiting | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_schedstat_running_seconds_total{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_schedstat_running_seconds_total IS NOT NUL... |
-| Threads Number and Limit | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_processes_threads{instance="$node",job="$job"} \|\|\| node_processes_max_th... | TS metrics-prometheus-* \| WHERE node_processes_threads IS NOT NULL OR node_proc... |
-| Context Switches / Interrupts | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_context_switches_total{instance="$node",job="$job"}[$__rate_interval]... | TS metrics-prometheus-* \| WHERE node_context_switches_total IS NOT NULL OR node... |
-| System Load | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_load1{instance="$node",job="$job"} \|\|\| node_load5{instance="$node",job="... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_load5 IS NOT NUL... |
+| Processes  Forks | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_forks_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_forks_total IS NOT NULL \| STATS node_fork... |
+| Processes Memory | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(process_virtual_memory_bytes{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE process_virtual_memory_bytes IS NOT NULL OR pro... |
+| PIDs Number and Limit | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_processes_pids{instance="$node",job="$job"} \|\|\| node_processes_max_proce... | TS metrics-prometheus-* \| WHERE node_processes_pids IS NOT NULL OR node_process... |
+| Process schedule stats Running / Waiting | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_schedstat_running_seconds_total{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_schedstat_running_seconds_total IS NOT NUL... |
+| Threads Number and Limit | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_processes_threads{instance="$node",job="$job"} \|\|\| node_processes_max_th... | TS metrics-prometheus-* \| WHERE node_processes_threads IS NOT NULL OR node_proc... |
+| Context Switches / Interrupts | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_context_switches_total{instance="$node",job="$job"}[$__rate_interval]... | TS metrics-prometheus-* \| WHERE node_context_switches_total IS NOT NULL OR node... |
+| System Load | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_load1{instance="$node",job="$job"} \|\|\| node_load5{instance="$node",job="... | TS metrics-prometheus-* \| WHERE node_load1 IS NOT NULL OR node_load5 IS NOT NUL... |
 | CPU Frequency Scaling | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_cpu_scaling_frequency_hertz{instance="$node",job="$job"} \|\|\| avg(node_cp... | TS metrics-prometheus-* \| WHERE node_cpu_scaling_frequency_hertz IS NOT NULL OR... |
-| Pressure Stall Information | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | rate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_pressure_cpu_waiting_seconds_total IS NOT ... |
-| Interrupts Detail | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_interrupts_total IS NOT NULL \| STATS node... |
-| Schedule timeslices executed by each cpu | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_schedstat_timeslices_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_schedstat_timeslices_total IS NOT NULL \| ... |
-| Entropy | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_entropy_available_bits{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_entropy_available_bits IS NOT NULL \| STAT... |
-| CPU time spent in user and system contexts | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(process_cpu_seconds_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL \| STATS ... |
-| File Descriptors | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | process_max_fds{instance="$node",job="$job"} \|\|\| process_open_fds{instance="$... | TS metrics-prometheus-* \| WHERE process_max_fds IS NOT NULL OR process_open_fds... |
-| Hardware temperature monitor | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_hwmon_temp_celsius{instance="$node",job="$job"} * on(chip) group_left(chip_... | TS metrics-prometheus-* \| WHERE node_hwmon_temp_celsius IS NOT NULL OR node_hwm... |
-| Throttle cooling device | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_cooling_device_cur_state{instance="$node",job="$job"} \|\|\| node_cooling_d... | TS metrics-prometheus-* \| WHERE node_cooling_device_cur_state IS NOT NULL OR no... |
-| Power supply | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_power_supply_online{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_power_supply_online IS NOT NULL \| STATS n... |
-| Systemd Sockets | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_systemd_socket_accepted_connections_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| WHERE node_systemd_socket_accepted_connections_total ... |
+| Pressure Stall Information | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | rate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__rat... | TS metrics-prometheus-* \| WHERE node_pressure_cpu_waiting_seconds_total IS NOT ... |
+| Interrupts Detail | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_interrupts_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_interrupts_total IS NOT NULL \| STATS node... |
+| Schedule timeslices executed by each cpu | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_schedstat_timeslices_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_schedstat_timeslices_total IS NOT NULL \| ... |
+| Entropy | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_entropy_available_bits{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_entropy_available_bits IS NOT NULL \| STAT... |
+| CPU time spent in user and system contexts | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(process_cpu_seconds_total{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE process_cpu_seconds_total IS NOT NULL \| STATS ... |
+| File Descriptors | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | process_max_fds{instance="$node",job="$job"} \|\|\| process_open_fds{instance="$... | TS metrics-prometheus-* \| WHERE process_max_fds IS NOT NULL OR process_open_fds... |
+| Hardware temperature monitor | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_hwmon_temp_celsius{instance="$node",job="$job"} * on(chip) group_left(chip_... | TS metrics-prometheus-* \| WHERE node_hwmon_temp_celsius IS NOT NULL OR node_hwm... |
+| Throttle cooling device | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_cooling_device_cur_state{instance="$node",job="$job"} \|\|\| node_cooling_d... | TS metrics-prometheus-* \| WHERE node_cooling_device_cur_state IS NOT NULL OR no... |
+| Power supply | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_power_supply_online{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_power_supply_online IS NOT NULL \| STATS n... |
+| Systemd Sockets | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_systemd_socket_accepted_connections_total{instance="$node",job="$job"... | TS metrics-prometheus-* \| WHERE node_systemd_socket_accepted_connections_total ... |
 | Systemd Units State | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_systemd_units{instance="$node",job="$job",state="activating"} \|\|\| node_s... | TS metrics-prometheus-* \| WHERE node_systemd_units IS NOT NULL \| STATS Activat... |
-| Disk IOps Completed | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
-| Disk R/W Data | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job"}[$__rate_interval])... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
-| Disk Average Wait Time | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_read_time_seconds_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_disk_read_time_seconds_total IS NOT NULL O... |
-| Average Queue Size | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_weighted_seconds_total{instance="$node",job="$job"}[$__r... | TS metrics-prometheus-* \| WHERE node_disk_io_time_weighted_seconds_total IS NOT... |
-| Disk R/W Merged | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_merged_total{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_disk_reads_merged_total IS NOT NULL OR nod... |
-| Time Spent Doing I/Os | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL OR ... |
-| Instantaneous Queue Size | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_disk_io_now{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_disk_io_now IS NOT NULL \| STATS node_disk... |
-| Disk IOps Discards completed / merged | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_disk_discards_completed_total{instance="$node",job="$job"}[$__rate_in... | TS metrics-prometheus-* \| WHERE node_disk_discards_completed_total IS NOT NULL ... |
-| Filesystem space available | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_filesystem_avail_bytes{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
-| File Nodes Free | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_filesystem_files_free{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
-| File Descriptor | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_filefd_maximum{instance="$node",job="$job"} \|\|\| node_filefd_allocated{in... | TS metrics-prometheus-* \| WHERE node_filefd_maximum IS NOT NULL OR node_filefd_... |
-| File Nodes Size | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_filesystem_files{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
+| Disk IOps Completed | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_completed_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_reads_completed_total IS NOT NULL OR ... |
+| Disk R/W Data | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_read_bytes_total{instance="$node",job="$job"}[$__rate_interval])... | TS metrics-prometheus-* \| WHERE node_disk_read_bytes_total IS NOT NULL OR node_... |
+| Disk Average Wait Time | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_read_time_seconds_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_disk_read_time_seconds_total IS NOT NULL O... |
+| Average Queue Size | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_weighted_seconds_total{instance="$node",job="$job"}[$__r... | TS metrics-prometheus-* \| WHERE node_disk_io_time_weighted_seconds_total IS NOT... |
+| Disk R/W Merged | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_reads_merged_total{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_disk_reads_merged_total IS NOT NULL OR nod... |
+| Time Spent Doing I/Os | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_io_time_seconds_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_disk_io_time_seconds_total IS NOT NULL OR ... |
+| Instantaneous Queue Size | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_disk_io_now{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_disk_io_now IS NOT NULL \| STATS node_disk... |
+| Disk IOps Discards completed / merged | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_disk_discards_completed_total{instance="$node",job="$job"}[$__rate_in... | TS metrics-prometheus-* \| WHERE node_disk_discards_completed_total IS NOT NULL ... |
+| Filesystem space available | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_filesystem_avail_bytes{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
+| File Nodes Free | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_filesystem_files_free{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
+| File Descriptor | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_filefd_maximum{instance="$node",job="$job"} \|\|\| node_filefd_allocated{in... | TS metrics-prometheus-* \| WHERE node_filefd_maximum IS NOT NULL OR node_filefd_... |
+| File Nodes Size | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_filesystem_files{instance="$node",job="$job",device!~'rootfs'} | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
 | Filesystem in ReadOnly / Error | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_filesystem_readonly{instance="$node",job="$job",device!~'rootfs'} \|\|\| no... | TS metrics-prometheus-* \| WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL... |
-| Network Traffic by Packets | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_packets_total{instance="$node",job="$job"}[$__rate_in... | TS metrics-prometheus-* \| WHERE node_network_receive_packets_total IS NOT NULL ... |
-| Network Traffic Errors | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_errs_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_errs_total IS NOT NULL OR ... |
-| Network Traffic Drop | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_drop_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
-| Network Traffic Compressed | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_compressed_total{instance="$node",job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_compressed_total IS NOT NU... |
-| Network Traffic Multicast | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_multicast_total{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_network_receive_multicast_total IS NOT NUL... |
-| Network Traffic Fifo | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_fifo_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_fifo_total IS NOT NULL OR ... |
-| Network Traffic Frame | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_receive_frame_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_frame_total IS NOT NULL \|... |
-| Network Traffic Carrier | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_transmit_carrier_total{instance="$node",job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_network_transmit_carrier_total IS NOT NULL... |
-| Network Traffic Colls | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_network_transmit_colls_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_network_transmit_colls_total IS NOT NULL \... |
-| NF Conntrack | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_nf_conntrack_entries{instance="$node",job="$job"} \|\|\| node_nf_conntrack_... | TS metrics-prometheus-* \| WHERE node_nf_conntrack_entries IS NOT NULL OR node_n... |
-| ARP Entries | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_arp_entries{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_arp_entries IS NOT NULL \| STATS node_arp_... |
-| MTU | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_network_mtu_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_mtu_bytes IS NOT NULL \| STATS nod... |
-| Speed | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_network_speed_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_speed_bytes IS NOT NULL \| STATS n... |
-| Queue Length | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_network_transmit_queue_length{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_transmit_queue_length IS NOT NULL ... |
-| Softnet Packets | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_softnet_processed_total{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_softnet_processed_total IS NOT NULL OR nod... |
-| Softnet Out of Quota | `timeseries` → `line` | migrated | **MINOR_ISSUE** | irate(node_softnet_times_squeezed_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_softnet_times_squeezed_total IS NOT NULL \... |
-| Network Operational Status | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_network_up{operstate="up",instance="$node",job="$job"} \|\|\| node_network_... | TS metrics-prometheus-* \| STATS node_network_up_A = MAX(LAST_OVER_TIME(CASE((op... |
-| Sockstat TCP | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_TCP_alloc{instance="$node",job="$job"} \|\|\| node_sockstat_TCP_in... | TS metrics-prometheus-* \| WHERE node_sockstat_TCP_alloc IS NOT NULL OR node_soc... |
-| Sockstat UDP | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_UDPLITE_inuse{instance="$node",job="$job"} \|\|\| node_sockstat_UD... | TS metrics-prometheus-* \| WHERE node_sockstat_UDPLITE_inuse IS NOT NULL OR node... |
-| Sockstat FRAG / RAW | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_FRAG_inuse{instance="$node",job="$job"} \|\|\| node_sockstat_RAW_i... | TS metrics-prometheus-* \| WHERE node_sockstat_FRAG_inuse IS NOT NULL OR node_so... |
-| Sockstat Memory Size | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_TCP_mem_bytes{instance="$node",job="$job"} \|\|\| node_sockstat_UD... | TS metrics-prometheus-* \| WHERE node_sockstat_TCP_mem_bytes IS NOT NULL OR node... |
-| Sockstat Used | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_sockets_used{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_sockstat_sockets_used IS NOT NULL \| STATS... |
-| Netstat IP In / Out Octets | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_IpExt_InOctets{instance="$node",job="$job"}[$__rate_interval]... | TS metrics-prometheus-* \| WHERE node_netstat_IpExt_InOctets IS NOT NULL OR node... |
-| Netstat IP Forwarding | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Ip_Forwarding{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_netstat_Ip_Forwarding IS NOT NULL \| STATS... |
-| ICMP In / Out | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Icmp_InMsgs{instance="$node",job="$job"}[$__rate_interval]) \... | TS metrics-prometheus-* \| WHERE node_netstat_Icmp_InMsgs IS NOT NULL OR node_ne... |
-| ICMP Errors | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Icmp_InErrors{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_netstat_Icmp_InErrors IS NOT NULL \| STATS... |
-| UDP In / Out | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Udp_InDatagrams{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_netstat_Udp_InDatagrams IS NOT NULL OR nod... |
-| UDP Errors | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Udp_InErrors{instance="$node",job="$job"}[$__rate_interval]) ... | TS metrics-prometheus-* \| WHERE node_netstat_Udp_InErrors IS NOT NULL OR node_n... |
-| TCP In / Out | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Tcp_InSegs{instance="$node",job="$job"}[$__rate_interval]) \|... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_InSegs IS NOT NULL OR node_net... |
-| TCP Errors | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_TcpExt_ListenOverflows{instance="$node",job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_netstat_TcpExt_ListenOverflows IS NOT NULL... |
-| TCP Connections | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_netstat_Tcp_CurrEstab{instance="$node",job="$job"} \|\|\| node_netstat_Tcp_... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_CurrEstab IS NOT NULL OR node_... |
-| TCP SynCookie | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_TcpExt_SyncookiesFailed{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_netstat_TcpExt_SyncookiesFailed IS NOT NUL... |
-| TCP Direct Transition | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Tcp_ActiveOpens{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_ActiveOpens IS NOT NULL OR nod... |
-| TCP Stat | `timeseries` → `line` | migrated_with_warnings | **MINOR_ISSUE** | node_tcp_connection_states{state="established",instance="$node",job="$job"} \|\|... | TS metrics-prometheus-* \| WHERE node_tcp_connection_states IS NOT NULL \| STATS... |
+| Network Traffic by Packets | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_packets_total{instance="$node",job="$job"}[$__rate_in... | TS metrics-prometheus-* \| WHERE node_network_receive_packets_total IS NOT NULL ... |
+| Network Traffic Errors | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_errs_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_errs_total IS NOT NULL OR ... |
+| Network Traffic Drop | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_drop_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_drop_total IS NOT NULL OR ... |
+| Network Traffic Compressed | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_compressed_total{instance="$node",job="$job"}[$__rate... | TS metrics-prometheus-* \| WHERE node_network_receive_compressed_total IS NOT NU... |
+| Network Traffic Multicast | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_multicast_total{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_network_receive_multicast_total IS NOT NUL... |
+| Network Traffic Fifo | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_fifo_total{instance="$node",job="$job"}[$__rate_inter... | TS metrics-prometheus-* \| WHERE node_network_receive_fifo_total IS NOT NULL OR ... |
+| Network Traffic Frame | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_receive_frame_total{instance="$node",job="$job"}[$__rate_inte... | TS metrics-prometheus-* \| WHERE node_network_receive_frame_total IS NOT NULL \|... |
+| Network Traffic Carrier | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_transmit_carrier_total{instance="$node",job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_network_transmit_carrier_total IS NOT NULL... |
+| Network Traffic Colls | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_network_transmit_colls_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_network_transmit_colls_total IS NOT NULL \... |
+| NF Conntrack | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_nf_conntrack_entries{instance="$node",job="$job"} \|\|\| node_nf_conntrack_... | TS metrics-prometheus-* \| WHERE node_nf_conntrack_entries IS NOT NULL OR node_n... |
+| ARP Entries | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_arp_entries{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_arp_entries IS NOT NULL \| STATS node_arp_... |
+| MTU | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_network_mtu_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_mtu_bytes IS NOT NULL \| STATS nod... |
+| Speed | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_network_speed_bytes{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_speed_bytes IS NOT NULL \| STATS n... |
+| Queue Length | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_network_transmit_queue_length{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_network_transmit_queue_length IS NOT NULL ... |
+| Softnet Packets | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_softnet_processed_total{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_softnet_processed_total IS NOT NULL OR nod... |
+| Softnet Out of Quota | `timeseries` → `area` | migrated | **MINOR_ISSUE** | irate(node_softnet_times_squeezed_total{instance="$node",job="$job"}[$__rate_int... | TS metrics-prometheus-* \| WHERE node_softnet_times_squeezed_total IS NOT NULL \... |
+| Network Operational Status | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_network_up{operstate="up",instance="$node",job="$job"} \|\|\| node_network_... | TS metrics-prometheus-* \| STATS node_network_up_A = MAX(LAST_OVER_TIME(CASE((op... |
+| Sockstat TCP | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_TCP_alloc{instance="$node",job="$job"} \|\|\| node_sockstat_TCP_in... | TS metrics-prometheus-* \| WHERE node_sockstat_TCP_alloc IS NOT NULL OR node_soc... |
+| Sockstat UDP | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_UDPLITE_inuse{instance="$node",job="$job"} \|\|\| node_sockstat_UD... | TS metrics-prometheus-* \| WHERE node_sockstat_UDPLITE_inuse IS NOT NULL OR node... |
+| Sockstat FRAG / RAW | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_FRAG_inuse{instance="$node",job="$job"} \|\|\| node_sockstat_RAW_i... | TS metrics-prometheus-* \| WHERE node_sockstat_FRAG_inuse IS NOT NULL OR node_so... |
+| Sockstat Memory Size | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_TCP_mem_bytes{instance="$node",job="$job"} \|\|\| node_sockstat_UD... | TS metrics-prometheus-* \| WHERE node_sockstat_TCP_mem_bytes IS NOT NULL OR node... |
+| Sockstat Used | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_sockstat_sockets_used{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_sockstat_sockets_used IS NOT NULL \| STATS... |
+| Netstat IP In / Out Octets | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_IpExt_InOctets{instance="$node",job="$job"}[$__rate_interval]... | TS metrics-prometheus-* \| WHERE node_netstat_IpExt_InOctets IS NOT NULL OR node... |
+| Netstat IP Forwarding | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Ip_Forwarding{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_netstat_Ip_Forwarding IS NOT NULL \| STATS... |
+| ICMP In / Out | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Icmp_InMsgs{instance="$node",job="$job"}[$__rate_interval]) \... | TS metrics-prometheus-* \| WHERE node_netstat_Icmp_InMsgs IS NOT NULL OR node_ne... |
+| ICMP Errors | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Icmp_InErrors{instance="$node",job="$job"}[$__rate_interval]) | TS metrics-prometheus-* \| WHERE node_netstat_Icmp_InErrors IS NOT NULL \| STATS... |
+| UDP In / Out | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Udp_InDatagrams{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_netstat_Udp_InDatagrams IS NOT NULL OR nod... |
+| UDP Errors | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Udp_InErrors{instance="$node",job="$job"}[$__rate_interval]) ... | TS metrics-prometheus-* \| WHERE node_netstat_Udp_InErrors IS NOT NULL OR node_n... |
+| TCP In / Out | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Tcp_InSegs{instance="$node",job="$job"}[$__rate_interval]) \|... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_InSegs IS NOT NULL OR node_net... |
+| TCP Errors | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_TcpExt_ListenOverflows{instance="$node",job="$job"}[$__rate_i... | TS metrics-prometheus-* \| WHERE node_netstat_TcpExt_ListenOverflows IS NOT NULL... |
+| TCP Connections | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_netstat_Tcp_CurrEstab{instance="$node",job="$job"} \|\|\| node_netstat_Tcp_... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_CurrEstab IS NOT NULL OR node_... |
+| TCP SynCookie | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_TcpExt_SyncookiesFailed{instance="$node",job="$job"}[$__rate_... | TS metrics-prometheus-* \| WHERE node_netstat_TcpExt_SyncookiesFailed IS NOT NUL... |
+| TCP Direct Transition | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | irate(node_netstat_Tcp_ActiveOpens{instance="$node",job="$job"}[$__rate_interval... | TS metrics-prometheus-* \| WHERE node_netstat_Tcp_ActiveOpens IS NOT NULL OR nod... |
+| TCP Stat | `timeseries` → `area` | migrated_with_warnings | **MINOR_ISSUE** | node_tcp_connection_states{state="established",instance="$node",job="$job"} \|\|... | TS metrics-prometheus-* \| WHERE node_tcp_connection_states IS NOT NULL \| STATS... |
 | Node Exporter Scrape Time | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_scrape_collector_duration_seconds{instance="$node",job="$job"} | TS metrics-prometheus-* \| WHERE node_scrape_collector_duration_seconds IS NOT N... |
-| Node Exporter Scrape | `timeseries` → `line` | migrated | **MINOR_ISSUE** | node_scrape_collector_success{instance="$node",job="$job"} \|\|\| node_textfile_... | TS metrics-prometheus-* \| WHERE node_scrape_collector_success IS NOT NULL OR no... |
+| Node Exporter Scrape | `timeseries` → `area` | migrated | **MINOR_ISSUE** | node_scrape_collector_success{instance="$node",job="$job"} \|\|\| node_textfile_... | TS metrics-prometheus-* \| WHERE node_scrape_collector_success IS NOT NULL OR no... |
 | Dashboard Links | `dashboard_links` → `links` | migrated | **EXPECTED_LIMITATION** | — | — |
 
 <details>
@@ -6740,6 +6880,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6768,6 +6909,7 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6775,19 +6917,19 @@ irate(node_pressure_cpu_waiting_seconds_total{instance="$node",job="$job"}[$__ra
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel` → approximated bargauge panel
 
-**Translated (bar):**
+**Translated (metric):**
 
 ```
 TS metrics-prometheus-*
 | WHERE node_pressure_cpu_waiting_seconds_total IS NOT NULL OR node_pressure_memory_waiting_seconds_total IS NOT NULL OR node_pressure_io_waiting_seconds_total IS NOT NULL
-| STATS CPU = IRATE(node_pressure_cpu_waiting_seconds_total), Mem = IRATE(node_pressure_memory_waiting_seconds_total), I_O = IRATE(node_pressure_io_waiting_seconds_total) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS CPU = IRATE(node_pressure_cpu_waiting_seconds_total), Mem = IRATE(node_pressure_memory_waiting_seconds_total), I_O = IRATE(node_pressure_io_waiting_seconds_total) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | STATS CPU = MAX(CPU), Mem = MAX(Mem), I_O = MAX(I_O)
 | KEEP CPU, Mem, I_O
 | EVAL __labels = MV_APPEND(MV_APPEND("CPU", "Mem"), "I/O"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(CPU), ""), COALESCE(TO_STRING(Mem), "")), COALESCE(TO_STRING(I_O), ""))
-| EVAL __pairs = MV_ZIP(__labels, __values, "~")
+| EVAL __pairs = MV_ZIP(__labels, __values, "\t")
 | MV_EXPAND __pairs
-| EVAL label = MV_FIRST(SPLIT(__pairs, "~")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
-| KEEP label, value
+| EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), gauge_value = (TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))) * 100
+| KEEP label, gauge_value
 | SORT label ASC
 ```
 
@@ -6801,14 +6943,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `CPU`
-- Semantic losses: Dropped variable-driven label filters during migration, Approximated bargauge as bar chart
+- Semantic losses: Dropped variable-driven label filters during migration, Approximated bargauge as metric tiles
 
 **Visual IR:**
 
-- Kibana type: `bar`
+- Kibana type: `metric`
 - Layout: x=0, y=0, w=6, h=12
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, primary, breakdown, styling
 
 **Operational IR:**
 
@@ -6819,11 +6961,9 @@ TS metrics-prometheus-*
 - targets: 3
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated bargauge as bar chart
+**Warnings:** Approximated bargauge as metric tiles
 
-**Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as bar chart
-
-**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
+**Semantic losses:** Dropped variable-driven label filters during migration; Approximated bargauge as metric tiles
 
 **Verdict:** MINOR_ISSUE
 
@@ -6843,6 +6983,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6864,6 +7005,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6879,8 +7021,9 @@ TS metrics-prometheus-*
 TS metrics-prometheus-*
 | WHERE mode == "idle"
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS node_cpu_seconds_total_mode_idle_rate_avg = AVG(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_cpu_seconds_total_mode_idle_rate_avg = AVG(RATE(node_cpu_seconds_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | EVAL computed_value = (100 * (1 - node_cpu_seconds_total_mode_idle_rate_avg))
+| WHERE computed_value IS NOT NULL
 | SORT time_bucket DESC
 | LIMIT 2
 | SORT time_bucket ASC
@@ -6917,11 +7060,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated PromQL arithmetic using same-bucket ES|QL math; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -6941,6 +7084,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -6962,6 +7106,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -6976,7 +7121,7 @@ scalar(node_load1{instance="$node",job="$job"}) * 100 / count(count(node_cpu_sec
 ```
 TS metrics-prometheus-*
 | WHERE node_load1 IS NOT NULL OR node_cpu_seconds_total IS NOT NULL
-| STATS node_load1_instance_job = AVG(LAST_OVER_TIME(node_load1)), node_cpu_seconds_total_instance_job_count = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_load1_instance_job = AVG(LAST_OVER_TIME(node_load1)), node_cpu_seconds_total_instance_job_count = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = ((node_load1_instance_job * 100) / node_cpu_seconds_total_instance_job_count)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -7011,11 +7156,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu); PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_load1` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7035,6 +7180,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7056,6 +7202,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7070,7 +7217,7 @@ TS metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemAvailable_bytes IS NOT NULL OR node_memory_MemTotal_bytes IS NOT NULL
-| STATS node_memory_MemAvailable_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemAvailable_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_MemAvailable_bytes)), node_memory_MemTotal_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = ((1 - (node_memory_MemAvailable_bytes_instance_job / node_memory_MemTotal_bytes_instance_job)) * 100)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -7104,11 +7251,9 @@ TS metrics-prometheus-*
 - targets: 2
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_MemAvailable_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_MemTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
-
-**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7128,6 +7273,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7149,6 +7295,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7163,7 +7310,7 @@ TS metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_SwapTotal_bytes IS NOT NULL OR node_memory_SwapFree_bytes IS NOT NULL
-| STATS node_memory_SwapTotal_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_SwapTotal_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_instance_job = AVG(LAST_OVER_TIME(node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (((node_memory_SwapTotal_bytes_instance_job - node_memory_SwapFree_bytes_instance_job) / node_memory_SwapTotal_bytes_instance_job) * 100)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -7198,11 +7345,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_SwapTotal_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_memory_SwapFree_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7222,6 +7369,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7243,6 +7391,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7259,7 +7408,7 @@ TS metrics-prometheus-*
 | WHERE mountpoint == "/"
 | WHERE (fstype != "rootfs" OR (fstype IS NULL AND "" != "rootfs"))
 | WHERE node_filesystem_avail_bytes IS NOT NULL OR node_filesystem_size_bytes IS NOT NULL
-| STATS node_filesystem_avail_bytes_mountpoint_fstype_rootfs = AVG(LAST_OVER_TIME(node_filesystem_avail_bytes)), node_filesystem_size_bytes_mountpoint_fstype_rootfs = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_filesystem_avail_bytes_mountpoint_fstype_rootfs = AVG(LAST_OVER_TIME(node_filesystem_avail_bytes)), node_filesystem_size_bytes_mountpoint_fstype_rootfs = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (100 - ((node_filesystem_avail_bytes_mountpoint_fstype_rootfs * 100) / node_filesystem_size_bytes_mountpoint_fstype_rootfs))
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -7294,11 +7443,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_filesystem_avail_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_filesystem_size_bytes` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7318,6 +7467,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7345,6 +7495,7 @@ count(count(node_cpu_seconds_total{instance="$node",job="$job"}) by (cpu))
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7387,11 +7538,11 @@ FROM metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7411,6 +7562,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7432,6 +7584,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7443,7 +7596,7 @@ node_time_seconds{instance="$node",job="$job"} - node_boot_time_seconds{instance
 ```
 TS metrics-prometheus-*
 | WHERE node_time_seconds IS NOT NULL OR node_boot_time_seconds IS NOT NULL
-| STATS node_time_seconds_instance_job = AVG(LAST_OVER_TIME(node_time_seconds)), node_boot_time_seconds_instance_job = AVG(LAST_OVER_TIME(node_boot_time_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_time_seconds_instance_job = AVG(LAST_OVER_TIME(node_time_seconds)), node_boot_time_seconds_instance_job = AVG(LAST_OVER_TIME(node_boot_time_seconds)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (node_time_seconds_instance_job - node_boot_time_seconds_instance_job)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -7477,11 +7630,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Approximated PromQL arithmetic using same-bucket ES|QL math; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration; Collapsed all series of `node_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.; Collapsed all series of `node_boot_time_seconds` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7501,6 +7654,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7531,6 +7685,7 @@ node_filesystem_size_bytes{instance="$node",job="$job",mountpoint="/",fstype!="r
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7544,7 +7699,7 @@ TS metrics-prometheus-*
 | WHERE mountpoint == "/"
 | WHERE (fstype != "rootfs" OR (fstype IS NULL AND "" != "rootfs"))
 | WHERE node_filesystem_size_bytes IS NOT NULL
-| STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_filesystem_size_bytes = MAX(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS node_filesystem_size_bytes = LAST(node_filesystem_size_bytes, time_bucket)
 | KEEP node_filesystem_size_bytes
 ```
@@ -7557,7 +7712,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `node_filesystem_size_bytes`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `node_filesystem_size_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -7576,9 +7731,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Collapsed all series of `node_filesystem_size_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `node_filesystem_size_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7598,6 +7755,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7628,6 +7786,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7639,7 +7798,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"}
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemTotal_bytes IS NOT NULL
-| STATS node_memory_MemTotal_bytes = MAX(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_MemTotal_bytes = MAX(LAST_OVER_TIME(node_memory_MemTotal_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS node_memory_MemTotal_bytes = LAST(node_memory_MemTotal_bytes, time_bucket)
 | KEEP node_memory_MemTotal_bytes
 ```
@@ -7652,7 +7811,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `node_memory_MemTotal_bytes`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `node_memory_MemTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -7671,9 +7830,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Collapsed all series of `node_memory_MemTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_MemTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7693,6 +7854,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7723,6 +7885,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7734,7 +7897,7 @@ node_memory_SwapTotal_bytes{instance="$node",job="$job"}
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_SwapTotal_bytes IS NOT NULL
-| STATS node_memory_SwapTotal_bytes = MAX(LAST_OVER_TIME(node_memory_SwapTotal_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_memory_SwapTotal_bytes = MAX(LAST_OVER_TIME(node_memory_SwapTotal_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS node_memory_SwapTotal_bytes = LAST(node_memory_SwapTotal_bytes, time_bucket)
 | KEEP node_memory_SwapTotal_bytes
 ```
@@ -7747,7 +7910,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `node_memory_SwapTotal_bytes`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `node_memory_SwapTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -7766,9 +7929,11 @@ TS metrics-prometheus-*
 - value_mappings: 1
 - has_description: True
 
-**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Grafana panel description is not carried into the migrated Kibana panel automatically
+**Warnings:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead; Collapsed all series of `node_memory_SwapTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `node_memory_SwapTotal_bytes` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Notes:** Grafana panel has 1 value mapping(s) (e.g. 0 -> 'Down', null -> 'N/A'); Kibana panel mappings assign colors, not display text, so the raw value is shown instead
 
 **Verdict:** MINOR_ISSUE
 
@@ -7788,6 +7953,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7809,6 +7975,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7822,7 +7989,7 @@ sum(irate(node_cpu_seconds_total{instance="$node",job="$job", mode="system"}[$__
 ```
 TS metrics-prometheus-*
 | WHERE node_cpu_seconds_total IS NOT NULL
-| STATS node_cpu_seconds_total_A_lhs = SUM(CASE((mode == "system"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((mode == "user"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((mode == "iowait"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((mode RLIKE ".*irq"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((mode != "idle" OR (mode IS NULL AND "" != "idle"))) and ((mode != "user" OR (mode IS NULL AND "" != "user"))) and ((mode != "system" OR (mode IS NULL AND "" != "system"))) and ((mode != "iowait" OR (mode IS NULL AND "" != "iowait"))) and ((mode != "irq" OR (mode IS NULL AND "" != "irq"))) and ((mode != "softirq" OR (mode IS NULL AND "" != "softirq"))), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((mode == "idle"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_cpu_seconds_total_A_lhs = SUM(CASE((mode == "system"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_A_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_B_lhs = SUM(CASE((mode == "user"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_B_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_C_lhs = SUM(CASE((mode == "iowait"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_C_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_D_lhs = SUM(CASE((mode RLIKE ".*irq"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_D_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_E_lhs = SUM(CASE(((mode != "idle" OR (mode IS NULL AND "" != "idle"))) and ((mode != "user" OR (mode IS NULL AND "" != "user"))) and ((mode != "system" OR (mode IS NULL AND "" != "system"))) and ((mode != "iowait" OR (mode IS NULL AND "" != "iowait"))) and ((mode != "irq" OR (mode IS NULL AND "" != "irq"))) and ((mode != "softirq" OR (mode IS NULL AND "" != "softirq"))), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_E_rhs = COUNT_DISTINCT(cpu), node_cpu_seconds_total_F_lhs = SUM(CASE((mode == "idle"), IRATE(node_cpu_seconds_total), NULL)), node_cpu_seconds_total_F_rhs = COUNT_DISTINCT(cpu) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | EVAL Busy_System = (node_cpu_seconds_total_A_lhs / node_cpu_seconds_total_A_rhs)
 | EVAL Busy_User = (node_cpu_seconds_total_B_lhs / node_cpu_seconds_total_B_rhs)
 | EVAL Busy_Iowait = (node_cpu_seconds_total_C_lhs / node_cpu_seconds_total_C_rhs)
@@ -7860,13 +8027,12 @@ TS metrics-prometheus-*
 
 - targets: 6
 - field_overrides: 7
+- field_override_properties: 7
 - has_description: True
 
-**Warnings:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
+**Warnings:** Approximated nested count(count()) as COUNT_DISTINCT(cpu)
 
 **Semantic losses:** Dropped variable-driven label filters during migration; Approximated nested count(count()) as COUNT_DISTINCT(cpu)
-
-**Notes:** Grafana panel has 7 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7886,6 +8052,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -7916,6 +8083,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -7929,7 +8097,7 @@ node_memory_MemTotal_bytes{instance="$node",job="$job"} ||| node_memory_MemTotal
 ```
 TS metrics-prometheus-*
 | WHERE node_memory_MemTotal_bytes IS NOT NULL OR node_memory_Cached_bytes IS NOT NULL OR node_memory_Buffers_bytes IS NOT NULL OR node_memory_SReclaimable_bytes IS NOT NULL OR node_memory_MemFree_bytes IS NOT NULL OR node_memory_SwapTotal_bytes IS NOT NULL OR node_memory_SwapFree_bytes IS NOT NULL
-| STATS RAM_Total = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)), node_memory_Cached_bytes_B_rhs_lhs_lhs = AVG(LAST_OVER_TIME(node_memory_Cached_bytes)), node_memory_Buffers_bytes_B_rhs_lhs_rhs = AVG(LAST_OVER_TIME(node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_B_rhs_rhs = AVG(LAST_OVER_TIME(node_memory_SReclaimable_bytes)), node_memory_Cached_bytes_C_lhs_lhs = AVG(LAST_OVER_TIME(node_memory_Cached_bytes)), node_memory_Buffers_bytes_C_lhs_rhs = AVG(LAST_OVER_TIME(node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_C_rhs = AVG(LAST_OVER_TIME(node_memory_SReclaimable_bytes)), RAM_Free = AVG(LAST_OVER_TIME(node_memory_MemFree_bytes)), node_memory_SwapTotal_bytes_E_lhs = AVG(LAST_OVER_TIME(node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_E_rhs = AVG(LAST_OVER_TIME(node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, job
+| STATS RAM_Total = AVG(LAST_OVER_TIME(node_memory_MemTotal_bytes)), node_memory_Cached_bytes_B_rhs_lhs_lhs = AVG(LAST_OVER_TIME(node_memory_Cached_bytes)), node_memory_Buffers_bytes_B_rhs_lhs_rhs = AVG(LAST_OVER_TIME(node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_B_rhs_rhs = AVG(LAST_OVER_TIME(node_memory_SReclaimable_bytes)), node_memory_Cached_bytes_C_lhs_lhs = AVG(LAST_OVER_TIME(node_memory_Cached_bytes)), node_memory_Buffers_bytes_C_lhs_rhs = AVG(LAST_OVER_TIME(node_memory_Buffers_bytes)), node_memory_SReclaimable_bytes_C_rhs = AVG(LAST_OVER_TIME(node_memory_SReclaimable_bytes)), RAM_Free = AVG(LAST_OVER_TIME(node_memory_MemFree_bytes)), node_memory_SwapTotal_bytes_E_lhs = AVG(LAST_OVER_TIME(node_memory_SwapTotal_bytes)), node_memory_SwapFree_bytes_E_rhs = AVG(LAST_OVER_TIME(node_memory_SwapFree_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance, job
 | EVAL RAM_Used = ((RAM_Total - RAM_Free) - ((node_memory_Cached_bytes_B_rhs_lhs_lhs + node_memory_Buffers_bytes_B_rhs_lhs_rhs) + node_memory_SReclaimable_bytes_B_rhs_rhs))
 | EVAL RAM_Cache_Buffer = ((node_memory_Cached_bytes_C_lhs_lhs + node_memory_Buffers_bytes_C_lhs_rhs) + node_memory_SReclaimable_bytes_C_rhs)
 | EVAL SWAP_Used = (node_memory_SwapTotal_bytes_E_lhs - node_memory_SwapFree_bytes_E_rhs)
@@ -7964,13 +8132,12 @@ TS metrics-prometheus-*
 
 - targets: 5
 - field_overrides: 23
+- field_override_properties: 27
 - has_description: True
 
-**Warnings:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically; Composited multi-label grouping (instance, job) into a single XY breakdown column
+**Warnings:** Composited multi-label grouping (instance, job) into a single XY breakdown column
 
 **Semantic losses:** Dropped variable-driven label filters during migration
-
-**Notes:** Grafana panel has 23 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -7990,6 +8157,7 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8011,23 +8179,24 @@ irate(node_network_receive_bytes_total{instance="$node",job="$job"}[$__rate_inte
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE node_network_receive_bytes_total IS NOT NULL OR node_network_transmit_bytes_total IS NOT NULL
-| STATS node_network_receive_bytes_total_A_lhs = IRATE(node_network_receive_bytes_total), node_network_transmit_bytes_total_B_lhs = IRATE(node_network_transmit_bytes_total) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS node_network_receive_bytes_total_A_lhs = AVG(IRATE(node_network_receive_bytes_total)), node_network_transmit_bytes_total_B_lhs = AVG(IRATE(node_network_transmit_bytes_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), device
 | EVAL recv = (node_network_receive_bytes_total_A_lhs * 8)
-| EVAL trans = (node_network_transmit_bytes_total_B_lhs * 8)
-| KEEP time_bucket, recv, trans
+| EVAL trans = (-1 * (node_network_transmit_bytes_total_B_lhs * 8))
+| KEEP time_bucket, device, recv, trans
 | SORT time_bucket ASC
 ```
 
@@ -8040,15 +8209,15 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `recv`
-- Output groups: `time_bucket`
+- Output groups: `time_bucket, device`
 - Semantic losses: Dropped variable-driven label filters during migration
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=0, y=11, w=24, h=10
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, legend
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -8058,9 +8227,8 @@ TS metrics-prometheus-*
 
 - targets: 2
 - field_overrides: 24
+- field_override_properties: 24
 - has_description: True
-
-**Warnings:** Grafana panel has 24 field override(s); verify visual mappings manually; Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Semantic losses:** Dropped variable-driven label filters during migration
 
@@ -8082,6 +8250,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8103,21 +8272,22 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
 - `query_validators` / `late_bound_group_control`
 - `panel_translators` / `metric_panel`
 - `panel_translators` / `bargauge_panel`
-- `panel_translators` / `xy_panel` → mapped to line panel
+- `panel_translators` / `xy_panel` → mapped to area panel
 
-**Translated (line):**
+**Translated (area):**
 
 ```
 TS metrics-prometheus-*
 | WHERE (NOT (device RLIKE "rootfs") OR (device IS NULL AND NOT ("" RLIKE "rootfs")))
 | WHERE node_filesystem_avail_bytes IS NOT NULL OR node_filesystem_size_bytes IS NOT NULL
-| STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME(node_filesystem_avail_bytes)), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), mountpoint
+| STATS node_filesystem_avail_bytes_device_rootfs = AVG(LAST_OVER_TIME(node_filesystem_avail_bytes)), node_filesystem_size_bytes_device_rootfs = AVG(LAST_OVER_TIME(node_filesystem_size_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), mountpoint
 | EVAL computed_value = (100 - ((node_filesystem_avail_bytes_device_rootfs * 100) / node_filesystem_size_bytes_device_rootfs))
 | KEEP time_bucket, mountpoint, computed_value
 | SORT time_bucket ASC
@@ -8137,10 +8307,10 @@ TS metrics-prometheus-*
 
 **Visual IR:**
 
-- Kibana type: `line`
+- Kibana type: `area`
 - Layout: x=24, y=11, w=24, h=10
 - Presentation kind: `esql`
-- Config keys: type, query, dimension, metrics, breakdown
+- Config keys: type, query, dimension, metrics, mode
 
 **Operational IR:**
 
@@ -8151,11 +8321,9 @@ TS metrics-prometheus-*
 - targets: 1
 - has_description: True
 
-**Warnings:** Grafana panel description is not carried into the migrated Kibana panel automatically; Approximated PromQL arithmetic using same-bucket ES|QL math
+**Warnings:** Approximated PromQL arithmetic using same-bucket ES|QL math
 
 **Semantic losses:** Approximated PromQL arithmetic using same-bucket ES|QL math; Dropped variable-driven label filters during migration
-
-**Notes:** Grafana panel description is not carried into the migrated Kibana panel automatically
 
 **Verdict:** MINOR_ISSUE
 
@@ -8179,8 +8347,8 @@ TS metrics-prometheus-*
 |-------|---------------------|--------|---------|-------------|-----------------|
 | Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
 | Uptime | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | time() - process_start_time_seconds{instance="$instance"} | FROM metrics-prometheus-* \| WHERE process_start_time_seconds IS NOT NULL \| STA... |
-| Total count of time series | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | prometheus_tsdb_head_series{instance="$instance"} | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_series IS NOT NULL \| STAT... |
-| Version | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | prometheus_build_info{instance="$instance"} | TS metrics-prometheus-* \| WHERE prometheus_build_info IS NOT NULL \| STATS prom... |
+| Total count of time series | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | prometheus_tsdb_head_series{instance="$instance"} | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_series IS NOT NULL \| STAT... |
+| Version | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | prometheus_build_info{instance="$instance"} | TS metrics-prometheus-* \| WHERE prometheus_build_info IS NOT NULL \| STATS prom... |
 | Actual head block length | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t... | TS metrics-prometheus-* \| WHERE prometheus_tsdb_head_max_time IS NOT NULL OR pr... |
 | Untitled | `text` → `markdown` | migrated | **EXPECTED_LIMITATION** | — | — |
 | 2 | `singlestat` → `metric` | migrated | **CORRECT** | 2 | ROW constant_value = 2.0 |
@@ -8190,7 +8358,7 @@ TS metrics-prometheus-*
 | Scrape delay (counts with 1m scrape interval) | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} ... | TS metrics-prometheus-* \| WHERE quantile == "0.99" \| WHERE prometheus_target_i... |
 | Rule evaulation duration | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q... | TS metrics-prometheus-* \| WHERE prometheus_evaluator_duration_seconds IS NOT NU... |
 | Request count | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) ... | TS metrics-prometheus-* \| WHERE http_requests_total IS NOT NULL \| STATS http_r... |
-| Request duration per handler | `graph` → `line` | migrated | **MINOR_ISSUE** | max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, ... | FROM metrics-prometheus-* \| STATS inner_val = SUM(http_request_duration_microse... |
+| Request duration per handler | `graph` → `line` | migrated | **MINOR_ISSUE** | max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, ... | TS metrics-prometheus-* \| WHERE http_request_duration_microseconds IS NOT NULL ... |
 | Request size by handler | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg... | TS metrics-prometheus-* \| WHERE quantile == "0.99" \| WHERE http_request_size_b... |
 | Cont of concurent queries | `graph` → `line` | migrated_with_warnings | **MINOR_ISSUE** | sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) \|\|... | TS metrics-prometheus-* \| WHERE prometheus_engine_queries IS NOT NULL OR promet... |
 | Alert queue size | `graph` → `line` | migrated | **MINOR_ISSUE** | sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) ... | TS metrics-prometheus-* \| WHERE prometheus_notifications_queue_capacity IS NOT ... |
@@ -8242,6 +8410,7 @@ time() - process_start_time_seconds{instance="$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=uptime backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family uptime bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8261,6 +8430,7 @@ time() - process_start_time_seconds{instance="$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8325,6 +8495,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8355,6 +8526,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8366,7 +8538,7 @@ prometheus_tsdb_head_series{instance="$instance"}
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_tsdb_head_series IS NOT NULL
-| STATS prometheus_tsdb_head_series = MAX(LAST_OVER_TIME(prometheus_tsdb_head_series)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS prometheus_tsdb_head_series = MAX(LAST_OVER_TIME(prometheus_tsdb_head_series)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS prometheus_tsdb_head_series = LAST(prometheus_tsdb_head_series, time_bucket)
 | KEEP prometheus_tsdb_head_series
 ```
@@ -8379,7 +8551,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `prometheus_tsdb_head_series`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `prometheus_tsdb_head_series` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -8396,7 +8568,9 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Warnings:** Collapsed all series of `prometheus_tsdb_head_series` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `prometheus_tsdb_head_series` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Verdict:** MINOR_ISSUE
 
@@ -8416,6 +8590,7 @@ prometheus_build_info{instance="$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8446,6 +8621,7 @@ prometheus_build_info{instance="$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8457,7 +8633,7 @@ prometheus_build_info{instance="$instance"}
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_build_info IS NOT NULL
-| STATS prometheus_build_info = MAX(LAST_OVER_TIME(prometheus_build_info)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS prometheus_build_info = MAX(LAST_OVER_TIME(prometheus_build_info)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS prometheus_build_info = LAST(prometheus_build_info, time_bucket)
 | KEEP prometheus_build_info
 ```
@@ -8470,7 +8646,7 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `prometheus_build_info`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `prometheus_build_info` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
@@ -8487,7 +8663,9 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Warnings:** Collapsed all series of `prometheus_build_info` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `prometheus_build_info` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Verdict:** MINOR_ISSUE
 
@@ -8507,6 +8685,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8528,6 +8707,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8539,7 +8719,7 @@ prometheus_tsdb_head_max_time{instance="$instance"} - prometheus_tsdb_head_min_t
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_tsdb_head_max_time IS NOT NULL OR prometheus_tsdb_head_min_time IS NOT NULL
-| STATS prometheus_tsdb_head_max_time_instance = AVG(LAST_OVER_TIME(prometheus_tsdb_head_max_time)), prometheus_tsdb_head_min_time_instance = AVG(LAST_OVER_TIME(prometheus_tsdb_head_min_time)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS prometheus_tsdb_head_max_time_instance = AVG(LAST_OVER_TIME(prometheus_tsdb_head_max_time)), prometheus_tsdb_head_min_time_instance = AVG(LAST_OVER_TIME(prometheus_tsdb_head_min_time)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (prometheus_tsdb_head_max_time_instance - prometheus_tsdb_head_min_time_instance)
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -8593,6 +8773,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros`
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=scalar backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family scalar bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8609,6 +8790,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8663,6 +8845,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8692,6 +8875,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8705,7 +8889,7 @@ max(prometheus_engine_query_duration_seconds{instance="$instance"}) by (instance
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_engine_query_duration_seconds IS NOT NULL
-| STATS prometheus_engine_query_duration_seconds = MAX(prometheus_engine_query_duration_seconds) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, slice
+| STATS prometheus_engine_query_duration_seconds = MAX(prometheus_engine_query_duration_seconds) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance, slice
 | EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(slice), ""))
 | SORT time_bucket ASC
 ```
@@ -8760,6 +8944,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8788,6 +8973,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8801,7 +8987,7 @@ sum(increase(prometheus_tsdb_head_series_created_total{instance="$instance"}[$ag
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_tsdb_head_series_created_total IS NOT NULL OR prometheus_tsdb_head_series_removed_total IS NOT NULL
-| STATS created_on = SUM(INCREASE(prometheus_tsdb_head_series_created_total)), prometheus_tsdb_head_series_removed_total_B = SUM(INCREASE(prometheus_tsdb_head_series_removed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS created_on = SUM(INCREASE(prometheus_tsdb_head_series_created_total)), prometheus_tsdb_head_series_removed_total_B = SUM(INCREASE(prometheus_tsdb_head_series_removed_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance
 | EVAL prometheus_tsdb_head_series_removed_total_B_calc = prometheus_tsdb_head_series_removed_total_B * -1
 | EVAL removed_on = prometheus_tsdb_head_series_removed_total_B_calc
 | KEEP time_bucket, instance, created_on, removed_on
@@ -8858,6 +9044,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8886,6 +9073,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -8899,7 +9087,7 @@ sum(increase(prometheus_target_scrapes_exceeded_sample_limit_total{instance="$in
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_target_scrapes_exceeded_sample_limit_total IS NOT NULL OR prometheus_target_scrapes_sample_duplicate_timestamp_total IS NOT NULL OR prometheus_target_scrapes_sample_out_of_bounds_total IS NOT NULL OR prometheus_target_scrapes_sample_out_of_order_total IS NOT NULL OR prometheus_rule_evaluation_failures_total IS NOT NULL OR prometheus_tsdb_compactions_failed_total IS NOT NULL OR prometheus_tsdb_reloads_failures_total IS NOT NULL OR prometheus_tsdb_head_series_not_found IS NOT NULL OR prometheus_evaluator_iterations_missed_total IS NOT NULL OR prometheus_evaluator_iterations_skipped_total IS NOT NULL
-| STATS prometheus_target_scrapes_exceeded_sample_limit_total_A = SUM(INCREASE(prometheus_target_scrapes_exceeded_sample_limit_total)), prometheus_target_scrapes_sample_duplicate_timestamp_total_B = SUM(INCREASE(prometheus_target_scrapes_sample_duplicate_timestamp_total)), prometheus_target_scrapes_sample_out_of_bounds_total_C = SUM(INCREASE(prometheus_target_scrapes_sample_out_of_bounds_total)), prometheus_target_scrapes_sample_out_of_order_total_D = SUM(INCREASE(prometheus_target_scrapes_sample_out_of_order_total)), prometheus_rule_evaluation_failures_total_G = SUM(INCREASE(prometheus_rule_evaluation_failures_total)), prometheus_tsdb_compactions_failed_total_K = SUM(INCREASE(prometheus_tsdb_compactions_failed_total)), prometheus_tsdb_reloads_failures_total_L = SUM(INCREASE(prometheus_tsdb_reloads_failures_total)), prometheus_tsdb_head_series_not_found_N = SUM(MAX_OVER_TIME(TO_DOUBLE(prometheus_tsdb_head_series_not_found), 5m)), prometheus_evaluator_iterations_missed_total_O = SUM(INCREASE(prometheus_evaluator_iterations_missed_total)), prometheus_evaluator_iterations_skipped_total_P = SUM(INCREASE(prometheus_evaluator_iterations_skipped_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS prometheus_target_scrapes_exceeded_sample_limit_total_A = SUM(INCREASE(prometheus_target_scrapes_exceeded_sample_limit_total)), prometheus_target_scrapes_sample_duplicate_timestamp_total_B = SUM(INCREASE(prometheus_target_scrapes_sample_duplicate_timestamp_total)), prometheus_target_scrapes_sample_out_of_bounds_total_C = SUM(INCREASE(prometheus_target_scrapes_sample_out_of_bounds_total)), prometheus_target_scrapes_sample_out_of_order_total_D = SUM(INCREASE(prometheus_target_scrapes_sample_out_of_order_total)), prometheus_rule_evaluation_failures_total_G = SUM(INCREASE(prometheus_rule_evaluation_failures_total)), prometheus_tsdb_compactions_failed_total_K = SUM(INCREASE(prometheus_tsdb_compactions_failed_total)), prometheus_tsdb_reloads_failures_total_L = SUM(INCREASE(prometheus_tsdb_reloads_failures_total)), prometheus_tsdb_head_series_not_found_N = SUM(MAX_OVER_TIME(TO_DOUBLE(prometheus_tsdb_head_series_not_found), 5m)), prometheus_evaluator_iterations_missed_total_O = SUM(INCREASE(prometheus_evaluator_iterations_missed_total)), prometheus_evaluator_iterations_skipped_total_P = SUM(INCREASE(prometheus_evaluator_iterations_skipped_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance
 | EVAL exceeded_sample_limit_on = CASE(prometheus_target_scrapes_exceeded_sample_limit_total_A > 0, prometheus_target_scrapes_exceeded_sample_limit_total_A, NULL)
 | EVAL duplicate_timestamp_on = CASE(prometheus_target_scrapes_sample_duplicate_timestamp_total_B > 0, prometheus_target_scrapes_sample_duplicate_timestamp_total_B, NULL)
 | EVAL out_of_bounds_on = CASE(prometheus_target_scrapes_sample_out_of_bounds_total_C > 0, prometheus_target_scrapes_sample_out_of_bounds_total_C, NULL)
@@ -8966,6 +9154,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -8987,6 +9176,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9001,7 +9191,7 @@ prometheus_target_interval_length_seconds{instance="$instance",quantile="0.99"} 
 TS metrics-prometheus-*
 | WHERE quantile == "0.99"
 | WHERE prometheus_target_interval_length_seconds IS NOT NULL
-| STATS prometheus_target_interval_length_seconds_quantile_0_99 = MAX(LAST_OVER_TIME(prometheus_target_interval_length_seconds)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS prometheus_target_interval_length_seconds_quantile_0_99 = MAX(LAST_OVER_TIME(prometheus_target_interval_length_seconds)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (prometheus_target_interval_length_seconds_quantile_0_99 - 0)
 | KEEP time_bucket, computed_value
 | SORT time_bucket ASC
@@ -9056,6 +9246,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9085,6 +9276,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9098,7 +9290,7 @@ sum(prometheus_evaluator_duration_seconds{instance="$instance"}) by (instance, q
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_evaluator_duration_seconds IS NOT NULL
-| STATS prometheus_evaluator_duration_seconds = SUM(prometheus_evaluator_duration_seconds) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, quantile
+| STATS prometheus_evaluator_duration_seconds = SUM(prometheus_evaluator_duration_seconds) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance, quantile
 | EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(quantile), ""))
 | SORT time_bucket ASC
 ```
@@ -9153,6 +9345,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9181,6 +9374,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9194,7 +9388,7 @@ sum(increase(http_requests_total{instance="$instance"}[$aggregation_interval])) 
 ```
 TS metrics-prometheus-*
 | WHERE http_requests_total IS NOT NULL
-| STATS http_requests_total = SUM(INCREASE(http_requests_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, handler
+| STATS http_requests_total = SUM(INCREASE(http_requests_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance, handler
 | WHERE http_requests_total > 0
 | EVAL legend = CONCAT(COALESCE(TO_STRING(handler), ""), " on ", COALESCE(TO_STRING(instance), ""))
 | SORT time_bucket ASC
@@ -9250,6 +9444,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=nested_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family nested_agg bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9277,6 +9472,7 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9288,8 +9484,9 @@ max(sum(http_request_duration_microseconds{instance="$instance"}) by (instance, 
 **Translated (line):**
 
 ```
-FROM metrics-prometheus-*
-| STATS inner_val = SUM(http_request_duration_microseconds) BY time_bucket = BUCKET(@timestamp, 50, ?_tstart, ?_tend), instance, handler, quantile
+TS metrics-prometheus-*
+| WHERE http_request_duration_microseconds IS NOT NULL
+| STATS inner_val = SUM(http_request_duration_microseconds) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance, handler, quantile
 | STATS http_request_duration_microseconds_max = MAX(inner_val) BY time_bucket
 | WHERE http_request_duration_microseconds_max > 0
 | SORT time_bucket ASC
@@ -9343,6 +9540,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9371,6 +9569,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 - `query_postprocessors` / `post_filter` → applied post-aggregation filter > 0
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9385,7 +9584,7 @@ sum(increase(http_request_size_bytes{instance="$instance", quantile="0.99"}[$agg
 TS metrics-prometheus-*
 | WHERE quantile == "0.99"
 | WHERE http_request_size_bytes IS NOT NULL
-| STATS http_request_size_bytes = SUM(MAX_OVER_TIME(TO_DOUBLE(http_request_size_bytes), 5m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, handler
+| STATS http_request_size_bytes = SUM(MAX_OVER_TIME(TO_DOUBLE(http_request_size_bytes), 5m)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance, handler
 | WHERE http_request_size_bytes > 0
 | EVAL legend = CONCAT(COALESCE(TO_STRING(handler), ""), " in ", COALESCE(TO_STRING(instance), ""))
 | SORT time_bucket ASC
@@ -9443,6 +9642,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9472,6 +9672,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9485,7 +9686,7 @@ sum(prometheus_engine_queries{instance="$instance"}) by (instance, handler) ||| 
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_engine_queries IS NOT NULL OR prometheus_engine_queries_concurrent_max IS NOT NULL
-| STATS Current_count = SUM(prometheus_engine_queries), Max_count = SUM(prometheus_engine_queries_concurrent_max) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance, handler
+| STATS Current_count = SUM(prometheus_engine_queries), Max_count = SUM(prometheus_engine_queries_concurrent_max) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance, handler
 | EVAL series_group = CONCAT(COALESCE(TO_STRING(instance), ""), " / ", COALESCE(TO_STRING(handler), ""))
 | KEEP time_bucket, instance, handler, Current_count, Max_count, series_group
 | SORT time_bucket ASC
@@ -9541,6 +9742,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9570,6 +9772,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9583,7 +9786,7 @@ sum(prometheus_notifications_queue_capacity{instance="$instance"})by (instance) 
 ```
 TS metrics-prometheus-*
 | WHERE prometheus_notifications_queue_capacity IS NOT NULL OR prometheus_notifications_queue_length IS NOT NULL
-| STATS Alert_queue_capacity = SUM(prometheus_notifications_queue_capacity), Alert_queue_size_on = SUM(prometheus_notifications_queue_length) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS Alert_queue_capacity = SUM(prometheus_notifications_queue_capacity), Alert_queue_size_on = SUM(prometheus_notifications_queue_length) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | KEEP time_bucket, instance, Alert_queue_capacity, Alert_queue_size_on
 | SORT time_bucket ASC
 ```
@@ -9638,7 +9841,7 @@ TS metrics-prometheus-*
 | Panel | Source Type → Kibana | Status | Verdict | Source Query | Translated Query |
 |-------|---------------------|--------|---------|-------------|-----------------|
 | Uptime | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval])) | TS metrics-prometheus-* \| WHERE redis_uptime_in_seconds IS NOT NULL \| STATS re... |
-| Clients | `singlestat` → `metric` | migrated | **MINOR_ISSUE** | redis_connected_clients{instance=~"$instance"} | TS metrics-prometheus-* \| WHERE redis_connected_clients IS NOT NULL \| STATS re... |
+| Clients | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | redis_connected_clients{instance=~"$instance"} | TS metrics-prometheus-* \| WHERE redis_connected_clients IS NOT NULL \| STATS re... |
 | Memory Usage | `singlestat` → `metric` | migrated_with_warnings | **MINOR_ISSUE** | 100 * (redis_memory_used_bytes{instance=~"$instance"}  / redis_memory_max_bytes{... | TS metrics-prometheus-* \| WHERE redis_memory_used_bytes IS NOT NULL OR redis_me... |
 | Commands Executed / sec | `graph` → `line` | migrated | **MINOR_ISSUE** | rate(redis_commands_processed_total{instance=~"$instance"}[1m]) | TS metrics-prometheus-* \| WHERE redis_commands_processed_total IS NOT NULL \| S... |
 | Hits / Misses per Sec | `graph` → `line` | migrated | **MINOR_ISSUE** | irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) \|\|\| irate(redis_k... | TS metrics-prometheus-* \| WHERE redis_keyspace_hits_total IS NOT NULL OR redis_... |
@@ -9669,6 +9872,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9697,6 +9901,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9708,7 +9913,7 @@ max(max_over_time(redis_uptime_in_seconds{instance=~"$instance"}[$__interval]))
 ```
 TS metrics-prometheus-*
 | WHERE redis_uptime_in_seconds IS NOT NULL
-| STATS redis_uptime_in_seconds = MAX(MAX_OVER_TIME(redis_uptime_in_seconds, 5m)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS redis_uptime_in_seconds = MAX(MAX_OVER_TIME(redis_uptime_in_seconds, 5m)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | STATS redis_uptime_in_seconds = LAST(redis_uptime_in_seconds, time_bucket)
 | KEEP redis_uptime_in_seconds
 ```
@@ -9761,6 +9966,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9791,6 +9997,7 @@ redis_connected_clients{instance=~"$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9802,7 +10009,7 @@ redis_connected_clients{instance=~"$instance"}
 ```
 TS metrics-prometheus-*
 | WHERE redis_connected_clients IS NOT NULL
-| STATS redis_connected_clients = MAX(LAST_OVER_TIME(redis_connected_clients)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS redis_connected_clients = MAX(LAST_OVER_TIME(redis_connected_clients)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | STATS redis_connected_clients = LAST(redis_connected_clients, time_bucket)
 | KEEP redis_connected_clients
 ```
@@ -9815,14 +10022,14 @@ TS metrics-prometheus-*
 - Source lang: `promql`
 - Target index: `metrics-prometheus-*`
 - Output metric: `redis_connected_clients`
-- Semantic losses: Dropped variable-driven label filters during migration
+- Semantic losses: Dropped variable-driven label filters during migration, Collapsed all series of `redis_connected_clients` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Visual IR:**
 
 - Kibana type: `metric`
 - Layout: x=4, y=0, w=4, h=11
 - Presentation kind: `esql`
-- Config keys: type, query, primary
+- Config keys: type, query, primary, time_range
 
 **Operational IR:**
 
@@ -9832,7 +10039,9 @@ TS metrics-prometheus-*
 
 - targets: 1
 
-**Semantic losses:** Dropped variable-driven label filters during migration
+**Warnings:** Collapsed all series of `redis_connected_clients` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+
+**Semantic losses:** Dropped variable-driven label filters during migration; Collapsed all series of `redis_connected_clients` into a single MAX line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
 
 **Verdict:** MINOR_ISSUE
 
@@ -9852,6 +10061,7 @@ TS metrics-prometheus-*
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9873,6 +10083,7 @@ TS metrics-prometheus-*
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9884,7 +10095,7 @@ TS metrics-prometheus-*
 ```
 TS metrics-prometheus-*
 | WHERE redis_memory_used_bytes IS NOT NULL OR redis_memory_max_bytes IS NOT NULL
-| STATS redis_memory_used_bytes_instance = AVG(LAST_OVER_TIME(redis_memory_used_bytes)), redis_memory_max_bytes_instance = AVG(LAST_OVER_TIME(redis_memory_max_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS redis_memory_used_bytes_instance = AVG(LAST_OVER_TIME(redis_memory_used_bytes)), redis_memory_max_bytes_instance = AVG(LAST_OVER_TIME(redis_memory_max_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL computed_value = (100 * (redis_memory_used_bytes_instance / redis_memory_max_bytes_instance))
 | STATS computed_value = LAST(computed_value, time_bucket)
 | KEEP computed_value
@@ -9906,7 +10117,7 @@ TS metrics-prometheus-*
 - Kibana type: `metric`
 - Layout: x=8, y=0, w=8, h=11
 - Presentation kind: `esql`
-- Config keys: type, query, primary
+- Config keys: type, query, primary, time_range
 
 **Operational IR:**
 
@@ -9938,6 +10149,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -9966,6 +10178,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -9979,7 +10192,7 @@ rate(redis_commands_processed_total{instance=~"$instance"}[1m])
 ```
 TS metrics-prometheus-*
 | WHERE redis_commands_processed_total IS NOT NULL
-| STATS redis_commands_processed_total = AVG(RATE(redis_commands_processed_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_commands_processed_total = AVG(RATE(redis_commands_processed_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -10031,6 +10244,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10059,6 +10273,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10072,7 +10287,7 @@ irate(redis_keyspace_hits_total{instance=~"$instance"}[5m]) ||| irate(redis_keys
 ```
 TS metrics-prometheus-*
 | WHERE redis_keyspace_hits_total IS NOT NULL OR redis_keyspace_misses_total IS NOT NULL
-| STATS hits = AVG(IRATE(redis_keyspace_hits_total)), misses = AVG(IRATE(redis_keyspace_misses_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS hits = AVG(IRATE(redis_keyspace_hits_total)), misses = AVG(IRATE(redis_keyspace_misses_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance
 | KEEP time_bucket, instance, hits, misses
 | SORT time_bucket ASC
 ```
@@ -10125,6 +10340,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10155,6 +10371,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10168,7 +10385,7 @@ redis_memory_used_bytes{instance=~"$instance"}  ||| redis_memory_max_bytes{insta
 ```
 TS metrics-prometheus-*
 | WHERE redis_memory_used_bytes IS NOT NULL OR redis_memory_max_bytes IS NOT NULL
-| STATS used = AVG(LAST_OVER_TIME(redis_memory_used_bytes)), max = AVG(LAST_OVER_TIME(redis_memory_max_bytes)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS used = AVG(LAST_OVER_TIME(redis_memory_used_bytes)), max = AVG(LAST_OVER_TIME(redis_memory_max_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | KEEP time_bucket, instance, used, max
 | SORT time_bucket ASC
 ```
@@ -10219,6 +10436,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10247,6 +10465,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10260,7 +10479,7 @@ rate(redis_net_input_bytes_total{instance=~"$instance"}[5m]) ||| rate(redis_net_
 ```
 TS metrics-prometheus-*
 | WHERE redis_net_input_bytes_total IS NOT NULL OR redis_net_output_bytes_total IS NOT NULL
-| STATS input = RATE(redis_net_input_bytes_total), output = RATE(redis_net_output_bytes_total) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS input = RATE(redis_net_input_bytes_total), output = RATE(redis_net_output_bytes_total) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
 | KEEP time_bucket, input, output
 | SORT time_bucket ASC
 ```
@@ -10313,6 +10532,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10342,6 +10562,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10355,7 +10576,7 @@ sum (redis_db_keys{instance=~"$instance"}) by (db)
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL
-| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), db
+| STATS redis_db_keys = SUM(redis_db_keys) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), db
 | SORT time_bucket ASC
 ```
 
@@ -10407,6 +10628,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=binary_expr backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family binary_expr bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10428,6 +10650,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10441,7 +10664,7 @@ sum (redis_db_keys{instance=~"$instance"}) - sum (redis_db_keys_expiring{instanc
 ```
 TS metrics-prometheus-*
 | WHERE redis_db_keys IS NOT NULL OR redis_db_keys_expiring IS NOT NULL
-| STATS redis_db_keys_A_lhs = SUM(redis_db_keys), expiring = SUM(redis_db_keys_expiring) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend)
+| STATS redis_db_keys_A_lhs = SUM(redis_db_keys), expiring = SUM(redis_db_keys_expiring) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
 | EVAL not_expiring = (redis_db_keys_A_lhs - expiring)
 | KEEP time_bucket, not_expiring, expiring
 | SORT time_bucket ASC
@@ -10494,6 +10717,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=range_agg backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10522,6 +10746,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10535,7 +10760,7 @@ sum(rate(redis_expired_keys_total{instance=~"$instance"}[5m])) by (instance) |||
 ```
 TS metrics-prometheus-*
 | WHERE redis_expired_keys_total IS NOT NULL OR redis_evicted_keys_total IS NOT NULL
-| STATS expired = SUM(RATE(redis_expired_keys_total)), evicted = SUM(RATE(redis_evicted_keys_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS expired = SUM(RATE(redis_expired_keys_total)), evicted = SUM(RATE(redis_evicted_keys_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), instance
 | KEEP time_bucket, instance, expired, evicted
 | SORT time_bucket ASC
 ```
@@ -10592,6 +10817,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=topk backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier` → fragment family topk bypasses unsupported-pattern check
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10614,6 +10840,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10627,7 +10854,7 @@ topk(5, irate(redis_commands_total{instance=~"$instance"} [1m]))
 ```
 TS metrics-prometheus-*
 | WHERE redis_commands_total IS NOT NULL
-| STATS value = AVG(IRATE(redis_commands_total)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), cmd
+| STATS value = AVG(IRATE(redis_commands_total)) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), cmd
 | SORT time_bucket ASC
 ```
 
@@ -10681,6 +10908,7 @@ redis_connected_clients{instance="$instance"}
 - `query_preprocessors` / `grafana_macros` → expanded Grafana macros
 - `query_preprocessors` / `parse_fragment` → parsed fragment family=simple_metric backend=ast
 - `query_classifiers` / `colocated_binary_agg_unblock`
+- `query_classifiers` / `agg_over_or_operand_drop`
 - `query_classifiers` / `fragment_guardrails`
 - `query_classifiers` / `family_classifier`
 - `query_classifiers` / `join_label_enrichment_check`
@@ -10711,6 +10939,7 @@ redis_connected_clients{instance="$instance"}
 - `query_postprocessors` / `post_filter`
 - `query_validators` / `metric_name_required`
 - `query_validators` / `dynamic_metric_name`
+- `query_validators` / `template_variable_placeholder_column`
 - `query_validators` / `time_filter_source_alignment`
 - `query_validators` / `live_metric_fields_exist`
 - `query_validators` / `rendered_query_required`
@@ -10724,7 +10953,7 @@ redis_connected_clients{instance="$instance"}
 ```
 TS metrics-prometheus-*
 | WHERE redis_connected_clients IS NOT NULL
-| STATS redis_connected_clients = AVG(LAST_OVER_TIME(redis_connected_clients)) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), instance
+| STATS redis_connected_clients = AVG(LAST_OVER_TIME(redis_connected_clients)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), instance
 | SORT time_bucket ASC
 ```
 
@@ -10783,8 +11012,8 @@ From the latest trace run:
 ```
 Elements:            289 total (266 panels + 23 rows)
 Renderable panels:   266
-  Migrated:             114 (42.9%)
-  With warnings:        145 (54.5%)
+  Migrated:             107 (40.2%)
+  With warnings:        152 (57.1%)
   Requires manual:        5 (1.9%)
   Not feasible:           1 (0.4%)
   Skipped:                1 (0.4%)
@@ -10793,8 +11022,8 @@ Renderable panels:   266
 Verdict breakdown:
 
 ```
-  CORRECT:                   11
-  MINOR_ISSUE:              238
+  CORRECT:                   10
+  MINOR_ISSUE:              239
   EXPECTED_LIMITATION:       40
 ```
 <!-- /GENERATED:APPENDIX_STATS -->
@@ -10817,4 +11046,4 @@ Every panel marked `not_feasible` in the trace run (1 total):
 
 ---
 
-*Last generated: 2026-08-04 18:38 UTC*
+*Last generated: 2026-09-02 14:04 UTC*

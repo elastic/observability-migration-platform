@@ -33,6 +33,10 @@ Covered here:
    all refuse rather than dropping an operand.
 4. The rewrites that *can* preserve the operator still translate, byte for byte
    — including ``or``, which keeps its established range-window fallback.
+
+``or`` between two genuinely different metrics was deliberately left open here
+and closed later, at classification time, by issue #434 — see
+``tests/test_issue434_agg_over_or_operand_drop.py``.
 """
 
 from __future__ import annotations
@@ -218,15 +222,16 @@ class TestAggOverBinaryRefusals(unittest.TestCase):
         (only ``or``) rather than a list of operators it refuses, because a
         deny-list omitted ``atan2`` and let exactly that through unwarned.
 
-        ``or`` is the one operator the guard hands on, so it is not swept here:
-        it still drops the right operand for a plain cross-metric union. That
-        gap is older and wider than this fix (it needs a resolver the parser
-        does not have) and is tracked separately.
+        ``or`` is still the one operator the *parse-time* guard hands on -- its
+        two reductions need a resolver the parser does not have -- but it is
+        swept here too, because ``agg_over_or_operand_drop_rule`` now closes the
+        same invariant at classification time, where the resolver exists
+        (issue #434).
         """
         for op in (
             "+", "-", "*", "/", "%", "^", "atan2",
             "==", "!=", ">", "<", ">=", "<=",
-            "and", "unless",
+            "and", "unless", "or",
         ):
             with self.subTest(op=op):
                 translated = _translate(f"count(node_a {op} node_b)")

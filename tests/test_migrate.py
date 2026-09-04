@@ -1958,6 +1958,26 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("Dropped grouping fields with incompatible target field types during migration", translated.warnings)
 
     def test_clamp_wrapper_uses_real_output_field_when_panel_drops_unmigrated_target(self):
+        # Both targets are ``linux_expr or node_cpu_average`` cloud fallbacks.
+        # Since issue #434 an ``or`` under an aggregation only reduces to its
+        # left operand when the right one is *provably* absent from the target,
+        # so seed the caps that prove it: node_cpu_seconds_total exists,
+        # node_cpu_average does not. Offline the same panel is refused rather
+        # than silently counting the Linux side alone.
+        self.seed_field_caps({
+            "node_cpu_seconds_total": {
+                "double": {
+                    "type": "double",
+                    "aggregatable": True,
+                    "searchable": True,
+                    "time_series_metric": "counter",
+                }
+            },
+            "node_name": {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}},
+            "mode": {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}},
+            "cpu": {"keyword": {"type": "keyword", "aggregatable": True, "searchable": True}},
+        })
+        self.resolver._discovery_status = "ok"
         panel = {
             "id": 22,
             "title": "$node_name - Overall CPU Utilization",
