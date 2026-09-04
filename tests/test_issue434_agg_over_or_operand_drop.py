@@ -207,6 +207,62 @@ class TestAggOverOrRefusals(unittest.TestCase):
         self.assertEqual(translated.feasibility, "not_feasible")
         self.assertFalse(translated.esql_query)
 
+    def test_nested_aggregation_does_not_reopen_the_hole(self):
+        """An outer agg around ``count/sum(A or B)`` still has to refuse.
+
+        The classifier originally inspected only the top fragment's inner
+        child. ``sum(count(A or B))`` stores the ``or`` one level down, so
+        the generic fallback rebuilt ``SUM(node_a)`` / ``COUNT(node_a)`` at
+        confidence 0.85 with no warning — the same silent drop issue #434
+        closed for the un-nested form.
+        """
+        for expr in (
+            "sum(count(node_a or node_b))",
+            "max(sum(node_a or node_b))",
+            "avg(count(node_a or node_b))",
+            "count(sum(node_a or node_b))",
+            "quantile(0.9, count(node_a or node_b))",
+        ):
+            with self.subTest(expr=expr):
+                translated = _translate(expr)
+                self.assertEqual(translated.feasibility, "not_feasible")
+                self.assertFalse(translated.esql_query)
+                self.assertNotIn("node_a", translated.esql_query or "")
+
+    def test_topk_over_cross_metric_or_does_not_keep_only_the_left_operand(self):
+        """``topk`` flattened the union to the left metric at parse time."""
+        for expr in (
+            "topk(3, node_a or node_b)",
+            "bottomk(3, node_a or node_b)",
+        ):
+            with self.subTest(expr=expr):
+                translated = _translate(expr)
+                self.assertEqual(translated.feasibility, "not_feasible")
+                self.assertFalse(translated.esql_query)
+
+    def test_label_replace_does_not_hide_an_inner_union(self):
+        """``label_replace`` stores the agg on ``lr_inner_frag``, not ``inner_frag``."""
+        translated = _translate(
+            'label_replace(sum(node_a or node_b), "x", "hello", "job", ".*")'
+        )
+
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertFalse(translated.esql_query)
+        joined = " ".join(translated.warnings)
+        self.assertIn("node_a", joined)
+        self.assertIn("node_b", joined)
+
+    def test_comparison_against_a_scalar_names_the_union(self):
+        """``avg(A or B) > 5`` used to refuse as 'Could not extract metric name'."""
+        translated = _translate("avg(node_a or node_b) > 5")
+
+        self.assertEqual(translated.feasibility, "not_feasible")
+        self.assertFalse(translated.esql_query)
+        joined = " ".join(translated.warnings)
+        self.assertIn("or", joined.lower())
+        self.assertIn("node_b", joined)
+        self.assertNotIn("Could not extract metric name", joined)
+
     def test_refusal_does_not_depend_on_panel_type(self):
         for panel_type in ("stat", "singlestat", "gauge", "timeseries", "graph", "table"):
             with self.subTest(panel_type=panel_type):
@@ -262,6 +318,22 @@ class TestAggOverOrStillTranslatable(unittest.TestCase):
         self.assertEqual(translated.feasibility, "feasible")
         self.assertIn("AVG(RATE(m_total))", translated.esql_query)
 
+    def test_topk_over_a_range_fallback_still_translates(self):
+        translated = _translate("topk(3, rate(m_total[10m]) or irate(m_total[5m]))")
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertTrue(translated.esql_query)
+        self.assertIn("m_total", translated.esql_query)
+
+    def test_nested_aggregation_over_a_range_fallback_still_translates(self):
+        """``sum(avg(rate or irate))`` must keep the reduction, not refuse."""
+        translated = _translate(
+            "sum(avg(rate(m_total[10m]) or irate(m_total[5m])))"
+        )
+
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("RATE(m_total)", translated.esql_query)
+
     def test_colocated_ratio_over_a_range_fallback_still_renders(self):
         translated = _translate(
             "sum(rate(a_total[5m]) / rate(b_total[5m])"
@@ -296,6 +368,15 @@ class TestAggOverOrDisclosure(unittest.TestCase):
 
         joined = " ".join(translated.warnings)
         self.assertIn("PromQL same-metric 'or': preferred left 'rate(...)'", joined)
+        self.assertIn("irate(...)", joined)
+
+    def test_nested_range_window_fallback_drop_is_disclosed(self):
+        translated = _translate(
+            "sum(avg(rate(m_total[10m]) or irate(m_total[5m])))"
+        )
+
+        joined = " ".join(translated.warnings)
+        self.assertIn("same-metric 'or'", joined)
         self.assertIn("irate(...)", joined)
 
     def test_wrapped_and_bare_disclose_the_same_range_fallback_drop(self):
@@ -340,8 +421,18 @@ class TestAggOverOrDisclosure(unittest.TestCase):
         self.assertNotIn("same-metric 'or'", joined)
         self.assertNotIn("absent from the live target", joined)
 
+    def test_identical_operands_do_not_claim_a_range_window_drop(self):
+        """``count(node_a or node_a)`` is a no-op union, not an alternate window."""
+        translated = _translate("count(node_a or node_a)")
 
-class TestAggOverOrReason(unittest.TestCase):
+        self.assertEqual(translated.feasibility, "feasible")
+        self.assertIn("COUNT(node_a)", translated.esql_query)
+        joined = " ".join(translated.warnings)
+        self.assertNotIn("same-metric 'or'", joined)
+        self.assertNotIn("alternate-window", joined)
+
+
+class TestAggOverOrRefusalReason(unittest.TestCase):
     """The refusal message has to tell an operator what to do next."""
 
     def test_reason_describes_union_semantics_not_filtering(self):

@@ -87,11 +87,11 @@ from .promql import (
     _resolve_metric_field,
     _same_metric_range_fallback_warning,
     _summary_mode_from_metadata,
-    agg_over_or_reduction,
     classify_promql_complexity,
     colocated_binary_agg_plan,
     colocated_metric_fields,
     gauge_default_agg_warning,
+    iter_agg_over_or_reductions,
     preprocess_grafana_macros,
     resolve_counter_range_translation,
 )
@@ -1158,7 +1158,12 @@ def agg_over_or_operand_drop_rule(context):
     ``fragment_extract``/``stats_expression`` fallback rebuilt
     ``agg(<first metric leaf>)`` from the fragment's summary fields and shipped
     it clean: ``count(node_a or node_b)`` became ``COUNT(node_a)`` with no
-    warning (issue #434). The bare chain keeps both operands (``COALESCE`` /
+    warning (issue #434). The same fallback still fires when the ``or`` sits
+    under a *nested* aggregation (``sum(count(A or B))``, ``max(sum(A or B))``),
+    because the ``or`` is on the inner fragment rather than the root's
+    ``inner_frag``. This rule therefore walks every nested ``agg(A or B)``.
+
+    The bare chain keeps both operands (``COALESCE`` /
     unified ``WHERE ... OR``) or refuses outright, so the wrapper was inverting
     the verdict on the identical expression.
 
@@ -1168,27 +1173,28 @@ def agg_over_or_operand_drop_rule(context):
     ``colocated_binary_agg_plan`` can render, which requires the same reduction
     to have elected an operand -- exactly the case this rule stays silent for.
     """
-    frag = context.fragment
-    reduction = agg_over_or_reduction(frag, context.resolver)
-    if reduction is None:
-        return None
-    if reduction.preferred is None:
-        reason = _agg_over_or_not_feasible_reason(
-            frag.outer_agg, _fragment_metric_names(reduction.chain)
-        )
-        _append_not_feasible_reason(frag, reason)
-        return reason
-    # A reduction did elect an operand, but the ones it removed still have to be
-    # disclosed -- the same warnings the bare path emits for the same drops.
     details = []
-    if reduction.dropped_absent:
-        _append_unique(context.warnings, _ABSENT_OR_OPERAND_WARNING)
-        details.append("disclosed live-absent 'or' operand drop")
-    if reduction.dropped_fallback:
-        _append_unique(
-            context.warnings, _same_metric_range_fallback_warning(reduction.chain)
-        )
-        details.append("disclosed dropped same-metric range-window fallback")
+    for current, reduction in iter_agg_over_or_reductions(
+        context.fragment, context.resolver
+    ):
+        if reduction.preferred is None:
+            reason = _agg_over_or_not_feasible_reason(
+                current.outer_agg, _fragment_metric_names(reduction.chain)
+            )
+            # Tag the root fragment so fragment_guardrails (priority 1) sees
+            # the reason. Nested aggregations store the ``or`` on an inner
+            # fragment whose own not_feasible_reasons would otherwise never
+            # reach the panel.
+            _append_not_feasible_reason(context.fragment, reason)
+            return reason
+        if reduction.dropped_absent:
+            _append_unique(context.warnings, _ABSENT_OR_OPERAND_WARNING)
+            details.append("disclosed live-absent 'or' operand drop")
+        if reduction.dropped_fallback:
+            _append_unique(
+                context.warnings, _same_metric_range_fallback_warning(reduction.chain)
+            )
+            details.append("disclosed dropped same-metric range-window fallback")
     return "; ".join(details) or None
 
 

@@ -2338,6 +2338,16 @@ def _copy_fragment_summary(target, source):
         "start_metric",
         "vector_matching",
         "wrapped_scalar",
+        # Comparison-with-scalar and label_replace/label_join copy the left
+        # summary onto a new fragment. Without these children the issue #434
+        # classifier cannot see a nested ``agg(A or B)`` (``avg(A or B) > 5``,
+        # ``label_replace(sum(A or B), ...)``) and the generic fallback ships
+        # ``agg(<first leaf>)``.
+        "inner_frag",
+        "left_frag",
+        "right_frag",
+        "lr_inner_frag",
+        "lj_inner_frag",
     ):
         if source.extra.get(key) is not None and key not in target.extra:
             target.extra[key] = source.extra[key]
@@ -2350,11 +2360,15 @@ def _iter_fragment_children(frag):
     if not frag:
         return []
     children = []
-    child = frag.extra.get("inner_frag")
-    if isinstance(child, PromQLFragment):
-        children.append(child)
-    for key in ("left_frag", "right_frag"):
-        child = frag.extra.get(key)
+    extra = getattr(frag, "extra", None) or {}
+    for key in (
+        "inner_frag",
+        "left_frag",
+        "right_frag",
+        "lr_inner_frag",
+        "lj_inner_frag",
+    ):
+        child = extra.get(key) if isinstance(extra, dict) else None
         if isinstance(child, PromQLFragment):
             children.append(child)
     if isinstance(frag.binary_rhs, PromQLFragment):
@@ -2493,6 +2507,12 @@ def _ast_call_fragment(node, expr):
             frag = _copy_fragment_summary(_new_fragment(expr, family="topk"), value_frag)
             frag.extra["topk_limit"] = int(limit_frag.scalar_value)
             frag.extra["topk_value_expr"] = value_frag.raw_expr
+            if (
+                getattr(value_frag, "family", "") == "binary_expr"
+                and (getattr(value_frag, "binary_op", "") or "").lower() == "or"
+            ):
+                frag.extra["inner_frag"] = value_frag
+                frag.outer_agg = "topk"
             return frag
 
     if func_name in SUPPORTED_RANGE_FUNCTIONS and len(args) == 1 and type(args[0]).__name__ == "MatrixSelector":
@@ -3042,6 +3062,15 @@ def _ast_aggregate_fragment(node, expr):
             topk_frag.extra["topk_limit"] = 10
         topk_frag.extra["topk_value_expr"] = child.raw_expr
         topk_frag.extra["topk_sort_asc"] = frag.outer_agg == "bottomk"
+        # Flattening copies the left metric leaf. If the value is an ``or``
+        # union, keep that chain on inner_frag so the issue #434 classifier
+        # can refuse an irreducible drop instead of shipping topk(left only).
+        if (
+            getattr(child, "family", "") == "binary_expr"
+            and (getattr(child, "binary_op", "") or "").lower() == "or"
+        ):
+            topk_frag.extra["inner_frag"] = child
+            topk_frag.outer_agg = frag.outer_agg
         return topk_frag
 
     # quantile(phi, expr) by (..) == ES|QL PERCENTILE(expr, phi*100). Capture the
@@ -6229,9 +6258,41 @@ def agg_over_or_reduction(frag, resolver):
     elif survivors and _operands_are_same_metric_range_fallback(survivors):
         preferred = survivors[0]
         dropped_fallback = dropped_fallback + survivors[1:]
+    # Identical ``count(node_a or node_a)`` collapses because simple_metric
+    # identity ignores range_func. That is not a range-window fallback, so
+    # do not disclose it as one. After macros, a real
+    # ``max_over_time(M[$interval]) or max_over_time(M[5m])`` still has a
+    # range shape and keeps the disclosure.
+    if dropped_fallback and not _operands_are_same_metric_range_fallback(operands):
+        dropped_fallback = []
     return AggOverOrReduction(
         chain, preferred, dropped_absent, dropped_fallback, survivors
     )
+
+
+def iter_agg_over_or_reductions(frag, resolver):
+    """Yield ``(fragment, reduction)`` for every ``agg(A or B)`` in *frag*.
+
+    ``agg_over_or_reduction`` looks at one fragment's own inner child. Nested
+    aggregations such as ``sum(count(A or B))`` store the ``or`` on the inner
+    fragment, so a top-only walk would miss it and the generic fallback would
+    rebuild ``agg(<first metric leaf>)`` — the issue #434 silent drop, one
+    wrapping layer down. Walking ``inner_frag`` / ``left_frag`` / ``right_frag``
+    keeps the classifier and the renderer on the same definition of "is this
+    union reducible".
+    """
+    seen: set[int] = set()
+    stack = [frag]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        reduction = agg_over_or_reduction(current, resolver)
+        if reduction is not None:
+            yield current, reduction
+        for child in _iter_fragment_children(current):
+            stack.append(child)
 
 
 def _expr_for_or_collapse_parse(expr: str, rule_pack=None) -> str:
