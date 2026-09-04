@@ -181,6 +181,29 @@ class DetectorMatchableShapesTests(unittest.TestCase):
         self.assertFalse(detect(f"{READY} / ignoring(__name__) {TOTAL}"))
         self.assertFalse(detect(f"{READY} * on(statefulset) group_left() {TOTAL}"))
 
+    def test_mixed_aggregation_against_a_bare_metric_is_not_flagged(self):
+        """``sum(A) / B`` is a loud 400 on Elasticsearch, not a silent empty.
+
+        Live 9.5.0-SNAPSHOT: ``aggregate function [...] not allowed outside
+        STATS``. Flagging it would hide a visible failure behind the same-bucket
+        approximation; leaving it native keeps the 400. ``vector(1) / A``
+        (nameless vs named) does return rows, so empty-vs-non-empty name sets
+        are not themselves unmatchable.
+        """
+        self.assertFalse(detect(f"sum({READY}) / {TOTAL}"))
+        self.assertFalse(detect(f"sum by (namespace) ({READY}) / {TOTAL}"))
+        self.assertFalse(detect(f"{READY} / sum({TOTAL})"))
+
+    def test_name_regex_selector_is_not_flagged(self):
+        """``{__name__=~\"...\"} / metric`` is a loud 400, not a silent empty.
+
+        Live 9.5.0-SNAPSHOT: ``regex label selectors on __name__ are not
+        supported at this time``. Exact ``{__name__=\"A\"} / B`` *is* detected
+        because both sides are determinate disjoint names.
+        """
+        self.assertFalse(detect(f'{{__name__=~"{READY}"}} / {TOTAL}'))
+        self.assertTrue(detect(f'{{__name__="{READY}"}} / {TOTAL}'))
+
     def test_metricless_selector_is_indeterminate_not_flagged(self):
         # Elasticsearch rejects these outright ("__name__ label selector is
         # required"); do not guess at their name set.
@@ -328,6 +351,26 @@ class AlertRoutingTests(unittest.TestCase):
         )
         self.assertTrue(_has_source_faithful_query(ir))
 
+    def test_control_bound_matcher_alert_is_not_called_faithful(self):
+        """Dashboard ``$namespace`` matchers have no control on an alert rule.
+
+        The generator already returned empty for this shape (unbound ``?namespace``
+        would fail evaluation). The faithfulness probe must agree, or the rule
+        is advertised as automated with no query.
+        """
+        from observability_migration.core.mapping import (
+            _generate_esql_for_alert,
+            _has_source_faithful_query,
+        )
+
+        expr = (
+            "node_memory_MemAvailable_bytes{namespace=~\"$namespace\"} "
+            "/ node_memory_MemTotal_bytes{namespace=~\"$namespace\"} < 0.1"
+        )
+        ir = self._ir_for(expr)
+        self.assertFalse(_has_source_faithful_query(ir))
+        self.assertFalse(str(_generate_esql_for_alert(ir, "metrics-*") or "").strip())
+
     def test_faithfulness_probe_agrees_with_the_query_it_promises(self):
         """The probe is resolver-free; the real call is not.
 
@@ -363,6 +406,8 @@ class AlertRoutingTests(unittest.TestCase):
             "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1",
             "changes(node_memory_MemAvailable_bytes[5m]) "
             "/ node_memory_MemTotal_bytes < 0.1",
+            "node_memory_MemAvailable_bytes{namespace=~\"$namespace\"} "
+            "/ node_memory_MemTotal_bytes{namespace=~\"$namespace\"} < 0.1",
         ):
             ir = self._ir_for(expr)
             promised = _has_source_faithful_query(ir)

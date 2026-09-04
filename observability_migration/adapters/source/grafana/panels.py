@@ -2782,7 +2782,7 @@ def _translate_panel_native_promql(
                 panel_notes,
                 "Native PROMQL skipped: target does not support PromQL label matcher params yet",
             )
-        elif _promql_has_unmatchable_vector_match(expr):
+        if _promql_has_unmatchable_vector_match(expr):
             _append_unique(
                 panel_notes,
                 "Native PROMQL skipped: element-wise arithmetic between different "
@@ -2888,15 +2888,14 @@ def _translate_panel_native_promql(
         #
         # NOTE: occurrence count is a proxy for "derived value", not a guarantee
         # of a single row. An implicit-match ratio (``node_memory_MemAvailable
-        # _bytes / node_memory_MemTotal_bytes``) has two operands and stays
-        # native, yet when multiple instances are scraped it matches per-instance
-        # and fans out to one series each — so single-value tiles can surface a
-        # multi-row instant result. Kibana reduces/repeats it the same way
-        # Grafana does for gauges; this is the intended outcome and mirrors
-        # #138's accepted line-chart behavior — kept native by design rather
-        # than degraded (#146). (Explicit vector matching like ``/ on(instance)``
-        # is a separate case: ``build_native_promql_query`` rejects it, so those
-        # degrade to ES|QL regardless of this gate.)
+        # _bytes / node_memory_MemTotal_bytes``) has two operands, but
+        # Elasticsearch keeps ``__name__`` in the matching key so the native
+        # command returns zero rows (issue #376). ``can_use_native_promql``
+        # therefore declines that shape and this single-value gate is not
+        # reached for it. Same-metric ratios and aggregated ``sum(A)/sum(B)``
+        # still stay native here. (Explicit vector matching like
+        # ``/ on(instance)`` is a separate case: ``build_native_promql_query``
+        # rejects it, so those degrade to ES|QL regardless of this gate.)
         #
         # Parse the *source* expression for the bare-selector check: native
         # cleaning rewrites ``{instance="$host"}`` to ``{instance=?host}``,

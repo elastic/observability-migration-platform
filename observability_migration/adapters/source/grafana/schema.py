@@ -891,6 +891,36 @@ class SchemaResolver:
         """
         return self._cooccurring_candidates(metric_field, [candidate]).get(candidate)
 
+    def metric_fields_cooccur(self, fields):
+        """Whether every pair of metric ``fields`` shares at least one document.
+
+        Returns ``True`` when every pair is proven to co-occur, ``False`` when
+        any pair is proven disjoint, and ``None`` when the target cannot answer
+        (offline, empty input after dedupe of a single field, or probe error).
+        Callers must treat ``None`` as unknown — not as a refusal — so offline
+        translation keeps its existing layout assumption.
+        """
+        unique: list[str] = []
+        for field in fields or []:
+            name = str(field or "").strip()
+            if name and name not in unique:
+                unique.append(name)
+        if len(unique) < 2:
+            return True
+        unknown = False
+        for i, left in enumerate(unique):
+            for right in unique[i + 1 :]:
+                result = self._cooccurs(left, right)
+                if result is None:
+                    result = self._cooccurs(right, left)
+                if result is False:
+                    return False
+                if result is not True:
+                    unknown = True
+        if unknown:
+            return None
+        return True
+
     def _probe_cooccurrence_batch(self, metric_field, candidates):
         """Single ES|QL probe counting, among documents where ``metric_field``
         is non-null, how many also carry each candidate field.

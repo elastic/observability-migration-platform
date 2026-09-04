@@ -39,6 +39,7 @@ from .promql import (
     PromQLFragment,
     _apply_fragment_to_context,
     _apply_metric_map_to_rate_on_simple,
+    _apply_outer_agg,
     _apply_unit_scale,
     _build_esql,
     _build_formula_plan,
@@ -1340,6 +1341,14 @@ def warning_pattern_rule(context):
     return None
 
 
+def _metric_fields_are_disjoint(resolver, fields) -> bool:
+    """True when live evidence proves the metric fields never share a document."""
+    probe = getattr(resolver, "metric_fields_cooccur", None)
+    if probe is None or not fields:
+        return False
+    return probe(fields) is False
+
+
 @QUERY_TRANSLATORS.register("colocated_binary_agg_family", priority=0)
 def colocated_binary_agg_family_rule(context):
     """``agg(A op B)`` over operands that share a label set.
@@ -1353,10 +1362,18 @@ def colocated_binary_agg_family_rule(context):
     stages (20/90) build ``agg(<frag.metric>)`` from fragment fields and know
     nothing about binary expressions, so letting them win drops an operand
     silently.
+
+    Live co-occurrence can refute the wide-document assumption (Prometheus
+    remote_write stores one sample per document). Those fragments skip this
+    rule so ``sparse_binary_agg_family`` can render same-bucket STATS/EVAL
+    instead of an empty ``WHERE A AND B`` panel.
     """
     frag = context.fragment
     plan = colocated_binary_agg_plan(frag, context.resolver, context.rule_pack)
     if plan is None:
+        return None
+    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
+    if _metric_fields_are_disjoint(context.resolver, colocated_metric_fields(inner, context.resolver)):
         return None
     value_expr, leaf = plan
     rp = context.rule_pack
@@ -1385,7 +1402,6 @@ def colocated_binary_agg_family_rule(context):
     # evaluating the arithmetic per document, so a row missing either metric is
     # not a valid sample of the expression -- without this the aggregate silently
     # loses whole series (measured: 1.23 instead of 42.41, one of two instances).
-    inner = (getattr(frag, "extra", {}) or {}).get("inner_frag")
     for metric_field in colocated_metric_fields(inner, context.resolver):
         parts.append(f"| WHERE {_esql_identifier(metric_field)} IS NOT NULL")
     stats_line = f"| STATS {alias} = {OUTER_AGG_MAP[(frag.outer_agg or '').lower()]}({value_expr})"
@@ -1421,6 +1437,116 @@ def colocated_binary_agg_family_rule(context):
         "per label-set; PromQL's all-label matching guarantees the operands align)",
     )
     return "translated co-located per-element arithmetic"
+
+
+@QUERY_TRANSLATORS.register("sparse_binary_agg_family", priority=1)
+def sparse_binary_agg_family_rule(context):
+    """``agg(A op B)`` when the operand metrics do not share a document.
+
+    The co-located renderer requires ``WHERE A IS NOT NULL AND B IS NOT NULL``.
+    Prometheus remote_write (and the native Prometheus write endpoint) store
+    one sample per document, so that filter matches nothing and the panel
+    renders empty — the same silent-empty failure issue #376 exists to stop.
+    Aggregate each operand independently, EVAL the arithmetic, then apply the
+    outer aggregation. Mark complete even when the formula plan cannot be
+    built, so the generic single-metric fallback cannot drop an operand.
+    """
+    frag = context.fragment
+    if colocated_binary_agg_plan(frag, context.resolver, context.rule_pack) is None:
+        return None
+    extra = getattr(frag, "extra", None) if frag else None
+    inner = extra.get("inner_frag") if isinstance(extra, dict) else None
+    fields = colocated_metric_fields(inner, context.resolver)
+    if not _metric_fields_are_disjoint(context.resolver, fields):
+        return None
+
+    def _refuse(reason):
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        context.translation_complete = True
+        _append_unique(context.warnings, reason)
+        return "sparse agg-over-binary not formula-planable"
+
+    formula = _build_formula_plan(
+        inner,
+        context.resolver,
+        context.rule_pack,
+        summary_mode=_summary_mode_from_metadata(context.metadata),
+        preferred_group_labels=context.metadata.get("preferred_group_labels"),
+        preferred_group_labels_origin=context.metadata.get("preferred_group_labels_origin"),
+    )
+    if not formula or not formula.specs:
+        return _refuse(
+            "PromQL aggregation over arithmetic between metrics that do not "
+            "share a document cannot be translated safely yet"
+        )
+    shared = _build_shared_measure_pipeline(context.index, formula.specs)
+    if not shared:
+        return _refuse(
+            "PromQL aggregation over arithmetic with divergent filters/groupings "
+            "cannot be translated safely yet"
+        )
+
+    parts, output_group_fields, _ = shared
+    alias = "computed_value"
+    parts.append(f"| EVAL {alias} = {formula.expr}")
+    outer_name = (frag.outer_agg or "").lower()
+    if outer_name not in OUTER_AGG_MAP:
+        return _refuse(
+            f"PromQL aggregation '{frag.outer_agg}' over sparse-document "
+            "arithmetic cannot be translated safely yet"
+        )
+    outer_keep = []
+    if "time_bucket" in output_group_fields:
+        outer_keep.append("time_bucket")
+    for group in _frag_group_labels(
+        frag,
+        context.resolver,
+        context.metadata.get("preferred_group_labels"),
+        preferred_origin=context.metadata.get("preferred_group_labels_origin"),
+    ):
+        if group and group not in outer_keep:
+            outer_keep.append(group)
+    agg_call = _apply_outer_agg(OUTER_AGG_MAP[outer_name], alias, frag)
+    stats_line = f"| STATS {alias} = {agg_call}"
+    if outer_keep:
+        stats_line += f" BY {', '.join(outer_keep)}"
+    parts.append(stats_line)
+    output_group_fields = outer_keep
+
+    context.parser_backend = "fragment"
+    context.source_type = formula.specs[0].source_type
+    context.metric_name = alias
+    context.output_metric_field = alias
+
+    collapsed = None
+    if _summary_mode_from_metadata(context.metadata):
+        collapsed = _collapse_summary_ts_query(
+            parts, output_group_fields, [alias],
+            keep_time_bucket=context.panel_type in {"table", "table-old"},
+            reduce_calc=context.metadata.get("reduce_calc", ""),
+        )
+    if collapsed is None:
+        parts.append(f"| KEEP {_keep(output_group_fields, alias)}")
+        if "time_bucket" in output_group_fields:
+            parts.append("| SORT time_bucket ASC")
+    else:
+        output_group_fields = collapsed
+    context.output_group_fields = output_group_fields
+    context.esql_query = "\n".join(parts)
+    context.translation_complete = True
+    _append_unique(
+        context.warnings,
+        "Operand metrics do not co-occur on the same document, so agg(A op B) "
+        "is rendered as same-bucket ES|QL aggregations combined after STATS "
+        "rather than per-document arithmetic",
+    )
+    for warning in formula.warnings:
+        _append_unique(context.warnings, warning)
+    for spec in formula.specs:
+        for warning in spec.warnings:
+            _append_unique(context.warnings, warning)
+    return "translated sparse-document agg-over-binary arithmetic"
 
 
 @QUERY_TRANSLATORS.register("scalar_family", priority=1)

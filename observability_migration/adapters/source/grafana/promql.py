@@ -7304,10 +7304,13 @@ __all__ = [
 #
 # ``agg(A op B) != agg(A) op agg(B)``, which is why the normaliser refuses this
 # shape by default. That inequality only matters if A and B must be aggregated
-# separately. When the operands share a label set they land on the SAME document
-# row in every Prometheus->Elasticsearch layout (one document per timestamp +
-# label-set carrying each metric of that set), so ES|QL can evaluate ``A op B``
-# per row and aggregate the result -- which is exactly ``agg(A op B)``.
+# separately. When the operands share a label set *and* the target stores every
+# metric of that set on one document (wide / ECS-style layouts), ES|QL can
+# evaluate ``A op B`` per row and aggregate the result -- which is exactly
+# ``agg(A op B)``. Prometheus remote_write and the native Prometheus write
+# endpoint are typically one sample per document, so the same AND-filter
+# rendering returns no rows; those targets fall through to same-bucket
+# STATS/EVAL instead (see ``sparse_binary_agg_family``).
 #
 # PromQL itself proves the label sets match: a binary operation with no
 # ``on()``/``ignoring()`` modifier matches on ALL labels, so a dashboard that

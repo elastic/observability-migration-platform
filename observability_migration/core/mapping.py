@@ -1064,17 +1064,28 @@ def _esql_translated_alert_query(
 
     ``_has_source_faithful_query`` and ``_generate_esql_for_alert`` both call
     this so they cannot disagree. The translator has no ES|QL form for a number
-    of PromQL functions (``changes()``, ``absent()``, ``predict_linear()``), and
-    a rule with no comparison and no explicit threshold has nothing to fire on;
-    promising a source-faithful query in those cases would advertise a rule that
-    ends up carrying no query at all.
+    of PromQL functions (``changes()``, ``absent()``, ``predict_linear()``);
+    control-bound label matchers (``{namespace=~"$namespace"}``) have no
+    dashboard control on an alert rule; and a rule with no comparison and no
+    explicit threshold has nothing to fire on. Promising a source-faithful
+    query in those cases would advertise a rule that ends up carrying no
+    query at all.
     """
+    from observability_migration.adapters.source.grafana.panels import (
+        _promql_label_matcher_has_template_variable,
+    )
     from observability_migration.adapters.source.grafana.promql import (
         _esql_identifier,
     )
     from observability_migration.adapters.source.grafana.translate import (
         translate_promql_to_esql,
     )
+
+    # Alerts have no dashboard control to bind ``{namespace=~"$namespace"}``.
+    # Promising a source-faithful query here advertised a rule whose generator
+    # then returned empty (issue #376 review).
+    if _promql_label_matcher_has_template_variable(primary_expr):
+        return ""
 
     translated = translate_promql_to_esql(
         primary_expr,

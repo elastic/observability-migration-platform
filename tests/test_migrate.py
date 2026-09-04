@@ -4906,7 +4906,7 @@ class TranslatorRegressionTests(unittest.TestCase):
         }
         rule_pack = rules.RulePackConfig(native_promql=True)
 
-        yaml_panel, _result = panels.translate_panel(
+        yaml_panel, result = panels.translate_panel(
             panel,
             esql_index="metrics-*",
             datasource_index="metrics-*",
@@ -4919,6 +4919,8 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
         self.assertIn("computed_value", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
 
     def test_distinct_metric_difference_degrades_to_esql_on_stat(self):
         """The ``stat`` grafana_type maps to the ``metric`` kibana type — a
@@ -5260,6 +5262,12 @@ class TranslatorRegressionTests(unittest.TestCase):
         ``migrated`` with confidence 0.9 and no warning, while returning zero
         rows against a target that contained both metrics.
         """
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
+        )
+
         expr = (
             "kube_statefulset_status_replicas_ready{namespace=~\"$namespace\"}"
             "/kube_statefulset_status_replicas{namespace=~\"$namespace\"}*100"
@@ -5267,24 +5275,49 @@ class TranslatorRegressionTests(unittest.TestCase):
         panel = {
             "title": "Statefulset replicas",
             "type": "graph",
-            "targets": [{"refId": "A", "expr": expr}],
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": expr,
+                    "legendFormat": "{{statefulset}}",
+                }
+            ],
         }
         rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="test"
+        )
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test"
+        )
+        resolver = schema.SchemaResolver(rule_pack)
 
         yaml_panel, result = panels.translate_panel(
             panel,
             esql_index="metrics-*",
             datasource_index="metrics-*",
             rule_pack=rule_pack,
-            resolver=self.resolver,
+            resolver=resolver,
         )
 
         query = yaml_panel["esql"]["query"]
         self.assertNotIn("PROMQL", query)
         self.assertIn("kube_statefulset_status_replicas_ready", query)
         self.assertIn("kube_statefulset_status_replicas", query)
-        self.assertNotEqual(result.status, "migrated")
-        self.assertLess(result.confidence, 0.9)
+        self.assertIn("STATS", query)
+        self.assertIn("EVAL", query)
+        self.assertIn("computed_value", query)
+        self.assertIn("k8s.statefulset.name", query)
+        self.assertIn("?namespace", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
+        self.assertTrue(
+            any(
+                "element-wise arithmetic between different metric names" in note
+                for note in result.notes
+            ),
+            f"expected a #376 native-skip explanation, got {result.notes}",
+        )
 
     def test_distinct_metric_arithmetic_records_native_skip_note(self):
         """The degradation must be explained, not silent: the operator-visible
