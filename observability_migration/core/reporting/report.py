@@ -372,6 +372,15 @@ def _describe_field_discovery(field_discovery):
     return f"target schema under '{index_pattern}' was not recognized"
 
 
+# Representative emitted field spellings for each named Prometheus profile,
+# used to describe the *actual* offline emit instead of a bogus OTel fallback.
+_NAMED_PROMETHEUS_FIELD_EXAMPLES = {
+    "prometheus_native": "e.g. labels.pod / metrics.<metric_name>",
+    "prometheus_metrics": "e.g. prometheus.labels.pod / prometheus.metrics.<metric_name>",
+    "prometheus_remote_write": "e.g. prometheus.labels.pod / prometheus.<metric_name>.value",
+}
+
+
 def print_field_discovery_warning(field_discovery):
     """Print a prominent, top-of-summary warning when migrated panels query
     unverified OTel field defaults. No-op unless ``otel_fallback`` is set, so
@@ -398,6 +407,32 @@ def print_field_discovery_warning(field_discovery):
         print(
             "  Fix: ensure the target stores the raw Prometheus names, or re-run\n"
             "       with --field-profile otel and --es-url for automatic mapping."
+        )
+        return
+    # A named Prometheus profile that never reached the target (offline/empty/
+    # error) emits that layout's fixed namespaced spellings deterministically —
+    # it does NOT fall through to OTel service.name. Describe the real emitted
+    # layout instead of claiming an OTel fallback that did not happen. (When
+    # discovery DID run — status "ok" — a label absent from the profile can
+    # still fall through to a blind OTel default, so keep the OTel wording for
+    # that case below.)
+    field_profile = field_discovery.get("field_profile")
+    if (
+        field_profile in _NAMED_PROMETHEUS_FIELD_EXAMPLES
+        and field_discovery.get("status") in {"offline", "empty", "error"}
+    ):
+        print(f"  {_describe_field_discovery(field_discovery)}.")
+        example = _NAMED_PROMETHEUS_FIELD_EXAMPLES[field_profile]
+        print(
+            f"  The --field-profile {field_profile} layout emits fixed field\n"
+            f"  spellings ({example}) against index '{index_pattern}'. These were\n"
+            "  not verified against your target, so panels can come up empty if your\n"
+            "  data uses a different layout."
+        )
+        print(
+            "  Fix: pass --es-url (and --esql-index for the index/data stream your\n"
+            "       metrics live in) to verify the layout, or choose the\n"
+            "       --field-profile that matches your target."
         )
         return
     print(f"  {_describe_field_discovery(field_discovery)}.")

@@ -96,10 +96,53 @@ Grafana curated packs must emit field names for the operator's
 `--field-profile`, not a hardcoded `prometheus_native` layout. The leakage
 linter (`parity-rig/verifier/profile_leakage.py`) and
 `tests/test_field_profile_portability.py` catch a `labels.*` column under
-`otel` (and the other cross-profile cases). Contributors run
-`scripts/run_cross_profile_corpus.py --input-dir DIR` to migrate a dashboard
-directory under every profile; the script exits non-zero on leakage, a
-feasibility drop vs native, or (with `--baseline-native`) a native JSON diff.
+`otel` (and the other cross-profile cases). That file's always-on tests (no
+`/tmp` fixtures) cover:
+
+- every shipped pack's authored `esql_query` stays canonical (`{{label:x}}` /
+  `{{metric:x}}`, never `labels.*` / `k8s.*`) and materializes without leakage
+  under `otel`, `prometheus_native`, `prometheus_metrics`,
+  `prometheus_remote_write`, and `passthrough`
+- a curated dashboard (Grafana 1471) and an engine-only (no-pack) PromQL panel
+  both namespace labels/metrics/controls per profile, including a CLI
+  `--field-profile` migrate of each
+- skip-gated full-source CLI migrates when `/tmp/community` is present
+  (Kubernetes, Redis, Postgres/MySQL/Node, plus 1471/3831)
+
+`tests/test_grafana_field_profile_portability.py` is the Grafana twin of the
+Datadog ingest-route gate. It migrates
+`tests/fixtures/grafana_field_profile/ingest_stories.json` (node_exporter,
+cAdvisor/kubelet, redis_exporter, app RED) under every Grafana profile:
+
+- `otel` — Prometheus metric names kept; labels → OTel (`instance` →
+  `service.instance.id`, `namespace`/`pod` → `k8s.*`)
+- `prometheus_native` — `metrics.*` / `labels.*`
+- `prometheus_metrics` — `prometheus.metrics.*` / `prometheus.labels.*`
+- `prometheus_remote_write` — typed Fleet leaves (`prometheus.<metric>.counter` /
+  `.value`)
+- `passthrough` — raw Prometheus metric and label names
+
+Datadog has no `--field-profile auto`: the operator picks the Elastic ingest
+route explicitly. `tests/test_datadog_field_profile_portability.py` migrates a
+compact in-repo dashboard (`tests/fixtures/datadog_field_profile/ingest_stories.json`)
+under every built-in profile. The fixture covers the three ways people typically
+send Datadog telemetry (Agent host checks, Kubernetes cluster agent, Redis /
+DogStatsD custom metrics) and asserts the matching Elastic layout:
+
+- `otel` — ECS/OTel **tags** (`host.name`, `k8s.pod.name`); metric names only
+  flattened (`system.cpu.user` → `system_cpu_user`, not OTel semconv)
+- `elastic_agent` — system metric overrides (`system.cpu.user.pct`) and
+  `kubernetes.*` tags; unmapped app metrics stay flattened
+- `prometheus_native` — `metrics.*` / `labels.*` (`host` → `labels.instance`)
+- `prometheus` — `prometheus.metrics.*` / `prometheus.labels.*`
+- `passthrough` — raw Datadog metric and tag names
+
+Contributors run `scripts/run_cross_profile_corpus.py --input-dir DIR` to
+migrate a dashboard directory under every profile; the script exits non-zero
+on leakage, a feasibility drop vs native, or (with `--baseline-native`) a
+native JSON diff. Live Kibana proof is a matching-profile render (panels
+paint) versus a mismatched-profile render (field_gap / unknown column) — the
+profile must change the query, not only the CLI flag.
 
 → See [Adding a supported panel/widget type](#adding-a-supported-panelwidget-type).
 

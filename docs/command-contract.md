@@ -595,8 +595,15 @@ Both native-PROMQL and ES|QL-fallback panels then query
 stream when you also want the Kibana data-view object / controls scoped there.
 
 Without `--es-url`, schema discovery is skipped entirely, so `--esql-index`
-still sets the query `FROM`/`PROMQL index` target, but the run falls back to
-OTel field defaults and cannot warn you that the index does not match your data.
+still sets the query `FROM`/`PROMQL index` target, but the emitted field
+spellings are unverified against your data. What the run emits depends on the
+`--field-profile`: `otel` (and `auto`) fall back to OTel field defaults (e.g.
+`service.name`); a named Prometheus profile (`prometheus_native`,
+`prometheus_metrics`, `prometheus_remote_write`) emits that layout's fixed
+namespaced spellings (e.g. `labels.*` / `metrics.*`); `passthrough` emits raw
+source names. In every case the offline run cannot confirm the index matches
+your data, so it prints a profile-specific "panels may render empty" warning
+naming the fields it emitted and the `--es-url` remediation.
 
 **Exception — Grafana panels already written as raw ES|QL.** If a source
 Grafana panel's `datasource.type` is `elasticsearch` and its query text is
@@ -763,12 +770,17 @@ redis_uptime_in_seconds  (mapped)   -> metrics.uptime_seconds           # profil
 redis_connected_clients  (unmapped) -> metrics.redis_connected_clients  # profile prefix applied
 ```
 
-Do **not** include the profile prefix in a Grafana target. A target such as
-`metrics.uptime_seconds` is treated as a logical name and (offline) double-prefixed
-to `metrics.metrics.uptime_seconds`. Use the logical metric name only and let the
-profile finish it; to emit literal, un-namespaced field names use
-`--field-profile passthrough`. With `--es-url`, a target whose namespaced field
-does not exist is reported as `missing` in `target_readiness_contract.json`.
+Do **not** include the profile prefix in a Grafana target. Grafana migrate **fails
+closed** when `--field-profile` is `prometheus_native`, `prometheus_metrics`, or
+`prometheus_remote_write` and a `metric_map` target already starts with that
+profile's prefix (`metrics.`, `prometheus.metrics.`, or `prometheus.`). The error
+names the source metric and the logical name to write instead, so a target such
+as `metrics.uptime_seconds` never emits `metrics.metrics.uptime_seconds`. Use the
+logical metric name only and let the profile finish it; to emit literal,
+un-namespaced field names use `--field-profile passthrough` (namespaced targets
+are allowed under `otel` and `passthrough` because those profiles do not prefix).
+With `--es-url`, a target whose namespaced field does not exist is reported as
+`missing` in `target_readiness_contract.json`.
 
 On **Datadog**, a `metric_map` target is still emitted **verbatim** (the profile
 prefix/suffix is not applied to it), so a Datadog target must be written as the
