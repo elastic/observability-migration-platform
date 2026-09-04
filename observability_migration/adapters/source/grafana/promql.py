@@ -3615,6 +3615,174 @@ def _make_binary_fragment(expr, left_frag, op, right_frag):
     )
 
 
+# --- Native PROMQL implicit vector matching (issue #376) --------------------
+#
+# Elasticsearch's ``PROMQL`` command includes ``__name__`` in the implicit
+# vector-matching key of a binary operation. Real PromQL excludes the metric
+# name when matching binary-operator operands, so an expression like ``A / B``
+# over two *different* metrics matches in Prometheus but can never match in
+# Elasticsearch — the query plans and executes fine and silently returns zero
+# rows. That is the dangerous shape: unlike ``on()``/``ignoring()`` (which fail
+# loudly with a 400), nothing signals the gap, so the panel scores green and
+# renders empty.
+#
+# Verified live against Elasticsearch 9.5.0-SNAPSHOT (see issue #376): ``A / B``
+# and ``A - B`` over distinct names return 0 rows, while ``A / A`` (960 rows),
+# ``sum(A) / sum(B)`` (480 rows) and ``A * 2`` (960 rows) all return data. The
+# rule that separates them is which constructs drop ``__name__``:
+#
+#   * PromQL *aggregation operators* (``sum``, ``avg``, ``min``, ``max``,
+#     ``count``, ``quantile``, ``count_values``, ``group``, ``stddev``,
+#     ``stdvar``) drop it, so their results match each other freely.
+#   * ``vector(...)`` yields a nameless series, which likewise matches anything.
+#   * *Everything else propagates it* — including function calls
+#     (``rate``/``irate``/``increase``/``delta``/``abs``/``round``/``clamp_*``/
+#     ``*_over_time``) and scalar arithmetic (``A * 1``). This is where
+#     Elasticsearch diverges from Prometheus, which drops ``__name__`` for both
+#     range functions and vector-scalar arithmetic. ``rate(A[5m]) /
+#     rate(B[5m])`` therefore also returns zero rows.
+#   * ``topk``/``bottomk`` select whole series and keep their labels, so they
+#     propagate too (they are blocked from the native path for other reasons,
+#     but the model stays faithful).
+_NAME_PRESERVING_AGG_OPS = frozenset({"topk", "bottomk"})
+
+# Sentinel for an operand that is a scalar rather than an instant vector.
+# Scalars take no part in vector matching (``A * 2`` is unaffected).
+_PROMQL_SCALAR_OPERAND = "scalar"
+
+
+def _ast_result_metric_names(node):
+    """Metric names (``__name__`` values) carried by the result of *node*.
+
+    Returns ``_PROMQL_SCALAR_OPERAND`` for a scalar operand, a ``frozenset`` of
+    metric names for a vector whose name is determinate (empty when the
+    construct drops ``__name__``), or ``None`` when the name cannot be
+    determined and no conclusion may be drawn.
+    """
+    node_type = type(node).__name__
+
+    if node_type == "ParenExpr":
+        return _ast_result_metric_names(node.expr)
+
+    if node_type == "UnaryExpr":
+        return _ast_result_metric_names(node.expr)
+
+    if node_type in ("NumberLiteral", "StringLiteral"):
+        return _PROMQL_SCALAR_OPERAND
+
+    if node_type == "VectorSelector":
+        name = str(getattr(node, "name", "") or "")
+        if name:
+            return frozenset({name})
+        # A metricless selector (``{job="x"}``) can stand for many names.
+        # Elasticsearch rejects those outright ("__name__ label selector is
+        # required"), but stay conservative rather than guessing.
+        for matcher in _ast_matchers(getattr(node, "matchers", None)):
+            if matcher.get("label") == "__name__" and matcher.get("op") == "=":
+                return frozenset({str(matcher.get("value") or "")})
+        return None
+
+    if node_type == "MatrixSelector":
+        return _ast_result_metric_names(node.vector_selector)
+
+    if node_type == "SubqueryExpr":
+        return _ast_result_metric_names(node.expr)
+
+    if node_type == "AggregateExpr":
+        if str(getattr(node, "op", "") or "").lower() in _NAME_PRESERVING_AGG_OPS:
+            return _ast_result_metric_names(node.expr)
+        return frozenset()
+
+    if node_type == "Call":
+        func = getattr(node, "func", None)
+        func_name = str(getattr(func, "name", "") or "").lower()
+        if func_name == "vector":
+            return frozenset()
+        if "scalar" in str(getattr(func, "return_type", "")).lower():
+            return _PROMQL_SCALAR_OPERAND
+        names = set()
+        for arg in list(getattr(node, "args", []) or []):
+            arg_names = _ast_result_metric_names(arg)
+            if arg_names is None:
+                return None
+            if arg_names is _PROMQL_SCALAR_OPERAND:
+                continue
+            names |= arg_names
+        return frozenset(names)
+
+    if node_type == "BinaryExpr":
+        left = _ast_result_metric_names(node.lhs)
+        right = _ast_result_metric_names(node.rhs)
+        if left is None or right is None:
+            return None
+        sides = [s for s in (left, right) if s is not _PROMQL_SCALAR_OPERAND]
+        if not sides:
+            return _PROMQL_SCALAR_OPERAND
+        return frozenset().union(*sides)
+
+    return None
+
+
+def _iter_ast_nodes(node):
+    """Yield *node* and every sub-expression reachable from it."""
+    yield node
+    for attr in ("expr", "lhs", "rhs", "vector_selector"):
+        child = getattr(node, attr, None)
+        if child is not None and hasattr(child, "prettify"):
+            yield from _iter_ast_nodes(child)
+    for arg in list(getattr(node, "args", []) or []):
+        if hasattr(arg, "prettify"):
+            yield from _iter_ast_nodes(arg)
+
+
+def promql_has_unmatchable_distinct_metric_binop(expr):
+    """True when *expr* contains a vector⊗vector binary op that can never match.
+
+    Detects the shape from issue #376: an element-wise binary operation whose
+    two operands resolve to *disjoint* metric names. Elasticsearch keeps
+    ``__name__`` in the implicit matching key, so such an operation returns zero
+    rows instead of the label-aligned result Prometheus produces. Callers use
+    this to keep the expression off the native ``PROMQL`` path so it degrades to
+    the ES|QL per-key aggregation instead of silently emitting an empty panel.
+
+    Set operators (``and``/``or``/``unless``) are excluded: distinct metric
+    names are normal and correct there, and they are blocked from the native
+    path separately. Operands with an explicit ``on()``/``ignoring()`` matcher
+    are excluded too — Elasticsearch rejects those loudly with a 400, so they
+    never fail silently.
+
+    *expr* must already be macro-resolved (``_clean_promql_for_native``): a raw
+    ``rate(foo[$__rate_interval])`` does not parse, and an unparseable
+    expression conservatively answers False.
+    """
+    if promql_parser is None or not expr or not str(expr).strip():
+        return False
+    try:
+        ast = promql_parser.parse(_trim_outer_parens(str(expr).strip()))
+    except Exception:
+        return False
+
+    for node in _iter_ast_nodes(ast):
+        if type(node).__name__ != "BinaryExpr":
+            continue
+        if str(getattr(node, "op", "") or "").lower() in _SET_OPERATORS:
+            continue
+        if getattr(getattr(node, "modifier", None), "matching", None) is not None:
+            continue
+        left = _ast_result_metric_names(node.lhs)
+        right = _ast_result_metric_names(node.rhs)
+        if left is None or right is None:
+            continue
+        if left is _PROMQL_SCALAR_OPERAND or right is _PROMQL_SCALAR_OPERAND:
+            continue
+        # An empty set means the construct dropped ``__name__`` (aggregation or
+        # ``vector()``), which matches anything — only two determinate and
+        # disjoint name sets are guaranteed to produce nothing.
+        if left and right and left.isdisjoint(right):
+            return True
+    return False
+
+
 def _parse_fragment(expr, depth=0):
     """Parse a PromQL expression into a PromQLFragment using the AST parser.
 
@@ -7136,10 +7304,13 @@ __all__ = [
 #
 # ``agg(A op B) != agg(A) op agg(B)``, which is why the normaliser refuses this
 # shape by default. That inequality only matters if A and B must be aggregated
-# separately. When the operands share a label set they land on the SAME document
-# row in every Prometheus->Elasticsearch layout (one document per timestamp +
-# label-set carrying each metric of that set), so ES|QL can evaluate ``A op B``
-# per row and aggregate the result -- which is exactly ``agg(A op B)``.
+# separately. When the operands share a label set *and* the target stores every
+# metric of that set on one document (wide / ECS-style layouts), ES|QL can
+# evaluate ``A op B`` per row and aggregate the result -- which is exactly
+# ``agg(A op B)``. Prometheus remote_write and the native Prometheus write
+# endpoint are typically one sample per document, so the same AND-filter
+# rendering returns no rows; those targets fall through to same-bucket
+# STATS/EVAL instead (see ``sparse_binary_agg_family``).
 #
 # PromQL itself proves the label sets match: a binary operation with no
 # ``on()``/``ignoring()`` modifier matches on ALL labels, so a dashboard that

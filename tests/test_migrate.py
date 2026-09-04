@@ -4842,14 +4842,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertNotIn('EVAL label = CASE', query)
         self.assertNotIn('REPLACE(REPLACE(_ts', query)
 
-    def test_native_promql_ratio_between_distinct_metrics_stays_native(self):
-        """A panel computing a ratio/difference between two distinct
-        metrics (e.g. the Disk Usage panel
-        ``1 - es_fs_path_available_bytes / es_fs_path_total_bytes``)
-        must migrate to a native PROMQL lens with the original
-        expression preserved — Kibana's PROMQL preview evaluates the
-        implicit label-set match natively, so there is no need to fall
-        through to a same-bucket ES|QL approximation (issue #138).
+    def test_distinct_metric_ratio_degrades_to_esql_on_timeseries(self):
+        """A ratio/difference between two *distinct* metric names must NOT take
+        the native PROMQL path.
+
+        Elasticsearch's ``PROMQL`` command includes ``__name__`` in the implicit
+        vector-matching key, so ``A / B`` over different metrics can never match
+        and the command silently returns zero rows — the panel scored green and
+        rendered empty (issue #376). This reverses the routing #138 introduced:
+        the native path was assumed to evaluate the implicit label-set match the
+        way Prometheus does, and it does not. The panel must degrade to the
+        ES|QL per-key pipeline, which computes the real ratio, and must carry
+        the same-bucket approximation warning so the gap is visible.
         """
         expr = (
             "1 - node_filesystem_avail_bytes{fstype=\"ext4\"} "
@@ -4871,31 +4875,25 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
-        # The native command reuses both metric names from the original
-        # expression; the ES|QL approximation would collapse them into a
-        # single computed_value STATS pipeline instead.
+        self.assertNotIn("PROMQL", query)
+        # Both operands are measured per bucket and divided in ES|QL.
         self.assertIn("node_filesystem_avail_bytes", query)
         self.assertIn("node_filesystem_size_bytes", query)
-        self.assertNotIn("STATS", query)
-        # No approximation: the same-bucket ES|QL fallback warning must
-        # not be attached.
-        joined = " ".join(result.notes) + " ".join(result.reasons)
-        self.assertNotIn(
+        self.assertIn("computed_value", query)
+        # Degrade gracefully: the semantic gap is surfaced, not hidden.
+        self.assertIn(
             "Approximated PromQL arithmetic using same-bucket ES|QL math",
-            joined,
+            result.reasons,
         )
+        self.assertEqual(result.status, "migrated_with_warnings")
 
-    def test_native_promql_distinct_metric_arithmetic_stays_native_on_gauge(self):
-        """A single-value tile (gauge/stat/singlestat) whose expression is a
-        distinct-metric ratio/difference (e.g. the Node Exporter ``RAM Used``
-        gauge ``(1 - MemAvailable / MemTotal) * 100``) must migrate to a
-        native PROMQL lens — an instant query for the latest value — with the
-        original arithmetic preserved. ``_native_promql_result_shape`` returns
-        ``group_cols == ['_timeseries']`` (the time dimension only, not a real
-        breakdown), so the single-value gate must NOT reject it: that is the
-        same-bucket ES|QL approximation #138 already removed for line charts
-        (issue #146).
+    def test_distinct_metric_arithmetic_degrades_to_esql_on_gauge(self):
+        """The single-value branch (gauge) must degrade too.
+
+        ``(1 - MemAvailable / MemTotal) * 100`` is the Node Exporter ``RAM
+        Used`` gauge. #146 routed this shape onto the native path on the theory
+        that the instant query preserves the original arithmetic; it does, but
+        the arithmetic evaluates to nothing on Elasticsearch (issue #376).
         """
         expr = (
             "(1 - (node_memory_MemAvailable_bytes{job=\"node\"} "
@@ -4917,28 +4915,18 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
-        # Both distinct metrics survive into the native command; the ES|QL
-        # approximation would collapse them into one STATS pipeline.
+        self.assertNotIn("PROMQL", query)
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        # Gauge tiles collapse the range via LAST (not same-bucket ES|QL math).
-        self.assertIn("| STATS value = LAST(value, step)", query)
-        self.assertNotIn("computed_value", query)
-        # No approximation: the same-bucket ES|QL fallback warning must not
-        # be attached.
-        joined = " ".join(result.notes) + " ".join(result.reasons)
-        self.assertNotIn(
-            "Approximated PromQL arithmetic using same-bucket ES|QL math",
-            joined,
-        )
+        self.assertIn("computed_value", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
 
-    def test_native_promql_distinct_metric_difference_stays_native_on_stat(self):
+    def test_distinct_metric_difference_degrades_to_esql_on_stat(self):
         """The ``stat`` grafana_type maps to the ``metric`` kibana type — a
-        different single-value branch than ``gauge`` — so cover it too: the
-        Node Exporter ``Uptime`` stat (``node_time_seconds - node_boot_time_seconds``,
-        a difference of two distinct metrics) must also stay on the native
-        PROMQL path rather than the same-bucket ES|QL approximation (#146).
+        different single-value branch than ``gauge`` — so cover it too. The Node
+        Exporter ``Uptime`` stat subtracts two distinct metrics, which the
+        native path cannot match (issue #376).
         """
         expr = (
             "node_time_seconds{job=\"node\"} "
@@ -4960,16 +4948,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
+        self.assertNotIn("PROMQL", query)
+        # Not merely "not native": both operands must be measured per bucket
+        # and subtracted by the ES|QL pipeline.
         self.assertIn("node_time_seconds", query)
         self.assertIn("node_boot_time_seconds", query)
-        self.assertIn("| STATS value = LAST(value, step)", query)
-        self.assertNotIn("computed_value", query)
-        joined = " ".join(result.notes) + " ".join(result.reasons)
-        self.assertNotIn(
-            "Approximated PromQL arithmetic using same-bucket ES|QL math",
-            joined,
-        )
+        self.assertIn("STATS", query)
+        self.assertIn("computed_value", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
 
     def test_native_promql_rate_or_irate_graph_collapses_to_left(self):
         """Grafana MySQL/Percona ``rate(M[$interval]) or irate(M[5m])`` is a
@@ -5191,17 +5178,15 @@ class TranslatorRegressionTests(unittest.TestCase):
             result.reasons,
         )
 
-    def test_native_promql_distinct_metric_ratio_with_macro_stays_native_on_gauge(self):
-        """The single-value distinct-metric gate must count metrics from the
-        *cleaned* expression, not the raw one. A common Grafana ratio uses a
-        macro range — ``rate(foo_total[$__rate_interval]) /
-        rate(bar_total[$__rate_interval])``. The raw expression fails the AST
-        parser (``$`` is illegal inside ``[...]``) and falls to the regex
-        backend, which collects zero metrics; counting those would wrongly drop
-        a genuine two-metric ratio back to the same-bucket ES|QL approximation.
-        Macro substitution (``$__rate_interval`` → a literal window) happens in
-        ``_clean_promql_for_native_with_state`` and the native command itself is
-        built from that cleaned expression, so the gate must parse it too (#146).
+    def test_distinct_metric_ratio_with_macro_range_degrades_to_esql(self):
+        """A macro range must not hide the distinct-metric shape.
+
+        ``rate(foo_total[$__rate_interval]) / rate(bar_total[$__rate_interval])``
+        does not parse raw (``$`` is illegal inside ``[...]``), so the detector
+        has to analyse the macro-resolved form the native command is actually
+        built from. Elasticsearch propagates ``__name__`` through ``rate()``
+        (unlike Prometheus, which drops it), so this shape returns zero rows
+        natively and must take the ES|QL path (issue #376).
         """
         expr = (
             "rate(node_network_receive_bytes_total{job=\"node\"}[$__rate_interval]) "
@@ -5223,31 +5208,21 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
+        self.assertNotIn("PROMQL", query)
+        # Not merely "not native": both rates must be computed per bucket and
+        # divided by the ES|QL pipeline.
         self.assertIn("node_network_receive_bytes_total", query)
         self.assertIn("node_network_transmit_bytes_total", query)
-        self.assertIn("| STATS value = LAST(value, step)", query)
-        self.assertNotIn("computed_value", query)
-        joined = " ".join(result.notes) + " ".join(result.reasons)
-        self.assertNotIn(
-            "Approximated PromQL arithmetic using same-bucket ES|QL math",
-            joined,
-        )
+        self.assertIn("STATS", query)
+        self.assertIn("computed_value", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
 
-    def test_native_promql_multiseries_implicit_match_ratio_stays_native_on_gauge(self):
-        """An implicit-match ratio between two distinct metrics
-        (``node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes``) has
-        two metrics, so the single-value gate keeps it native. When multiple
-        instances are scraped this matches per-instance and fans out to one
-        series each rather than collapsing to a single scalar — so the gauge
-        surfaces a multi-row latest-value result. This is intended (#146): the
-        range+LAST query preserves the original arithmetic and Kibana
-        reduces/repeats the multi-row result the same way Grafana does,
-        mirroring #138's accepted line-chart behavior. The gate's
-        distinct-metric count is a deliberate proxy for "derived value", not a
-        guarantee of a single row, so these are NOT degraded to same-bucket
-        ES|QL math. (Explicit ``/ on(instance)`` vector matching is a separate
-        case the native builder rejects, so those degrade regardless.)
+    def test_bare_distinct_metric_ratio_degrades_to_esql_on_gauge(self):
+        """A bare implicit-match ratio between two distinct metrics
+        (``node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes``, no
+        selectors, no aggregation) is the minimal form of the #376 shape and
+        must degrade like the rest.
         """
         expr = (
             "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes"
@@ -5268,17 +5243,142 @@ class TranslatorRegressionTests(unittest.TestCase):
         )
 
         query = yaml_panel["esql"]["query"]
-        self.assertIn("PROMQL", query)
+        self.assertNotIn("PROMQL", query)
+        # Not merely "not native": both operands must be measured per bucket
+        # and divided by the ES|QL pipeline.
         self.assertIn("node_memory_MemAvailable_bytes", query)
         self.assertIn("node_memory_MemTotal_bytes", query)
-        # Multi-series keep one latest value per series.
-        self.assertIn("| STATS value = LAST(value, step) BY _timeseries", query)
-        self.assertNotIn("computed_value", query)
-        joined = " ".join(result.notes) + " ".join(result.reasons)
-        self.assertNotIn(
-            "Approximated PromQL arithmetic using same-bucket ES|QL math",
-            joined,
+        self.assertIn("STATS", query)
+        self.assertIn("computed_value", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
+
+    def test_issue_376_statefulset_replicas_panel_degrades_to_esql(self):
+        """End-to-end guard for the exact panel reported in issue #376.
+
+        grafana.com dashboard 13332 ("kube-state-metrics-v2"), panel
+        ``Statefulset replicas``. On the unmodified base this emitted
+        ``PROMQL index=... value=(ready{...}/total{...}*100)`` and was reported
+        ``migrated`` with confidence 0.9 and no warning, while returning zero
+        rows against a target that contained both metrics.
+        """
+        from observability_migration.adapters.source.grafana.runtime_features import (
+            ESQL_NAMED_PARAM_BINDING,
+            PROMQL_LABEL_MATCHER_PARAMS,
+            set_runtime_feature,
         )
+
+        expr = (
+            "kube_statefulset_status_replicas_ready{namespace=~\"$namespace\"}"
+            "/kube_statefulset_status_replicas{namespace=~\"$namespace\"}*100"
+        )
+        panel = {
+            "title": "Statefulset replicas",
+            "type": "graph",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": expr,
+                    "legendFormat": "{{statefulset}}",
+                }
+            ],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+        set_runtime_feature(
+            rule_pack, ESQL_NAMED_PARAM_BINDING, supported=True, source="test"
+        )
+        set_runtime_feature(
+            rule_pack, PROMQL_LABEL_MATCHER_PARAMS, supported=True, source="test"
+        )
+        resolver = schema.SchemaResolver(rule_pack)
+
+        yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=resolver,
+        )
+
+        query = yaml_panel["esql"]["query"]
+        self.assertNotIn("PROMQL", query)
+        self.assertIn("kube_statefulset_status_replicas_ready", query)
+        self.assertIn("kube_statefulset_status_replicas", query)
+        self.assertIn("STATS", query)
+        self.assertIn("EVAL", query)
+        self.assertIn("computed_value", query)
+        self.assertIn("k8s.statefulset.name", query)
+        self.assertIn("?namespace", query)
+        self.assertEqual(result.status, "migrated_with_warnings")
+        self.assertEqual(result.confidence, 0.6)
+        self.assertTrue(
+            any(
+                "element-wise arithmetic between different metric names" in note
+                for note in result.notes
+            ),
+            f"expected a #376 native-skip explanation, got {result.notes}",
+        )
+
+    def test_distinct_metric_arithmetic_records_native_skip_note(self):
+        """The degradation must be explained, not silent: the operator-visible
+        note has to say why the native path was declined (issue #376)."""
+        panel = {
+            "title": "Disk Usage",
+            "type": "timeseries",
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "node_filesystem_avail_bytes / node_filesystem_size_bytes",
+                }
+            ],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        _yaml_panel, result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertTrue(
+            any(
+                "element-wise arithmetic between different metric names" in note
+                for note in result.notes
+            ),
+            f"expected a native-skip explanation, got {result.notes}",
+        )
+
+    def test_aggregated_distinct_metric_ratio_stays_native(self):
+        """``sum(A) / sum(B)`` must keep the native path.
+
+        PromQL aggregation operators drop ``__name__``, so both operands become
+        nameless and Elasticsearch's implicit match succeeds — verified live at
+        480 rows for the same corpus where the un-aggregated ``A / B`` returns
+        zero (issue #376). Over-blocking these would needlessly downgrade the
+        many dashboards that use the aggregated ratio form.
+        """
+        expr = (
+            "sum(kube_pod_container_resource_requests{resource=\"cpu\"}) "
+            "/ sum(kube_node_status_allocatable{resource=\"cpu\"})"
+        )
+        panel = {
+            "title": "Cluster CPU Requested",
+            "type": "graph",
+            "targets": [{"refId": "A", "expr": expr}],
+        }
+        rule_pack = rules.RulePackConfig(native_promql=True)
+
+        yaml_panel, _result = panels.translate_panel(
+            panel,
+            esql_index="metrics-*",
+            datasource_index="metrics-*",
+            rule_pack=rule_pack,
+            resolver=self.resolver,
+        )
+
+        self.assertIn("PROMQL", yaml_panel["esql"]["query"])
 
     def test_native_promql_same_metric_error_rate_ratio_stays_native_on_gauge(self):
         """The canonical Prometheus error-rate ratio divides the *same* metric

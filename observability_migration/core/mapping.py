@@ -48,6 +48,10 @@ _DURATION_UNIT_SECONDS: dict[str, float] = {
 # ``ms`` is listed before the single-letter units so it is matched greedily.
 _DURATION_TOKEN_RE = re.compile(r"(\d+)\s*(ms|[smhdwy])", re.IGNORECASE)
 
+# Stand-in index for asking "can the translator express this expression at all",
+# where the answer is about the PromQL constructs and never about the index name.
+_FEASIBILITY_PROBE_INDEX = "metrics-*"
+
 
 def _duration_to_seconds(value: str) -> float | None:
     """Parse a Grafana/Prometheus duration to seconds.
@@ -783,11 +787,35 @@ def _has_source_faithful_query(ir: AlertingIR) -> bool:
         return False
 
     try:
-        from observability_migration.adapters.source.grafana.panels import can_use_native_promql
+        from observability_migration.adapters.source.grafana.panels import (
+            _promql_has_unmatchable_vector_match,
+            can_use_native_promql,
+        )
     except ImportError:
         return False
 
-    return bool(can_use_native_promql(expr))
+    if can_use_native_promql(expr):
+        return True
+
+    # Element-wise arithmetic between distinct metric names is declined by the
+    # native path because Elasticsearch's implicit vector-matching key includes
+    # ``__name__``, so the query would always return zero rows and the rule
+    # would silently never fire (issue #376). The ES|QL translator expresses the
+    # same ratio as a per-key STATS/EVAL pipeline, so keep the rule automated
+    # through that route -- but only when the translator can actually emit it,
+    # or the rule would be advertised as faithful while carrying no query.
+    if not _promql_has_unmatchable_vector_match(expr):
+        return False
+    # Probed without a resolver because no caller here has one; the resolver
+    # only renames fields, and ``_generate_esql_for_alert`` re-checks with it.
+    # A probe failure means no query can be promised, so answer False rather
+    # than propagating out of what every caller treats as a predicate.
+    try:
+        return bool(
+            _esql_translated_alert_query(ir, expr, _FEASIBILITY_PROBE_INDEX, None)
+        )
+    except Exception:
+        return False
 
 
 def record_semantic_losses(ir: AlertingIR) -> list[str]:
@@ -1029,6 +1057,62 @@ def _threshold_where_clause_from_source(ir: AlertingIR) -> str:
     return f"value {comparator} {threshold_val}"
 
 
+def _esql_translated_alert_query(
+    ir: AlertingIR, primary_expr: str, data_view: str, resolver: Any = None
+) -> str:
+    """The ES|QL query for an alert routed off native PROMQL, or ``""``.
+
+    ``_has_source_faithful_query`` and ``_generate_esql_for_alert`` both call
+    this so they cannot disagree. The translator has no ES|QL form for a number
+    of PromQL functions (``changes()``, ``absent()``, ``predict_linear()``);
+    control-bound label matchers (``{namespace=~"$namespace"}``) have no
+    dashboard control on an alert rule; and a rule with no comparison and no
+    explicit threshold has nothing to fire on. Promising a source-faithful
+    query in those cases would advertise a rule that ends up carrying no
+    query at all.
+    """
+    from observability_migration.adapters.source.grafana.panels import (
+        _promql_label_matcher_has_template_variable,
+    )
+    from observability_migration.adapters.source.grafana.promql import (
+        _esql_identifier,
+    )
+    from observability_migration.adapters.source.grafana.translate import (
+        translate_promql_to_esql,
+    )
+
+    # Alerts have no dashboard control to bind ``{namespace=~"$namespace"}``.
+    # Promising a source-faithful query here advertised a rule whose generator
+    # then returned empty (issue #376 review).
+    if _promql_label_matcher_has_template_variable(primary_expr):
+        return ""
+
+    translated = translate_promql_to_esql(
+        primary_expr,
+        datasource_index=data_view,
+        esql_index=data_view,
+        panel_type="stat",
+        rule_pack=getattr(resolver, "_rule_pack", None),
+        resolver=resolver,
+        query_language="promql",
+    )
+    query = str(getattr(translated, "esql_query", "") or "").strip()
+    if getattr(translated, "feasibility", "") == "not_feasible" or not query:
+        return ""
+    if _promql_expr_has_comparison(primary_expr):
+        return query
+    if not _has_explicit_threshold(ir):
+        return ""
+    where_clause = _threshold_where_clause_from_source(ir)
+    output_field = str(getattr(translated, "output_metric_field", "") or "value")
+    where_clause = re.sub(
+        r"\bvalue\b",
+        _esql_identifier(output_field),
+        where_clause,
+    )
+    return f"{query} | WHERE {where_clause}" if where_clause else ""
+
+
 def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = None) -> str:
     """Generate a source-faithful query for an alert rule when possible.
 
@@ -1051,6 +1135,7 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
     # keeps the decision explicit and durable if that ever changes.)
     try:
         from observability_migration.adapters.source.grafana.panels import (
+            _promql_has_unmatchable_vector_match,
             _promql_label_matcher_has_template_variable,
             _promql_uses_rule_pack_label_overrides,
             _record_passthrough_native_labels,
@@ -1065,46 +1150,19 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
                 getattr(resolver, "_rule_pack", None),
             )
         )
+        # Native PROMQL cannot match ``A / B`` across distinct metric names on
+        # Elasticsearch (issue #376), so route those through the ES|QL
+        # translator rather than emitting a rule that never fires.
+        requires_esql_for_vector_match = _promql_has_unmatchable_vector_match(primary_expr)
     except ImportError:
         has_control_bound_matcher = False
         requires_esql_for_label_rules = False
+        requires_esql_for_vector_match = False
     if has_control_bound_matcher:
         return ""
 
-    if requires_esql_for_label_rules:
-        from observability_migration.adapters.source.grafana.promql import (
-            _esql_identifier,
-        )
-        from observability_migration.adapters.source.grafana.translate import (
-            translate_promql_to_esql,
-        )
-
-        translated = translate_promql_to_esql(
-            primary_expr,
-            datasource_index=data_view,
-            esql_index=data_view,
-            panel_type="stat",
-            rule_pack=getattr(resolver, "_rule_pack", None),
-            resolver=resolver,
-            query_language="promql",
-        )
-        query = str(getattr(translated, "esql_query", "") or "").strip()
-        if getattr(translated, "feasibility", "") == "not_feasible" or not query:
-            return ""
-        if _promql_expr_has_comparison(primary_expr):
-            return query
-        if not _has_explicit_threshold(ir):
-            return ""
-        where_clause = _threshold_where_clause_from_source(ir)
-        output_field = str(
-            getattr(translated, "output_metric_field", "") or "value"
-        )
-        where_clause = re.sub(
-            r"\bvalue\b",
-            _esql_identifier(output_field),
-            where_clause,
-        )
-        return f"{query} | WHERE {where_clause}" if where_clause else ""
+    if requires_esql_for_label_rules or requires_esql_for_vector_match:
+        return _esql_translated_alert_query(ir, primary_expr, data_view, resolver)
 
     exact_rank_spec = _grafana_unified_exact_topk_bottomk_spec(ir)
     if exact_rank_spec:

@@ -69,3 +69,60 @@ def test_join_with_on_modifier_stays_not_feasible():
     """An explicit vector-matching join is NOT co-located and must still refuse."""
     result = _translate("sum(node_a / on(x) group_left node_b)")
     assert result.feasibility == "not_feasible"
+
+
+def _sparse_ratio_resolver():
+    """Resolver that has proven the two memory metrics never share a document."""
+    rp = rules.RulePackConfig()
+    set_runtime_feature(rp, ESQL_NAMED_PARAM_BINDING, supported=True, source="test")
+    resolver = schema.SchemaResolver(rp, field_profile="prometheus_native")
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {
+        "metrics.redis_memory_used_bytes": {"type": "double"},
+        "metrics.redis_memory_max_bytes": {"type": "double"},
+        "labels.instance": {"type": "keyword"},
+    }
+    used = resolver.resolve_metric_field("redis_memory_used_bytes")
+    maximum = resolver.resolve_metric_field("redis_memory_max_bytes")
+    resolver._cooccurrence_cache[(used, maximum)] = False
+    resolver._cooccurrence_cache[(maximum, used)] = False
+    return rp, resolver, used, maximum
+
+
+def test_sum_ratio_uses_same_bucket_eval_when_metrics_do_not_cooccur():
+    """Live-disjoint metrics must not use per-document AND filters (empty panel)."""
+    rp, resolver, used, maximum = _sparse_ratio_resolver()
+    result = translate.translate_promql_to_esql(
+        "sum(100 * (redis_memory_used_bytes / redis_memory_max_bytes))",
+        datasource_index="metrics-redis.prometheus-rw",
+        panel_type="gauge",
+        rule_pack=rp,
+        resolver=resolver,
+    )
+    query = result.esql_query or ""
+    assert result.feasibility == "feasible", result.warnings
+    assert f"{used} IS NOT NULL OR {maximum} IS NOT NULL" in query, query
+    assert f"| WHERE {used} IS NOT NULL\n| WHERE {maximum} IS NOT NULL" not in query
+    assert "EVAL" in query
+    assert "SUM(" in query or "sum(" in query.lower()
+    assert any("do not co-occur" in warning for warning in result.warnings), result.warnings
+
+
+def test_sum_ratio_keeps_per_document_and_when_metrics_cooccur():
+    """Wide layouts that actually share a document keep the exact colocated path."""
+    rp, resolver, used, maximum = _sparse_ratio_resolver()
+    resolver._cooccurrence_cache[(used, maximum)] = True
+    resolver._cooccurrence_cache[(maximum, used)] = True
+    result = translate.translate_promql_to_esql(
+        "sum(100 * (redis_memory_used_bytes / redis_memory_max_bytes))",
+        datasource_index="metrics-redis.prometheus-rw",
+        panel_type="gauge",
+        rule_pack=rp,
+        resolver=resolver,
+    )
+    query = result.esql_query or ""
+    assert result.feasibility == "feasible", result.warnings
+    assert f"| WHERE {used} IS NOT NULL" in query, query
+    assert f"| WHERE {maximum} IS NOT NULL" in query, query
+    assert any("co-located metrics" in warning for warning in result.warnings), result.warnings
