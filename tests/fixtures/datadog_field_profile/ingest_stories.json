@@ -1,0 +1,124 @@
+{
+  "id": "dd-fp-ingest-stories",
+  "title": "Datadog field-profile ingest stories",
+  "description": "Compact stand-in for the three ways people typically send Datadog telemetry, then land the same signals in Elastic: Datadog Agent host checks, the Kubernetes cluster agent, and an integration (Redis).",
+  "layout_type": "ordered",
+  "template_variables": [
+    {"name": "host", "tag": "host", "prefix": "host", "default": "*", "defaults": ["*"]},
+    {"name": "env", "tag": "env", "prefix": "env", "default": "*", "defaults": ["*"]},
+    {"name": "namespace", "tag": "kube_namespace", "prefix": "kube_namespace", "default": "*", "defaults": ["*"]},
+    {"name": "service", "tag": "service", "prefix": "service", "default": "*", "defaults": ["*"]}
+  ],
+  "widgets": [
+    {
+      "id": 1,
+      "definition": {
+        "type": "timeseries",
+        "title": "CPU usage by host (Datadog Agent)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.cpu.user{$host,env:$env} by {host}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {"x": 0, "y": 0, "width": 6, "height": 3}
+    },
+    {
+      "id": 2,
+      "definition": {
+        "type": "timeseries",
+        "title": "Usable memory by host (Datadog Agent)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:system.mem.usable{$host,env:$env} by {host}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {"x": 6, "y": 0, "width": 6, "height": 3}
+    },
+    {
+      "id": 3,
+      "definition": {
+        "type": "timeseries",
+        "title": "Pods running by namespace (Kubernetes cluster agent)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:kubernetes.pods.running{$namespace} by {kube_namespace,pod_name}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {"x": 0, "y": 3, "width": 6, "height": 3}
+    },
+    {
+      "id": 4,
+      "definition": {
+        "type": "timeseries",
+        "title": "Redis memory used (integration)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:redis.mem.used{$host} by {host}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {"x": 6, "y": 3, "width": 6, "height": 3}
+    },
+    {
+      "id": 5,
+      "definition": {
+        "type": "timeseries",
+        "title": "App request rate (DogStatsD custom metric)",
+        "requests": [
+          {
+            "formulas": [{"formula": "query1"}],
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "sum:myapp.http.requests{$service,env:$env} by {service}.as_rate()"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {"x": 0, "y": 6, "width": 6, "height": 3}
+    }
+  ]
+}

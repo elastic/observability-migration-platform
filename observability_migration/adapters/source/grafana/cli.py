@@ -1909,20 +1909,36 @@ def _validate_field_profile(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def _exit_grafana_metric_map_prefix_error(exc: BaseException) -> None:
+    """Print prefix-lint ValueError lines as ERROR: and exit 1; otherwise return."""
+    text = str(exc)
+    if not isinstance(exc, ValueError) or not text.startswith("Grafana metric_map target "):
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            print(f"  ERROR: {line}", file=sys.stderr)
+    sys.exit(1)
+
+
 def _build_dashboard_schema_resolver(
     args: argparse.Namespace,
     rule_pack,
     *,
     verify: bool | str,
 ) -> SchemaResolver:
-    return SchemaResolver(
-        rule_pack,
-        es_url=args.es_url or None,
-        index_pattern=args.esql_index or args.data_view,
-        es_api_key=args.es_api_key or None,
-        verify=verify,
-        field_profile=args.field_profile,
-    )
+    try:
+        return SchemaResolver(
+            rule_pack,
+            es_url=args.es_url or None,
+            index_pattern=args.esql_index or args.data_view,
+            es_api_key=args.es_api_key or None,
+            verify=verify,
+            field_profile=args.field_profile,
+        )
+    except ValueError as exc:
+        _exit_grafana_metric_map_prefix_error(exc)
+        raise
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -2378,7 +2394,11 @@ def main(argv: list[str] | None = None):
 
     if args.es_url:
         print(f"\n  Schema discovery: {args.es_url}")
-        resolver._discover_fields()
+        try:
+            resolver._discover_fields()
+        except ValueError as exc:
+            _exit_grafana_metric_map_prefix_error(exc)
+            raise
         control_schema_path = str(getattr(args, "control_schema", "") or "").strip()
         if control_schema_path:
             schema_file = Path(control_schema_path)
@@ -2473,7 +2493,11 @@ def main(argv: list[str] | None = None):
             print(f"  [curated pack] gnetId={gnet_id} — applying bundled curated rules")
             # The shared resolver was built with the base rule_pack; clone it so the
             # curated pack's label_candidates are visible to offline label resolution.
-            dashboard_resolver = resolver.copy_with_pack(dashboard_pack)
+            try:
+                dashboard_resolver = resolver.copy_with_pack(dashboard_pack)
+            except ValueError as exc:
+                _exit_grafana_metric_map_prefix_error(exc)
+                raise
         else:
             dashboard_resolver = resolver
         result = _translate_dashboard_resilient(

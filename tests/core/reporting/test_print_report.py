@@ -239,6 +239,53 @@ class PrintReportFieldDiscoveryWarningTests(unittest.TestCase):
             out.index("may render empty"), out.index("Dashboards processed")
         )
 
+    def test_offline_named_prometheus_profile_describes_layout_not_otel(self):
+        # A named Prometheus profile offline emits that layout's fixed
+        # namespaced spellings deterministically (labels.* / metrics.*); it does
+        # NOT fall through to OTel service.name. The warning must describe the
+        # real emitted layout, not misinform the operator about an OTel fallback.
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "offline",
+                "field_profile": "prometheus_native",
+                "index_pattern": "metrics-k8s.prometheus-default",
+            }
+        )
+        self.assertIn("WARNING: migrated panels may render empty", out)
+        self.assertIn("prometheus_native", out)
+        self.assertIn("labels.", out)
+        self.assertIn("--es-url", out)
+        # Must not claim an OTel fallback that never happened offline.
+        self.assertNotIn("service.name", out)
+        self.assertNotIn("OTel field defaults", out)
+
+    def test_offline_remote_write_profile_names_prometheus_layout(self):
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "offline",
+                "field_profile": "prometheus_remote_write",
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertIn("prometheus_remote_write", out)
+        self.assertIn("prometheus.labels.", out)
+        self.assertNotIn("service.name", out)
+
+    def test_offline_otel_profile_still_names_otel_default(self):
+        # otel offline legitimately emits OTel guesses — keep the concrete
+        # service.name example for that profile.
+        out = self._run(
+            {
+                "otel_fallback": True,
+                "status": "offline",
+                "field_profile": "otel",
+                "index_pattern": "metrics-*",
+            }
+        )
+        self.assertIn("service.name", out)
+
     def test_empty_fallback_names_index(self):
         out = self._run(
             {"otel_fallback": True, "status": "empty", "index_pattern": "metrics-prod-*"}

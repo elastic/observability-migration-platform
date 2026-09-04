@@ -83,9 +83,18 @@ kitchen-sink canary against `docs/dashboards/schema.json`. The fidelity ratchet
 runs as an e2e gate (`tests/e2e/test_fidelity_ratchet.py`) against committed
 baselines (`parity-rig/benchmark/fidelity_baseline_{grafana,datadog}.json`).
 Grafana curated-pack field-profile portability is gated by
-`tests/test_field_profile_portability.py` (leakage linter + per-pack migrate)
-and `scripts/run_cross_profile_corpus.py` (community corpus × every
-`--field-profile`; see `docs/contributing/dev-commands.md`).
+`tests/test_field_profile_portability.py` (always-on leakage linter, curated
+`{{label:}}`/`{{metric:}}` materialization × every profile, engine-only PromQL
+panel, CLI `--field-profile` migrate of 1471 + a no-pack dashboard; skip-gated
+full-source corpus when `/tmp/community` is present) and
+`scripts/run_cross_profile_corpus.py` (community corpus × every
+`--field-profile`; see below). Grafana ingest-route portability is gated by
+`tests/test_grafana_field_profile_portability.py` (node_exporter / cAdvisor /
+redis_exporter / app RED fixture × every Grafana profile). Datadog ingest-route
+portability is gated by
+`tests/test_datadog_field_profile_portability.py` (Agent / Kubernetes /
+Redis+DogStatsD fixture × `otel`, `elastic_agent`, `prometheus_native`,
+`prometheus`, `passthrough`).
 
 Examples:
 

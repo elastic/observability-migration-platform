@@ -493,7 +493,10 @@ a concrete non-canonical field (escape hatch).
 Bundled curated packs follow the same contract. Hand-written `esql_query`
 strings use `` `{{label:pod}}` `` / `{{metric:name:gauge}}` placeholders so
 grouping columns and metrics resolve per profile. `metric_map` targets are
-bare logical metric names (see `docs/command-contract.md`). Verify a pack
+bare logical metric names (see `docs/command-contract.md`). Grafana migrate
+exits non-zero if a target already has the active Prometheus profile prefix
+(`metrics.*` under `prometheus_native`, and the equivalent for
+`prometheus_metrics` / `prometheus_remote_write`). Verify a pack
 with `scripts/run_cross_profile_corpus.py` so emitted ES|QL has zero
 profile leakage and `prometheus_native` output stays byte-identical.
 
