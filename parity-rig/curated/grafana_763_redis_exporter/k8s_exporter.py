@@ -6,8 +6,10 @@
 #
 # Emits a small, coherent cluster in modern shape so the Kubernetes curated
 # packs can be validated on real (rig-ingested) data:
-#   - Grafana 315 (cAdvisor): container_* + machine_* + container_fs_* with the
-#     modern `pod`/`container` labels and a root-cgroup `id="/"` series.
+#   - Grafana 315 / 1621 (cAdvisor): container_* + machine_* + container_fs_* with the
+#     modern `pod`/`container` labels and a root-cgroup `id="/"`. 1621 filesystem
+#     KPIs need several `/dev/*` partitions (sda + nvme + sdb); 315's tighter
+#     `[sv]d[a-z][1-9]` regex only matches the scsi/virtio disks.
 #   - Grafana 6417 (kube-state-metrics + node_exporter): kube_* in the modern
 #     resource-split shape (kube_node_status_allocatable{resource=...}, etc.),
 #     plus node_filesystem_*_bytes.
@@ -86,14 +88,20 @@ def render() -> str:
             f'container_memory_working_set_bytes{{id="/",instance="{n}",node="{n}"}} '
             f'{int((5.0 + ni) * 1024**3)}'
         )
-        L.append(
-            f'container_fs_usage_bytes{{id="/",device="/dev/sda1",instance="{n}"}} '
-            f'{int((30 + 5 * ni) * 1024**3)}'
-        )
-        L.append(
-            f'container_fs_limit_bytes{{id="/",device="/dev/sda1",instance="{n}"}} '
-            f'{(100 * 1024**3)}'
-        )
+        # Several partitions so 1621 (device=~^/dev/.*) sums scsi + nvme while
+        # 315's ^/dev/[sv]d[a-z][1-9]$ still matches only sda1.
+        for device, used_gib, limit_gib in (
+            ("/dev/sda1", 30 + 5 * ni, 100),
+            ("/dev/nvme0n1p1", 10 + ni, 50),
+        ):
+            L.append(
+                f'container_fs_usage_bytes{{id="/",device="{device}",instance="{n}"}} '
+                f"{int(used_gib * 1024**3)}"
+            )
+            L.append(
+                f'container_fs_limit_bytes{{id="/",device="{device}",instance="{n}"}} '
+                f"{int(limit_gib * 1024**3)}"
+            )
 
     # ---- cAdvisor: per pod/container series -----------------------------
     idx = 0
@@ -140,6 +148,8 @@ def render() -> str:
     # ---- kube-state-metrics: pods ---------------------------------------
     L.append("# HELP kube_pod_info Information about pod")
     L.append("# TYPE kube_pod_info gauge")
+    L.append("# HELP kube_pod_container_info Information about a container in a pod")
+    L.append("# TYPE kube_pod_container_info gauge")
     L.append("# HELP kube_pod_status_phase The pods current phase")
     L.append("# TYPE kube_pod_status_phase gauge")
     L.append("# HELP kube_pod_container_status_running Whether the container is running")
@@ -157,7 +167,15 @@ def render() -> str:
         for pod, container in pods:
             n = _node_for(idx)
             idx += 1
-            L.append(f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}"}} 1')
+            pod_ip = f"10.244.0.{idx}"
+            L.append(
+                f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}",'
+                f'pod_ip="{pod_ip}",host_ip="10.0.0.{1 + (idx % 2)}"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_info{{namespace="{ns}",pod="{pod}",'
+                f'container="{container}",image="registry/{container}:latest"}} 1'
+            )
             # kube-state-metrics emits every phase as a 0/1 series; 0-valued
             # non-Running phases keep the Pending/Failed/Succeeded/Unknown
             # tiles at 0 instead of Lens N/A.
