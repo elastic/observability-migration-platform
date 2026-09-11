@@ -91,6 +91,7 @@ from .promql import (
     _parse_fragment,
     _safe_alias,
     _split_top_level_csv,
+    _strip_promql_comments,
     _summary_mode_from_metadata,
     _union_group_fields,
     _unique_safe_alias,
@@ -1773,6 +1774,11 @@ def _clean_promql_for_native_with_state(
     callers that still need to parse the expression must clean without this flag.
     """
     had_bare_variable = False
+    # Comments go first, while their end-of-line extent is still intact: the
+    # whitespace collapse at the end of this function would otherwise let a
+    # comment swallow the rest of the expression and emit that as the native
+    # query (issue #443).
+    expr = _strip_promql_comments(expr)
     expr = substitute_grafana_range_macros(expr)
     # #273: a Grafana adaptive-window macro on rate()/increase() means "size the
     # lookback to the view", so drop the window and let the native PROMQL command
@@ -2387,6 +2393,18 @@ def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
         return False
+    # Every gate below asks a question about query *structure*, so none of them
+    # may read comment prose: on the raw expression a comment mentioning
+    # ``or`` / ``topk(`` / ``histogram_quantile(`` / ``{}`` / ``$var`` tripped
+    # the matching gate and needlessly degraded a native-able panel, while the
+    # gates that clean first (notably the issue-#376 vector-matching guard)
+    # analysed text the comment had already truncated and so missed the
+    # construct they exist to refuse (issue #443).
+    promql_expr = _strip_promql_comments(promql_expr)
+    if not promql_expr.strip():
+        # Nothing but comments: there is no query to emit, so decline instead of
+        # building ``value=(# note)``, which Kibana rejects at parse time.
+        return False
     if (
         _promql_label_matcher_has_template_variable(promql_expr)
         and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)
@@ -2730,7 +2748,16 @@ def _translate_panel_native_promql(
         return None
 
     target = targets_with_expr[0][0]
-    expr = target.get("expr", "")
+    # ``raw_expr`` is what the operator authored in Grafana and is reported back
+    # to them verbatim as "Original query"; ``expr`` is the structural form.
+    # Everything below treats ``expr`` as structure — or-collapsing, the empty
+    # selector guard, live metric discovery, label recording and the routing
+    # gate — so comment prose would otherwise be read as query text: a comment
+    # naming a metric made live discovery report it missing, and one containing
+    # ``{}`` tripped the empty-selector guard, each declining native emission
+    # with a note describing something the query never did (issue #443).
+    raw_expr = target.get("expr", "")
+    expr = _strip_promql_comments(raw_expr)
     collapsed_expr = collapse_or_for_native_promql(
         expr, resolver=resolver, rule_pack=rule_pack
     )
@@ -2742,9 +2769,16 @@ def _translate_panel_native_promql(
             "side only when the left lacks samples",
         )
         expr = collapsed_expr
-    expr = _strip_ignored_promql_label_matchers(
-        expr, getattr(rule_pack, "ignored_labels", None)
-    )
+        # A rewritten expression has no comment-preserving form, and the two
+        # rewrites below already report themselves: this one through the note
+        # just above, the label strip through the rule pack. Carrying them into
+        # ``raw_expr`` too keeps the recorded source exactly what it has always
+        # been apart from the comment, so parity comparisons still execute the
+        # expression the panel actually migrated.
+        raw_expr = collapsed_expr
+    ignored_labels = getattr(rule_pack, "ignored_labels", None)
+    expr = _strip_ignored_promql_label_matchers(expr, ignored_labels)
+    raw_expr = _strip_ignored_promql_label_matchers(raw_expr, ignored_labels)
     if _PROMQL_EMPTY_METRICLESS_SELECTOR_RE.search(_strip_promql_string_literals(expr)):
         # Stripping an ignored label removed the sole matcher, leaving an empty
         # metricless selector (``{}``) — invalid PromQL. Decline native
@@ -3030,7 +3064,12 @@ def _translate_panel_native_promql(
 
     query_ir = QueryIR()
     query_ir.source_language = "promql"
-    query_ir.source_expression = expr
+    # The source expression is provenance, not structure: it is what the
+    # operator compares against their Grafana panel, so it keeps the comment
+    # the structural passes above had to drop. ``clean_expression`` beside it
+    # is the cleaned counterpart, and the ES|QL path records the raw text the
+    # same way.
+    query_ir.source_expression = raw_expr
     query_ir.clean_expression = cleaned_expr
     query_ir.panel_type = panel_type
     query_ir.datasource_type = datasource.get("type", "")
@@ -3060,7 +3099,8 @@ def _translate_panel_native_promql(
         kibana_type,
         "migrated_with_warnings" if metric_map_note else "migrated",
         confidence,
-        promql_expr=expr,
+        # Reported to the operator as "Original query"; see ``raw_expr`` above.
+        promql_expr=raw_expr,
         # Record the *emitted* panel query, not the bare ``PROMQL …`` command.
         # Gauge/metric native panels append a trailing ``| EVAL _gauge_*`` (or
         # other constants) to ``native_panel["query"]`` after
@@ -3116,7 +3156,11 @@ def _translate_multi_target_native_promql(
     target_fragments = []
 
     for target, _ in targets_with_expr:
-        expr = target.get("expr", "")
+        # Comment-blind for the same reason as the single-target path above.
+        # Unreachable while the combiner is disabled by the early return, so
+        # this is here to keep the bug from returning with the feature rather
+        # than to change behavior today.
+        expr = _strip_promql_comments(target.get("expr", ""))
         runtime_features = getattr(rule_pack, "runtime_features", {})
         _record_passthrough_native_labels(expr, resolver)
         if (
