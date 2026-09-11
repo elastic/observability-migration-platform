@@ -980,6 +980,19 @@ Use that doc for:
   is a loud 400 on this target ("regex label selectors on __name__ are not
   supported") and is left on the native path for that reason; exact
   `{__name__="A"} / B` is detected and rerouted.
+- **PromQL `#` comments are removed before anything reads the expression.** A
+  comment runs to the end of its line, and both translation paths collapse
+  whitespace, so comments are stripped first, while that extent is still exact.
+  Otherwise a comment swallowed the rest of the expression and the truncated
+  text became the emitted query — Kibana reported "Couldn't parse Elasticsearch
+  ES|QL query" on a panel the run had scored as migrated. A `#` inside a string
+  literal is a label value, not a comment, and is preserved in all three PromQL
+  string forms (`"…"`, `'…'`, and backquoted `` `…` ``). Comment text never
+  decides routing either: prose mentioning `or`, `topk(` or
+  `histogram_quantile(` no longer disqualifies a panel from the native path, and
+  a comment can no longer hide a distinct-metric ratio from the vector-matching
+  rule above. An expression that is nothing but comments has no query to emit
+  and is reported `not_feasible` rather than shipping an empty selector.
 - **Range-vector windows and counter typing.** Passing `--es-url` adds
   validation and schema discovery; it does not change which translation strategy
   a range-vector panel gets. `rate()` / `irate()` / `increase()` stay on the
