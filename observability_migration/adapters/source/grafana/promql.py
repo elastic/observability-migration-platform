@@ -939,6 +939,10 @@ class FormulaPlan:
     # comparison indicator (``CASE(cond, 1, 0)``). A parent division uses this to
     # re-render the indicator with a NULL false-branch so it never divides by 0.
     bool_compare_cond: str = ""
+    # Set when ``expr`` contains a PromQL comparison used without ``bool``, which
+    # filters rather than computes: ``CASE(cond, <value>, NULL)`` yields NULL for
+    # the elements PromQL drops. The translator turns that into a real row drop.
+    filter_compare: bool = False
     # Set when ``expr`` is a cross-metric PromQL ``or`` rendered as a
     # ``COALESCE(left, right, ...)`` union (left precedence, right fills the
     # gaps). The translator uses this to emit the correct set-union note instead
@@ -4017,12 +4021,20 @@ def _frag_has_incompatible_target_fields(frag, resolver):
 
 
 def _matcher_has_dropped_variable(m):
+    """Return True when *m* lost a Grafana variable rather than a static filter.
+
+    A literal ``=~".*"`` is not one of them: it is a match-all regex that also
+    matches an absent label, so omitting it changes nothing. Reporting it as a
+    dropped variable pointed operators at a cause that was not there (#375).
+    Variables arrive here as parameter sentinels, ``label_var`` forms, or a raw
+    ``$var`` token — never pre-expanded to ``.*``, which only happens on the
+    native PROMQL cleaning path that never reaches this translator.
+    """
     value = str(m.get("value", ""))
     if _grafana_param_name(value):
         return True
     return (
         bool(re.search(r"\$\w", value))
-        or (m.get("op") == "=~" and value.strip() == ".*")
         or value.startswith("label_")
         or value.startswith("^label_")
     )
@@ -4303,9 +4315,11 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
         # filter yields an empty scalar panel even though older buckets have
         # data. After dropping nulls, keep the penultimate non-null bucket to
         # avoid the incomplete window-edge rate spike documented above.
-        parts.append("| WHERE " + " AND ".join(
+        null_skip = "| WHERE " + " AND ".join(
             f"{_esql_identifier(field)} IS NOT NULL" for field in keep_fields
-        ))
+        )
+        if not parts or parts[-1] != null_skip:
+            parts.append(null_skip)
         parts.append("| SORT time_bucket DESC")
         parts.append("| LIMIT 2")
         parts.append("| SORT time_bucket ASC")
@@ -7339,11 +7353,25 @@ def _build_formula_plan(
         # a boolean, so the result composes with surrounding arithmetic.
         if frag.extra.get("bool_compare"):
             condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+            indicator = f"CASE({condition}, 1, 0)"
+            # An operand that is itself a bare comparison is already NULL for the
+            # elements PromQL dropped, and a NULL condition falls through to
+            # CASE's default — turning a dropped element back into a real 0.
+            # Keep it NULL so the row is dropped rather than charted as a false
+            # negative (#375).
+            filtered = [
+                f"{plan.expr} IS NOT NULL"
+                for plan in (left_plan, right_plan)
+                if plan.filter_compare
+            ]
+            if filtered:
+                indicator = f"CASE({' AND '.join(filtered)}, {indicator}, NULL)"
             return FormulaPlan(
                 specs=left_plan.specs + right_plan.specs,
-                expr=f"CASE({condition}, 1, 0)",
+                expr=indicator,
                 warnings=warnings,
                 bool_compare_cond=condition,
+                filter_compare=bool(filtered),
             )
 
         # Guard a ``bool`` indicator used as a divisor: 1 stays 1, but the false
@@ -7355,12 +7383,31 @@ def _build_formula_plan(
                 specs=left_plan.specs + right_plan.specs,
                 expr=f"({left_plan.expr} / {divisor})",
                 warnings=warnings,
+                filter_compare=left_plan.filter_compare or right_plan.filter_compare,
             )
+
+        # A comparison without ``bool`` is a filter, not arithmetic: PromQL keeps
+        # the elements that satisfy it — carrying the *vector* operand's own
+        # value — and drops the rest. ``(a == b)`` would instead label every
+        # series with a boolean, losing both the filter and the value (#375).
+        # The scalar side is never the result, so a scalar left operand
+        # (``0.5 < node_load1``) still yields the right-hand vector's value.
+        if frag.binary_op in _COMPARISON_OPERATORS:
+            value_plan = left_plan if left_plan.specs else right_plan
+            if value_plan.specs:
+                condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+                return FormulaPlan(
+                    specs=left_plan.specs + right_plan.specs,
+                    expr=f"CASE({condition}, {value_plan.expr}, NULL)",
+                    warnings=warnings,
+                    filter_compare=True,
+                )
 
         return FormulaPlan(
             specs=left_plan.specs + right_plan.specs,
             expr=_esql_binary_expr(left_plan.expr, frag.binary_op, right_plan.expr),
             warnings=warnings,
+            filter_compare=left_plan.filter_compare or right_plan.filter_compare,
         )
 
     # label_join(v, dst, sep, src1, ...) — the outer label-join is a pure

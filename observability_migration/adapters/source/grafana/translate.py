@@ -2275,6 +2275,11 @@ def binary_expr_family_rule(context):
             parts, output_group_fields, _ = shared
             result_alias = "computed_value"
             parts.append(f"| EVAL {result_alias} = {plan.expr}")
+            if plan.filter_compare:
+                # PromQL drops the elements a bare comparison rejects; the CASE
+                # marks them NULL, so drop those rows instead of charting gaps
+                # and empty legend entries for series that never matched (#375).
+                parts.append(f"| WHERE {result_alias} IS NOT NULL")
             context.source_type = plan.specs[0].source_type
             collapsed = None
             if _summary_mode_from_metadata(context.metadata):
