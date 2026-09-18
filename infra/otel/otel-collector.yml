@@ -52,8 +52,11 @@ exporters:
     endpoint: "0.0.0.0:8889"
     namespace: otel
 
-  loki:
-    endpoint: "http://loki:3100/loki/api/v1/push"
+  # The dedicated `loki` exporter was removed from collector-contrib after
+  # v0.120. Loki 3.x ingests OTLP natively, so logs now go over OTLP/HTTP;
+  # the exporter appends /v1/logs to this endpoint.
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
 
   elasticsearch:
     endpoints: ["http://elasticsearch:9200"]
@@ -77,4 +80,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [loki, elasticsearch]
+      exporters: [otlphttp/loki, elasticsearch]
