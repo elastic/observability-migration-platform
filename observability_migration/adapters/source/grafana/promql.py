@@ -780,11 +780,22 @@ def resolve_counter_range_translation(range_func, metric, is_counter, resolver, 
             warning = uncertainty if uncertainty else template.format(metric=metric)
         return fallback_func, warning, is_counter
     warning = None
-    if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+    if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
         # Source rate()/irate() is counter-only; trust it over the gauge
         # heuristic, but surface the disagreement when live caps refute it.
+        # Gate on target evidence alone, and independently of ``is_counter``: a
+        # rule-pack ``counter`` pin suppresses the *degrade* (above) and already
+        # makes ``is_counter`` true, but it must not suppress this disclosure --
+        # otherwise a pinned metric emits RATE/IRATE the target rejects at
+        # runtime while the panel is reported clean.
         is_counter = True
-        if resolver and resolver.refutes_counter(metric):
+        target_refutes = getattr(resolver, "target_refutes_counter", None) if resolver else None
+        refuted = (
+            target_refutes(metric)
+            if callable(target_refutes)
+            else bool(resolver and resolver.refutes_counter(metric))
+        )
+        if refuted:
             warning = _target_gauge_disagreement_warning(range_func, metric)
     return inner_func, warning, is_counter
 

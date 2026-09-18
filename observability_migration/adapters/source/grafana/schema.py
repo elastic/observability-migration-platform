@@ -1216,12 +1216,19 @@ class SchemaResolver:
     def has_conflicting_types(self, field_name):
         return has_conflicting_types(self.field_capability(field_name))
 
-    def is_counter(self, metric_name):
-        kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
-        if kind == "counter":
-            return True
-        if kind == "gauge":
-            return False
+    def is_counter(self, metric_name, *, ignore_pin=False):
+        """Whether *metric_name* may be emitted as an ES|QL counter.
+
+        ``ignore_pin`` skips the rule-pack ``metric_kinds`` short-circuit so
+        callers can ask what the *target* alone says; see
+        :meth:`target_refutes_counter`.
+        """
+        if not ignore_pin:
+            kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
+            if kind == "counter":
+                return True
+            if kind == "gauge":
+                return False
         # metric_map drop_rate targets a pre-rated / gauge equivalent (including
         # Prometheus recording rules with no rate() AST node). Never treat those
         # as bare counters — that selects LAST_OVER_TIME and forces sibling
@@ -1307,6 +1314,37 @@ class SchemaResolver:
             return False
         return str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower() == "gauge"
 
+    def target_refutes_counter(self, metric_name):
+        """Positive *target* evidence that the resolved field is gauge-typed,
+        ignoring any rule-pack ``metric_kinds`` pin.
+
+        Disclosure-only companion to :meth:`refutes_counter`. A ``counter`` pin
+        legitimately suppresses *degradation* — the source's counter-only
+        ``rate``/``irate`` keeps its true ``RATE``/``IRATE`` form because
+        contract-faithful ingest types such fields as counters — but it must not
+        suppress *disclosure*: whether the live target currently types the field
+        as a counter is a fact about the target, not about the pin. While the two
+        were joined, a pinned metric emitted ``RATE``/``IRATE`` the target
+        rejects at runtime while the panel was still reported clean.
+
+        Mirrors :meth:`refutes_counter`'s target-evidence logic exactly, minus
+        the pin short-circuit. A plain numeric with no ``time_series_metric``
+        counts as refutation too: ES|QL rejects ``RATE``/``IRATE`` on anything
+        that is not ``counter_*``, not just on explicit gauges. Stays silent
+        when the target is offline or does not know the field."""
+        if not metric_name:
+            return False
+        if self.is_counter(metric_name, ignore_pin=True):
+            return False
+        for candidate in (
+            metric_name,
+            self.resolve_metric_field(metric_name, prefer="counter"),
+            self.resolve_metric_field(metric_name, prefer="gauge"),
+        ):
+            if candidate and self.field_exists(candidate):
+                return True
+        return False
+
     def refutes_counter(self, metric_name):
         """True when the *target* has positive information that the metric is
         NOT a usable ES|QL counter — an explicit rule-pack ``gauge`` kind, or a
@@ -1319,7 +1357,8 @@ class SchemaResolver:
         (``rate``/``irate``) may keep its true ES|QL ``RATE``/``IRATE`` form
         (no refutation -> trust the source) or must degrade to a gauge analogue
         (refuted -> emitting ``RATE`` would 400 in Kibana on a non-counter
-        field)."""
+        field). For disclosure rather than degradation use
+        :meth:`target_refutes_counter`, which a ``counter`` pin does not mask."""
         if not metric_name:
             return False
         kind = str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower()
