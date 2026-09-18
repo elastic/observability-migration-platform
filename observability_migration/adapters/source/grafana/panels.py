@@ -7960,6 +7960,10 @@ def _apply_series_override_axes(yaml_panel: dict, grafana_panel: dict, warnings:
                     warnings,
                     f'Dropped Grafana secondary y-axis assignment for unmatched series override "{alias}"',
                 )
+        # A named stack group ("stack": "D") is not "stack": false and was
+        # previously dropped, so an overlay series got accumulated onto the
+        # breakdown it is meant to sit above (9852 Memory rendered ~2x too tall).
+        _apply_named_stack_group_overrides(metrics, grafana_panel, warnings)
     _apply_field_override_metric_overrides(metrics, grafana_panel)
 
 
@@ -8021,6 +8025,70 @@ def _field_override_marks_metric_unstacked(override: dict[str, Any]) -> bool:
         if str(value.get("mode") or "").strip() == "normal" and value.get("group") is False:
             return True
     return False
+
+
+def _named_stack_group_members(
+    metrics: list[dict[str, Any]], overrides: list[Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Map each Grafana *named* stack group to the metrics it holds.
+
+    ``seriesOverrides[].stack`` is ``False`` (exclude from stacking), ``True``
+    (default group), or a group name like ``"A"``/``"D"``. Only the named form
+    is collected here; the boolean forms are handled by the caller.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for override in overrides:
+        if not isinstance(override, dict):
+            continue
+        group = override.get("stack")
+        if not isinstance(group, str) or not group.strip():
+            continue
+        alias = str(override.get("alias") or "").strip()
+        if not alias:
+            continue
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            candidates = {
+                str(metric.get("field") or ""),
+                str(metric.get("label") or ""),
+            }
+            if _series_override_alias_matches(alias, candidates):
+                groups.setdefault(group.strip(), []).append(metric)
+    return groups
+
+
+def _apply_named_stack_group_overrides(
+    metrics: list[dict[str, Any]],
+    grafana_panel: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    """Translate Grafana named stack groups into per-metric ``stack: false``.
+
+    A named group holding exactly one series is precisely an unstacked overlay --
+    the common "total/limit line drawn over a stacked breakdown" idiom (9852
+    Memory's ``Total memory``, ``stack: "D"``, ``fill: 0``) -- so it maps
+    losslessly onto the ``stack: false`` the panel schema already carries and the
+    target already renders as a separate unstacked layer.
+
+    Kibana Lens accumulates one stack per layer, so a named group holding two or
+    more series cannot be represented; those are left stacked and disclosed
+    rather than silently reshaped.
+    """
+    if not grafana_panel.get("stack"):
+        # Grafana ignores seriesOverrides stacking on an unstacked panel.
+        return
+    groups = _named_stack_group_members(metrics, grafana_panel.get("seriesOverrides") or [])
+    for group, members in sorted(groups.items()):
+        if len(members) == 1:
+            members[0]["stack"] = False
+            continue
+        _append_unique(
+            warnings,
+            f'Grafana stack group "{group}" holds {len(members)} series; Kibana Lens '
+            "accumulates one stack per layer, so they remain stacked with the rest "
+            "of the panel instead of forming a separate stack",
+        )
 
 
 def _apply_field_override_metric_overrides(
