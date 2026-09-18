@@ -292,6 +292,27 @@ the Info and Activity sections. KPI chrome titles are shortened for Kibana
 tiles (Safe to autoscale, Unscheduled pods, Since scale-down/autoscale, Net
 scaled nodes); the 0/1 safe-to-scale gauge has no Yes/No value map.
 
+The node-exporter disk graphs (9852) pack covers the second most-popular node
+exporter dashboard (~5M downloads). Three things the engine handles without pack
+help: the IO Wait per core two-layer Min/Avg/Max split (issue #355), the
+element-wise `rate(A)/rate(B)` same-bucket ratio (issue #376), and the
+`$RateInterval` interval-variable disclosure (issue #356 — the rate window is
+fixed at 5m in the translated PROMQL; ES|QL panels use a TBUCKET bucket-width).
+What the pack adds: `node_vmstat_oom_kill` is pinned as a **gauge** —
+node_exporter declares it `# TYPE ... untyped` (Prometheus reports its type as
+`unknown`) because it is a raw `/proc/vmstat` passthrough, so there is no
+counter declaration to honour. The source panel still calls `irate()` on it,
+which Prometheus permits only because it does not type-check; Elasticsearch
+does, and rejects `RATE`/`IRATE` on a field it did not map `counter_*`. The pin
+lets the engine degrade `irate()` to its gauge analogue (surfaced as a warning)
+rather than emit an `IRATE` the target rejects at runtime. `$Node` / `$CPU` /
+`$Disk` variables map to `instance` / `cpu` / `device` labels; the Disk IO
+panel names its three series `Weighted IO time` / `Write time` / `Read time`
+grouped per device; and the four per-device ratio panels (`Write size`, `Write
+latency`, `Read size`, `Read latency`) produce a named output column instead of
+`computed_value`. The 24-column source layout scales cleanly to the 48-column
+Kibana grid without gaps.
+
 The Kubernetes App Metrics (1471) pack is a pre-1.16 cAdvisor + app-HTTP mix.
 Heapster labels (`container_name`, `pod_name`, `kubernetes_io_hostname`) and
 HTTP `kubernetes_namespace` rewrite to canonical `container` / `pod` /

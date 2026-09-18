@@ -181,3 +181,12 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52"
     description: "Kubernetes App Metrics — Heapster label remap, $namespace/$container populate, HTTP native/nginx/haproxy series, cAdvisor ratios"
+
+  - gnet_id: 9852
+    name: grafana_9852_node_exporter_disk_graphs
+    title_hint: "node-exporter disk graphs"
+    tags_hint: []
+    path: grafana_9852_node_exporter_disk_graphs
+    gnet_revision: 1
+    dashboard_sha256: "273ed2e26432d4d3aca9f008ef589007a1fcf5d09b101528924b755bcfda65a7"
+    description: "node-exporter disk graphs — suffix-less node_vmstat_oom_kill counter pin, per-device rate-ratio joins for disk size/latency, named Disk IO series, Node/CPU/Disk label pins"

@@ -443,6 +443,11 @@ def test_curated_rate_overrides_do_not_use_sub_scrape_adaptive_tbucket_100():
         {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]},
         {"gnetId": 763, "title": "Redis...", "tags": []},
         {"gnetId": 11835, "title": "Redis...", "tags": []},
+        # 9852's five disk rate-ratio overrides must stay at scrape-safe buckets.
+        # Its two gauge overrides (Memory, Memory write cache) intentionally use
+        # TBUCKET(100) and are skipped below: LAST_OVER_TIME has no >=2-samples
+        # -per-bucket requirement, so the blank-chart hazard does not apply.
+        {"gnetId": 9852, "title": "node-exporter disk graphs", "tags": []},
     ]
 
     offenders = []
@@ -5880,3 +5885,312 @@ def test_1471_memory_total_uses_last_over_time():
     assert "container_memory_usage_bytes" in query
     assert "container_spec_memory_limit_bytes" in query
     assert "`limit`" in query or "limit" in query
+
+
+# ---------------------------------------------------------------------------
+# Grafana 9852 — node-exporter disk graphs
+# ---------------------------------------------------------------------------
+
+
+def _resolve_9852():
+    dashboard = {
+        "gnetId": 9852,
+        "title": "node-exporter disk graphs",
+        "tags": [],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_9852(panel, *, section_title=""):
+    resolved, resolver = _resolve_9852()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+        section_title=section_title,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_9852_registry_entry_present():
+    entry = find_curated_pack(gnet_id=9852, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_9852_node_exporter_disk_graphs"
+    assert entry["gnet_revision"] == 1
+
+
+def test_9852_find_by_exact_title():
+    entry = find_curated_pack(gnet_id=9852, title="node-exporter disk graphs", tags=[])
+    assert entry is not None
+    assert entry["gnet_id"] == 9852
+
+
+def test_9852_tags_hint_is_empty_so_any_tags_match():
+    # tags_hint is [] → any (or no) tags on the dashboard should still match
+    entry_no_tags = find_curated_pack(gnet_id=9852, title="node-exporter disk graphs", tags=[])
+    entry_with_tags = find_curated_pack(
+        gnet_id=9852, title="node-exporter disk graphs", tags=["prometheus", "node"]
+    )
+    assert entry_no_tags is not None
+    assert entry_with_tags is not None
+
+
+def test_9852_pins_oom_kill_as_gauge_because_exporter_leaves_it_untyped():
+    """node_exporter declares node_vmstat_oom_kill `# TYPE ... untyped` (its
+    Prometheus metadata type is "unknown") -- it is a raw /proc/vmstat
+    passthrough, not a declared counter. Pinning it counter made the engine
+    emit IRATE, which Elasticsearch rejects on a field it did not map
+    counter_*, so the panel errored at runtime. Gauge lets irate() degrade to
+    its gauge analogue instead."""
+    resolved, _ = _resolve_9852()
+    assert resolved.metric_kinds["node_vmstat_oom_kill"] == "gauge"
+
+
+def test_9852_pins_disk_counters_correctly():
+    resolved, _ = _resolve_9852()
+    counters = [
+        "node_cpu_seconds_total",
+        "node_disk_io_time_seconds_total",
+        "node_disk_io_time_weighted_seconds_total",
+        "node_disk_write_time_seconds_total",
+        "node_disk_read_time_seconds_total",
+        "node_disk_writes_completed_total",
+        "node_disk_reads_completed_total",
+        "node_disk_written_bytes_total",
+        "node_disk_read_bytes_total",
+    ]
+    for name in counters:
+        assert resolved.metric_kinds[name] == "counter", f"{name} should be counter"
+    gauges = [
+        "node_memory_Active_bytes",
+        "node_memory_Dirty_bytes",
+        "node_time_seconds",
+    ]
+    for name in gauges:
+        assert resolved.metric_kinds[name] == "gauge", f"{name} should be gauge"
+
+
+def test_9852_field_overrides_map_variables():
+    resolved, _ = _resolve_9852()
+    assert resolved.control_field_overrides["Node"] == "instance"
+    assert resolved.control_field_overrides["CPU"] == "cpu"
+    assert resolved.control_field_overrides["Disk"] == "device"
+
+
+def test_9852_disk_io_override_names_series_by_device():
+    """Disk IO override names Weighted IO time / Write time / Read time per device."""
+    panel = {
+        "id": 4,
+        "type": "graph",
+        "title": "Disk IO",
+        "targets": [
+            {
+                "expr": 'rate(node_disk_io_time_weighted_seconds_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "Weighted IO time {{ device }} {{ instance }}",
+                "refId": "D",
+            },
+            {
+                "expr": 'rate(node_disk_write_time_seconds_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "Write time {{ device }} {{ instance }}",
+                "refId": "B",
+            },
+            {
+                "expr": 'rate(node_disk_read_time_seconds_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "Read time {{ device }} {{ instance }}",
+                "refId": "C",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 13, "w": 24, "h": 9},
+    }
+    result, query, yaml_panel = _translate_9852(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    # Override must produce ES|QL (not native PROMQL)
+    assert query.strip().startswith("TS ")
+    assert "PROMQL " not in query
+    # Named series columns
+    assert "Weighted IO time" in query
+    assert "Write time" in query
+    assert "Read time" in query
+    # Grouped by device only (canonical placeholder)
+    assert "device" in query.lower()
+    # sr0 exclusion must survive the override
+    assert "sr0" in query
+    # $Disk bind
+    assert "?Disk" in query
+    # $Node bind
+    assert "?Node" in query
+    # kibana_type_override
+    assert (yaml_panel.get("esql") or {}).get("type") == "line"
+
+
+def test_9852_write_size_is_per_device_ratio_with_named_column():
+    """Write size override: named 'Write size' column, per device, sr0 excluded."""
+    panel = {
+        "id": 11,
+        "type": "graph",
+        "title": "Write size",
+        "targets": [
+            {
+                "expr": 'rate(node_disk_written_bytes_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval]) / rate(node_disk_writes_completed_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "{{ instance }} {{ device }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 8, "y": 19, "w": 8, "h": 9},
+    }
+    result, query, yaml_panel = _translate_9852(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert query.strip().startswith("TS ")
+    assert "`Write size`" in query or "Write size" in query
+    assert "computed_value" not in query
+    assert "sr0" in query
+    assert "?Disk" in query
+    assert "?Node" in query
+    # breakdown by device
+    bd = ((yaml_panel.get("esql") or {}).get("breakdown") or {}).get("field")
+    assert bd in {"labels.device", "device", "`device`"}, f"unexpected breakdown: {bd}"
+
+
+def test_9852_write_latency_is_per_device_ratio_with_named_column():
+    """Write latency override: named 'Write latency' column, per device."""
+    panel = {
+        "id": 6,
+        "type": "graph",
+        "title": "Write latency",
+        "targets": [
+            {
+                "expr": 'rate(node_disk_write_time_seconds_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval]) / rate(node_disk_writes_completed_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "{{ instance }} {{ device }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 16, "y": 19, "w": 8, "h": 9},
+    }
+    result, query, _yaml_panel = _translate_9852(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert query.strip().startswith("TS ")
+    assert "`Write latency`" in query or "Write latency" in query
+    assert "computed_value" not in query
+    assert "node_disk_write_time_seconds_total" in query
+    assert "node_disk_writes_completed_total" in query
+    assert "sr0" in query
+
+
+def test_9852_read_size_is_per_device_ratio_with_named_column():
+    """Read size override: named 'Read size' column, per device."""
+    panel = {
+        "id": 27,
+        "type": "graph",
+        "title": "Read size",
+        "targets": [
+            {
+                "expr": 'rate(node_disk_read_bytes_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval]) / rate(node_disk_reads_completed_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "{{ instance }} {{ device }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 8, "y": 25, "w": 8, "h": 9},
+    }
+    result, query, _yaml_panel = _translate_9852(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert query.strip().startswith("TS ")
+    assert "`Read size`" in query or "Read size" in query
+    assert "computed_value" not in query
+    assert "node_disk_read_bytes_total" in query
+    assert "node_disk_reads_completed_total" in query
+
+
+def test_9852_read_latency_is_per_device_ratio_with_named_column():
+    """Read latency override: named 'Read latency' column, per device."""
+    panel = {
+        "id": 28,
+        "type": "graph",
+        "title": "Read latency",
+        "targets": [
+            {
+                "expr": 'rate(node_disk_read_time_seconds_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval]) / rate(node_disk_reads_completed_total{instance=~"$Node", device!="sr0", device=~"$Disk"}[$RateInterval])',
+                "legendFormat": "{{ instance }} {{ device }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 16, "y": 25, "w": 8, "h": 9},
+    }
+    result, query, _yaml_panel = _translate_9852(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert query.strip().startswith("TS ")
+    assert "`Read latency`" in query or "Read latency" in query
+    assert "computed_value" not in query
+    assert "node_disk_read_time_seconds_total" in query
+    assert "node_disk_reads_completed_total" in query
+
+
+def test_9852_memory_override_aliases_instance_to_flat_node():
+    """Memory / Memory write cache overrides EVAL a flat `node` alias for {{label:instance}}.
+    Kibana Lens ES|QL mode treats dotted breakdown column names as nested-object paths,
+    producing (null) in the legend. The EVAL-before-STATS approach avoids dots in the
+    STATS BY group field and KEEP columns, fixing the null-label without changing semantics."""
+    resolved, _ = _resolve_9852()
+    query_titles = {item["title_match"]: item for item in resolved.panel_query_overrides}
+    assert "Memory" in query_titles, "Memory needs an EVAL-node override"
+    assert "Memory write cache" in query_titles, "Memory write cache needs an EVAL-node override"
+    for title in ("Memory", "Memory write cache"):
+        q = query_titles[title]["esql_query"]
+        assert "EVAL" in q and "`node`" in q, f"{title}: must EVAL `node` = {{label:instance}} before STATS BY"
+        assert "BY" in q and "`node`" in q, f"{title}: must group BY `node` (not the dotted instance field)"
+        assert "approximation_note" not in query_titles[title], f"{title}: EVAL-alias override stays PERFECT (no approximation_note)"
+
+
+def test_9852_no_override_for_io_wait_per_core():
+    """Engine #355 two-layer split is the correct shape; pack does not override."""
+    resolved, _ = _resolve_9852()
+    query_titles = {item["title_match"] for item in resolved.panel_query_overrides}
+    assert "IO Wait per core" not in query_titles
+
+
+def test_9852_layout_source_scales_cleanly_to_48_cols():
+    """Source 24-col layout doubles to 48-col with no gaps or overlaps.
+
+    Verify the geometry without requiring a full schema-valid panel body:
+    each (x, y) → (x+w, y+h) rectangle must stay within [0, 48] and
+    no two panels in the same row should overlap horizontally.
+    """
+    # (title, x, w, y-row) — grid after 2x scaling from Grafana's 24-col grid
+    layout = [
+        # Memory row
+        ("Memory",             0,  16, 0),
+        ("Memory write cache", 16, 16, 0),
+        ("OOM killed procs",   32, 16, 0),
+        # Disk row 1
+        ("IO Wait per core",   0,  24, 1),
+        ("Disk active time",   24, 24, 1),
+        # Disk row 2
+        ("Disk IO",            0,  24, 2),
+        ("IOPS",               24, 24, 2),
+        # Write row
+        ("Write bandwidth",    0,  16, 3),
+        ("Write size",         16, 16, 3),
+        ("Write latency",      32, 16, 3),
+        # Read row
+        ("Read bandwidth",     0,  16, 4),
+        ("Read size",          16, 16, 4),
+        ("Read latency",       32, 16, 4),
+    ]
+    for title, x, w, _row in layout:
+        assert x + w <= 48, f"{title}: x({x}) + w({w}) = {x+w} > 48"
+        assert x >= 0, f"{title}: x({x}) < 0"
+        assert w > 0, f"{title}: w({w}) <= 0"
+    # No horizontal overlaps within each row
+    from itertools import combinations
+    for r in range(5):
+        row_panels = [(title, x, w) for (title, x, w, row) in layout if row == r]
+        for (t1, x1, w1), (t2, x2, w2) in combinations(row_panels, 2):
+            overlap = min(x1 + w1, x2 + w2) - max(x1, x2)
+            assert overlap <= 0, f"Overlap in row {r}: {t1} [{x1},{x1+w1}) vs {t2} [{x2},{x2+w2})"
+    # All panels in each row sum to 48 (tile perfectly)
+    for r in range(5):
+        row_w = sum(w for (_title, _x, w, row) in layout if row == r)
+        assert row_w == 48, f"Row {r} widths sum to {row_w}, not 48"

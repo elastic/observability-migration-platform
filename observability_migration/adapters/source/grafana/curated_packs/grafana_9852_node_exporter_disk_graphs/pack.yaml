@@ -1,0 +1,199 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 9852
+# https://grafana.com/grafana/dashboards/9852-stians-disk-graphs/
+#
+# Source: community "node-exporter disk graphs" (stians-disk-graphs, ~5M downloads).
+# Revision 1. schemaVersion 16. 13 leaf panels + 2 rows (Memory / Disk).
+# Variables: $Node (instance, multi), $CPU (cpu, multi), $Disk (device, multi),
+#            $RateInterval (interval, dropped per engine issue #356).
+#
+# The panel type is "graph" throughout; panels.py:134 already maps it to "line".
+# No plugin.py needed: all label_values() populate queries target metrics that
+# exist on an Elastic scrape.
+#
+# Engine vs pack split:
+#   Engine: irate/rate counter evaluation, multi-select MV_CONTAINS binds for
+#           $Node/$CPU/$Disk, element-wise rate(A)/rate(B) per-device STATS+EVAL
+#           (#376/PR#438), IO Wait per core two-layer Min/Avg/Max split (#355),
+#           $RateInterval interval-variable disclosure (#356).
+#   Pack:   metric_kinds (including the suffix-less node_vmstat_oom_kill counter),
+#           Node→instance / CPU→cpu / Disk→device field pins, named series for
+#           Disk IO (Weighted IO time / Write time / Read time) per device, and
+#           clean per-device column names for the four rate-ratio panels
+#           (Write size / Write latency / Read size / Read latency).
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    # node_vmstat_oom_kill is pinned *gauge*, not counter. node_exporter
+    # declares it `# TYPE ... untyped` (Prometheus metadata reports
+    # type "unknown") because it is a raw /proc/vmstat passthrough field, so
+    # there is no counter declaration to honour. The source panel still calls
+    # irate() on it, which Prometheus permits only because it does not
+    # type-check; Elasticsearch does, and rejects RATE/IRATE on anything not
+    # mapped counter_*. Pinning gauge lets the engine degrade irate() to its
+    # gauge analogue (disclosed as a warning) instead of emitting an IRATE the
+    # target rejects at runtime.
+    node_vmstat_oom_kill: gauge
+    # counters — declared `# TYPE ... counter` by node_exporter
+    node_cpu_seconds_total: counter
+    node_disk_io_time_seconds_total: counter
+    node_disk_io_time_weighted_seconds_total: counter
+    node_disk_write_time_seconds_total: counter
+    node_disk_read_time_seconds_total: counter
+    node_disk_writes_completed_total: counter
+    node_disk_reads_completed_total: counter
+    node_disk_written_bytes_total: counter
+    node_disk_read_bytes_total: counter
+    # gauges
+    node_memory_Active_bytes: gauge
+    node_memory_Buffers_bytes: gauge
+    node_memory_Cached_bytes: gauge
+    node_memory_MemTotal_bytes: gauge
+    node_memory_Dirty_bytes: gauge
+    node_memory_Writeback_bytes: gauge
+    node_time_seconds: gauge
+
+controls:
+  field_overrides:
+    Node: instance
+    CPU: cpu
+    Disk: device
+
+panel:
+  query_overrides:
+    # The Memory panel engine output groups by `service.instance.id` (OTel) or
+    # `labels.instance` (prometheus_native) — both contain dots. Kibana Lens
+    # ES|QL mode treats dotted column names as nested-object paths, so the
+    # breakdown value resolves to null and the legend shows "(null) - Memory active".
+    # Fix: RENAME the breakdown to `node` (a flat, dot-free name) before KEEP.
+    # No approximation_note: the query is semantically identical, just renamed.
+    #
+    # TBUCKET(100) is deliberate and is NOT the sub-scrape hazard that
+    # test_curated_rate_overrides_do_not_use_sub_scrape_adaptive_tbucket_100
+    # guards against: that hazard is specific to RATE/IRATE/INCREASE, which need
+    # >=2 samples per bucket and go blank below scrape cadence. These two panels
+    # are gauges read with LAST_OVER_TIME, where a bucket narrower than the
+    # scrape interval simply yields no row (Grafana renders raw samples the same
+    # way). Coarser counts visibly over-smooth: on a 15m range TBUCKET(20) gives
+    # 15 points and TBUCKET(100) gives 31, against ~33 samples actually present.
+    - title_match: "Memory"
+      kibana_type_override: area
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:node_memory_Active_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Buffers_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Cached_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL
+        | EVAL `node` = {{label:instance}}
+        | STATS `Memory active` = AVG(LAST_OVER_TIME({{metric:node_memory_Active_bytes:gauge}})), `Memory buffers` = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), `Memory cached` = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), `Total memory` = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), `node`
+        | KEEP time_bucket, `node`, `Memory active`, `Memory buffers`, `Memory cached`, `Total memory`
+        | SORT time_bucket ASC
+
+    # Same dotted-name fix for Memory write cache (Dirty bytes / Writeback bytes).
+    - title_match: "Memory write cache"
+      kibana_type_override: area
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:node_memory_Dirty_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_Writeback_bytes:gauge}} IS NOT NULL
+        | EVAL `node` = {{label:instance}}
+        | STATS `Dirty bytes` = AVG(LAST_OVER_TIME({{metric:node_memory_Dirty_bytes:gauge}})), `Writeback bytes` = AVG(LAST_OVER_TIME({{metric:node_memory_Writeback_bytes:gauge}})) BY time_bucket = TBUCKET(100, ?_tstart, ?_tend), `node`
+        | KEEP time_bucket, `node`, `Dirty bytes`, `Writeback bytes`
+        | SORT time_bucket ASC
+
+    # The three-metric Disk IO panel (#354 engine fixture) produces column names
+    # Weighted_IO_time / Write_time / Read_time but groups breakdown by
+    # CONCAT(device, " / ", instance). Override to group by device only so the
+    # legend is per-device (matching Grafana's single-node use) and names are
+    # human-readable. Note: multi-node deployments with $Node="All" see per-device
+    # sums across all selected instances rather than per-instance series.
+    - title_match: "Disk IO"
+      kibana_type_override: line
+      approximation_note: "Groups by device only (not device+instance); matches Grafana single-node view. Multi-node use shows per-device aggregates across all selected $Node instances."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE ({{label:device}} != "sr0" OR ({{label:device}} IS NULL AND "" != "sr0"))
+        | WHERE (MV_COUNT(?Disk) == 0 OR MV_CONTAINS(TO_STRING(?Disk), ".*") OR MV_CONTAINS(TO_STRING(?Disk), {{label:device}}))
+        | WHERE {{metric:node_disk_io_time_weighted_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_write_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_read_time_seconds_total:counter}} IS NOT NULL
+        | STATS `Weighted IO time` = AVG(RATE({{metric:node_disk_io_time_weighted_seconds_total:counter}})), `Write time` = AVG(RATE({{metric:node_disk_write_time_seconds_total:counter}})), `Read time` = AVG(RATE({{metric:node_disk_read_time_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | KEEP time_bucket, `{{label:device}}`, `Weighted IO time`, `Write time`, `Read time`
+        | SORT time_bucket ASC
+
+    # Element-wise rate(written) / rate(writes) — engine (#376) produces the
+    # correct per-device STATS+EVAL ratio but names the output "computed_value"
+    # and groups by CONCAT(instance, " / ", device). Override to name the column
+    # "Write size" and break by device only.
+    # approximation_note preserves migrated_with_warnings: same-bucket ES|QL
+    # math is an approximation vs exact PromQL element-wise evaluation (#376).
+    - title_match: "Write size"
+      kibana_type_override: line
+      approximation_note: "Same-bucket ES|QL ratio: RATE(written_bytes) / RATE(writes_completed) within each TBUCKET. Equivalent to Grafana rate(A)/rate(B) when the scrape interval divides cleanly into the bucket width."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE ({{label:device}} != "sr0" OR ({{label:device}} IS NULL AND "" != "sr0"))
+        | WHERE (MV_COUNT(?Disk) == 0 OR MV_CONTAINS(TO_STRING(?Disk), ".*") OR MV_CONTAINS(TO_STRING(?Disk), {{label:device}}))
+        | WHERE {{metric:node_disk_written_bytes_total:counter}} IS NOT NULL OR {{metric:node_disk_writes_completed_total:counter}} IS NOT NULL
+        | STATS _written = AVG(RATE({{metric:node_disk_written_bytes_total:counter}})), _writes = AVG(RATE({{metric:node_disk_writes_completed_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | EVAL `Write size` = _written / _writes
+        | DROP _written, _writes
+        | KEEP time_bucket, `{{label:device}}`, `Write size`
+        | SORT time_bucket ASC
+
+    # rate(write_time) / rate(writes_completed) — same pattern as Write size.
+    - title_match: "Write latency"
+      kibana_type_override: line
+      approximation_note: "Same-bucket ES|QL ratio: RATE(write_time) / RATE(writes_completed) within each TBUCKET. See Write size note."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE ({{label:device}} != "sr0" OR ({{label:device}} IS NULL AND "" != "sr0"))
+        | WHERE (MV_COUNT(?Disk) == 0 OR MV_CONTAINS(TO_STRING(?Disk), ".*") OR MV_CONTAINS(TO_STRING(?Disk), {{label:device}}))
+        | WHERE {{metric:node_disk_write_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_writes_completed_total:counter}} IS NOT NULL
+        | STATS _time = AVG(RATE({{metric:node_disk_write_time_seconds_total:counter}})), _writes = AVG(RATE({{metric:node_disk_writes_completed_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | EVAL `Write latency` = _time / _writes
+        | DROP _time, _writes
+        | KEEP time_bucket, `{{label:device}}`, `Write latency`
+        | SORT time_bucket ASC
+
+    # rate(read_bytes) / rate(reads_completed) — bytes per completed read per device.
+    - title_match: "Read size"
+      kibana_type_override: line
+      approximation_note: "Same-bucket ES|QL ratio: RATE(read_bytes) / RATE(reads_completed) within each TBUCKET. See Write size note."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE ({{label:device}} != "sr0" OR ({{label:device}} IS NULL AND "" != "sr0"))
+        | WHERE (MV_COUNT(?Disk) == 0 OR MV_CONTAINS(TO_STRING(?Disk), ".*") OR MV_CONTAINS(TO_STRING(?Disk), {{label:device}}))
+        | WHERE {{metric:node_disk_read_bytes_total:counter}} IS NOT NULL OR {{metric:node_disk_reads_completed_total:counter}} IS NOT NULL
+        | STATS _read = AVG(RATE({{metric:node_disk_read_bytes_total:counter}})), _reads = AVG(RATE({{metric:node_disk_reads_completed_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | EVAL `Read size` = _read / _reads
+        | DROP _read, _reads
+        | KEEP time_bucket, `{{label:device}}`, `Read size`
+        | SORT time_bucket ASC
+
+    # rate(read_time) / rate(reads_completed) — seconds per completed read per device.
+    - title_match: "Read latency"
+      kibana_type_override: line
+      approximation_note: "Same-bucket ES|QL ratio: RATE(read_time) / RATE(reads_completed) within each TBUCKET. See Write size note."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_COUNT(?Node) == 0 OR MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE ({{label:device}} != "sr0" OR ({{label:device}} IS NULL AND "" != "sr0"))
+        | WHERE (MV_COUNT(?Disk) == 0 OR MV_CONTAINS(TO_STRING(?Disk), ".*") OR MV_CONTAINS(TO_STRING(?Disk), {{label:device}}))
+        | WHERE {{metric:node_disk_read_time_seconds_total:counter}} IS NOT NULL OR {{metric:node_disk_reads_completed_total:counter}} IS NOT NULL
+        | STATS _time = AVG(RATE({{metric:node_disk_read_time_seconds_total:counter}})), _reads = AVG(RATE({{metric:node_disk_reads_completed_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | EVAL `Read latency` = _time / _reads
+        | DROP _time, _reads
+        | KEEP time_bucket, `{{label:device}}`, `Read latency`
+        | SORT time_bucket ASC
