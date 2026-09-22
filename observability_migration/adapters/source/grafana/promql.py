@@ -3840,6 +3840,142 @@ def promql_has_unmatchable_distinct_metric_binop(expr):
     return False
 
 
+# --- Native PROMQL explicit vector matching (issue #440) --------------------
+#
+# Elasticsearch gained PromQL vector matching — ``on(...)``, ``ignoring(...)``,
+# ``group_left``, ``group_right`` — in elastic/elasticsearch#155634 (Serverless
+# and Stack 9.6). It is narrower than Prometheus's: an explicitly matched binary
+# operation is only planned when Elasticsearch can determine each operand's
+# label set *statically*. Otherwise it fails at analysis time with
+# ``vector matching requires operands with concrete label sets``, which in Kibana
+# is a hard panel error rather than an empty result.
+#
+# Verified live against Elasticsearch 9.6.0-SNAPSHOT (rows/status per operand
+# shape, matcher present on every case):
+#
+#   sum by (d) (A)            / on(d) sum by (d) (B)        HTTP 200
+#   sum(A)                    / on(d) sum(B)                HTTP 200
+#   abs(sum by (d) (A))       / on(d) sum by (d) (B)        HTTP 200
+#   vector(1)                 / on(d) sum by (d) (B)        HTTP 200
+#   sum by (d) (A) / sum by (d) (B) / on(d) sum by (d) (B)  HTTP 200
+#   sum without (d) (A)       / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   A                         / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   rate(A[5m])               / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   A / B                     / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#
+# The separating rule: an aggregation *pins* the result label set (``by (L)`` →
+# exactly ``L``; no modifier → the empty set), and ``vector()`` is nameless and
+# labelless, so those are concrete. ``without (L)`` means "every label except
+# L", and a raw selector (or anything that only propagates one) can carry any
+# label the data happens to have, so those are indeterminate. Functions, unary
+# minus, parentheses and nested arithmetic propagate their operand's label set,
+# so they are concrete exactly when their vector operand is.
+_AGG_MODIFIER_WITHOUT = "AggModifierType.Without"
+
+
+def _ast_label_set_is_concrete(node):
+    """Whether Elasticsearch can statically determine *node*'s result label set.
+
+    Returns ``_PROMQL_SCALAR_OPERAND`` for a scalar (scalars take no part in
+    vector matching), else a bool. Unrecognized nodes answer False so an
+    unmodelled construct keeps the ES|QL fallback rather than emitting a query
+    that fails at analysis time.
+    """
+    node_type = type(node).__name__
+
+    if node_type in ("ParenExpr", "UnaryExpr"):
+        return _ast_label_set_is_concrete(node.expr)
+
+    if node_type in ("NumberLiteral", "StringLiteral"):
+        return _PROMQL_SCALAR_OPERAND
+
+    if node_type == "AggregateExpr":
+        # ``topk``/``bottomk`` select whole series, so they keep the inner
+        # labels instead of pinning a new set — the same reason they keep
+        # ``__name__``. (They are blocked from the native path outright by
+        # ``_PROMQL_UNSUPPORTED_RE``; modelled here so this predicate is
+        # faithful on its own terms.)
+        if str(getattr(node, "op", "") or "").lower() in _NAME_PRESERVING_AGG_OPS:
+            return _ast_label_set_is_concrete(node.expr)
+        modifier = getattr(node, "modifier", None)
+        if modifier is None:
+            # Aggregation with no by/without collapses to one labelless series.
+            return True
+        return str(getattr(modifier, "type", "")) != _AGG_MODIFIER_WITHOUT
+
+    if node_type == "Call":
+        func = getattr(node, "func", None)
+        func_name = str(getattr(func, "name", "") or "").lower()
+        if func_name == "vector":
+            return True
+        if "scalar" in str(getattr(func, "return_type", "")).lower():
+            return _PROMQL_SCALAR_OPERAND
+        # A function propagates its vector argument's label set.
+        saw_vector = False
+        for arg in list(getattr(node, "args", []) or []):
+            arg_state = _ast_label_set_is_concrete(arg)
+            if arg_state is _PROMQL_SCALAR_OPERAND:
+                continue
+            saw_vector = True
+            if not arg_state:
+                return False
+        return True if saw_vector else _PROMQL_SCALAR_OPERAND
+
+    if node_type == "BinaryExpr":
+        sides = [
+            state
+            for state in (
+                _ast_label_set_is_concrete(node.lhs),
+                _ast_label_set_is_concrete(node.rhs),
+            )
+            if state is not _PROMQL_SCALAR_OPERAND
+        ]
+        if not sides:
+            return _PROMQL_SCALAR_OPERAND
+        return all(sides)
+
+    # VectorSelector / MatrixSelector / SubqueryExpr and anything unmodelled.
+    return False
+
+
+def promql_vector_matching_has_indeterminate_operand(expr):
+    """True when *expr* explicitly vector-matches an operand ES cannot plan.
+
+    Answers the shape half of the native-PROMQL decision for ``on()`` /
+    ``ignoring()`` / ``group_left`` / ``group_right`` (issue #440); the target
+    half is the ``promql_vector_matching`` runtime feature. Every explicitly
+    matched binary operation in the expression is checked, including nested
+    ones, because Elasticsearch rejects the query if any single one of them has
+    an operand whose label set is indeterminate.
+
+    Set operators are reported as indeterminate regardless of operand shape:
+    Elasticsearch rejects ``or``/``and``/``unless`` combined with
+    ``on``/``ignoring`` outright (``set operator [or] with on/ignoring is not
+    supported at this time``, elasticsearch#158181 still open).
+
+    *expr* must already be macro-resolved (``_clean_promql_for_native``). An
+    unparseable expression answers True so it keeps the ES|QL fallback.
+    """
+    if promql_parser is None or not expr or not str(expr).strip():
+        return True
+    try:
+        ast = promql_parser.parse(_trim_outer_parens(str(expr).strip()))
+    except Exception:
+        return True
+
+    for node in _iter_ast_nodes(ast):
+        if type(node).__name__ != "BinaryExpr":
+            continue
+        if getattr(getattr(node, "modifier", None), "matching", None) is None:
+            continue
+        if str(getattr(node, "op", "") or "").lower() in _SET_OPERATORS:
+            return True
+        for operand in (node.lhs, node.rhs):
+            if _ast_label_set_is_concrete(operand) is not True:
+                return True
+    return False
+
+
 def _parse_fragment(expr, depth=0):
     """Parse a PromQL expression into a PromQLFragment using the AST parser.
 

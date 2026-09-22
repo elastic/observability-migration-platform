@@ -98,6 +98,7 @@ from .promql import (
     grafana_template_var_name,
     promql_has_unmatchable_distinct_metric_binop,
     promql_literal_value,
+    promql_vector_matching_has_indeterminate_operand,
     substitute_grafana_range_macros,
     substitute_literal_template_vars,
     substitute_scalar_template_vars,
@@ -109,6 +110,7 @@ from .runtime_features import (
     KIBANA_PROMQL_CONTROL_PARAMS,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
+    PROMQL_VECTOR_MATCHING,
     binds_esql_named_params,
     get_runtime_features,
     is_feature_supported,
@@ -190,6 +192,14 @@ NATIVE_PROMQL_CONTROL_PARAMS_MIN_VERSION = "9.5.0"
 # the ES|QL fallback rewrites it to ``PERCENTILE(...)`` — so its presence in a
 # panel query uniquely marks a 9.5-requiring panel.
 NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION = "9.5.0"
+# Floor required by panels whose native PROMQL query vector-matches
+# (``on()``/``ignoring()``/``group_left``/``group_right``; Elasticsearch
+# Serverless or 9.6, elastic/elasticsearch#155634). Migration only emits these
+# against a target that probed as capable, but the artifact is portable — it can
+# be uploaded to a different stack later — so it records the floor it needs
+# (issue #440). Only the native path keeps these modifiers in the emitted
+# query; the ES|QL fallback rewrites them away.
+NATIVE_VECTOR_MATCHING_MIN_VERSION = "9.6.0"
 MIN_PANEL_WIDTH = 4
 
 
@@ -398,10 +408,11 @@ def _dashboard_minimum_kibana_version(flat_panels):
     """Return the dashboard ``minimum_kibana_version`` floor for *flat_panels*.
 
     Defaults to :data:`MINIMUM_KIBANA_VERSION` (product floor: Kibana 9.5+).
-    Raised further only if a future panel capability needs a higher version;
-    today control-param forwarding and native ``histogram_quantile`` also
-    require 9.5. The dashboard schema only carries this field per-dashboard,
-    so the floor is the max across panels.
+    Control-param forwarding and native ``histogram_quantile`` also require 9.5;
+    native vector matching raises the floor to 9.6. Each check reads the
+    *emitted* query, so a panel that fell back to ES|QL never raises the floor.
+    The dashboard schema only carries this field per-dashboard, so the floor is
+    the max across panels.
     """
     minimum = MINIMUM_KIBANA_VERSION
     for panel in flat_panels or []:
@@ -419,6 +430,15 @@ def _dashboard_minimum_kibana_version(flat_panels):
             NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION
         ) > _parse_kibana_version(minimum):
             minimum = NATIVE_HISTOGRAM_QUANTILE_MIN_VERSION
+        # Structure only: a legend or label value that happens to contain
+        # ``on(`` must not raise the floor.
+        if (
+            query.lstrip().upper().startswith("PROMQL ")
+            and _PROMQL_VECTOR_MATCHING_RE.search(_strip_promql_string_literals(query))
+            and _parse_kibana_version(NATIVE_VECTOR_MATCHING_MIN_VERSION)
+            > _parse_kibana_version(minimum)
+        ):
+            minimum = NATIVE_VECTOR_MATCHING_MIN_VERSION
     return minimum
 
 KIBANA_TYPE_HEIGHT = {
@@ -1220,8 +1240,19 @@ _PROMQL_UNSUPPORTED_RE = re.compile(
     | \blabel_replace\s*\(                        # label_replace not supported
     | \blabel_join\s*\(                           # label_join not supported
     | \bscalar\s*\(                               # scalar() triggers planner error
-    | \b(?:on|ignoring)\s*\(                      # vector matching modifiers not supported
-    | \bgroup_(?:left|right)\b                    # group modifiers not supported
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Explicit PromQL vector matching. Native only where the target advertises the
+# PROMQL_VECTOR_MATCHING runtime feature (Elasticsearch Serverless / >= 9.6,
+# elastic/elasticsearch#155634), and only for operand shapes Elasticsearch can
+# plan — hence gated separately from the unconditional blockers above rather
+# than listed among them (issue #440).
+_PROMQL_VECTOR_MATCHING_RE = re.compile(
+    r"""
+      \b(?:on|ignoring)\s*\(     # on(...) / ignoring(...) matcher
+    | \bgroup_(?:left|right)\b   # group_left / group_right cardinality modifier
     """,
     re.VERBOSE | re.IGNORECASE,
 )
@@ -1519,6 +1550,59 @@ def _strip_promql_string_literals(expr):
     text = re.sub(r'"(?:\\.|[^"])*"', '""', text)
     text = re.sub(r"'(?:\\.|[^'])*'", "''", text)
     return text
+
+
+def _strip_promql_comments(expr):
+    """Drop ``#`` line comments, leaving their newline, so structural regexes see syntax.
+
+    PromQL allows a comment between a token and its parenthesis —
+    ``on # note\\n(instance)`` parses as ``on(instance)`` — so a check that scans
+    for a construct must not be fooled into missing one (issue #440). Quote state
+    is tracked, backticks included, because a ``#`` inside a label value is data.
+
+    Only valid on text that still has its newlines. A comment ends at its
+    newline, so stripping after a flattening pass such as
+    ``_clean_promql_for_native`` would swallow real expression text — which is
+    why this is separate from :func:`_strip_promql_string_literals` rather than
+    folded into it.
+    """
+    text = str(expr or "")
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if quote:
+            out.append(char)
+            if char == "\\" and quote != "`" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if char == quote:
+                quote = ""
+            i += 1
+            continue
+        if char in "\"'`":
+            quote = char
+            out.append(char)
+            i += 1
+            continue
+        if char == "#":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _sanitize_promql_structure(expr):
+    """Blank literals and comments so a structural regex sees only PromQL syntax.
+
+    Comments are removed first, on the original text, so their extent is exact;
+    literals are blanked after. Callers must pass the *unflattened* expression.
+    """
+    return _strip_promql_string_literals(_strip_promql_comments(expr))
 
 
 def _promql_grouping_has_template_variable(expr):
@@ -2383,6 +2467,78 @@ def _promql_has_unmatchable_vector_match(promql_expr) -> bool:
         return False
 
 
+def _promql_vector_matching_is_native_feasible(promql_expr) -> bool:
+    """True when every explicit ``on()``/``ignoring()`` match in the expression
+    is one Elasticsearch can plan (issue #440).
+
+    Elasticsearch only vector-matches operands whose label set it can determine
+    statically; anything else fails analysis with ``vector matching requires
+    operands with concrete label sets``, which surfaces in Kibana as a hard
+    panel error. So a capable target is necessary but not sufficient — the
+    operand shapes have to qualify too, or the panel keeps the ES|QL join/ratio
+    translation it has today.
+
+    Macros are resolved first so the shape analysed is the one the native
+    command is actually built from; a raw ``rate(foo[$__rate_interval])`` does
+    not parse.
+    """
+    if not promql_expr or not str(promql_expr).strip():
+        return False
+    try:
+        cleaned = _clean_promql_for_native(promql_expr)
+        return not promql_vector_matching_has_indeterminate_operand(
+            cleaned or promql_expr
+        )
+    except Exception:
+        return False
+
+
+def _native_vector_matching_skip_note(promql_expr, runtime_features) -> str:
+    """Operator-facing reason an ``on()``/``ignoring()`` panel stayed on ES|QL.
+
+    Returns ``""`` when vector matching is not what blocked native emission —
+    an expression can carry a matcher *and* fail for an unrelated reason (an
+    outer ``sum by()`` around a blocked ``topk()``, say), and telling that
+    operator to reshape their operands would send them after the wrong thing.
+    So this mirrors the gate in :func:`can_use_native_promql` rather than
+    assuming the matcher was the cause.
+
+    Otherwise the three causes need different answers, so name which one
+    applied: the target cannot vector-match (upgrade path), the probe could not
+    establish that it can (connectivity/permissions path), or it can but not for
+    these operands (rewrite path). Worded to avoid the semantic-loss tokens in
+    ``verification._NOTE_SEMANTIC_LOSS_TOKENS`` — the note explains a routing
+    decision, and the ES|QL translation reports its own approximations.
+    """
+    if not _PROMQL_VECTOR_MATCHING_RE.search(_sanitize_promql_structure(promql_expr)):
+        return ""
+    if is_feature_supported(runtime_features, PROMQL_VECTOR_MATCHING):
+        if _promql_vector_matching_is_native_feasible(promql_expr):
+            return ""
+        return (
+            "Native PROMQL skipped: this target only vector-matches operands whose "
+            "label set it can determine statically — aggregate both sides with "
+            "'by (...)' (a raw selector, a rate()/*_over_time() over one, or "
+            "'without (...)' does not qualify) — so the panel migrates as ES|QL instead"
+        )
+    # A feature value may be a bare bool as well as a probe-state dict, so only
+    # a dict can carry a confidence to report.
+    state = (runtime_features or {}).get(PROMQL_VECTOR_MATCHING)
+    if isinstance(state, dict) and str(state.get("confidence", "")).lower() == "inconclusive":
+        return (
+            "Native PROMQL skipped: could not verify whether the target evaluates "
+            "PromQL vector matching (on()/ignoring()/group_left/group_right) — "
+            f"{state.get('reason') or 'the capability probe was inconclusive'} — so "
+            "the panel migrates as ES|QL instead"
+        )
+    return (
+        "Native PROMQL skipped: target does not evaluate PromQL vector "
+        "matching (on()/ignoring()/group_left/group_right; needs "
+        "Elasticsearch Serverless or 9.6+), so the panel migrates as "
+        "ES|QL instead"
+    )
+
+
 def can_use_native_promql(promql_expr, runtime_features=None):
     """Return True if the expression is within the server-supported PromQL subset."""
     if not promql_expr or not promql_expr.strip():
@@ -2394,7 +2550,11 @@ def can_use_native_promql(promql_expr, runtime_features=None):
         return False
     if _promql_grouping_has_template_variable(promql_expr):
         return False
-    sanitized = _strip_promql_string_literals(promql_expr)
+    # Comment-aware: the checks below scan the raw expression, where a comment's
+    # extent is still exact, so a construct hidden behind one is still seen
+    # (issue #440). The gates that run on ``_clean_promql_for_native`` output
+    # deliberately do not, because flattening destroys that extent.
+    sanitized = _sanitize_promql_structure(promql_expr)
     if _PROMQL_EMPTY_METRICLESS_SELECTOR_RE.search(sanitized):
         # A metricless selector with no matchers (``{}``) is invalid PromQL.
         # This shape typically appears after an ignored label was the *sole*
@@ -2405,6 +2565,11 @@ def can_use_native_promql(promql_expr, runtime_features=None):
         return False
     if _PROMQL_HISTOGRAM_QUANTILE_RE.search(sanitized) and not is_feature_supported(
         runtime_features, PROMQL_HISTOGRAM_QUANTILE
+    ):
+        return False
+    if _PROMQL_VECTOR_MATCHING_RE.search(sanitized) and not (
+        is_feature_supported(runtime_features, PROMQL_VECTOR_MATCHING)
+        and _promql_vector_matching_is_native_feasible(promql_expr)
     ):
         return False
     if _promql_has_unsupported_comparison(promql_expr):
@@ -2790,6 +2955,9 @@ def _translate_panel_native_promql(
                 "vector-matching key includes the metric name), so the panel "
                 "migrates as same-bucket ES|QL math instead",
             )
+        matching_note = _native_vector_matching_skip_note(expr, runtime_features)
+        if matching_note:
+            _append_unique(panel_notes, matching_note)
         return None
     # A control-bound label-matcher variable (e.g. ``{instance=~"$instance"}``)
     # is rewritten to ``{instance=~?instance}`` inside the opaque PromQL string.
@@ -3137,6 +3305,9 @@ def _translate_multi_target_native_promql(
                     panel_notes,
                     "Native PROMQL skipped: target does not support PromQL label matcher params yet",
                 )
+            matching_note = _native_vector_matching_skip_note(expr, runtime_features)
+            if matching_note:
+                _append_unique(panel_notes, matching_note)
             return None
         # Kibana-side forwarding of control params into inner PROMQL expressions
         # is gated by ``KIBANA_PROMQL_CONTROL_PARAMS`` (preferred by default;

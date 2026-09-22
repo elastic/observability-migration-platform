@@ -121,6 +121,7 @@ from .runtime_features import (
     PROMQL_COMMAND_V0,
     PROMQL_HISTOGRAM_QUANTILE,
     PROMQL_LABEL_MATCHER_PARAMS,
+    PROMQL_VECTOR_MATCHING,
     get_runtime_features,
     is_feature_supported,
     set_runtime_feature,
@@ -884,6 +885,24 @@ _PROMQL_LABEL_MATCHER_PARAM_PROBE = (
     "value=(up{job=?_job})"
 )
 
+# Probe for native PromQL vector matching (elastic/elasticsearch#155634): the
+# ``on(...)`` matcher, the ``group_left``/``group_right`` cardinality modifier,
+# and ``ignoring(...)`` in one request. No cluster capability name is advertised
+# for the feature, so this is the only way to ask.
+#
+# ``vector(1)`` operands are deliberate. A probe over real metric selectors
+# cannot answer the question: a *supported* target still rejects a bare selector
+# (its label set is not statically determinable) and returns HTTP 500 for a
+# matched binary op over metrics the index does not have, so either shape would
+# report "unsupported" on a capable cluster. ``vector(1)`` is labelless and
+# concrete, needs no index or data, and reaches the vector-matching analyzer —
+# verified HTTP 200 on Elasticsearch 9.6.0-SNAPSHOT.
+_PROMQL_VECTOR_MATCHING_PROBE = (
+    'PROMQL index=metrics-* step=1m '
+    'start="2024-01-01T00:00:00Z" end="2024-01-01T01:00:00Z" '
+    "value=(vector(1) * on(job) group_left(pod) vector(1) / ignoring(pod) vector(1))"
+)
+
 # Self-contained probe for plain ES|QL named-parameter binding. It needs no
 # real index or data — ``ROW`` synthesizes a row and the ``WHERE … == ?p`` /
 # ``RLIKE ?p`` clause exercises exactly the named-parameter substitution the
@@ -1038,6 +1057,82 @@ def _detect_promql_label_matcher_params(
             "confidence": "verified",
             "level": "syntax",
             "reason": "target parser rejects PromQL label matcher params",
+        }
+    return {
+        "supported": False,
+        "source": "probe",
+        "confidence": "inconclusive",
+        "level": "syntax",
+        "reason": f"target probe returned HTTP {status}",
+    }
+
+
+def _detect_promql_vector_matching(
+    es_url: str,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+    verify: bool | str = True,
+) -> dict[str, Any]:
+    """Probe whether the target evaluates native PromQL vector matching.
+
+    Returns a feature-state dict. Fail-closed by design: only HTTP 200 enables
+    the native path, because every other answer — a stack that predates
+    elastic/elasticsearch#155634, an auth error, a flaky cluster — leaves the
+    ES|QL join/ratio translation, which is what these panels get today. That is
+    the opposite default from ``PROMQL_COMMAND_V0`` (optimistic), and matches
+    ``PROMQL_HISTOGRAM_QUANTILE``: enabling a capability the target lacks turns a
+    working ES|QL panel into a hard Kibana error (issue #440).
+
+    Probing rather than version-gating is what makes this work on Serverless,
+    where the capability is present but ``version.number`` does not imply 9.6.
+    """
+    if not es_url:
+        return {}
+    url = es_url.rstrip("/") + "/_query"
+    try:
+        response = requests.post(
+            url,
+            json={"query": _PROMQL_VECTOR_MATCHING_PROBE},
+            headers=_es_headers(api_key),
+            timeout=timeout,
+            verify=verify,
+        )
+    except Exception as exc:
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": f"target probe failed ({exc.__class__.__name__})",
+        }
+
+    status = getattr(response, "status_code", 0)
+    if status == 200:
+        return {
+            "supported": True,
+            "source": "probe",
+            "confidence": "verified",
+            "level": "syntax",
+            "reason": "target accepted PromQL on()/ignoring()/group_* vector matching",
+        }
+    if status in (401, 403):
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "inconclusive",
+            "level": "syntax",
+            "reason": "target probe skipped due to auth error",
+        }
+    if status == 400:
+        return {
+            "supported": False,
+            "source": "probe",
+            "confidence": "verified",
+            "level": "syntax",
+            "reason": (
+                "target rejects PromQL vector matching; on()/ignoring()/group_* "
+                "panels use the ES|QL translation"
+            ),
         }
     return {
         "supported": False,
@@ -1383,6 +1478,10 @@ def _detect_target_runtime_features(
         ),
     )
 
+    profile[PROMQL_VECTOR_MATCHING] = _detect_promql_vector_matching(
+        es_url, api_key, timeout=timeout, verify=verify
+    )
+
     headers = _es_headers(api_key)
     capabilities_url = es_url.rstrip("/") + "/_nodes/capabilities"
     try:
@@ -1433,9 +1532,14 @@ def _runtime_feature_status_label(state: Any) -> str:
 def _print_promql_runtime_profile(runtime_features: dict[str, Any]) -> None:
     command_state = runtime_features.get(PROMQL_COMMAND_V0, {})
     label_state = runtime_features.get(PROMQL_LABEL_MATCHER_PARAMS, {})
+    matching_state = runtime_features.get(PROMQL_VECTOR_MATCHING, {})
     print("  Target PromQL profile:")
     print(f"    PROMQL command: {_runtime_feature_status_label(command_state)}")
     print(f"    PROMQL label matcher params: {_runtime_feature_status_label(label_state)}")
+    print(
+        "    PROMQL vector matching (on/ignoring/group_*): "
+        f"{_runtime_feature_status_label(matching_state)}"
+    )
     if (
         is_feature_supported(runtime_features, PROMQL_COMMAND_V0)
         and not is_feature_supported(runtime_features, PROMQL_LABEL_MATCHER_PARAMS)

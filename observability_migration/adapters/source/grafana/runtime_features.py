@@ -22,6 +22,20 @@ KIBANA_PROMQL_CONTROL_PARAMS = "kibana_promql_control_params"
 # panels pass through the native PROMQL path instead of the ES|QL PERCENTILE()
 # translation. Gated behind this feature so older stacks keep the ES|QL path.
 PROMQL_HISTOGRAM_QUANTILE = "promql_histogram_quantile"
+# Native PromQL vector matching: ``on(…)`` / ``ignoring(…)`` and the
+# ``group_left`` / ``group_right`` cardinality modifiers
+# (elastic/elasticsearch#155634, on Serverless and Stack 9.6). No cluster
+# capability name is advertised for it, so it is probed with a self-contained
+# ``PROMQL … value=(vector(1) * on(…) group_left(…) vector(1) / ignoring(…)
+# vector(1))`` query. Fail-closed: only a probe that returns HTTP 200 enables
+# the native path, so older stacks and inconclusive probes keep the ES|QL
+# join/ratio translation (issue #440).
+#
+# Support is necessary but not sufficient — even on a capable target
+# Elasticsearch only vector-matches operands whose label set it can determine
+# statically, so callers must also consult
+# ``promql_vector_matching_has_indeterminate_operand``.
+PROMQL_VECTOR_MATCHING = "promql_vector_matching"
 # Plain ES|QL named-parameter binding (``FROM … | WHERE field == ?var`` /
 # ``RLIKE ?var``). Unlike ``promql_label_matcher_params`` this does NOT require
 # the ES|QL PROMQL command, so it is available on a broader set of targets and

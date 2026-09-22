@@ -9874,7 +9874,15 @@ class TranslatorRegressionTests(unittest.TestCase):
         self.assertEqual(profile[PROMQL_COMMAND_V0]["source"], "probe")
         self.assertTrue(profile[PROMQL_LABEL_MATCHER_PARAMS]["supported"])
         self.assertEqual(profile[PROMQL_LABEL_MATCHER_PARAMS]["source"], "capabilities+probe")
-        post.assert_called_once()
+        # The advertised capability must not make the label-matcher probe run
+        # twice. Counted by query rather than by total POSTs so an unrelated
+        # feature probe (e.g. vector matching) does not look like a regression.
+        label_matcher_probes = [
+            call
+            for call in post.call_args_list
+            if "?_job" in str(call.kwargs.get("json", {}).get("query", ""))
+        ]
+        self.assertEqual(len(label_matcher_probes), 1)
 
     def test_detect_target_runtime_features_probe_rejection_overrides_capability(self):
         from observability_migration.adapters.source.grafana.cli import (
