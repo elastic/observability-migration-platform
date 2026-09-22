@@ -1,0 +1,15 @@
+source: kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+feasibility: feasible
+warning: Approximated PromQL arithmetic using same-bucket ES|QL math
+warning: Collapsed all series of `kube_hpa_status_current_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: Collapsed all series of `kube_hpa_spec_max_replicas` into a single AVG line; the source selector has no series labels (no legend, by(), or dashboard reference), so per-series detail is dropped. Add a legend/by() or migrate with target access to recover per-series fidelity.
+warning: PromQL series labels were not retained; output is bucket-level and may collapse multiple source series
+---
+TS metrics-*
+| WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+| WHERE kube_hpa_status_current_replicas IS NOT NULL OR kube_hpa_spec_max_replicas IS NOT NULL
+| STATS kube_hpa_status_current_replicas = AVG(LAST_OVER_TIME(kube_hpa_status_current_replicas)), kube_hpa_spec_max_replicas = AVG(LAST_OVER_TIME(kube_hpa_spec_max_replicas)) BY time_bucket = TBUCKET(5 minute)
+| EVAL computed_value = CASE(kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas, kube_hpa_status_current_replicas, NULL)
+| WHERE computed_value IS NOT NULL
+| KEEP time_bucket, computed_value
+| SORT time_bucket ASC
