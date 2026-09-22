@@ -111,12 +111,25 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
         else:
             props[field_name] = {"type": "keyword"}
 
+    # Elasticsearch caps mapping fields at 1000 by default. A realistic corpus
+    # blows straight past it -- the 47 DataDog/integrations-core dashboards
+    # declare 1043 metric properties -- and the whole template is then rejected
+    # with "template after composition is invalid", leaving every panel
+    # unseeded. The template knows its own property count, so it raises the
+    # ceiling to clear it with headroom for the dimensions added below.
+    field_limit = max(1000, int(len(props) * 1.5) + 200)
+
     template: dict[str, Any] = {
         "index_patterns": [concrete_name],
         "data_stream": {},
         "priority": 1000,
         "template": {
-            "settings": {"index": {"codec": "best_compression"}},
+            "settings": {
+                "index": {
+                    "codec": "best_compression",
+                    "mapping.total_fields.limit": field_limit,
+                }
+            },
             # A dotted name is stored as a literal leaf rather than an object
             # path. Without this, Elasticsearch refuses a mapping that holds
             # both `redis.keys` and `redis.keys.evicted` ("can't merge a non
@@ -1636,9 +1649,30 @@ def _flush_into_summary(
         summary.error_samples.append(f"{missing} document(s) had no bulk result line")
 
 
+def _error_reason_chain(error: Any) -> str:
+    """Flatten an Elasticsearch error and its ``caused_by`` chain.
+
+    The outermost reason is often a wrapper ("template after composition is
+    invalid") whose leaf carries the only actionable detail ("Limit of total
+    fields [1000] has been exceeded"). Dropping the chain turns a one-setting
+    fix into an unexplained failure.
+    """
+    reasons: list[str] = []
+    node = error
+    while isinstance(node, dict):
+        reason = str(node.get("reason") or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        node = node.get("caused_by")
+    if not reasons:
+        return str(error)
+    return " <- ".join(reasons)
+
+
 def _raise_on_error(result: dict[str, Any], action: str) -> None:
     if isinstance(result, dict) and result.get("error"):
-        reason = result["error"].get("reason") if isinstance(result["error"], dict) else str(result["error"])
+        error = result["error"]
+        reason = _error_reason_chain(error) if isinstance(error, dict) else str(error)
         raise RuntimeError(f"Failed to {action}: {reason}")
 
 
