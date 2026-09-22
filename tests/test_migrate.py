@@ -6173,6 +6173,95 @@ class TranslatorRegressionTests(unittest.TestCase):
             f"expected unstacked overlay layer, got {layer_types}",
         )
 
+    def test_named_stack_group_singleton_becomes_unstacked_overlay(self):
+        """9852 Memory: ``stack: "D"`` isolates ``Total memory`` into its own group.
+
+        Grafana stacks active+buffers+cached and draws Total memory as a separate
+        overlay line. A named group of one is exactly an unstacked overlay, so it
+        must not be accumulated onto the breakdown (which read ~2x too tall).
+        """
+        panel = {
+            "id": 21,
+            "type": "graph",
+            "title": "Memory",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "stack": True,
+            "lines": True,
+            "seriesOverrides": [
+                {"alias": "/Total memory/", "fill": 0, "linewidth": 2, "stack": "D"},
+            ],
+            "targets": [
+                {"expr": "node_memory_Active_bytes", "refId": "A",
+                 "legendFormat": "Memory active"},
+                {"expr": "node_memory_Cached_bytes", "refId": "B",
+                 "legendFormat": "Memory cached"},
+                {"expr": "node_memory_MemTotal_bytes", "refId": "C",
+                 "legendFormat": "Total memory"},
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        self.assertIn(result.status, {"migrated", "migrated_with_warnings"})
+        esql = yaml_panel["esql"]
+        self.assertEqual(esql.get("mode"), "stacked")
+        metrics_by_label = {
+            str(m.get("label") or m.get("field")): m for m in esql.get("metrics") or []
+        }
+        self.assertIs(
+            metrics_by_label.get("Total memory", {}).get("stack"), False,
+            "Total memory is alone in stack group D, so it is an unstacked overlay",
+        )
+        for stacked in ("Memory active", "Memory cached"):
+            self.assertIsNot(
+                metrics_by_label.get(stacked, {}).get("stack"), False,
+                f"{stacked} has no override and must stay stacked",
+            )
+
+        from observability_migration.targets.kibana.dashboards_api import _cfg_xy
+
+        native = _cfg_xy("Memory", esql, esql["query"])
+        layer_types = [layer.get("type") for layer in native.get("layers") or []]
+        self.assertIn("area_stacked", layer_types)
+        self.assertTrue(
+            any(t in {"line", "area"} for t in layer_types),
+            f"expected unstacked overlay layer, got {layer_types}",
+        )
+
+    def test_named_stack_group_with_multiple_series_is_disclosed_not_reshaped(self):
+        """Lens accumulates one stack per layer, so a 2+ member named group cannot
+        be represented. It must stay stacked and say so, not silently reshape."""
+        panel = {
+            "id": 22,
+            "type": "graph",
+            "title": "Paired Stacks",
+            "datasource": {"type": "prometheus", "uid": "prom"},
+            "stack": True,
+            "lines": True,
+            "seriesOverrides": [
+                {"alias": "/^in_/", "stack": "B"},
+            ],
+            "targets": [
+                {"expr": "metric_a", "refId": "A", "legendFormat": "in_one"},
+                {"expr": "metric_b", "refId": "B", "legendFormat": "in_two"},
+                {"expr": "metric_c", "refId": "C", "legendFormat": "out_one"},
+            ],
+        }
+
+        yaml_panel, result = self.translate_panel(panel)
+        esql = yaml_panel["esql"]
+        metrics_by_label = {
+            str(m.get("label") or m.get("field")): m for m in esql.get("metrics") or []
+        }
+        for label in ("in_one", "in_two"):
+            self.assertIsNot(
+                metrics_by_label.get(label, {}).get("stack"), False,
+                f"{label} shares stack group B, so it cannot become an overlay",
+            )
+        self.assertTrue(
+            any("stack group" in str(r).lower() for r in (result.reasons or [])),
+            f"expected an unrepresentable-stack-group disclosure, got {result.reasons}",
+        )
+
     def test_regex_series_override_yaxis_preserved_on_merged_metric(self):
         panel = {
             "id": 910,
