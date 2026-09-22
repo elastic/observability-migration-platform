@@ -554,6 +554,47 @@ To emit a validated starter rule-pack template:
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 | Named profiles | `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto` (Grafana-only) | `otel`, `elastic_agent`, `prometheus` (Metricbeat), `prometheus_native` (ES `/_prometheus`), `passthrough`, or YAML path |
 
+### Label Matcher Value Types
+
+A PromQL label matcher value is always a string — `{le="0.5"}`, `{status_code="500"}`
+— but the target field has a real type, and ES|QL rejects a cross-family
+comparison (`first argument ... is [numeric] so second argument must also be
+[numeric]`). With live field caps loaded (`--es-url`), two things happen:
+
+* **Non-`le` labels** whose target field is numeric have the matcher **dropped**,
+  and the panel records `Dropped label filters with incompatible target field
+  types during migration`. The filter is lost but reported — the query stays
+  valid.
+* **Histogram `le`** cannot be dropped: the bucket boundary *is* the series
+  identity, so `histogram_quantile` would be wrong without it. A numeric `le`
+  is therefore compared numerically:
+
+| Target `le` mapping | Matcher | Emitted ES\|QL |
+| --- | --- | --- |
+| `double` / `long` | `le="0.5"` | `le == 0.5` |
+| `double` / `long` | `le="1"` | `le == 1` |
+| `double` / `long` | `le!="0.5"` | `(le != 0.5 OR le IS NULL)` |
+| `double` / `long` | `le=~"0\.5"` | `TO_STRING(le) RLIKE "0\.5"` |
+| `double` / `long` | `le="+Inf"` | `TO_STRING(le) == "+Inf"` |
+| `keyword` | `le="1"` | `(le == "1" OR le == "1.0")` |
+| unknown (no `--es-url`) | `le="1"` | `(le == "1" OR le == "1.0")` |
+
+A numeric mapping needs no `"1"`/`"1.0"` spelling alternation — `le == 1`
+already matches a stored `1.0`. That alternation exists only because string
+equality cannot see the two spellings are the same boundary, and it stays for
+the keyword exporters (e.g. express-prometheus-middleware) that need it.
+
+`RLIKE` and `LIKE` take a string argument, so a numeric field is cast rather
+than compared directly. `+Inf` is a real histogram boundary but not an ES|QL
+numeric literal, so it also compares through `TO_STRING(...)`: a numeric field
+holds no such value, so no rows can match, but the query stays valid instead of
+failing verification.
+
+Residual: an `le` matcher bound to a Grafana template variable (`le="$bucket"`)
+still emits `le == ?bucket`, which will fail if the control binds a string
+against a numeric field. Literal `le` values — what `histogram_quantile`
+dashboards actually use — are covered.
+
 ### Grouping Template Variables (Late-Bound `by ($var)`)
 
 Grafana dashboards often expose the grouping dimension as a template variable

@@ -24,7 +24,10 @@ from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.core.assets.visual import VisualIR
 from observability_migration.core.reporting.report import _panel_query_index
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
-from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
+from observability_migration.targets.kibana.emit.esql_utils import (
+    esql_identifier,
+    extract_esql_shape,
+)
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
     apply_style_guide_layout,
@@ -95,14 +98,16 @@ PANEL_PRESENTATION_KINDS = ("markdown", "esql", "lens", "links", "image")
 
 
 def _quote_esql_identifier(name: str) -> str:
-    value = str(name or "").strip()
-    if not value:
-        return value
-    if value.startswith("`") and value.endswith("`"):
-        return value
-    if re.fullmatch(r"[A-Za-z_][\w.]*", value):
-        return value
-    return f"`{value}`"
+    """Quote a dotted field path for ES|QL, per segment and idempotently.
+
+    This used to treat its argument as a single token: the "already quoted"
+    guard matched only a *fully* backticked string, so a per-segment-quoted
+    name arriving from the translator (``prometheus.labels.`client-id```) was
+    wrapped a second time into ``` `prometheus.labels.`client-id`` ```, which
+    Elasticsearch rejects with "token recognition error at: '-'". Every
+    ``prometheus*`` profile emitted that for any tag needing quotes.
+    """
+    return esql_identifier(str(name or "").strip())
 
 
 def _panel_presentation_kind(panel: dict[str, Any]) -> str:

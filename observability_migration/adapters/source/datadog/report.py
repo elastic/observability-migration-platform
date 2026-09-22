@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from observability_migration import __version__
+from observability_migration.core.reporting.report import print_data_readiness
 from observability_migration.core.reporting.summary_md import (
     AttentionItem,
     DashboardRow,
@@ -293,6 +294,8 @@ def print_report(results: list[DashboardResult]) -> None:
                 print(f"      - {p.title}: {reason_str}")
             if len(nf_panels) > 5:
                 print(f"      ... and {len(nf_panels) - 5} more")
+
+    print_data_readiness(results)
 
     print(f"\n{'=' * 70}")
     print(

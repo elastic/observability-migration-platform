@@ -24,6 +24,7 @@ from typing import Any
 from observability_migration.core.verification.field_capabilities import (
     FieldCapability,
     assess_field_usage,
+    is_object_container_field,
 )
 
 from .field_map import FieldMapProfile, detect_metric_layout
@@ -336,7 +337,11 @@ def build_target_readiness_contract(
 
             status = "unknown"
             field_type = None
-            if capability is not None:
+            if is_object_container_field(capability):
+                # A dotted path's parent node is reported by _field_caps but
+                # cannot be queried; treat it as absent, not as present.
+                status = "missing" if context_has_caps else "unknown"
+            elif capability is not None:
                 status = "confirmed"
                 field_type = capability.type
             elif context_has_caps:

@@ -35,8 +35,10 @@ from observability_migration.core.telemetry_data import (
     concrete_stream_name,
     generate_documents,
     ingest_documents,
+    lookback_truncation_warning,
     purge_foreign_streams,
     setup_templates_and_streams,
+    unmappable_field_report,
 )
 
 
@@ -224,7 +226,7 @@ def seed_sample_data(
         purge_foreign_streams(contract, request)
     if not no_recreate:
         setup_templates_and_streams(contract, request, recreate=True)
-    return ingest_documents(
+    summary = ingest_documents(
         generate_documents(
             contract,
             data_hours=data_hours,
@@ -235,6 +237,11 @@ def seed_sample_data(
         batch_docs=batch_docs,
         on_progress=on_progress,
     )
+    truncation = lookback_truncation_warning(contract)
+    if truncation:
+        summary.warnings.append(truncation)
+    summary.warnings.extend(unmappable_field_report(contract))
+    return summary
 
 
 @dataclass

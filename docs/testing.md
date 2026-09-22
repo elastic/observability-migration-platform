@@ -327,6 +327,39 @@ for both on Serverless). Full command examples are in
 | Interaction audit | `targets/kibana/interaction_{audit,scenarios,driver,runner}.py` | control selection reaches intended panels with adapter-specific evidence (see below) |
 | Numeric parity | `obs-migrate compare` + `verifier.corpus_gate` | native PROMQL and translated ES\|QL are numerically close |
 | Trend guard | `verifier.benchmark_gate` | success metrics + denominators don't drop vs a compatible baseline |
+| Filter semantics | `verifier.filter_semantics_gate` | an emitted tag-filter `WHERE` clause selects *exactly* the intended rows, per field profile and per target field type (see below) |
+
+### Filter semantics (the right-rows gate)
+
+`live_validate` asks whether Elasticsearch *accepts* a query; this gate asks
+whether the query *selects the right rows*. Nothing else in the pyramid does:
+
+* `live_validate` classifies `LIKE "web-%"` as `ok` — it is well-formed ES|QL.
+* The render audit sees the resulting empty panel as `unexpected_empty` /
+  `data_gap`, a **warn**, indistinguishable from telemetry not being seeded.
+* `obs-migrate compare` only covers panels the native PROMQL oracle applies to,
+  so a Datadog tag filter is outside it.
+
+A filter that quietly selects the wrong rows therefore passed every layer. Two
+real escapes, both fixed:
+
+| Source scope | Was emitted | Real effect |
+|---|---|---|
+| `{host:web-*}` | `host.name LIKE "web-%"` | matched **nothing** — panel rendered empty |
+| `{!host:canary*}` | `host.name NOT LIKE "canary%"` | matched **everything** — the exclusion did nothing |
+
+ES|QL `LIKE` wildcards are `*` and `?`; `%` and `_` are literal characters.
+
+The gate seeds one throwaway index per (field profile, field type), emits every
+tag-filter shape through the real translator, executes it, and asserts the
+returned document count equals the expected selection. It also asserts that the
+numeric and string mappings of the same tag select the *same* rows — the
+property a field profile must preserve. Validity alone is not a pass.
+
+It needs only a cluster, not migration output, so the local no-SSO stack is
+enough. The driver's HTTP layer is injectable and covered offline by
+`tests/test_filter_semantics_gate.py`; the literal-typing matrix it guards is
+covered offline by `tests/test_filter_literal_type_matrix.py`.
 
 ### Render audit (the render-truth gate)
 

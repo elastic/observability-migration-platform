@@ -60,6 +60,8 @@ question, and no single gate is sufficient for "the dashboard is correct".
 | `render_audit_driver` | uploaded dashboard + headless browser (+ `--es-url` field caps) | Each panel actually renders in real Kibana (no Lens "invalid column"/error embeddable). A panel whose error names only columns field caps confirm absent is `field_gap` (warn); an empty panel whose metric column is confirmed absent is `data_gap` (warn). Field caps come from the index each panel's own ES\|QL `FROM` names, so a `FROM logs-*` panel is never judged against `metrics-*`. Per-panel metadata comes from the audited dashboard only, never the whole run. Without field caps absence is unconfirmable: an error stays `render_error` and an empty panel stays `unexpected_empty` | no `render_error` |
 | `scripts/run_interaction_audit_local.sh` | uploaded dashboard + Playwright + scenario manifest | Adapter-specific control state plus affected/unaffected panel request evidence | no unexpected `fail` |
 | `verifier.mutations` | `migration_report.json` | The invariant verifier catches deliberate corruptions | all mutations pass |
+| `scripts/run_cross_profile_corpus.py --source {grafana,datadog}` | source dashboard JSON | Emitted field spellings match the requested profile, per source. Exits 2 (fail-closed) when a listed profile has no leakage rules, so a profile cannot pass vacuously | no leakage; no unchecked profile |
+| `verifier.filter_semantics_gate` | live Elasticsearch (seeds its own throwaway indices) | An emitted tag-filter WHERE clause selects *exactly* the intended rows, under every Datadog field profile and for both a numeric and a string mapping of the same tag. Catches the class `live_validate` cannot see: valid ES\|QL that filters wrongly (`LIKE "web-%"` matching nothing, `NOT LIKE "canary%"` excluding nothing) | all shapes select the expected rows |
 | `verifier.lens_fixtures` | LensConfigBuilder fixture JSON | Authoritative Lens-as-code fixtures exist for required chart families | coverage complete |
 | `verifier.corpus_manifest` | Grafana catalog + datasource map | Larger benchmark corpus is pinned/stratified/reproducible | committed manifest |
 
@@ -112,6 +114,16 @@ PYTHONPATH=parity-rig .venv/bin/python -m verifier.dashboards_api \
   --kibana-url "$KIBANA_ENDPOINT" \
   --api-key "$KEY" \
   --fail-on-error
+
+# Filter semantics: are the right rows selected? Seeds its own indices, so it
+# needs only a cluster -- no migration output. Use the local no-SSO stack.
+STACK_VERSION=9.6.0-SNAPSHOT docker compose \
+  -f parity-rig/docker-compose.render-audit.yml up -d --wait
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.filter_semantics_gate \
+  --es-url http://localhost:9200
+# Narrow to one profile while iterating:
+PYTHONPATH=parity-rig .venv/bin/python -m verifier.filter_semantics_gate \
+  --es-url http://localhost:9200 --profile passthrough --json
 
 # Semantic corpus gate over compare reports.
 PYTHONPATH=parity-rig .venv/bin/python -m verifier.corpus_gate \

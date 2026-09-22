@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -335,3 +336,100 @@ def extract_esql_columns(esql):
     if shape.projected_fields:
         return shape.projected_fields[0], shape.group_fields
     return "value", ["time_bucket"]
+
+# ES|QL keywords that cannot appear as a bare identifier segment. Derived by
+# probing every keyword in the grammar against Elasticsearch 9.6.0 as both a
+# dotted middle segment (``a.<word>.c``) and a standalone column: these are the
+# ones the parser rejects. ``system.network.in.bytes`` -- a real Elastic Agent
+# field -- fails with "no viable alternative at input 'SUM(system.network.in'"
+# unless ``in`` is quoted.
+ESQL_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "and",
+        "as",
+        "asc",
+        "by",
+        "desc",
+        "false",
+        "first",
+        "in",
+        "is",
+        "last",
+        "like",
+        "limit",
+        "not",
+        "null",
+        "nulls",
+        "on",
+        "or",
+        "rlike",
+        "true",
+        "where",
+        "with",
+    }
+)
+
+# Matches the rule both adapters already used, so the only output changes
+# from centralising this are the reserved-word quoting and idempotence.
+# (``@pspReference`` is valid unquoted too, but keeping it backticked
+# avoids churning committed expectations for no correctness gain.)
+_SAFE_ESQL_SEGMENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def esql_identifier_segments(field_name: str) -> list[str]:
+    """Split a dotted ES|QL identifier on the dots *outside* backticks.
+
+    ``a.b.`5xx``` is three segments; ```labels.weird``` is one segment that
+    happens to contain a dot. Splitting on every dot corrupts the second,
+    ignoring backticks corrupts the first.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_ticks = False
+    index = 0
+    while index < len(field_name):
+        char = field_name[index]
+        if char == "`":
+            if in_ticks and field_name[index + 1 : index + 2] == "`":
+                current.append("`")  # ``  is an escaped backtick
+                index += 2
+                continue
+            in_ticks = not in_ticks
+            index += 1
+            continue
+        if char == "." and not in_ticks:
+            segments.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    if in_ticks:
+        # Unbalanced backtick: the input is not a quoted identifier, so treat
+        # every backtick as a literal character of a raw field name instead of
+        # as a delimiter. Ambiguous either way; this keeps the character.
+        return field_name.split(".")
+    return segments
+
+
+def esql_identifier(field_name: str) -> str:
+    """Quote each segment of a dotted field path that needs it, exactly once.
+
+    A segment needs backticks when it is not a plain identifier (a dot inside
+    a quoted name, a hyphen, a leading digit, a space) or when it collides with
+    an ES|QL keyword. Quoting is **idempotent**: the input is parsed back into
+    segments first, so re-quoting an already-quoted name is a no-op rather than
+    producing nested backticks like ``` `prometheus.labels.`client-id`` ```,
+    which Elasticsearch rejects outright.
+    """
+    text = str(field_name or "")
+    if not text:
+        return text
+    quoted: list[str] = []
+    for segment in esql_identifier_segments(text):
+        if _SAFE_ESQL_SEGMENT.fullmatch(segment) and segment.lower() not in ESQL_RESERVED_IDENTIFIERS:
+            quoted.append(segment)
+        else:
+            quoted.append("`" + segment.replace("`", "``") + "`")
+    return ".".join(quoted)

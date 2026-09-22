@@ -391,15 +391,20 @@ def build_telemetry_contract(
 
 
 def _drop_metric_object_prefix_conflicts(streams: dict[str, dict[str, Any]]) -> None:
-    """Drop impossible flat metrics that collide with dotted metric objects.
+    """Drop bogus flat metrics that a query-shape extraction invented.
 
-    Elasticsearch cannot store both a scalar metric ``metrics`` and dotted
-    metrics such as ``metrics.redis_up`` in the same stream: the dotted fields
-    require ``metrics`` to be an object. Some query-shape extraction paths can
-    still surface the object prefix as a bogus metric field even though no panel
-    actually reads it. Remove those impossible flat metrics from both the stream
-    field map and the per-requirement metric lists before the contract drives
-    seeding or template creation.
+    A dotted metric such as ``metrics.redis_up`` can make an extraction path
+    surface the bare prefix ``metrics`` as a metric no panel actually reads.
+
+    This used to drop *every* prefix, on the grounds that Elasticsearch cannot
+    hold ``redis.keys`` and ``redis.keys.evicted`` together. It cannot under
+    the default object mapping, but the seeder now emits
+    ``subobjects: false``, under which a dotted name is a literal leaf and the
+    pair is accepted (verified on Elasticsearch 9.6.0). Real Datadog metrics
+    that are also prefixes -- ``redis.keys``, ``rabbitmq.queues``,
+    ``rabbitmq.queue.messages`` -- are therefore kept and seeded; only a bare
+    single-segment prefix with no dot of its own is still treated as an
+    extraction artifact.
     """
     for stream in streams.values():
         fields = stream.get("fields")
@@ -415,11 +420,27 @@ def _drop_metric_object_prefix_conflicts(streams: dict[str, dict[str, Any]]) -> 
         dropped = {
             field_name
             for field_name in dotted_prefixes
-            if isinstance(fields.get(field_name), dict)
+            if "." not in field_name  # only a bare head, never a real dotted metric
+            and isinstance(fields.get(field_name), dict)
             and fields[field_name].get("role") == "metric"
         }
         if not dropped:
             continue
+        # Record what was dropped and why. The drop itself is unavoidable, but
+        # a panel really can query the parent (measured on the in-repo Datadog
+        # corpus under `passthrough`: redis.keys, rabbitmq.queues,
+        # rabbitmq.queue.messages), and silently removing it leaves an
+        # "Unknown column" in Kibana with no trace back to this decision.
+        conflicts = stream.setdefault("metric_prefix_conflicts", {})
+        for field_name in sorted(dropped):
+            children = sorted(
+                name
+                for name in fields
+                if name.startswith(f"{field_name}.")
+                and isinstance(fields.get(name), dict)
+                and fields[name].get("role") == "metric"
+            )
+            conflicts[field_name] = children
         for field_name in dropped:
             fields.pop(field_name, None)
         for requirement in stream.get("requirements") or []:
@@ -1978,10 +1999,43 @@ def _lookback_to_seconds(value: str) -> int:
     return amount * _LOOKBACK_SECONDS.get(unit, 0)
 
 
+def _identifier_segments(value: str) -> list[str]:
+    """Split a dotted ES|QL identifier on the dots *outside* backticks.
+
+    ES|QL backticks any segment that does not start with a letter or
+    underscore, so ``a.b.`5xx`` is one three-segment field -- while
+    ```labels.weird``` is a single segment that happens to contain a dot.
+    Splitting on every dot would corrupt the second; ignoring backticks
+    corrupts the first.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_ticks = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "`":
+            if in_ticks and value[index + 1 : index + 2] == "`":
+                current.append("`")  # ``  is an escaped backtick
+                index += 2
+                continue
+            in_ticks = not in_ticks
+            index += 1
+            continue
+        if char == "." and not in_ticks:
+            segments.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    return segments
+
+
 def _normalize_field(field_name: str) -> str:
     value = field_name.strip().rstrip("|").strip()
-    if value.startswith("`") and value.endswith("`"):
-        value = value[1:-1].replace("``", "`")
+    value = ".".join(_identifier_segments(value))
     if value.endswith(".keyword"):
         value = value.removesuffix(".keyword")
     return value
@@ -2014,6 +2068,17 @@ _QUERY_FIELD_RESERVED_WORDS = {
 }
 
 
+# One segment of a dotted ES|QL identifier: backtick-quoted (which is how the
+# translator spells a segment such as ``5xx`` or ``95percentile``, since ES|QL
+# rejects a bare identifier that does not start with a letter or underscore) or
+# a plain one. A field is one or more segments joined by dots, matched as a
+# single token so a quoted tail stays attached to its path.
+_QUERY_IDENTIFIER_SEGMENT = r"(?:`(?:[^`]|``)+`|[A-Za-z_@][\w@-]*)"
+_QUERY_IDENTIFIER_RE = re.compile(
+    rf"{_QUERY_IDENTIFIER_SEGMENT}(?:\.{_QUERY_IDENTIFIER_SEGMENT})*"
+)
+
+
 def _extract_query_field_candidates(expression: str) -> list[str]:
     # Drop quoted string literals first: comparison values such as
     # ``CASE((mode == "idle"), ...)`` are label *values*, not fields, and the
@@ -2022,7 +2087,7 @@ def _extract_query_field_candidates(expression: str) -> list[str]:
     # stripped here.
     expression = re.sub(r"\"[^\"]*\"|'[^']*'", " ", expression)
     fields: list[str] = []
-    for match in re.finditer(r"`[^`]+`|[A-Za-z_@][\w.@-]*", expression):
+    for match in re.finditer(_QUERY_IDENTIFIER_RE, expression):
         raw = match.group(0)
         if match.start() > 0 and expression[match.start() - 1].isdigit():
             # Duration literals such as ``1m`` / ``30s`` are not fields; the

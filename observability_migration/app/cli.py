@@ -1967,7 +1967,19 @@ def _run_seed_sample_data(args: Any) -> int:
     except RuntimeError as exc:
         print(json.dumps({"error": "seed_failed", "detail": str(exc)}, indent=2))
         return 2
-    print(json.dumps({"ingested": summary.ok, "errors": summary.errors, "docs_per_stream": summary.docs_per_stream}, indent=2))
+    report: dict[str, Any] = {
+        "ingested": summary.ok,
+        "errors": summary.errors,
+        "docs_per_stream": summary.docs_per_stream,
+    }
+    if summary.error_samples:
+        # Without a reason, "errors": 53256 is undiagnosable -- a TSDS
+        # dimension collision, a mapping conflict and an out-of-window
+        # timestamp all look identical. The samples are already captured.
+        report["error_samples"] = list(summary.error_samples)
+    if summary.warnings:
+        report["warnings"] = list(summary.warnings)
+    print(json.dumps(report, indent=2))
     return 0 if not summary.errors else 1
 
 

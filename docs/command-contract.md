@@ -1515,6 +1515,24 @@ contract produced zero control fields. The second case used to seed
 seeded documents matched no control selection and every filtered panel rendered
 empty.
 
+The JSON report carries `ingested`, `errors`, `docs_per_stream`, and — when
+relevant — two diagnostic keys:
+
+- `error_samples`: up to three rejection reasons from Elasticsearch. A bare
+  `"errors": 53256` is undiagnosable; a TSDS dimension collision, a mapping
+  conflict and an out-of-window timestamp all look identical without the
+  reason.
+- `warnings`: seeding decisions that will show up as missing data in Kibana:
+  - **Backfill truncated.** A time-series index accepts at most `7d` of
+    backfill (`index.look_back_time` is capped at `7d` by Elasticsearch), so a
+    dashboard declaring a longer range gets the most recent 7 days and a panel
+    with a longer time range shows a shorter series than the source.
+  - **Field not seeded.** A field that must be an *object* because a deeper
+    field exists (`service` alongside `service.name`) cannot also be a leaf, so
+    it is skipped in both the mapping and the documents. The warning names the
+    deeper field, because the fix is to rename one of the two in the source.
+    Panels grouping on the skipped field show `Unknown column`.
+
 ```bash
 # Seed synthetic data for a single migrated artifact directory.
 obs-migrate seed-sample-data \

@@ -28,6 +28,9 @@ from observability_migration.core.verification.field_capabilities import (
     is_numeric_field,
     is_string_field,
 )
+from observability_migration.targets.kibana.emit.esql_utils import (
+    esql_identifier,
+)
 
 from .models import (
     LogAttributeFilter,
@@ -70,6 +73,7 @@ _TOKEN_RE = re.compile(
     |(@[\w.]+:\[(?:[^\]])*\])    # attribute range filter @field:[low TO high]
     |(@[\w.]+:\((?:[^)])*\))     # attribute filter with grouped values @field:(a OR b)
     |(@[\w.]+:[^\s,)]+)          # attribute filter @field:value
+    |([\w.*?]+:\((?:[^)])*\))    # tag filter with grouped values field:(a OR b)
     |([\w.*?]+:(?:"(?:[^"\\]|\\.)*"|[^\s,)]+))  # reserved-tag or key:value filter
     |((?:\$\w+(?:\.\w+)*)|[\w.*?/\\]+)  # plain term or template var
     |\s+                         # whitespace
@@ -198,9 +202,14 @@ def _tokenize(text: str) -> list[tuple[str, str]]:
         elif m.group(9) is not None:
             tokens.append(("ATTR", m.group(9)))
         elif m.group(10) is not None:
+            # field:(a OR b) -- the grouped form of a bare tag/facet. Without
+            # this the value pattern below stops at ")" and captures "(a",
+            # leaving " OR b)" to tokenize as a separate free-text term.
             tokens.append(("KV", m.group(10)))
         elif m.group(11) is not None:
-            tokens.append(("TERM", m.group(11)))
+            tokens.append(("KV", m.group(11)))
+        elif m.group(12) is not None:
+            tokens.append(("TERM", m.group(12)))
     return tokens
 
 
@@ -638,13 +647,13 @@ def _esql_escape(val: str) -> str:
 
 
 def _esql_identifier(field_name: str) -> str:
-    parts = []
-    for part in field_name.split("."):
-        if _SAFE_IDENTIFIER_RE.match(part):
-            parts.append(part)
-        else:
-            parts.append(f"`{part.replace('`', '``')}`")
-    return ".".join(parts)
+    """Quote each dotted segment that needs it, exactly once.
+
+    Delegates to the shared emit helper so this adapter gets reserved-keyword
+    handling (``system.network.in.bytes``) and idempotence (no nested
+    backticks when a prefixed name is quoted twice).
+    """
+    return esql_identifier(field_name)
 
 
 def _resolve_esql_field(raw_field: str, field_map: LogFieldMapping) -> tuple[str, Any | None]:

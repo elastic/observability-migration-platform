@@ -17,6 +17,10 @@ from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import (
     assess_field_usage,
     is_counter_metric_field,
+    is_numeric_field,
+)
+from observability_migration.targets.kibana.emit.esql_utils import (
+    esql_identifier,
 )
 
 from .field_map import FieldMapProfile
@@ -105,6 +109,7 @@ _DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>[smhdw])$", re.IGNORECAS
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
+_NUMERIC_TAG_VALUE_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _UNRESOLVABLE_TEMPLATE_VARS = {"scope"}
 
 
@@ -995,7 +1000,15 @@ def _metric_map_attribute_where_clauses(
     clauses: list[str] = []
     for key, value in map_result.entry.attribute_filter.items():
         field = _esql_identifier(key)
-        clauses.append(f'{field} == "{_esql_escape(value)}"')
+        # A rule pack's attribute_filter value is a YAML string just like a tag
+        # value, so it needs the same target-type handling -- pinning
+        # ``http.response.status_code: "500"`` must not emit a keyword literal
+        # against a numeric field.
+        capability = field_map.field_capability(key, context="metric")
+        lhs, rhs = _tag_comparison_operands(
+            field, value, _tag_comparison_mode([value], capability)
+        )
+        clauses.append(f"{lhs} == {rhs}")
     return clauses
 
 
@@ -1087,6 +1100,13 @@ def _build_metric_query_spec(
     group_fields = [_esql_identifier(field_name) for field_name in raw_group_fields]
 
     metric_cap = field_map.field_capability(es_metric, context="metric")
+    if metric_cap is None:
+        # `assess_field_usage` exists to report exactly this, but the call used
+        # to sit inside `if metric_cap:` so its capability-is-None branch was
+        # unreachable: a run whose live caps proved the metric absent still
+        # scored the panel a clean OK. Only report when discovery actually
+        # returned something -- otherwise absence is unknowable.
+        _report_absent_target_field(result, field_map, es_metric, usage="aggregate")
     if metric_cap:
         metric_assessment = assess_field_usage(
             metric_cap,
@@ -1107,6 +1127,9 @@ def _build_metric_query_spec(
     for raw_group_field in raw_group_fields:
         group_cap = field_map.field_capability(raw_group_field, context="metric")
         if not group_cap:
+            _report_absent_target_field(
+                result, field_map, raw_group_field, usage="group_by"
+            )
             continue
         group_assessment = assess_field_usage(
             group_cap,
@@ -1126,6 +1149,14 @@ def _build_metric_query_spec(
     for filt in mq.scope:
         if _scope_filter_consumed_by_metric_map(filt, consumed_source_filters):
             continue
+        # Scope filters were the one field role never assessed: a metric or a
+        # group-by resolving to an absent field was reported, but
+        # `{service:shop-lab}` against a target that only has `service.name`
+        # emitted `service == "shop-lab"` and said nothing.
+        for tag_key in _scope_filter_tag_keys(filt):
+            mapped_tag = field_map.map_tag(tag_key, context="metric")
+            if mapped_tag and field_map.field_capability(mapped_tag, context="metric") is None:
+                _report_absent_target_field(result, field_map, mapped_tag, usage="filter")
         clause = _metric_scope_to_esql(filt, field_map, context="metric")
         if clause:
             where_clauses.append(clause)
@@ -1852,6 +1883,60 @@ def _scope_item_template_vars(scope_item: Any) -> set[str]:
     return set()
 
 
+def _scope_filter_tag_keys(scope_item: Any) -> list[str]:
+    """Tag keys a scope item filters on, walking nested boolean groups.
+
+    Skips shapes that emit no clause (a bare ``*``) and template-variable
+    values, whose field is only decided at view time and so cannot be judged
+    against the target now.
+    """
+    if isinstance(scope_item, ScopeBoolOp):
+        keys: list[str] = []
+        for child in scope_item.children or []:
+            keys.extend(_scope_filter_tag_keys(child))
+        return keys
+    if isinstance(scope_item, TagFilter):
+        value = scope_item.value or ""
+        if not scope_item.key or _has_template_vars(value):
+            return []
+        if value == "*" and not scope_item.negated:
+            return []
+        return [scope_item.key]
+    return []
+
+
+def _report_absent_target_field(
+    result: TranslationResult,
+    field_map: FieldMapProfile,
+    target_field: str,
+    *,
+    usage: str,
+) -> None:
+    """Record that live discovery proved ``target_field`` is not on the target.
+
+    The query is still emitted so the panel self-heals once the telemetry
+    lands, but ES|QL rejects an unknown column, so until then Kibana shows a
+    red "Unknown column" card. The reason string deliberately matches the
+    phrase ``core/reporting/report.py`` keys its DATA READINESS section on, so
+    Datadog and Grafana report this the same way.
+    """
+    if not getattr(field_map, "has_live_field_capabilities", None):
+        return
+    if not field_map.has_live_field_capabilities(context="metric"):
+        return
+    assessment = assess_field_usage(
+        None, field_name=target_field, display_name=target_field, usage=usage
+    )
+    for warning in assessment.warnings:
+        _append_unique_warning(result, warning)
+    reason = (
+        f"Target field {target_field} is missing from live schema discovery "
+        "(data readiness, not translation infeasibility)"
+    )
+    if reason not in result.reasons:
+        result.reasons.append(reason)
+
+
 def _append_unique_warning(result: TranslationResult, message: str) -> None:
     if message not in result.warnings:
         result.warnings.append(message)
@@ -2021,7 +2106,20 @@ def _build_log_widget_query(
     group_fields = _infer_log_group_by(widget, field_map)
 
     if is_stream:
-        keep_fields = ["@timestamp", "message", "log.level", "service.name", "host.name"]
+        # Resolve the display columns through the profile instead of hardcoding
+        # ECS names. Six of the seven built-in profiles map these tags to
+        # log.level / service.name / host.name, which is why the hardcoded list
+        # looked correct; `passthrough` keeps the Datadog spellings, so every
+        # log panel failed with "Unknown column [log.level]" against a
+        # correctly seeded target.
+        keep_fields = ["@timestamp", "message"]
+        for source_tag in ("status", "service", "host"):
+            mapped = field_map.map_tag(source_tag, context="log")
+            if not mapped:
+                continue
+            column = _esql_identifier(mapped)
+            if column not in keep_fields:
+                keep_fields.append(column)
         keep_str = ", ".join(keep_fields)
         return (
             f"FROM {index}\n"
@@ -2646,40 +2744,119 @@ def _append_multi_field_series_reducer_stats(
         lines.append(f"| STATS {', '.join(reduced_parts)}")
 
 
+def _tag_comparison_mode(values: list[str], capability: Any | None) -> str:
+    """Decide how to compare a mapped tag field against ``values``.
+
+    Datadog tag values are untyped strings, so ``http.response.status_code:500``
+    arrives as ``"500"`` no matter what the target field holds. ES|QL compares
+    only within a type family and rejects ``<numeric> == <keyword>`` outright
+    ("first argument ... is [numeric] so second argument must also be
+    [numeric]"), so the literal has to be rendered at the target field's real
+    type. OTel semantic conventions map ``http.response.status_code`` to
+    ``long``, which is why every status-code panel and monitor failed at query
+    time against a correctly mapped target.
+
+    Returns one of:
+
+    ``"numeric"``
+        Live field caps say numeric and every value is a number: compare as
+        numbers.
+    ``"cast"``
+        The comparison is ambiguous or crosses families, so compare through
+        ``TO_STRING(field)``, which is valid against keyword *and* numeric
+        mappings. Used when caps are absent (offline translation, no
+        ``--es-url``) and the value looks numeric, and when a numeric field is
+        compared against a non-numeric value. Mirrors
+        :func:`log_parser._render_attr_predicate`.
+    ``"text"``
+        Unambiguously a string comparison: quote the literal as before.
+
+    One mode is chosen for all of a filter's values so an OR chain or an
+    ``IN`` list keeps a single left-hand side.
+    """
+    all_numeric = bool(values) and all(
+        _NUMERIC_TAG_VALUE_RE.fullmatch(value) for value in values
+    )
+    if is_numeric_field(capability):
+        return "numeric" if all_numeric else "cast"
+    if capability is None and all_numeric:
+        return "cast"
+    return "text"
+
+
+def _tag_comparison_operands(es_field: str, value: str, mode: str) -> tuple[str, str]:
+    """Render the ``(lhs, rhs)`` of one comparison for a :func:`_tag_comparison_mode`."""
+    if mode == "numeric":
+        return es_field, value
+    if mode == "cast":
+        return f"TO_STRING({es_field})", f'"{_esql_escape(value)}"'
+    return es_field, f'"{_esql_escape(value)}"'
+
+
+def _tag_pattern_field(es_field: str, capability: Any | None) -> str:
+    """``LIKE``/``NOT LIKE`` take a string pattern, so cast a numeric field.
+
+    Only caps-confirmed numeric fields are cast: a wildcard value is not
+    numeric-looking, so an unknown type stays a bare ``LIKE`` on the field --
+    the overwhelmingly common keyword case -- rather than casting on a guess.
+    """
+    return f"TO_STRING({es_field})" if is_numeric_field(capability) else es_field
+
+
 def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> str:
     if not isinstance(filt, TagFilter):
         return ""
 
-    es_field = _esql_identifier(field_map.map_tag(filt.key, context=context))
+    mapped_field = field_map.map_tag(filt.key, context=context)
+    es_field = _esql_identifier(mapped_field)
     value = filt.value or ""
+    capability = (
+        field_map.field_capability(mapped_field, context=context)
+        if hasattr(field_map, "field_capability")
+        else None
+    )
 
     if value == "*" and not filt.negated:
         return ""
 
     if getattr(filt, "is_in_list", False):
         members = [
-            _esql_escape(member)
+            member
             for member in value.split("|")
             if member and not _has_template_vars(member)
         ]
         if not members:
             return ""
-        rendered = ", ".join(f'"{member}"' for member in members)
+        mode = _tag_comparison_mode(members, capability)
+        lhs = _tag_comparison_operands(es_field, members[0], mode)[0]
+        rendered = ", ".join(
+            _tag_comparison_operands(es_field, member, mode)[1] for member in members
+        )
         op = "NOT IN" if filt.negated else "IN"
-        return f"{es_field} {op} ({rendered})"
+        return f"{lhs} {op} ({rendered})"
 
     if "|" in value:
+        options = [
+            part.strip()
+            for part in value.split("|")
+            if part.strip() and not _has_template_vars(part.strip())
+        ]
+        literal_options = [
+            option for option in options if "*" not in option and "?" not in option
+        ]
+        mode = _tag_comparison_mode(literal_options, capability)
         clauses = []
-        for option in [part.strip() for part in value.split("|") if part.strip()]:
-            if _has_template_vars(option):
-                continue
+        for option in options:
             if "*" in option or "?" in option:
-                pattern = _esql_escape(option.replace("*", "%").replace("?", "_"))
+                pattern = _esql_escape(option)
                 like_op = "NOT LIKE" if filt.negated else "LIKE"
-                clauses.append(f'{es_field} {like_op} "{pattern}"')
+                clauses.append(
+                    f'{_tag_pattern_field(es_field, capability)} {like_op} "{pattern}"'
+                )
             else:
                 op = "!=" if filt.negated else "=="
-                clauses.append(f'{es_field} {op} "{_esql_escape(option)}"')
+                lhs, rhs = _tag_comparison_operands(es_field, option, mode)
+                clauses.append(f"{lhs} {op} {rhs}")
         if not clauses:
             return ""
         joiner = " AND " if filt.negated else " OR "
@@ -2690,15 +2867,25 @@ def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> 
         if pattern in ("", "*") and not filt.negated:
             return ""
         op = "NOT LIKE" if filt.negated else "LIKE"
-        return f'{es_field} {op} "{pattern}"'
+        return f'{_tag_pattern_field(es_field, capability)} {op} "{pattern}"'
 
     if "*" in value or "?" in value:
-        pattern = value.replace("*", "%").replace("?", "_")
+        # ES|QL LIKE wildcards are ``*`` and ``?`` -- the same glob syntax
+        # Datadog uses -- so the pattern passes through. Translating them to
+        # SQL's ``%``/``_`` produced valid ES|QL that matched the wrong rows:
+        # ``%`` is a literal character there, so ``LIKE "web-%"`` matched
+        # nothing and ``NOT LIKE "canary%"`` excluded nothing.
         op = "NOT LIKE" if filt.negated else "LIKE"
-        return f'{es_field} {op} "{_esql_escape(pattern)}"'
+        return (
+            f'{_tag_pattern_field(es_field, capability)} {op} '
+            f'"{_esql_escape(value)}"'
+        )
 
     op = "!=" if filt.negated else "=="
-    return f'{es_field} {op} "{_esql_escape(value)}"'
+    lhs, rhs = _tag_comparison_operands(
+        es_field, value, _tag_comparison_mode([value], capability)
+    )
+    return f"{lhs} {op} {rhs}"
 
 
 def _needs_rate(mq: MetricQuery) -> bool:
@@ -2787,13 +2974,13 @@ def _rollup_seconds(mq: MetricQuery | None) -> float | None:
 
 
 def _esql_identifier(field_name: str) -> str:
-    parts = []
-    for part in field_name.split("."):
-        if _SAFE_IDENTIFIER_RE.match(part):
-            parts.append(part)
-        else:
-            parts.append(f"`{part.replace('`', '``')}`")
-    return ".".join(parts)
+    """Quote each dotted segment that needs it, exactly once.
+
+    Delegates to the shared emit helper so this adapter gets reserved-keyword
+    handling (``system.network.in.bytes``) and idempotence (no nested
+    backticks when a prefixed name is quoted twice).
+    """
+    return esql_identifier(field_name)
 
 
 def _esql_escape(value: str) -> str:
