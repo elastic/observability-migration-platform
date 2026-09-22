@@ -1437,6 +1437,45 @@ class TestConflictingTypeAcrossIndices(unittest.TestCase):
         resolver._discovery_status = "ok"
         return resolver
 
+    def test_counter_pin_suppresses_degrade_but_not_gauge_disclosure(self):
+        """A rule-pack ``counter`` pin must not mask target gauge typing.
+
+        9852's ``node_vmstat_oom_kill`` is a real Prometheus counter that lacks a
+        ``_total`` suffix, so the pack pins it ``counter``. On an OTel-mapped
+        target the ingest types it ``gauge``, and ES|QL rejects
+        ``IRATE`` on a non-counter field. Keeping ``IRATE`` is the deliberate
+        source-faithful policy, but the pin must still leave the disagreement
+        *disclosed* -- otherwise the panel is reported clean while erroring at
+        runtime.
+        """
+        rp = rules.RulePackConfig()
+        rp.metric_kinds["node_vmstat_oom_kill"] = "counter"
+        resolver = schema.SchemaResolver(rp)
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = {
+            "node_vmstat_oom_kill": {
+                "double": {"type": "double", "time_series_metric": "gauge"}
+            }
+        }
+
+        # The pin still wins for the degrade decision (source-faithful IRATE).
+        self.assertTrue(resolver.is_counter("node_vmstat_oom_kill"))
+        self.assertFalse(resolver.refutes_counter("node_vmstat_oom_kill"))
+        # ...but the target's gauge typing is still reported for disclosure.
+        self.assertTrue(resolver.target_refutes_counter("node_vmstat_oom_kill"))
+
+    def test_target_refutes_counter_stays_silent_without_gauge_evidence(self):
+        """Disclosure must not fire offline, nor on a genuine counter."""
+        rp = rules.RulePackConfig()
+        offline = schema.SchemaResolver(rp)
+        self.assertFalse(offline.target_refutes_counter("node_vmstat_oom_kill"))
+
+        real_counter = self._live_resolver(
+            {"http_requests_total": {"long": {"type": "long", "time_series_metric": "counter"}}}
+        )
+        self.assertFalse(real_counter.target_refutes_counter("http_requests_total"))
+
     def test_conflicting_kind_is_detected_as_counter(self):
         # One index types it counter (via plain long + time_series_metric),
         # another types it a gauge double. The counter signal must win.
