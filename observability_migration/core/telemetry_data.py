@@ -575,6 +575,20 @@ def _metric_families(
             matched = _requirement_metric_targets(metric_name, metric_fields)
             for target_name in matched:
                 metric_dims[target_name] |= dims
+    # A dashboard control filters *every* panel, so its field has to be on
+    # every document -- it is not a per-query dimension. Unioning only the
+    # requirement dimensions left an unrelated metric without the field
+    # whenever some other panel's query happened to mention it, and the
+    # control's selection then excluded that metric's documents entirely.
+    dashboard_controls: set[str] = set()
+    for field_name in stream.get("control_fields") or []:
+        dashboard_controls.update(
+            _requirement_dimension_targets(field_name, stream_fields, metric_fields)
+        )
+    if dashboard_controls:
+        for metric_name in metric_dims:
+            metric_dims[metric_name] |= dashboard_controls
+
     # A ratio numerator must travel with its denominator (same document) and
     # share its dimensions so the bound holds per series.
     for metric_name, info in metric_fields.items():

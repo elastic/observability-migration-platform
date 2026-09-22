@@ -24,7 +24,9 @@ import requests
 from observability_migration.core.telemetry_contract import (
     build_combined_telemetry_contract,
     build_telemetry_contract,
+    control_selection_values,
     count_declared_controls,
+    merge_control_selection_values,
     merge_metric_kind_overrides,
     metric_kinds_from_prometheus_metadata,
 )
@@ -222,6 +224,12 @@ def seed_sample_data(
     if not streams:
         raise RuntimeError("no telemetry requirements discovered in the artifact directories")
     _require_control_fields(artifact_dirs, streams)
+    # A control's pre-selected value never appears in a query, so the contract
+    # cannot learn it from query text. Without this the seeder invents its own
+    # values, the control filters on one that was never seeded, and the
+    # dashboard opens with every panel showing "No results found".
+    for artifact_dir in artifact_dirs:
+        merge_control_selection_values(contract, control_selection_values(artifact_dir))
     if purge_foreign:
         purge_foreign_streams(contract, request)
     if not no_recreate:

@@ -796,6 +796,84 @@ def _apply_dimension_evidence(streams: dict[str, dict[str, Any]]) -> None:
             info.pop("relationships", None)
 
 
+def control_selection_values(artifact_dir: str | Path) -> dict[str, dict[str, list[str]]]:
+    """Return ``{data_view: {field: values}}`` a dashboard control offers.
+
+    The contract is otherwise built from query *text*, so a value that only
+    exists as a control pre-selection is invisible to it. A Datadog template
+    variable default (``env: prod``) migrates into
+    ``selected_options: ["prod"]`` on the control and filters every panel, yet
+    no query mentions ``prod`` -- so the seeder invents its own values and the
+    dashboard opens with every panel showing "No results found".
+
+    The pre-selected value is listed first so a cardinality cap truncates the
+    merely-offered options rather than the one the dashboard actually applies.
+    """
+    artifact_path = Path(artifact_dir)
+    candidates = [artifact_path / "ir"]
+    if artifact_path.name in _ARTIFACT_SUBDIRS:
+        candidates.append(artifact_path.parent / "ir")
+    ir_dir = next((path for path in candidates if path.is_dir()), None)
+    if ir_dir is None:
+        return {}
+    found: dict[str, dict[str, list[str]]] = {}
+    for ir_file in sorted(ir_dir.glob("*.ir.json")):
+        try:
+            payload = json.loads(ir_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        dashboard = payload.get("dashboard_ir") if isinstance(payload, dict) else None
+        controls = (dashboard or {}).get("controls") if isinstance(dashboard, dict) else None
+        for control in controls or []:
+            if not isinstance(control, dict):
+                continue
+            field_name = str(control.get("field_name") or "").strip()
+            if not field_name:
+                continue
+            values: list[str] = []
+            for value in list(control.get("selected_options") or []) + list(
+                control.get("available_options") or []
+            ):
+                text = str(value).strip()
+                if text and text != "*" and text not in values:
+                    values.append(text)
+            if not values:
+                continue
+            data_view = str(control.get("data_view") or control.get("datasource") or "").strip()
+            if not data_view:
+                continue
+            bucket = found.setdefault(data_view, {})
+            for value in values:
+                _append_unique(bucket.setdefault(field_name, []), value)
+    return found
+
+
+def merge_control_selection_values(
+    contract: dict[str, Any], selections: dict[str, dict[str, list[str]]]
+) -> None:
+    """Merge control values into the streams' ``required_values``.
+
+    Only fields the stream already knows as controls are merged, so this
+    cannot invent a dimension the dashboard never filters on.
+    """
+    streams = contract.get("streams") or {}
+    # A dashboard control filters every panel, including ones reading another
+    # data view, so its values are merged into every stream that knows the
+    # field -- not only the stream the control itself names. Binding by
+    # data_view alone left the logs stream with invented values and blanked
+    # its panels whenever the control had a selection.
+    for fields in (selections or {}).values():
+        for field_name, values in fields.items():
+            for stream in streams.values():
+                if not isinstance(stream, dict):
+                    continue
+                if field_name not in set(stream.get("control_fields") or []):
+                    continue
+                target = stream.setdefault("required_values", {}).setdefault(field_name, [])
+                for value in values:
+                    _append_unique(target, value)
+
+
 def count_declared_controls(artifact_dir: str | Path) -> int:
     """Count the dashboard controls the source declared, from the native payload.
 
