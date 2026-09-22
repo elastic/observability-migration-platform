@@ -1012,6 +1012,63 @@ def _grafana_param_name(value: str) -> str | None:
     return name or None
 
 
+def _strip_promql_comments(expr):
+    """Remove PromQL ``#`` comments, preserving each comment's newline.
+
+    A comment runs from an unquoted ``#`` to the end of its line, so it has to
+    go while that extent is still exact — before any caller collapses newlines.
+    Both cleaning entry points flatten whitespace, and doing that first let a
+    comment swallow the rest of the expression: on the native path the truncated
+    text became the emitted query, and on the ES|QL path comment prose was read
+    as query structure (issue #443).
+
+    The newline itself is kept so the remaining operands stay separated once
+    whitespace is collapsed; dropping it would join ``sum(a)`` and ``+ sum(b)``
+    into different text than Prometheus sees.
+
+    A ``#`` inside a string literal is a label value, not a comment, so the scan
+    tracks quote state across all three PromQL string forms: double, single, and
+    backquoted raw. The regex-based ``_strip_promql_string_literals`` helpers
+    cannot stand in here because they do not know the backquoted form. A
+    backslash is treated as an escape inside every form, matching
+    ``promql-parser``; that also errs toward staying in string state, which
+    keeps text rather than deleting it.
+    """
+    text = str(expr or "")
+    if "#" not in text:
+        return text
+    out = []
+    quote = ""
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "\"'`":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "#":
+            newline = text.find("\n", index)
+            if newline == -1:
+                break
+            index = newline
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def substitute_grafana_range_macros(expr):
     """Expand Grafana range macros before generic template-variable handling."""
     result = expr
@@ -1130,6 +1187,12 @@ def _normalize_count_scalar(expr):
 def preprocess_grafana_macros(expr, rule_pack=None):
     """Replace Grafana-specific macros with valid PromQL placeholders."""
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
+    # Comments first, while their end-of-line extent is still exact. Everything
+    # downstream treats this result as query structure — the complexity
+    # classifier and warning patterns scan it, so a comment merely *mentioning*
+    # ``predict_linear`` used to raise "predict_linear has no ES|QL equivalent"
+    # against a plain ``sum(rate(...))`` (issue #443).
+    expr = _strip_promql_comments(expr)
     expr = _normalize_count_scalar(expr)
     # Grafana's dynamic step macros ($__interval / $__rate_interval /
     # $__auto_interval_* / $interval) resolve at render time from the selected
@@ -1588,6 +1651,12 @@ def template_vars_in_label_selectors(expr):
 def classify_promql_complexity(expr, rule_pack=None):
     """Classify a PromQL expression's translation complexity."""
     rule_pack = rule_pack or RulePackConfig()
+    # The rule-pack patterns match function and operator names anywhere in the
+    # text, so a comment that merely names an untranslatable construct would be
+    # reported as if the expression used it (issue #443). Callers inside the
+    # pipeline pass an already-cleaned expression; this keeps the exported
+    # helper honest for the ones that do not.
+    expr = _strip_promql_comments(expr)
     for rule in rule_pack.not_feasible_patterns:
         if re.search(rule.pattern, expr, re.IGNORECASE):
             return "not_feasible", rule.reason
