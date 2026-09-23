@@ -2341,6 +2341,23 @@ def _native_promql_effective_profile(resolver):
     return getattr(resolver, "_field_profile", None)
 
 
+def _native_promql_detected_profile(resolver):
+    """Return the layout detected from live caps, tolerating stub resolvers."""
+    current_fn = getattr(resolver, "_current_schema_profile", None)
+    if callable(current_fn):
+        try:
+            return current_fn()
+        except Exception:
+            return None
+    compute_fn = getattr(resolver, "_compute_schema_profile", None)
+    if callable(compute_fn):
+        try:
+            return compute_fn(getattr(resolver, "_field_cache", None) or {})
+        except Exception:
+            return None
+    return None
+
+
 def _native_promql_label_rewrite_applies(resolver):
     """True when native PROMQL label names must be rewritten to target fields (#448).
 
@@ -2349,15 +2366,25 @@ def _native_promql_label_rewrite_applies(resolver):
     1. Live field-caps (``discovery_status()["status"] == "ok"``). Offline or
        inconclusive discovery keeps today's bare emission, so behavior is
        unchanged without ``--es-url``.
-    2. The effective profile is *not* a Prometheus-namespaced plan
-       (``prometheus_native``, ``prometheus_remote_write``,
-       ``prometheus_metrics``). On those, ``resolve_label`` returns the
-       namespaced storage field (``labels.instance``), but the Elasticsearch
-       PROMQL command already resolves bare matcher/grouping keys against those
-       namespaced label fields on its own. Rewriting the key there would emit a
-       spelling the command does not expect — and, because
-       ``_prefix_native_metric_fields`` only applies the ``metrics.`` prefix,
-       would mix a bare metric name with a namespaced label key.
+    2. Neither the *planned* profile nor the *detected* layout is a
+       Prometheus-namespaced plan (``prometheus_native``,
+       ``prometheus_remote_write``, ``prometheus_metrics``). On those,
+       ``resolve_label`` returns the namespaced storage field
+       (``labels.instance``), but the Elasticsearch PROMQL command already
+       resolves bare matcher/grouping keys against those namespaced label
+       fields on its own. Rewriting the key there would emit a spelling the
+       command does not expect — and, because ``_prefix_native_metric_fields``
+       only applies the ``metrics.`` prefix, would mix a bare metric name with
+       a namespaced label key.
+
+       The planned profile alone is not enough: ``_effective_schema_profile()``
+       is ``None`` under the *default* ``otel`` plan, so a target whose live
+       caps are unmistakably ``labels.*`` / ``metrics.*`` would rewrite
+       ``instance`` to an OTel guess (``service.instance.id``) that
+       ``field_exists`` then proves absent — degrading every ``instance`` /
+       ``job`` panel and alert on exactly the layout
+       ``_prefix_native_metric_fields`` (#270) supports today, and which
+       ``_maybe_warn_otel_plan_vs_named_layout`` only warns about.
 
     Every #448 gate shares this predicate so the rewrite, the conflict degrade
     and the absent-field safety net can never disagree about whether the
@@ -2371,7 +2398,11 @@ def _native_promql_label_rewrite_applies(resolver):
     named_prometheus_plans = getattr(
         resolver, "_NAMED_PROMETHEUS_PLANS", _DEFAULT_NAMED_PROMETHEUS_PLANS
     )
-    return _native_promql_effective_profile(resolver) not in named_prometheus_plans
+    profiles = (
+        _native_promql_effective_profile(resolver),
+        _native_promql_detected_profile(resolver),
+    )
+    return not any(profile in named_prometheus_plans for profile in profiles)
 
 
 def _conflicting_native_promql_labels(expr, resolver):

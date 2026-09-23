@@ -952,9 +952,11 @@ Four further gates still push panels to ES|QL even when the target supports
    native matchers/groupings would not preserve the source series, so the panel
    migrates via ES|QL`.
    Without `--es-url`, no degrade occurs (offline runs keep bare labels as
-   before), and neither does it on the Prometheus-namespaced field profiles
-   (`prometheus_native`, `prometheus_remote_write`, `prometheus_metrics`),
-   where the PROMQL command resolves bare label keys itself. A multi-metric
+   before), and neither does it on the Prometheus-namespaced layouts
+   (`prometheus_native`, `prometheus_remote_write`, `prometheus_metrics`) —
+   whether you selected one with `--field-profile` or live `_field_caps`
+   detected one under the default `otel` profile — because the PROMQL command
+   resolves bare label keys itself there. A multi-metric
    expression also degrades when metric-scoped
    resolution maps the same Prometheus label to different target fields; native
    PROMQL cannot represent both mappings with one grouping/vector-matching name.

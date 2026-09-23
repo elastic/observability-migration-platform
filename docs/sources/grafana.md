@@ -445,13 +445,18 @@ Two cases keep bare Prometheus label names, unchanged from previous behaviour:
 
 - **Without `--es-url`**, or when discovery is inconclusive. Offline runs emit
   exactly what they emitted before.
-- **On the Prometheus-namespaced field profiles** (`--field-profile
-  prometheus_native`, `prometheus_remote_write`, `prometheus_metrics`, or
-  `auto` resolving to one of them). There, labels are stored at `labels.<name>`
-  / `prometheus.labels.<name>` and the Elasticsearch PROMQL command resolves
-  bare matcher and grouping keys against those namespaced fields on its own, so
-  rewriting the key is unnecessary — and would pair a namespaced label key with
-  a bare metric name. The same condition gates both degrades below.
+- **On the Prometheus-namespaced layouts** (`prometheus_native`,
+  `prometheus_remote_write`, `prometheus_metrics`). There, labels are stored at
+  `labels.<name>` / `prometheus.labels.<name>` and the Elasticsearch PROMQL
+  command resolves bare matcher and grouping keys against those namespaced
+  fields on its own, so rewriting the key is unnecessary — and would pair a
+  namespaced label key with a bare metric name. This covers both the profile
+  you selected (`--field-profile prometheus_native`, …, or `auto` resolving to
+  one of them) **and** a layout that live `_field_caps` detect under the
+  default `otel` profile: the plan emits bare/OTel candidate names there (with
+  the `live caps look like <layout>` warning), and resolving `instance` to an
+  OTel guess the target does not have would degrade every such panel. The same
+  condition gates both degrades below.
 
 One asymmetry to be aware of: Elasticsearch's PROMQL command automatically
 resolves bare datapoint attributes (labels stored at `attributes.*` in the OTel

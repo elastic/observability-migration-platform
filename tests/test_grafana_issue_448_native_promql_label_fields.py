@@ -1096,7 +1096,12 @@ class TestNamedPrometheusProfilesKeepBareLabels(unittest.TestCase):
                 self.assertNotIn("RENAME", query)
 
     def test_otel_profile_on_the_same_caps_still_rewrites(self):
-        """Symmetry check: the gate is the profile, not the field cache."""
+        """Symmetry check: the plan gates the rewrite on its own.
+
+        These caps match no named layout (``labels.*`` but no ``metrics.*``),
+        so only the plan can turn the rewrite off — see section K for the caps
+        that turn it off under the default ``otel`` plan.
+        """
         resolver = self._resolver("prometheus_native")
         resolver._field_profile = "otel"
         resolver._field_cache["service.instance.id"] = {"keyword": {"type": "keyword"}}
@@ -1334,6 +1339,99 @@ class TestTimeseriesJsonPathGate(unittest.TestCase):
         }
         resolver._cooccurrence_cache = {}
         self.assertIsNone(panels._timeseries_json_path("device", resolver))
+
+
+# ---------------------------------------------------------------------------
+# K. Detected named-Prometheus layouts — the gate is the plan *and* the caps
+# ---------------------------------------------------------------------------
+
+class TestDetectedNamedPrometheusLayoutKeepsBareLabels(unittest.TestCase):
+    """The default ``otel`` plan on ``labels.*`` caps must keep bare labels.
+
+    ``_effective_schema_profile()`` returns ``None`` for the default ``otel``
+    plan, so gating on the *planned* profile alone turned the rewrite on for
+    targets whose live caps are unmistakably ``labels.*`` / ``metrics.*``.
+    ``resolve_label`` then guesses OTel names (``instance`` ->
+    ``service.instance.id``), ``field_exists`` proves them absent, and every
+    ``instance`` / ``job`` panel falls off the native path — even though
+    ``_prefix_native_metric_fields`` (#270) still emits ``metrics.up`` and the
+    PROMQL command resolves the bare keys against ``labels.*`` itself. That is
+    the exact combination this target supports today, and
+    ``_maybe_warn_otel_plan_vs_named_layout`` only *warns* about it.
+    """
+
+    _NATIVE_CAPS = {
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+        "metrics.up": {"double": {"type": "double"}},
+    }
+    _REMOTE_WRITE_CAPS = {
+        "prometheus.labels.instance": {"keyword": {"type": "keyword"}},
+        "prometheus.up.counter": {"double": {"type": "double"}},
+    }
+    _METRICS_CAPS = {
+        "prometheus.labels.instance": {"keyword": {"type": "keyword"}},
+        "prometheus.metrics.up": {"double": {"type": "double"}},
+    }
+
+    def _resolver(self, caps=None, field_profile="otel"):
+        resolver = SchemaResolver(
+            RulePackConfig(),
+            es_url="https://es",
+            index_pattern="metrics-prom-native-*",
+            field_profile=field_profile,
+        )
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = dict(caps or self._NATIVE_CAPS)
+        resolver._cooccurrence_cache = {}
+        return resolver
+
+    def test_caps_detect_the_named_layout(self):
+        """Guard the premise: these caps really are a named Prometheus layout."""
+        for expected, caps in (
+            ("prometheus_native", self._NATIVE_CAPS),
+            ("prometheus_remote_write", self._REMOTE_WRITE_CAPS),
+            ("prometheus_metrics", self._METRICS_CAPS),
+        ):
+            with self.subTest(layout=expected):
+                resolver = self._resolver(caps)
+                self.assertIsNone(resolver._effective_schema_profile())
+                self.assertEqual(resolver._current_schema_profile(), expected)
+
+    def test_gate_is_off_for_every_detected_named_layout(self):
+        for caps in (self._NATIVE_CAPS, self._REMOTE_WRITE_CAPS, self._METRICS_CAPS):
+            with self.subTest(caps=sorted(caps)):
+                self.assertFalse(
+                    panels._native_promql_label_rewrite_applies(self._resolver(caps))
+                )
+
+    def test_grouped_panel_stays_native_with_bare_labels(self):
+        query = build_native_promql_query(
+            'sum by (instance) (up{job="api"})',
+            index="metrics-prom-native-*",
+            resolver=self._resolver(),
+        )
+        self.assertIn("sum by (instance)", query)
+        self.assertIn("{job=", query)
+        self.assertIn("metrics.up", query)
+        self.assertNotIn("RENAME", query)
+        self.assertNotIn("service.instance.id", query)
+
+    def test_absent_field_safety_net_stays_off(self):
+        """The degrade that pushed these panels to ES|QL must not fire."""
+        self.assertEqual(
+            panels._unresolvable_native_promql_labels(
+                'sum by (instance) (up{job="api"})', self._resolver()
+            ),
+            [],
+        )
+
+    def test_otel_caps_under_the_otel_plan_still_rewrite(self):
+        """Symmetry: caps that match no named layout keep the #448 rewrite on."""
+        self.assertTrue(
+            panels._native_promql_label_rewrite_applies(_otel_live_resolver())
+        )
 
 
 if __name__ == "__main__":
