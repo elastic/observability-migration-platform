@@ -23,11 +23,17 @@ found by this gate's approach and fixed:
    **everything**: the exclusion silently did nothing.
 
 This gate seeds a throwaway index per (field profile, field type), emits every
-tag-filter shape through the real translator, executes it, and asserts the
-returned document set is exactly the expected one. Validity alone is not a
-pass. It also asserts the numeric and string mappings of the same logical
-filter select the *same* rows, which is the property a field profile has to
-preserve.
+tag-filter shape through the real translator, executes it, and compares the
+**selected rows** against the expected ones. Neither validity nor row count is
+a pass on its own -- a predicate that returns the right number of the wrong
+documents is precisely the bug class here. It also asserts the numeric and
+string mappings of the same logical filter select the same rows, which is the
+property a field profile has to preserve.
+
+Every index it creates is named with a per-invocation token and deleted in a
+``finally``, so concurrent runs cannot collide and nothing outside this run is
+ever deleted -- the gate takes an arbitrary ``--es-url`` and must not be able
+to destroy an unrelated index that happens to share a name.
 
 Needs a cluster. Local stack:
 
@@ -43,6 +49,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
 
@@ -50,6 +57,7 @@ from observability_migration.adapters.source.datadog.field_map import BUILTIN_PR
 from observability_migration.adapters.source.datadog.models import TagFilter
 from observability_migration.adapters.source.datadog.translate import _tag_filter_to_esql
 from observability_migration.core.verification.field_capabilities import FieldCapability
+from observability_migration.targets.kibana.emit.esql_utils import esql_identifier
 
 # The tag under test and the documents seeded for it. OTel semantic conventions
 # map http.response.status_code to `long`, which is what made this the field
@@ -85,14 +93,17 @@ class Finding:
     field_type: str
     shape: str
     predicate: str
-    expected: int
+    #: The rows themselves, not how many: a predicate that selects the wrong
+    #: document of the right cardinality is exactly the bug class this gate
+    #: exists for, and a count cannot see it.
+    expected: object
     actual: object
     detail: str = ""
 
     def render(self) -> str:
         return (
             f"{self.profile}/{self.field_type}/{self.shape}: "
-            f"expected {self.expected} rows, got {self.actual}"
+            f"expected {self.expected}, got {self.actual}"
             f"{' — ' + self.detail if self.detail else ''}\n"
             f"    {self.predicate}"
         )
@@ -138,9 +149,19 @@ def _error_reason(body: str) -> str:
         return str(body)[:200]
 
 
-def _seed(es_url: str, index: str, mapped_field: str, field_type: str, request=_request) -> None:
-    request(es_url, "DELETE", f"/{index}")
-    request(
+def _seed(
+    es_url: str, index: str, mapped_field: str, field_type: str, request=_request
+) -> str:
+    """Create and fill this run's index. Returns "" on success, else the reason.
+
+    Nothing is deleted here. The index name carries a per-run token, so there
+    is nothing of ours to clear first and a pre-emptive ``DELETE`` could only
+    ever destroy someone else's index that happened to share the name.
+
+    Every response is checked. Discarding them let the gate run its assertions
+    against an index that was never written, and report a pass.
+    """
+    code, body = request(
         es_url,
         "PUT",
         f"/{index}",
@@ -153,6 +174,8 @@ def _seed(es_url: str, index: str, mapped_field: str, field_type: str, request=_
             }
         },
     )
+    if not 200 <= code < 300:
+        return f"could not create {index}: {_error_reason(body)}"
     lines = []
     for value in SEEDED:
         lines.append(json.dumps({"index": {}}))
@@ -164,7 +187,31 @@ def _seed(es_url: str, index: str, mapped_field: str, field_type: str, request=_
                 }
             )
         )
-    request(es_url, "POST", f"/{index}/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
+    code, body = request(
+        es_url, "POST", f"/{index}/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True
+    )
+    if not 200 <= code < 300:
+        return f"could not seed {index}: {_error_reason(body)}"
+    # A bulk can answer 200 while rejecting every document.
+    if isinstance(body, dict) and body.get("errors"):
+        reasons = [
+            str(((item.get("index") or {}).get("error") or {}).get("reason", ""))
+            for item in (body.get("items") or [])
+        ]
+        first = next((r for r in reasons if r), "unreported")
+        return f"could not seed {index}: {first}"
+    return ""
+
+
+def _selected_values(body: object) -> list[str]:
+    """The rows a query returned, normalized for comparison.
+
+    A ``long`` mapping answers with ints and the expectation table is written
+    in strings, and ES|QL row order is not part of the contract -- so compare
+    sorted strings.
+    """
+    rows = body.get("values") or [] if isinstance(body, dict) else []
+    return sorted(str(row[0]) for row in rows if row)
 
 
 def run_gate(es_url: str, profiles: list[str] | None = None, request=_request) -> GateResult:
@@ -174,45 +221,75 @@ def run_gate(es_url: str, profiles: list[str] | None = None, request=_request) -
     way ``live_validate`` makes its query runner injectable.
     """
     result = GateResult()
-    for profile_name in profiles or sorted(BUILTIN_PROFILES):
-        for field_type in FIELD_TYPES:
-            profile = deepcopy(BUILTIN_PROFILES[profile_name])
-            mapped = profile.map_tag(TAG, context="metric")
-            profile.metric_field_caps = {
-                mapped: FieldCapability(name=mapped, type=field_type)
-            }
-            index = f"filter-semantics-{profile_name.replace('_', '-')}-{field_type}"
-            _seed(es_url, index, mapped, field_type, request=request)
-            for shape, kwargs, expected in SHAPES:
-                predicate = _tag_filter_to_esql(
-                    TagFilter(key=TAG, **kwargs), profile, context="metric"
+    # One token per invocation, so two runs -- concurrent or not -- can never
+    # name the same index, and so cleanup can key on "did this run create it?"
+    run_token = uuid.uuid4().hex[:10]
+    created: list[str] = []
+    try:
+        for profile_name in profiles or sorted(BUILTIN_PROFILES):
+            for field_type in FIELD_TYPES:
+                profile = deepcopy(BUILTIN_PROFILES[profile_name])
+                mapped = profile.map_tag(TAG, context="metric")
+                profile.metric_field_caps = {
+                    mapped: FieldCapability(name=mapped, type=field_type)
+                }
+                index = (
+                    f"filter-semantics-{run_token}-"
+                    f"{profile_name.replace('_', '-')}-{field_type}"
                 )
-                result.executed += 1
-                if not predicate:
+                created.append(index)
+                seed_error = _seed(es_url, index, mapped, field_type, request=request)
+                if seed_error:
+                    # Every shape for this index is unanswerable; say so once
+                    # rather than reporting ten row-set mismatches against an
+                    # index that holds nothing.
                     result.findings.append(
-                        Finding(profile_name, field_type, shape, "(empty)",
-                                len(expected), "no predicate emitted")
+                        Finding(profile_name, field_type, "(seed)", "(none)",
+                                sorted(SEEDED), "not seeded", seed_error)
                     )
                     continue
-                code, body = request(
-                    es_url,
-                    "POST",
-                    "/_query",
-                    {"query": f"FROM {index} | WHERE {predicate} | STATS n = COUNT(*)"},
-                )
-                if code != 200:
-                    result.findings.append(
-                        Finding(profile_name, field_type, shape, predicate,
-                                len(expected), "query rejected", _error_reason(body))
+                keep = esql_identifier(mapped)
+                for shape, kwargs, expected in SHAPES:
+                    predicate = _tag_filter_to_esql(
+                        TagFilter(key=TAG, **kwargs), profile, context="metric"
                     )
-                    continue
-                actual = body["values"][0][0]
-                if actual != len(expected):
-                    result.findings.append(
-                        Finding(profile_name, field_type, shape, predicate,
-                                len(expected), actual,
-                                f"expected to select {', '.join(expected)}")
+                    result.executed += 1
+                    if not predicate:
+                        result.findings.append(
+                            Finding(profile_name, field_type, shape, "(empty)",
+                                    sorted(expected), "no predicate emitted")
+                        )
+                        continue
+                    code, body = request(
+                        es_url,
+                        "POST",
+                        "/_query",
+                        {
+                            "query": (
+                                f"FROM {index} | WHERE {predicate} "
+                                f"| KEEP {keep} | SORT {keep} ASC"
+                            )
+                        },
                     )
+                    if code != 200:
+                        result.findings.append(
+                            Finding(profile_name, field_type, shape, predicate,
+                                    sorted(expected), "query rejected",
+                                    _error_reason(body))
+                        )
+                        continue
+                    actual = _selected_values(body)
+                    if actual != sorted(expected):
+                        result.findings.append(
+                            Finding(profile_name, field_type, shape, predicate,
+                                    sorted(expected), actual,
+                                    "selected the wrong rows"
+                                    if len(actual) == len(expected)
+                                    else "")
+                        )
+    finally:
+        # Only what this invocation made, and even if a shape blew up.
+        for index in created:
             request(es_url, "DELETE", f"/{index}")
     return result
 
