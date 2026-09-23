@@ -177,6 +177,15 @@ class StripPromqlCommentsTests(unittest.TestCase):
         expr = "foo{path=`a\\`b#c`} + bar"
         self.assertEqual(_strip_promql_comments(expr), expr)
 
+    def test_there_is_exactly_one_implementation(self):
+        # ``panels.py`` used to carry its own copy of this scanner, which
+        # shadowed the import and diverged on the escaped-backtick case above,
+        # deleting a vector matcher out of an expression and letting an incapable
+        # target onto the native path (issue #455). Ruff's F811 only catches a
+        # duplicate that sits beside a live import; this also catches the variant
+        # where someone drops the import and keeps a local definition.
+        self.assertIs(panels._strip_promql_comments, _strip_promql_comments)
+
 
 class NativeEmissionTests(unittest.TestCase):
     """The emitted native query must carry the whole expression."""

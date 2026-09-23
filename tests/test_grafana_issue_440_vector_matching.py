@@ -411,6 +411,28 @@ class NativeEligibilityGateTests(unittest.TestCase):
                 self.assertFalse(can_use_native_promql(expr, runtime_features={}))
                 self.assertTrue(can_use_native_promql(expr, runtime_features=CAPABLE))
 
+    def test_an_escaped_backtick_in_a_label_value_does_not_delete_the_matcher(self):
+        # The scanner treats a backslash as an escape in all three string forms,
+        # matching the parser every gate downstream uses, so this label value
+        # leaves the backquoted string open and the ``#`` is data. A scanner that
+        # treated backticks as raw instead dropped out of string state at the
+        # escaped backtick and deleted ``#c`} / on(device) ...`` as a comment --
+        # taking the matcher with it. The gate then saw a plain aggregation and
+        # offered native PROMQL to a target that cannot evaluate ``on()``, which
+        # is exactly the hiding this issue is about. ``panels.py`` carried such a
+        # copy, shadowing the canonical one, until it was removed (issue #455).
+        expr = (
+            f"sum by (device) ({RX}{{path=`a\\`b#c`}})"
+            f" / on(device) sum by (device) ({TX})"
+        )
+        # The mechanism: the matcher survives sanitization.
+        self.assertIn("on(device)", panels._sanitize_promql_structure(expr))
+        # The consequence: neither target goes native. The string really is
+        # unterminated for the parser, so the shape check reports an
+        # indeterminate operand -- the safe answer for input that does not parse.
+        self.assertFalse(can_use_native_promql(expr, runtime_features={}))
+        self.assertFalse(can_use_native_promql(expr, runtime_features=CAPABLE))
+
     def test_comment_handling_does_not_weaken_the_flattening_based_gates(self):
         # ``_promql_has_known_server_bug`` and ``_promql_has_unsupported_comparison``
         # scan ``_clean_promql_for_native`` output, where newlines are already gone

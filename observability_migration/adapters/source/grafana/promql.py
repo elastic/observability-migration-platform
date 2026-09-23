@@ -1041,13 +1041,25 @@ def _strip_promql_comments(expr):
     whitespace is collapsed; dropping it would join ``sum(a)`` and ``+ sum(b)``
     into different text than Prometheus sees.
 
+    Structural scans need the same treatment, not only emission: PromQL allows a
+    comment between a token and its parenthesis, so ``on # note\\n(instance)``
+    parses as ``on(instance)`` and a gate looking for that construct must not be
+    fooled into missing one (issue #440). That is why ``panels.py`` sanitizes
+    through this function rather than through the regex literal-blankers.
+
     A ``#`` inside a string literal is a label value, not a comment, so the scan
     tracks quote state across all three PromQL string forms: double, single, and
     backquoted raw. The regex-based ``_strip_promql_string_literals`` helpers
     cannot stand in here because they do not know the backquoted form. A
     backslash is treated as an escape inside every form, matching
-    ``promql-parser``; that also errs toward staying in string state, which
-    keeps text rather than deleting it.
+    ``promql-parser`` — which is what every downstream gate parses with, even
+    though Prometheus itself treats backquoted strings as raw and does not
+    interpret escape sequences inside them. On such input the scan stays in
+    string state, so a real comment can survive into the flattened text; that is
+    the lesser of the two errors, because deleting the string instead removes
+    real query structure — a ``#`` in a backquoted value used to take a whole
+    ``/ on(device) …`` matcher with it and offer native ``PROMQL`` to a target
+    that cannot evaluate it (issue #455).
     """
     text = str(expr or "")
     if "#" not in text:
