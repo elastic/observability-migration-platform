@@ -919,7 +919,7 @@ summarizing each probe — `PROMQL command`, `PROMQL label matcher params`, and
 `PROMQL vector matching (on/ignoring/group_*)` — so you can see which native
 capabilities this target actually accepted before reading per-panel notes.
 
-Three further gates still push panels to ES|QL even when the target supports
+Four further gates still push panels to ES|QL even when the target supports
 `PROMQL`:
 
 1. **Control-bound PromQL matchers** (common on Redis 763: `instance=~"$instance"`).
@@ -943,6 +943,22 @@ Three further gates still push panels to ES|QL even when the target supports
    which of the two conditions declined. Native vector-matching panels raise the
    dashboard's `minimum_kibana_version` to `9.6.0`. See
    [Grafana source behavior](sources/grafana.md).
+4. **Unresolvable label fields (issue #448).** When `--es-url` is set and
+   `resolve_label` maps a Prometheus label to a target-schema field (e.g.
+   `instance` → `service.instance.id`), but live `_field_caps` prove that
+   resolved field is absent from the target, whether it is used by a matcher or
+   a grouping modifier, the panel degrades with:
+   `Native PROMQL skipped: target has no field for PromQL label(s) <names>;
+   native matchers/groupings would not preserve the source series, so the panel
+   migrates via ES|QL`.
+   Without `--es-url`, no degrade occurs (offline runs keep bare labels as
+   before). A multi-metric expression also degrades when metric-scoped
+   resolution maps the same Prometheus label to different target fields; native
+   PROMQL cannot represent both mappings with one grouping/vector-matching name.
+   Note that labels stored at `attributes.*` (the OTel datapoint-level
+   scope) are already resolved by the ES PROMQL engine without this gate; only
+   `resource.attributes.*` labels require explicit resolution. See
+   [Grafana source behavior](sources/grafana.md) for the full OTel asymmetry.
 
 Construct-level unsupported cases can still degrade or require manual review.
 Datadog accepts `--translation-mode` for CLI parity, but it is a no-op because

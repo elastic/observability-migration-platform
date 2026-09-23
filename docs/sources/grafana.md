@@ -427,6 +427,38 @@ loaded, panels that stay on the native path attach a warning
 (`metric_map not applied for <metric>: native PROMQL requires literal target
 metric names`) and are marked `migrated_with_warnings`.
 
+**Label resolution in native PROMQL (issue #448).** When `--es-url` is set and
+discovery succeeds (`discovery_status == ok`), the native PROMQL path now calls
+`resolve_label` for every label matcher key and every grouping label — the same
+resolution that the ES|QL path has used since issue #163. For example, on an
+OTel Collector target (`mapping.mode: otel`, index
+`metrics-prometheusreceiver.otel-default`) where Grafana panels use the
+Prometheus label `instance`, the emitted matcher becomes
+`` `service.instance.id`=~?Node `` and a `| RENAME `service.instance.id` AS
+instance` pipe restores the original column name for downstream Lens code.
+Without `--es-url`, or when discovery is inconclusive, the native path keeps
+bare Prometheus label names (no change from previous behaviour).
+
+One asymmetry to be aware of: Elasticsearch's PROMQL command automatically
+resolves bare datapoint attributes (labels stored at `attributes.*` in the OTel
+model) — bare `device=~"vdb"` works even on an OTel target because `device`
+lives at `attributes.device`, and the PROMQL engine resolves `attributes.*`
+itself. However, it does **not** resolve `resource.attributes.*`: a bare
+`instance` matcher returns zero rows because `service.instance.id` is stored at
+`resource.attributes.service.instance.id`, outside the PROMQL engine's
+automatic scope. `resolve_label` already knows this distinction; the fix simply
+wires its output into the native PROMQL emission.
+
+When a matcher or grouping label resolves to a field that live caps prove
+absent, the panel degrades to ES|QL with a note (`Native PROMQL skipped: target
+has no field for PromQL label(s) <names>; native matchers/groupings would not
+preserve the source series, so the panel migrates via ES|QL`) rather than emitting a silently-dead native
+matcher or collapsing a grouping dimension. Multi-metric expressions likewise
+degrade when metric-scoped resolution maps the same Prometheus label to
+different target fields: choosing either field would silently mis-handle the
+other operand. This is **the fourth degrade gate** documented in
+`docs/command-contract.md`.
+
 > **Verify requires live data.** Without `--es-url`, or before telemetry lands,
 > per-field status may be `unknown` — the planned layout still drives emitted
 > queries. After ingest, rerun with a reachable `--es-url` and confirm

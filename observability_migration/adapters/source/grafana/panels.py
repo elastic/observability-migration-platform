@@ -2229,6 +2229,246 @@ def _prefix_native_metric_fields(expr, resolver):
     return "".join(out)
 
 
+# ---------------------------------------------------------------------------
+# Issue #448 — native PROMQL label-field resolution
+# ---------------------------------------------------------------------------
+
+# Matches a single matcher inside {}: label op value
+# After _clean_promql_for_native values are "string" or ?param (no quotes).
+# We need to capture the label, op+value together for rewriting.
+_MATCHER_PART_LABEL_RE = re.compile(
+    r"^(?P<ws>\s*)(?P<label>[A-Za-z_][A-Za-z0-9_]*)(?P<op_val>\s*(?:=~|!~|!=|=)\s*.+)$",
+    re.DOTALL,
+)
+
+# Grouping modifier keyword followed by its label list (flat comma-separated identifiers)
+_GROUPING_LABELS_REWRITE_RE = re.compile(
+    r"(\b(?:by|without|on|ignoring|group_left|group_right)\s*\()([^)]*)(\))",
+    re.IGNORECASE,
+)
+
+
+def _sub_grouping_labels_outside_promql_literals(expr, rewrite_group):
+    """Apply *rewrite_group* to grouping clauses, never to quoted label values."""
+    text = str(expr or "")
+    pieces = []
+    start = 0
+    for literal in _PROMQL_STRING_LITERAL_RE.finditer(text):
+        pieces.append(
+            _GROUPING_LABELS_REWRITE_RE.sub(rewrite_group, text[start:literal.start()])
+        )
+        pieces.append(literal.group(0))
+        start = literal.end()
+    pieces.append(_GROUPING_LABELS_REWRITE_RE.sub(rewrite_group, text[start:]))
+    return "".join(pieces)
+
+
+def _native_promql_source_metrics(expr):
+    """Return source metrics in stable AST order for native label resolution."""
+    try:
+        analysis_expr = _clean_promql_for_native(expr, adaptive_window=False)
+        metrics = _collect_source_metrics(_parse_fragment(analysis_expr or expr))
+        if metrics:
+            return list(dict.fromkeys(metrics))
+    except Exception:
+        pass
+    # The lightweight scanner does not understand vector-matching lists, so
+    # exclude every structurally identified label from its fallback result.
+    labels = _promql_label_names(expr)
+    return sorted(metric for metric in _metrics_in_expr(str(expr or "")) if metric not in labels)
+
+
+def _native_promql_metric_fields(expr, resolver):
+    """Resolve expression metrics to stable target fields, preserving source order."""
+    if resolver is None:
+        return []
+    resolve_metric = getattr(resolver, "resolve_metric_field", None)
+    if not callable(resolve_metric):
+        return []
+    fields = []
+    for metric in _native_promql_source_metrics(expr):
+        try:
+            resolved = resolve_metric(metric)
+        except Exception:
+            continue
+        if resolved and resolved not in fields:
+            fields.append(resolved)
+    return fields
+
+
+def _native_promql_label_resolutions(label, resolver, metric_fields):
+    """Return distinct target fields selected for *label* across metric scopes."""
+    resolve_label = getattr(resolver, "resolve_label", None)
+    if not callable(resolve_label):
+        return []
+    scopes = list(metric_fields) or [None]
+    resolved_fields = []
+    for metric_field in scopes:
+        try:
+            resolved = resolve_label(label, metric_field=metric_field)
+        except Exception:
+            continue
+        if resolved and resolved not in resolved_fields:
+            resolved_fields.append(resolved)
+    return resolved_fields
+
+
+def _conflicting_native_promql_labels(expr, resolver):
+    """Return labels whose metric-scoped target fields disagree."""
+    if not resolver or not expr:
+        return []
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return []
+    metric_fields = _native_promql_metric_fields(expr, resolver)
+    conflicts = []
+    for label in sorted(_promql_label_names(expr)):
+        resolved_fields = _native_promql_label_resolutions(
+            label, resolver, metric_fields
+        )
+        if len(resolved_fields) > 1:
+            conflicts.append((label, tuple(resolved_fields)))
+    return conflicts
+
+
+def _resolve_native_promql_label_fields(expr, resolver, metric_field=None):
+    """Rewrite PromQL label names to resolved target field names (#448).
+
+    On OTel targets, labels like ``instance`` are stored under
+    ``service.instance.id`` — bare matcher keys match zero series silently.
+    This rewrites each label name to what ``resolve_label`` says the target
+    field is, then backquotes it when the name contains dots or other
+    non-identifier characters (ES|QL backtick quoting).
+
+    Rewrites occur in two positions:
+
+    1. **Matcher keys** inside ``{…}`` (``instance=~?Node`` →
+       `` `service.instance.id`=~?Node ``).
+    2. **Grouping labels** inside ``by(…)``, ``without(…)``, ``on(…)``,
+       ``ignoring(…)``, ``group_left(…)``, ``group_right(…)``
+       (``sum by (instance) (…)`` → ``sum by (`service.instance.id`) (…)``).
+
+    Labels that resolve to themselves (e.g. ``device`` on an OTel target where
+    bare ``device`` exists in field-caps) are left unchanged.
+
+    **Gate:** only fires when ``resolver.discovery_status()["status"] == "ok"``
+    (live field-caps available). Offline / inconclusive discovery keeps today's
+    bare emission so behavior is unchanged when ``--es-url`` is absent.
+
+    Returns ``(rewritten_expr, rename_map)`` where ``rename_map`` maps
+    ``resolved_field -> prom_label`` for rewritten *grouping* labels only.
+    Those become column names in the PROMQL result, so
+    ``build_native_promql_query`` appends ``| RENAME <resolved> AS <prom>``
+    for each entry to restore the Prometheus name downstream.
+    """
+    if not resolver or not expr:
+        return str(expr or ""), {}
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return str(expr), {}
+    resolve_fn = getattr(resolver, "resolve_label", None)
+    if not callable(resolve_fn):
+        return str(expr), {}
+
+    rename_map: dict[str, str] = {}  # {resolved_field: prom_label}
+
+    def _resolve_name(label, in_grouping=False):
+        if label == "__name__":
+            return label
+        try:
+            resolved = resolve_fn(label, metric_field=metric_field)
+        except Exception:
+            return label
+        if not resolved or resolved == label:
+            return label
+        if in_grouping:
+            rename_map[resolved] = label
+        return _esql_identifier(resolved)
+
+    # Step 1: rewrite matcher keys inside {…}
+    def _rewrite_selector(selector_text):
+        parts = []
+        changed = False
+        for part in _split_top_level_csv(selector_text):
+            m = _MATCHER_PART_LABEL_RE.match(part)
+            if not m or m.group("label") == "__name__":
+                parts.append(part)
+                continue
+            original = m.group("label")
+            rewritten = _resolve_name(original, in_grouping=False)
+            if rewritten != original:
+                parts.append(m.group("ws") + rewritten + m.group("op_val"))
+                changed = True
+            else:
+                parts.append(part)
+        return ", ".join(parts) if changed else selector_text
+
+    result = _map_promql_brace_selectors(expr, _rewrite_selector)
+
+    # Step 2: rewrite grouping labels (by/without/on/ignoring/group_left/group_right)
+    def _rewrite_group(match):
+        keyword_paren = match.group(1)
+        content = match.group(2)
+        close_paren = match.group(3)
+        labels = [lbl.strip() for lbl in content.split(",") if lbl.strip()]
+        if not labels:
+            return match.group(0)
+        rewritten = [_resolve_name(lbl, in_grouping=True) for lbl in labels]
+        if rewritten == labels:
+            return match.group(0)
+        return keyword_paren + ", ".join(rewritten) + close_paren
+
+    result = _sub_grouping_labels_outside_promql_literals(result, _rewrite_group)
+
+    return result, rename_map
+
+
+def _timeseries_json_path(label, resolver, metric_field=None):
+    """Return the storage path for *label* inside the native ``_timeseries`` blob.
+
+    The OTel ``_timeseries`` JSON mirrors the Elasticsearch OTel data model:
+
+    - Scrape-level / datapoint labels (e.g. ``device``, ``cpu``, ``mode``) land
+      at ``attributes.<label>`` inside the blob.
+    - Resource labels (e.g. ``service.instance.id``, ``host.name``) land at
+      ``resource.attributes.<label>`` (possibly under their dotted ES field name).
+
+    Returns:
+
+    - ``None`` — fall back to today's flat / ``{"labels":…}`` GROK anchor.
+    - ``("attributes", leaf)`` — label is at ``attributes.<leaf>`` in the blob.
+    - ``("resource.attributes", leaf)`` — label is at
+      ``resource.attributes.<leaf>`` in the blob.
+
+    Only reports a nested path when live field-caps confirm the nested field
+    exists (``field_exists`` returns ``True``).  When discovery is offline or
+    the field is not provably present, returns ``None`` so the flat pattern
+    is used.
+    """
+    if resolver is None:
+        return None
+    field_exists_fn = getattr(resolver, "field_exists", None)
+    if not callable(field_exists_fn):
+        return None
+
+    # Check attributes.<label> first (scrape-level / datapoint labels)
+    if field_exists_fn(f"attributes.{label}") is True:
+        return ("attributes", label)
+
+    # Check resource.attributes.<resolved_label> (resource labels)
+    resolve_fn = getattr(resolver, "resolve_label", None)
+    if callable(resolve_fn):
+        try:
+            resolved = resolve_fn(label, metric_field=metric_field)
+        except Exception:
+            resolved = None
+        if resolved and resolved != label:
+            if field_exists_fn(f"resource.attributes.{resolved}") is True:
+                return ("resource.attributes", resolved)
+
+    return None
+
+
 def _extract_legend_labels(legend_format):
     """Parse ``{{label}}`` placeholders from a Grafana legendFormat string."""
     if not legend_format or legend_format in ("__auto", ""):
@@ -2297,6 +2537,67 @@ def _label_placeholder_value_metric(yaml_panel, *, title, legend_format=""):
         metric.setdefault("label", fallback_label)
 
 
+def _unresolvable_native_promql_labels(expr, resolver):
+    """Return Prometheus label names that resolve to a field absent from live caps.
+
+    Used as a safety net (#448): if ``resolve_label`` returns a new name (e.g.
+    ``instance`` → ``service.instance.id``) but field-caps prove that resolved
+    name is also absent from the target, the matcher would still return zero rows.
+    Only fires when ``discovery_status["status"] == "ok"``.
+
+    **Not applied on Prometheus-namespaced profiles** (``prometheus_native``,
+    ``prometheus_remote_write``, ``prometheus_metrics``): the Elasticsearch PROMQL
+    command automatically resolves bare label matcher keys against the profile's
+    namespaced label fields (``labels.*``, ``prometheus.labels.*``) without
+    explicit key rewriting, so the resolved field is effectively always "present"
+    from the PROMQL engine's perspective.
+
+    Returns a list of ``(prom_label, resolved_field)`` tuples for each absent
+    case, or ``[]`` when it is safe to emit native PROMQL.
+    """
+    if not resolver or not expr:
+        return []
+    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
+    if discovery_status.get("status") != "ok":
+        return []
+    # Prometheus-namespaced profiles: PROMQL engine resolves labels.* automatically.
+    _named_prometheus_plans = getattr(
+        resolver, "_NAMED_PROMETHEUS_PLANS",
+        frozenset({"prometheus_remote_write", "prometheus_metrics", "prometheus_native"}),
+    )
+    _effective_profile_fn = getattr(resolver, "_effective_schema_profile", None)
+    if callable(_effective_profile_fn):
+        try:
+            _effective_profile = _effective_profile_fn()
+        except Exception:
+            _effective_profile = None
+    else:
+        _effective_profile = getattr(resolver, "_field_profile", None)
+    if _effective_profile in _named_prometheus_plans:
+        return []
+    resolve_fn = getattr(resolver, "resolve_label", None)
+    field_exists_fn = getattr(resolver, "field_exists", None)
+    if not callable(resolve_fn) or not callable(field_exists_fn):
+        return []
+
+    absent = []
+    metric_fields = _native_promql_metric_fields(expr, resolver)
+    for label in sorted(_promql_label_names(expr)):
+        resolved_fields = _native_promql_label_resolutions(
+            label, resolver, metric_fields
+        )
+        # Conflicts are handled by the dedicated degrade gate. Checking every
+        # conflicting candidate here would produce a misleading absence note.
+        if len(resolved_fields) != 1:
+            continue
+        resolved = resolved_fields[0]
+        if resolved == label:
+            continue
+        if field_exists_fn(resolved) is False:
+            absent.append((label, resolved))
+    return absent
+
+
 def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
                               legend_labels=None, kibana_type=None,
                               legend_format=None, runtime_features=None,
@@ -2335,6 +2636,23 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         runtime_features=runtime_features,
         regex_default_params=regex_default_params,
         adaptive_window=adaptive_window,
+    )
+    # Resolve label names to their target-field equivalents (#448).
+    # On non-Prometheus targets (e.g. OTel mapping.mode: otel), labels like
+    # ``instance`` are stored under ``service.instance.id`` — bare matcher keys
+    # match zero series silently.  Only fires when live field-caps are available.
+    # Get the primary metric for metric-scoped co-occurrence resolution (#163).
+    _label_conflicts = _conflicting_native_promql_labels(promql_expr, resolver)
+    if _label_conflicts:
+        labels = ", ".join(label for label, _ in _label_conflicts)
+        raise ValueError(
+            "Native PROMQL labels resolve to different target fields across metrics: "
+            f"{labels}"
+        )
+    _metric_fields = _native_promql_metric_fields(promql_expr, resolver)
+    _primary_metric = _metric_fields[0] if _metric_fields else None
+    cleaned, _label_rename_map = _resolve_native_promql_label_fields(
+        cleaned, resolver, metric_field=_primary_metric
     )
     cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
@@ -2378,6 +2696,17 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
+        # Append RENAME pipes so downstream Lens code still sees Prometheus label
+        # names even when the expression used resolved field names (e.g.
+        # ``sum by (`service.instance.id`)`` → column ``service.instance.id``
+        # must be renamed back to ``instance`` for parity with the ES|QL path).
+        if _label_rename_map:
+            rename_pipes = "\n".join(
+                f"| RENAME {_esql_identifier(resolved_field)}"
+                f" AS {_esql_identifier(prom_label)}"
+                for resolved_field, prom_label in _label_rename_map.items()
+            )
+            return base + "\n" + rename_pipes
         return base
 
     # The ``step`` column only exists on range queries; an instant query must
@@ -2392,7 +2721,15 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
         # ``.*``) and a full-blob ``REPLACE(REPLACE(...))`` fallback per row,
         # which degraded super-linearly on wide label sets. A label absent from a
         # given series yields NULL (correct: that series has no such dimension).
-        evals = [_grok_label_extraction(lbl) for lbl in legend_labels]
+        evals = [
+            _grok_label_extraction(
+                lbl,
+                json_path=_timeseries_json_path(
+                    lbl, resolver, metric_field=_primary_metric
+                ),
+            )
+            for lbl in legend_labels
+        ]
         keep = value_cols + [_esql_identifier(lbl) for lbl in legend_labels]
         return base + "\n" + "\n".join(evals) + f'\n| KEEP {", ".join(keep)}'
 
@@ -3020,6 +3357,33 @@ def _translate_panel_native_promql(
             panel_notes,
             f"Native PROMQL skipped: rule pack pins {declared_gauge_metric} as a "
             "gauge, so the counter-style range function degrades via ES|QL",
+        )
+        return None
+    # A multi-metric expression can resolve the same Prometheus label to
+    # different target fields under metric-scoped co-occurrence (#163). Native
+    # PROMQL has one grouping/matching name for the whole expression, so choosing
+    # either field would silently mis-handle the other operand. Degrade instead.
+    _conflicting_resolved = _conflicting_native_promql_labels(expr, resolver)
+    if _conflicting_resolved:
+        _conflicting_names = ", ".join(label for label, _ in _conflicting_resolved)
+        _append_unique(
+            panel_notes,
+            "Native PROMQL skipped: PromQL label(s) "
+            f"{_conflicting_names} resolve to different target fields across "
+            "the expression's metrics, so the panel migrates via ES|QL",
+        )
+        return None
+    # Safety net (#448): if a label in the expression resolves to a field name
+    # that live field-caps prove absent, the matcher will return zero rows —
+    # a silent failure.  Decline native and let ES|QL handle it instead.
+    _absent_resolved = _unresolvable_native_promql_labels(expr, resolver)
+    if _absent_resolved:
+        _absent_names = ", ".join(p for p, _ in _absent_resolved)
+        _append_unique(
+            panel_notes,
+            f"Native PROMQL skipped: target has no field for PromQL label(s) "
+            f"{_absent_names}; native matchers/groupings would not preserve the "
+            "source series, so the panel migrates via ES|QL",
         )
         return None
     legend_format = target.get("legendFormat", "")
@@ -7596,30 +7960,73 @@ def _esql_identifier(name):
     return "`" + text.replace("`", "``") + "`"
 
 
-def _grok_label_extraction(label):
+def _grok_label_extraction(label, json_path=None):
     """Emit a GROK pipe that pulls a single PromQL series label out of the
     native ``_timeseries`` JSON string.
 
     The label appears in the blob as ``"<label>":"<value>"``; GROK reads the
     string once and binds ``<value>`` to a column named after the label. When the
     label is not present on a series the column is NULL.
+
+    *json_path* is an optional ``(scope, leaf)`` tuple from
+    ``_timeseries_json_path`` that selects the right nested location in an OTel
+    ``_timeseries`` blob (#448):
+
+    - ``None`` — today's flat / ``{"labels":…}`` anchor (default, no change
+      when ``--es-url`` is absent or the target is Prometheus-shaped).
+    - ``("attributes", "device")`` — label is at ``attributes.device`` inside
+      the blob.  Anchor: ``(?:\\A\\{|,)"attributes":\\{(?:[^{}]*,)?``.
+    - ``("resource.attributes", "service.instance.id")`` — label is at
+      ``resource.attributes.service.instance.id``.  Anchor:
+      ``"resource":\\{"attributes":\\{(?:[^{}]*,)?``.
+
+    In all cases the GROK capture name is the **Prometheus label name** (the
+    *label* argument), so the emitted column is unchanged from today.
     """
-    literal = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", str(label))
-    # Triple-quoted ES|QL string so inner double quotes need no escaping. The
-    # pattern is ``"<label>":"%{DATA:<label>}\"`` — DATA (non-greedy) is bounded
-    # by the trailing ``\"`` which matches the JSON value's closing quote.
-    #
-    # The key is anchored to a TOP-LEVEL position: object start (optionally
-    # through the ``{"labels":{...}}`` wrapper) or a preceding comma. An
-    # unanchored first-occurrence match binds a same-named key nested inside
-    # OTel resource attributes instead — ``k8s.cluster.name`` sorts before a
-    # top-level ``name`` and ``service.name`` exists on any OTel-mapped
-    # cluster — so the panel legend (and parity series keys) would carry the
-    # wrong label's value. Nested first keys are always preceded by ``:{``,
-    # which the anchor excludes; nested non-first keys are comma-preceded and
-    # remain theoretically ambiguous, but the known OTel collision shapes
-    # (service.name, host.name, k8s.*.name) are all single-key objects.
-    pattern = f'(?:\\A\\{{(?:"labels":\\{{)?|,)"{literal}":"%{{DATA:{label}}}\\"'
+    capture_name = str(label)
+    if json_path is None:
+        literal = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", capture_name)
+        # Triple-quoted ES|QL string so inner double quotes need no escaping. The
+        # pattern is ``"<label>":"%{DATA:<label>}\"`` — DATA (non-greedy) is bounded
+        # by the trailing ``\"`` which matches the JSON value's closing quote.
+        #
+        # The key is anchored to a TOP-LEVEL position: object start (optionally
+        # through the ``{"labels":{...}}`` wrapper) or a preceding comma. An
+        # unanchored first-occurrence match binds a same-named key nested inside
+        # OTel resource attributes instead — ``k8s.cluster.name`` sorts before a
+        # top-level ``name`` and ``service.name`` exists on any OTel-mapped
+        # cluster — so the panel legend (and parity series keys) would carry the
+        # wrong label's value. Nested first keys are always preceded by ``:{``,
+        # which the anchor excludes; nested non-first keys are comma-preceded and
+        # remain theoretically ambiguous, but the known OTel collision shapes
+        # (service.name, host.name, k8s.*.name) are all single-key objects.
+        pattern = f'(?:\\A\\{{(?:"labels":\\{{)?|,)"{literal}":"%{{DATA:{capture_name}}}\\"'
+    elif json_path[0] == "attributes":
+        # Scrape-level / datapoint label stored at ``attributes.<leaf>`` in the
+        # OTel _timeseries blob.  Anchor to the top-level ``"attributes"``
+        # object (``\A\{`` or after ``,``) so the pattern does not accidentally
+        # match inside ``resource.attributes``.
+        leaf = str(json_path[1])
+        leaf_escaped = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", leaf)
+        pattern = (
+            f'(?:\\A\\{{|,)"attributes":\\{{(?:[^{{}}]*,)?"{leaf_escaped}":'
+            f'"%{{DATA:{capture_name}}}\\"'
+        )
+    elif json_path[0] == "resource.attributes":
+        # Resource label stored at ``resource.attributes.<leaf>`` (e.g.
+        # ``service.instance.id``).  The anchor descends into the nested
+        # objects; ``[^{}]*`` cannot cross object boundaries so there is no
+        # risk of matching a similarly-named key inside a nested sub-object.
+        leaf = str(json_path[1])
+        leaf_escaped = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", leaf)
+        pattern = (
+            f'"resource":\\{{"attributes":\\{{(?:[^{{}}]*,)?"{leaf_escaped}":'
+            f'"%{{DATA:{capture_name}}}\\"'
+        )
+    else:
+        # Unknown scope — fall back to flat pattern
+        literal = _GROK_LITERAL_ESCAPE_RE.sub(r"\\\1", capture_name)
+        pattern = f'(?:\\A\\{{(?:"labels":\\{{)?|,)"{literal}":"%{{DATA:{capture_name}}}\\"'
     return f'| GROK _timeseries """{pattern}"""'
 
 
