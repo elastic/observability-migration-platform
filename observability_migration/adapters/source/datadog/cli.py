@@ -1299,7 +1299,18 @@ def _upload_all_dashboards(
             seen_dashboard_ids=uploaded_dashboard_ids,
         )
         dr.uploaded = upload_result["success"]
-        dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
+        # An empty source dashboard is a no-op, not a failed upload: real
+        # accounts carry scratch dashboards with no widgets, and calling those
+        # errors buries the failures that matter.
+        nothing_to_upload = bool(upload_result.get("nothing_to_upload"))
+        dr.upload_skipped_reason = (
+            f"{stem}: the source dashboard has no panels" if nothing_to_upload else ""
+        )
+        dr.upload_error = (
+            ""
+            if upload_result["success"] or nothing_to_upload
+            else upload_result["output"][:500]
+        )
         dr.upload_warnings = upload_warnings_from_reasons(
             upload_result.get("unmapped_reasons", {})
         )
@@ -1308,6 +1319,8 @@ def _upload_all_dashboards(
         dr.uploaded_kibana_url = upload_result["kibana_url"]
         if upload_result["success"]:
             print(f"    Uploaded: {stem}")
+        elif nothing_to_upload:
+            print(f"    UPLOAD SKIPPED: {stem}: the source dashboard has no panels")
         else:
             print(f"    UPLOAD FAILED: {stem}: {dr.upload_error[:200]}")
         # Named per panel, not just counted: an HTTP 200 upload that dropped

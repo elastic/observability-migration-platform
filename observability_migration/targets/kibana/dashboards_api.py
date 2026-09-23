@@ -209,7 +209,13 @@ class UnresolvedDataView:
 class UploadResult:
     dashboard: str
     dashboard_id: str = ""
-    # created | updated | conflict | rejected | empty | lossy | duplicate_id
+    # created | updated | conflict | rejected | empty | source_empty | lossy
+    # | duplicate_id
+    #
+    # ``source_empty`` is the one non-success status that is not a defect: the
+    # source dashboard had no panels, so nothing was sent and nothing was lost.
+    # It is kept distinct from ``empty`` -- a payload that should have had
+    # panels and does not -- so reporting can skip it instead of failing it.
     #
     # ``lossy`` is a 2xx upload that Kibana accepted *without* some of the leaf
     # panels that were sent (see :func:`_record_panel_loss`). It is a failure,
@@ -2024,6 +2030,33 @@ def map_yaml_control(control: dict[str, Any]) -> dict[str, Any] | None:
 _DROPPED_FILTER_REASON = "dropped_unsupported_dashboard_filter"
 
 
+def _payload_is_an_empty_source(
+    payload: dict[str, Any], *, mapped: int, unmapped: int
+) -> bool:
+    """True when a zero-leaf payload is an empty *source*, not a lost one.
+
+    :func:`_payload_has_leaf_panels` refuses to upload a payload with no leaves,
+    which covers two unrelated situations. A dashboard whose source carried no
+    widgets produces literally nothing -- no items, no controls, nothing mapped
+    and nothing recorded as unmapped -- and that is a no-op to report, not a
+    failure to investigate; real accounts are full of empty scratch dashboards.
+    A payload that *does* carry items (sections, controls) or that counted
+    panels in or out is the hazard the check was written for: its panels went
+    missing on the way here, and it must keep failing.
+
+    Keyed on the payload's own shape rather than on a caller's claim, so a
+    source that silently drops panels without counting them cannot reach the
+    benign answer by staying quiet: dropping panels leaves either the items
+    that held them or a non-zero count behind.
+    """
+    return (
+        not (payload.get("panels") or [])
+        and not (payload.get("pinned_panels") or [])
+        and mapped == 0
+        and unmapped == 0
+    )
+
+
 def _payload_has_leaf_panels(payload: dict[str, Any]) -> bool:
     """True if an API payload contains at least one leaf panel.
 
@@ -3386,7 +3419,14 @@ def _upload_native_api_payload(
         payload, data_view_ids, data_view_inventory=data_view_inventory,
     )
     if not _payload_has_leaf_panels(payload):
-        res.status = "empty"
+        if _payload_is_an_empty_source(payload, mapped=mapped, unmapped=unmapped):
+            res.status = "source_empty"
+            res.message = (
+                "the source dashboard has no panels, so there was nothing to "
+                "upload; no dashboard was created"
+            )
+        else:
+            res.status = "empty"
         return res
 
     session = _session(api_key, verify=verify)

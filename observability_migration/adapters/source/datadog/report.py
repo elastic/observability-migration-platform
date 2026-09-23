@@ -364,8 +364,15 @@ def print_report(results: list[DashboardResult]) -> None:
             print(f"    Groups: {groups} (structural, not migrated)")
 
         if dr.upload_attempted:
-            upload_status = "pass" if dr.uploaded and not dr.upload_error else "fail"
+            if dr.uploaded and not dr.upload_error:
+                upload_status = "pass"
+            elif dr.upload_skipped_reason and not dr.upload_error:
+                upload_status = "skipped"
+            else:
+                upload_status = "fail"
             print(f"    Upload: {upload_status}")
+            if dr.upload_skipped_reason and not dr.upload_error:
+                print(f"    UPLOAD SKIPPED: {dr.upload_skipped_reason}")
             if dr.upload_error:
                 print(f"    UPLOAD ERROR: {dr.upload_error}")
             for dropped in dr.upload_dropped_panels or []:
