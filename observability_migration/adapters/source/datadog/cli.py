@@ -270,6 +270,34 @@ def _load_configured_field_map(args: argparse.Namespace) -> FieldMapProfile:
     return field_map
 
 
+def empty_extraction_message(args: Any) -> str:
+    """Explain an empty dashboard extraction in terms of the mode in use.
+
+    Both callers used to print the files-mode sentence unconditionally, so an
+    API run with a mistyped ``--dashboard-ids`` interpolated an unset
+    ``--input-dir`` as ``..`` and told the operator to fix a flag they never
+    passed.
+    """
+    if str(getattr(args, "input_mode", "") or "") == "api":
+        ids = str(getattr(args, "dashboard_ids", "") or "").strip()
+        if ids:
+            return (
+                f"  ERROR: no Datadog dashboards matched --dashboard-ids {ids}. "
+                "Check the ids against the dashboard list in Datadog "
+                "(the id is the last path segment of the dashboard URL)."
+            )
+        return (
+            "  ERROR: no Datadog dashboards returned by the Datadog API. "
+            "Check DD_API_KEY / DD_APP_KEY / DD_SITE reach the intended org, "
+            "and that any --select-* filters are not excluding everything."
+        )
+    return (
+        f"  ERROR: no Datadog dashboards found under {getattr(args, 'input_dir', None)}. "
+        "Point --input-dir at a directory of Datadog dashboard JSON "
+        "exports (each with a top-level 'widgets' key)."
+    )
+
+
 def _run_dashboard_pipeline(
     *,
     args: argparse.Namespace,
@@ -281,12 +309,7 @@ def _run_dashboard_pipeline(
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
     if not raw_dashboards:
-        print(
-            f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
-            "Point --input-dir at a directory of Datadog dashboard JSON "
-            "exports (each with a top-level 'widgets' key).",
-            file=sys.stderr,
-        )
+        print(empty_extraction_message(args), file=sys.stderr)
         sys.exit(1)
 
     criteria = _selection_criteria_or_exit(args)
