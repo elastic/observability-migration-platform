@@ -69,6 +69,18 @@ class PreflightResult:
         return [i for i in self.issues if i.level == "warn"]
 
 
+def preflight_status_label(passed: bool) -> str:
+    """The single verdict word for a preflight result.
+
+    Only a blocking issue fails a preflight -- warnings and info are carried by
+    the ``Warn``/``Info`` counts printed beside this label and by the listed
+    issues. Both the in-run line and the end-of-run report derive the word from
+    here so they cannot disagree about the same result, and so neither can
+    contradict the ``passed`` flag written to the manifest.
+    """
+    return "pass" if passed else "issues"
+
+
 def check_kibana_version(
     target_version: str,
     source_version: str = "",

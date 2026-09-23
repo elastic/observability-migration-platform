@@ -82,6 +82,7 @@ from .planner import plan_widget
 from .preflight import (
     PreflightResult,
     build_target_readiness_contract,
+    preflight_status_label,
     run_preflight,
     save_target_readiness_contract,
 )
@@ -804,7 +805,7 @@ def _print_preflight_summary(preflight: PreflightResult) -> None:
     block_count = len(preflight.blocking_issues)
     warn_count = len(preflight.warnings)
     info_count = len([issue for issue in preflight.issues if issue.level == "info"])
-    status = "pass" if preflight.passed and not preflight.issues else "issues" if preflight.issues else "pass"
+    status = preflight_status_label(preflight.passed)
     print(f"    Preflight: {status}  Block: {block_count}  Warn: {warn_count}  Info: {info_count}")
     for issue in preflight.issues[:5]:
         prefix = issue.widget_id + ": " if issue.widget_id else ""

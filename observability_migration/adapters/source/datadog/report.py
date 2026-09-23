@@ -22,6 +22,7 @@ from observability_migration.core.reporting.summary_md import (
 )
 
 from .models import DashboardResult
+from .preflight import preflight_status_label
 
 
 def _maybe_to_dict(value: Any) -> Any:
@@ -388,7 +389,7 @@ def print_report(results: list[DashboardResult]) -> None:
             preflight_warns = sum(1 for issue in dr.preflight_issues if issue.get("level") == "warn")
             preflight_info = sum(1 for issue in dr.preflight_issues if issue.get("level") == "info")
             print(
-                f"    Preflight: {'pass' if dr.preflight_passed else 'issues'}  "
+                f"    Preflight: {preflight_status_label(dr.preflight_passed)}  "
                 f"Block: {preflight_blocks}  Warn: {preflight_warns}  Info: {preflight_info}"
             )
             for issue in dr.preflight_issues[:5]:

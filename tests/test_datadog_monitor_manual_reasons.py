@@ -121,10 +121,10 @@ def test_every_manual_only_kind_has_a_specific_reason():
     to "no ES|QL translation was produced" for any of them wastes the one
     chance the run has to tell the operator what to build instead.
     """
-    from observability_migration.core.mapping import MANUAL_ONLY_KINDS
     from observability_migration.adapters.source.datadog.report import (
         _GENERIC_MANUAL_REASON,
     )
+    from observability_migration.core.mapping import MANUAL_ONLY_KINDS
 
     missing = []
     for kind in sorted(MANUAL_ONLY_KINDS):
