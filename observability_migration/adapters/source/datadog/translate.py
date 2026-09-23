@@ -17,10 +17,18 @@ from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import (
     assess_field_usage,
     is_counter_metric_field,
-    is_numeric_field,
+)
+from observability_migration.targets.kibana.emit.esql_utils import (
+    comparison_mode as _tag_comparison_mode,
+)
+from observability_migration.targets.kibana.emit.esql_utils import (
+    comparison_operands as _tag_comparison_operands,
 )
 from observability_migration.targets.kibana.emit.esql_utils import (
     esql_identifier,
+)
+from observability_migration.targets.kibana.emit.esql_utils import (
+    pattern_field as _tag_pattern_field,
 )
 
 from .field_map import FieldMapProfile
@@ -1164,7 +1172,12 @@ def _build_metric_query_spec(
         # group-by resolving to an absent field was reported, but
         # `{service:shop-lab}` against a target that only has `service.name`
         # emitted `service == "shop-lab"` and said nothing.
-        for tag_key in _scope_filter_tag_keys(filt):
+        for tag_key in _scope_filter_tag_keys(
+            filt,
+            emits=lambda leaf: bool(
+                _metric_scope_to_esql(leaf, field_map, context="metric")
+            ),
+        ):
             mapped_tag = field_map.map_tag(tag_key, context="metric")
             if mapped_tag and field_map.field_capability(mapped_tag, context="metric") is None:
                 _report_absent_target_field(result, field_map, mapped_tag, usage="filter")
@@ -1894,21 +1907,37 @@ def _scope_item_template_vars(scope_item: Any) -> set[str]:
     return set()
 
 
-def _scope_filter_tag_keys(scope_item: Any) -> list[str]:
+def _scope_filter_tag_keys(scope_item: Any, emits: Any = None) -> list[str]:
     """Tag keys a scope item filters on, walking nested boolean groups.
 
-    Skips shapes that emit no clause (a bare ``*``) and template-variable
-    values, whose field is only decided at view time and so cannot be judged
-    against the target now.
+    What decides assessment is whether a clause is emitted, not whether the
+    value mentions a template. A *pure* template (``service:$svc``) emits
+    nothing, so there is no field to judge; a *mixed* one
+    (``service:prod-$svc``) emits ``service LIKE "prod-*"``, which is as hard a
+    dependency on ``service`` as a plain literal. Treating both as "decided at
+    view time" meant the mixed form emitted a field reference that readiness
+    never checked, and the panel failed with ``Unknown column`` instead of
+    carrying a DATA READINESS reason.
+
+    A dynamic *key* is still skipped: it names no field to assess, and
+    recording the literal ``$k`` as a dependency is worse than recording none.
+
+    ``emits`` is the predicate that answers "does this leaf produce a clause?"
+    -- normally the emitter itself, so the two cannot drift. Without it the
+    conservative structural rules apply.
     """
     if isinstance(scope_item, ScopeBoolOp):
         keys: list[str] = []
         for child in scope_item.children or []:
-            keys.extend(_scope_filter_tag_keys(child))
+            keys.extend(_scope_filter_tag_keys(child, emits))
         return keys
     if isinstance(scope_item, TagFilter):
         value = scope_item.value or ""
-        if not scope_item.key or _has_template_vars(value):
+        if not scope_item.key or _has_template_vars(scope_item.key):
+            return []
+        if emits is not None:
+            return [scope_item.key] if emits(scope_item) else []
+        if _has_template_vars(value):
             return []
         if value == "*" and not scope_item.negated:
             return []
@@ -2753,65 +2782,6 @@ def _append_multi_field_series_reducer_stats(
         lines.append(f"| STATS {', '.join(reduced_parts)} BY {', '.join(group_aliases)}")
     else:
         lines.append(f"| STATS {', '.join(reduced_parts)}")
-
-
-def _tag_comparison_mode(values: list[str], capability: Any | None) -> str:
-    """Decide how to compare a mapped tag field against ``values``.
-
-    Datadog tag values are untyped strings, so ``http.response.status_code:500``
-    arrives as ``"500"`` no matter what the target field holds. ES|QL compares
-    only within a type family and rejects ``<numeric> == <keyword>`` outright
-    ("first argument ... is [numeric] so second argument must also be
-    [numeric]"), so the literal has to be rendered at the target field's real
-    type. OTel semantic conventions map ``http.response.status_code`` to
-    ``long``, which is why every status-code panel and monitor failed at query
-    time against a correctly mapped target.
-
-    Returns one of:
-
-    ``"numeric"``
-        Live field caps say numeric and every value is a number: compare as
-        numbers.
-    ``"cast"``
-        The comparison is ambiguous or crosses families, so compare through
-        ``TO_STRING(field)``, which is valid against keyword *and* numeric
-        mappings. Used when caps are absent (offline translation, no
-        ``--es-url``) and the value looks numeric, and when a numeric field is
-        compared against a non-numeric value. Mirrors
-        :func:`log_parser._render_attr_predicate`.
-    ``"text"``
-        Unambiguously a string comparison: quote the literal as before.
-
-    One mode is chosen for all of a filter's values so an OR chain or an
-    ``IN`` list keeps a single left-hand side.
-    """
-    all_numeric = bool(values) and all(
-        _NUMERIC_TAG_VALUE_RE.fullmatch(value) for value in values
-    )
-    if is_numeric_field(capability):
-        return "numeric" if all_numeric else "cast"
-    if capability is None and all_numeric:
-        return "cast"
-    return "text"
-
-
-def _tag_comparison_operands(es_field: str, value: str, mode: str) -> tuple[str, str]:
-    """Render the ``(lhs, rhs)`` of one comparison for a :func:`_tag_comparison_mode`."""
-    if mode == "numeric":
-        return es_field, value
-    if mode == "cast":
-        return f"TO_STRING({es_field})", f'"{_esql_escape(value)}"'
-    return es_field, f'"{_esql_escape(value)}"'
-
-
-def _tag_pattern_field(es_field: str, capability: Any | None) -> str:
-    """``LIKE``/``NOT LIKE`` take a string pattern, so cast a numeric field.
-
-    Only caps-confirmed numeric fields are cast: a wildcard value is not
-    numeric-looking, so an unknown type stays a bare ``LIKE`` on the field --
-    the overwhelmingly common keyword case -- rather than casting on a guess.
-    """
-    return f"TO_STRING({es_field})" if is_numeric_field(capability) else es_field
 
 
 def _tag_filter_to_esql(filt, field_map: FieldMapProfile, context: str = "") -> str:

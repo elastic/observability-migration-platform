@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
+
+from observability_migration.core.verification.field_capabilities import (
+    is_numeric_field,
+)
 
 
 def _split_top_level_csv(expr):
@@ -433,3 +438,80 @@ def esql_identifier(field_name: str) -> str:
         else:
             quoted.append("`" + segment.replace("`", "``") + "`")
     return ".".join(quoted)
+
+
+# ---------------------------------------------------------------------------
+# Typed comparison operands
+#
+# Source tag and log-attribute values are untyped strings on both the Datadog
+# tag path and the Datadog log path, while ES|QL compares only within a type
+# family. Both paths therefore need the same decision, and when they disagreed
+# the log path emitted predicates Elasticsearch rejects outright. One
+# implementation, imported by both.
+# ---------------------------------------------------------------------------
+
+_NUMERIC_LITERAL_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def escape_esql_string(value: str) -> str:
+    """Escape a value for use inside an ES|QL double-quoted string literal."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def comparison_mode(values: list[str], capability: Any | None) -> str:
+    """Decide how to compare a mapped tag field against ``values``.
+
+    Datadog tag values are untyped strings, so ``http.response.status_code:500``
+    arrives as ``"500"`` no matter what the target field holds. ES|QL compares
+    only within a type family and rejects ``<numeric> == <keyword>`` outright
+    ("first argument ... is [numeric] so second argument must also be
+    [numeric]"), so the literal has to be rendered at the target field's real
+    type. OTel semantic conventions map ``http.response.status_code`` to
+    ``long``, which is why every status-code panel and monitor failed at query
+    time against a correctly mapped target.
+
+    Returns one of:
+
+    ``"numeric"``
+        Live field caps say numeric and every value is a number: compare as
+        numbers.
+    ``"cast"``
+        The comparison is ambiguous or crosses families, so compare through
+        ``TO_STRING(field)``, which is valid against keyword *and* numeric
+        mappings. Used when caps are absent (offline translation, no
+        ``--es-url``) and the value looks numeric, and when a numeric field is
+        compared against a non-numeric value. Mirrors
+        the Datadog log path, which routes through the same three helpers.
+    ``"text"``
+        Unambiguously a string comparison: quote the literal as before.
+
+    One mode is chosen for all of a filter's values so an OR chain or an
+    ``IN`` list keeps a single left-hand side.
+    """
+    all_numeric = bool(values) and all(
+        _NUMERIC_LITERAL_RE.fullmatch(value) for value in values
+    )
+    if is_numeric_field(capability):
+        return "numeric" if all_numeric else "cast"
+    if capability is None and all_numeric:
+        return "cast"
+    return "text"
+
+
+def comparison_operands(es_field: str, value: str, mode: str) -> tuple[str, str]:
+    """Render the ``(lhs, rhs)`` of one comparison for a :func:`comparison_mode`."""
+    if mode == "numeric":
+        return es_field, value
+    if mode == "cast":
+        return f"TO_STRING({es_field})", f'"{escape_esql_string(value)}"'
+    return es_field, f'"{escape_esql_string(value)}"'
+
+
+def pattern_field(es_field: str, capability: Any | None) -> str:
+    """``LIKE``/``NOT LIKE`` take a string pattern, so cast a numeric field.
+
+    Only caps-confirmed numeric fields are cast: a wildcard value is not
+    numeric-looking, so an unknown type stays a bare ``LIKE`` on the field --
+    the overwhelmingly common keyword case -- rather than casting on a guess.
+    """
+    return f"TO_STRING({es_field})" if is_numeric_field(capability) else es_field

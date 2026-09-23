@@ -29,7 +29,10 @@ from observability_migration.core.verification.field_capabilities import (
     is_string_field,
 )
 from observability_migration.targets.kibana.emit.esql_utils import (
+    comparison_mode,
+    comparison_operands,
     esql_identifier,
+    pattern_field,
 )
 
 from .models import (
@@ -596,8 +599,15 @@ def log_ast_to_esql_where(node: Any, field_map: LogFieldMapping = None) -> str:
             return ""
         if node.value.startswith("(") and node.value.endswith(")") and re.search(r"\bOR\b", node.value, re.IGNORECASE):
             inner = node.value[1:-1]
-            options = [part.strip() for part in re.split(r"\bOR\b", inner, flags=re.IGNORECASE) if part.strip()]
-            clauses = [_render_attr_predicate(field, value, node.negated, capability) for value in options]
+            options = _split_group_members(inner)
+            # One comparison family for the whole group, decided from every
+            # member together -- the same rule the tag path applies to an OR
+            # chain or an IN list.
+            group_mode = comparison_mode(options, capability)
+            clauses = [
+                _render_attr_predicate(field, value, node.negated, capability, group_mode)
+                for value in options
+            ]
             clauses = [clause for clause in clauses if clause]
             if not clauses:
                 return ""
@@ -667,6 +677,60 @@ def _resolve_esql_field(raw_field: str, field_map: LogFieldMapping) -> tuple[str
     return mapped, capability
 
 
+def _split_group_members(inner: str) -> list[str]:
+    """Split ``a OR "b c" OR d`` into its values, honouring quotes.
+
+    A plain ``re.split`` on ``OR`` cut inside quoted values and left the quote
+    characters attached, so ``status:("error" OR "warn")`` compared the field
+    against a value that literally contained ``"`` and matched nothing. The
+    quote is syntax here, exactly as it is for a single value, so it is
+    consumed rather than passed through to the predicate.
+    """
+    members: list[str] = []
+    current: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        if quote:
+            if char == "\\" and index + 1 < len(inner):
+                current.append(inner[index : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            else:
+                current.append(char)
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            index += 1
+            continue
+        if (
+            char in "oO"
+            and inner[index : index + 2].upper() == "OR"
+            and (index == 0 or inner[index - 1].isspace())
+            and (index + 2 >= len(inner) or inner[index + 2].isspace())
+        ):
+            members.append("".join(current).strip())
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    members.append("".join(current).strip())
+    return [member for member in members if member]
+
+
+def _strip_quotes(value: str) -> str:
+    """Drop one layer of matching surrounding quotes from a single value."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
 def _render_attr_literal(value: str, field_capability: Any | None = None) -> str:
     if field_capability is not None:
         if is_numeric_field(field_capability):
@@ -678,7 +742,21 @@ def _render_attr_literal(value: str, field_capability: Any | None = None) -> str
     return f'"{_esql_escape(value)}"'
 
 
-def _render_attr_predicate(field: str, value: str, negated: bool, field_capability: Any | None = None) -> str:
+def _render_attr_predicate(
+    field: str,
+    value: str,
+    negated: bool,
+    field_capability: Any | None = None,
+    mode: str | None = None,
+) -> str:
+    """Render one ``field:value`` predicate at the target field's real type.
+
+    ``mode`` lets a caller fix the comparison family across a whole group, so
+    ``(500 OR error)`` against a numeric field keeps one left-hand side rather
+    than emitting a numeric compare beside a cast one. It is the value of
+    :func:`~observability_migration.targets.kibana.emit.esql_utils.comparison_mode`,
+    which the Datadog tag path uses for the identical decision.
+    """
     value = value.strip()
     if value.startswith("(") and value.endswith(")") and not re.search(r"\bOR\b", value, re.IGNORECASE):
         value = value[1:-1].strip()
@@ -690,7 +768,9 @@ def _render_attr_predicate(field: str, value: str, negated: bool, field_capabili
         return f'{field} {like_op} "{pattern}"'
     if "*" in value or "?" in value:
         like_op = "NOT LIKE" if negated else "LIKE"
-        return f'{field} {like_op} "{_esql_escape(value)}"'
+        # ES|QL: "argument of [x LIKE ...] must be [string]". A numeric column
+        # has to be cast before it can be matched against a pattern.
+        return f'{pattern_field(field, field_capability)} {like_op} "{_esql_escape(value)}"'
     comp = _COMPARISON_RE.fullmatch(value)
     if comp:
         op, number = comp.groups()
@@ -701,15 +781,14 @@ def _render_attr_predicate(field: str, value: str, negated: bool, field_capabili
             return f"NOT ({field} {op} {rhs})"
         return f"{field} {op} {rhs}"
     op = "!=" if negated else "=="
-    # Equality on a numeric-looking value whose target field type is UNKNOWN is
-    # ambiguous: log facets such as http.status_code are frequently mapped as
-    # keyword in the target, and ES|QL rejects `<keyword> == <integer>`. When we
-    # have no field caps to disambiguate, compare as string via TO_STRING(...)
-    # so the predicate is valid against both keyword and numeric mappings.
-    # With caps present, honor them exactly (numeric stays numeric).
-    if field_capability is None and _NUMERIC_RE.fullmatch(value):
-        return f'TO_STRING({field}) {op} "{_esql_escape(value)}"'
-    return f"{field} {op} {_render_attr_literal(value, field_capability)}"
+    # The type decision is shared with the tag path: numeric caps + numeric
+    # value compares as numbers; a numeric field against a non-numeric value,
+    # or an unknown field against a numeric-looking value, compares through
+    # TO_STRING so the predicate is valid against either mapping. Emitting the
+    # bare word instead makes ES|QL read it as a column ("Unknown column").
+    resolved = mode or comparison_mode([value], field_capability)
+    lhs, rhs = comparison_operands(field, value, resolved)
+    return f"{lhs} {op} {rhs}"
 
 
 def _template_value_to_like_pattern(value: str) -> str:
