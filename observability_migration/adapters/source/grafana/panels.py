@@ -2275,7 +2275,19 @@ def _native_promql_source_metrics(expr):
     # The lightweight scanner does not understand vector-matching lists, so
     # exclude every structurally identified label from its fallback result.
     labels = _promql_label_names(expr)
-    return sorted(metric for metric in _metrics_in_expr(str(expr or "")) if metric not in labels)
+    text = str(expr or "")
+    candidates = {metric for metric in _metrics_in_expr(text) if metric not in labels}
+    # ``_metrics_in_expr`` returns an unordered set, so order by first appearance
+    # in the source text. Callers treat element 0 as the *primary* metric scope
+    # for label resolution; sorting alphabetically would silently resolve a
+    # multi-metric expression's labels against whichever operand sorts first
+    # rather than the leading one.
+    ordered = [
+        name
+        for name in re.findall(r"[A-Za-z_:][A-Za-z0-9_:]*", text)
+        if name in candidates
+    ]
+    return list(dict.fromkeys(ordered))
 
 
 def _native_promql_metric_fields(expr, resolver):
@@ -2313,12 +2325,65 @@ def _native_promql_label_resolutions(label, resolver, metric_fields):
     return resolved_fields
 
 
-def _conflicting_native_promql_labels(expr, resolver):
-    """Return labels whose metric-scoped target fields disagree."""
-    if not resolver or not expr:
-        return []
+_DEFAULT_NAMED_PROMETHEUS_PLANS = frozenset(
+    {"prometheus_remote_write", "prometheus_metrics", "prometheus_native"}
+)
+
+
+def _native_promql_effective_profile(resolver):
+    """Return the resolver's effective emit profile, tolerating stub resolvers."""
+    effective_fn = getattr(resolver, "_effective_schema_profile", None)
+    if callable(effective_fn):
+        try:
+            return effective_fn()
+        except Exception:
+            return None
+    return getattr(resolver, "_field_profile", None)
+
+
+def _native_promql_label_rewrite_applies(resolver):
+    """True when native PROMQL label names must be rewritten to target fields (#448).
+
+    Both conditions are required:
+
+    1. Live field-caps (``discovery_status()["status"] == "ok"``). Offline or
+       inconclusive discovery keeps today's bare emission, so behavior is
+       unchanged without ``--es-url``.
+    2. The effective profile is *not* a Prometheus-namespaced plan
+       (``prometheus_native``, ``prometheus_remote_write``,
+       ``prometheus_metrics``). On those, ``resolve_label`` returns the
+       namespaced storage field (``labels.instance``), but the Elasticsearch
+       PROMQL command already resolves bare matcher/grouping keys against those
+       namespaced label fields on its own. Rewriting the key there would emit a
+       spelling the command does not expect — and, because
+       ``_prefix_native_metric_fields`` only applies the ``metrics.`` prefix,
+       would mix a bare metric name with a namespaced label key.
+
+    Every #448 gate shares this predicate so the rewrite, the conflict degrade
+    and the absent-field safety net can never disagree about whether the
+    rewrite is live for a given target.
+    """
+    if resolver is None:
+        return False
     discovery_status = getattr(resolver, "discovery_status", lambda: {})()
     if discovery_status.get("status") != "ok":
+        return False
+    named_prometheus_plans = getattr(
+        resolver, "_NAMED_PROMETHEUS_PLANS", _DEFAULT_NAMED_PROMETHEUS_PLANS
+    )
+    return _native_promql_effective_profile(resolver) not in named_prometheus_plans
+
+
+def _conflicting_native_promql_labels(expr, resolver):
+    """Return labels whose metric-scoped target fields disagree.
+
+    Shares :func:`_native_promql_label_rewrite_applies` with the rewrite itself:
+    a target that never rewrites label names has no single-name conflict to
+    degrade for, so it must not lose the native path.
+    """
+    if not resolver or not expr:
+        return []
+    if not _native_promql_label_rewrite_applies(resolver):
         return []
     metric_fields = _native_promql_metric_fields(expr, resolver)
     conflicts = []
@@ -2351,20 +2416,26 @@ def _resolve_native_promql_label_fields(expr, resolver, metric_field=None):
     Labels that resolve to themselves (e.g. ``device`` on an OTel target where
     bare ``device`` exists in field-caps) are left unchanged.
 
-    **Gate:** only fires when ``resolver.discovery_status()["status"] == "ok"``
-    (live field-caps available). Offline / inconclusive discovery keeps today's
-    bare emission so behavior is unchanged when ``--es-url`` is absent.
+    **Gate:** :func:`_native_promql_label_rewrite_applies` — live field-caps and
+    a non-Prometheus-namespaced profile. Offline / inconclusive discovery and
+    Prometheus-namespaced plans keep today's bare emission, so behavior is
+    unchanged when ``--es-url`` is absent or the PROMQL command resolves bare
+    keys itself.
 
     Returns ``(rewritten_expr, rename_map)`` where ``rename_map`` maps
-    ``resolved_field -> prom_label`` for rewritten *grouping* labels only.
-    Those become column names in the PROMQL result, so
-    ``build_native_promql_query`` appends ``| RENAME <resolved> AS <prom>``
-    for each entry to restore the Prometheus name downstream.
+    ``resolved_field -> prom_label`` for rewritten ``by (…)`` labels only.
+    Those are the only grouping labels that become columns in the PROMQL
+    result, so ``build_native_promql_query`` appends
+    ``| RENAME <resolved> AS <prom>`` for each entry to restore the Prometheus
+    name downstream. Matching modifiers (``on``/``ignoring``/``group_left``/
+    ``group_right``) and ``without`` are still rewritten in the query text —
+    the engine needs real field names there — but are deliberately excluded
+    from *rename_map*: their labels are not result columns, so renaming them
+    would reference a column the result never carries.
     """
     if not resolver or not expr:
         return str(expr or ""), {}
-    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
-    if discovery_status.get("status") != "ok":
+    if not _native_promql_label_rewrite_applies(resolver):
         return str(expr), {}
     resolve_fn = getattr(resolver, "resolve_label", None)
     if not callable(resolve_fn):
@@ -2413,7 +2484,15 @@ def _resolve_native_promql_label_fields(expr, resolver, metric_field=None):
         labels = [lbl.strip() for lbl in content.split(",") if lbl.strip()]
         if not labels:
             return match.group(0)
-        rewritten = [_resolve_name(lbl, in_grouping=True) for lbl in labels]
+        # Only ``by (…)`` labels survive as result columns. ``without (…)``
+        # *removes* its labels from the output, and the vector-matching
+        # modifiers (``on``/``ignoring``/``group_left``/``group_right``) only
+        # constrain how operands pair up. Recording those in *rename_map* would
+        # emit ``| RENAME`` for a column the result never has.
+        is_result_grouping = keyword_paren.strip().rstrip("(").strip().lower() == "by"
+        rewritten = [
+            _resolve_name(lbl, in_grouping=is_result_grouping) for lbl in labels
+        ]
         if rewritten == labels:
             return match.group(0)
         return keyword_paren + ", ".join(rewritten) + close_paren
@@ -2441,11 +2520,19 @@ def _timeseries_json_path(label, resolver, metric_field=None):
       ``resource.attributes.<leaf>`` in the blob.
 
     Only reports a nested path when live field-caps confirm the nested field
-    exists (``field_exists`` returns ``True``).  When discovery is offline or
-    the field is not provably present, returns ``None`` so the flat pattern
-    is used.
+    exists: the same gate as the rest of #448
+    (:func:`_native_promql_label_rewrite_applies`) *plus* ``field_exists``
+    returning ``True``.  The gate matters because ``field_exists`` answers
+    ``True`` for anything seeded into a ``partial`` (``--control-schema``)
+    cache, which is not an authoritative field inventory — without it a seeded
+    hint could flip the GROK anchor to the nested form while every other part
+    of the feature stayed disabled.  When discovery is offline/partial, the
+    profile resolves labels itself, or the field is not provably present,
+    returns ``None`` so the flat pattern is used.
     """
     if resolver is None:
+        return None
+    if not _native_promql_label_rewrite_applies(resolver):
         return None
     field_exists_fn = getattr(resolver, "field_exists", None)
     if not callable(field_exists_fn):
@@ -2543,37 +2630,21 @@ def _unresolvable_native_promql_labels(expr, resolver):
     Used as a safety net (#448): if ``resolve_label`` returns a new name (e.g.
     ``instance`` → ``service.instance.id``) but field-caps prove that resolved
     name is also absent from the target, the matcher would still return zero rows.
-    Only fires when ``discovery_status["status"] == "ok"``.
 
-    **Not applied on Prometheus-namespaced profiles** (``prometheus_native``,
+    Gated by :func:`_native_promql_label_rewrite_applies`, so it is **not applied
+    on Prometheus-namespaced profiles** (``prometheus_native``,
     ``prometheus_remote_write``, ``prometheus_metrics``): the Elasticsearch PROMQL
     command automatically resolves bare label matcher keys against the profile's
     namespaced label fields (``labels.*``, ``prometheus.labels.*``) without
     explicit key rewriting, so the resolved field is effectively always "present"
-    from the PROMQL engine's perspective.
+    from the PROMQL engine's perspective — and the rewrite itself is off there.
 
     Returns a list of ``(prom_label, resolved_field)`` tuples for each absent
     case, or ``[]`` when it is safe to emit native PROMQL.
     """
     if not resolver or not expr:
         return []
-    discovery_status = getattr(resolver, "discovery_status", lambda: {})()
-    if discovery_status.get("status") != "ok":
-        return []
-    # Prometheus-namespaced profiles: PROMQL engine resolves labels.* automatically.
-    _named_prometheus_plans = getattr(
-        resolver, "_NAMED_PROMETHEUS_PLANS",
-        frozenset({"prometheus_remote_write", "prometheus_metrics", "prometheus_native"}),
-    )
-    _effective_profile_fn = getattr(resolver, "_effective_schema_profile", None)
-    if callable(_effective_profile_fn):
-        try:
-            _effective_profile = _effective_profile_fn()
-        except Exception:
-            _effective_profile = None
-    else:
-        _effective_profile = getattr(resolver, "_field_profile", None)
-    if _effective_profile in _named_prometheus_plans:
+    if not _native_promql_label_rewrite_applies(resolver):
         return []
     resolve_fn = getattr(resolver, "resolve_label", None)
     field_exists_fn = getattr(resolver, "field_exists", None)
@@ -2656,6 +2727,30 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
     )
     cleaned = _prefix_native_metric_fields(cleaned, resolver)
 
+    # RENAME pipes restore the Prometheus label names downstream (Lens field
+    # references, alert ``BY`` reductions) when the expression grouped on
+    # resolved field names — ``sum by (`service.instance.id`)`` emits a
+    # ``service.instance.id`` column that must come back as ``instance``.
+    #
+    # Only labels the result actually carries are renamed. ``_rewrite_group``
+    # already excludes the non-column grouping keywords; this is the backstop
+    # for a rewritten ``by (…)`` that still does not reach the output (an inner
+    # clause the outer aggregation collapses). Renaming a column the result
+    # never carries fails the whole query at runtime, and the resulting
+    # verification error is not a parse rejection, so
+    # ``_native_promql_query_survives_validation`` would read it as a data gap
+    # and keep the broken native query.
+    _rename_pipes = ""
+    if _label_rename_map:
+        _, _group_cols = _native_promql_result_shape(promql_expr)
+        if "_timeseries" not in _group_cols:
+            _rename_pipes = "\n".join(
+                f"| RENAME {_esql_identifier(resolved_field)}"
+                f" AS {_esql_identifier(prom_label)}"
+                for resolved_field, prom_label in _label_rename_map.items()
+                if prom_label in _group_cols
+            )
+
     # An instant query evaluates the expression at a single point (the Kibana
     # time-picker end, ``?_tend``) and returns one row per series = the current
     # value, with NO ``step`` time column. A range query walks ``step=`` buckets
@@ -2689,25 +2784,20 @@ def build_native_promql_query(promql_expr, index="metrics-prometheus-*",
 
     header = f"PROMQL index={index}" + (f" {selector}" if selector else "")
 
-    if kibana_type in ("metric", "gauge"):
-        return f'{header} value=({cleaned})'
-
     base = f'{header} value=({cleaned})'
+
+    if kibana_type in ("metric", "gauge"):
+        # Single-value tiles skip the ``_timeseries`` extraction, but they can
+        # still carry a ``by (…)`` grouping whose column the caller reduces over
+        # (the migrated ``topk``/``bottomk`` alert appends
+        # ``| STATS value = LAST(value, step) BY <prom_label>``). Returning
+        # before the RENAME would leave that reference pointing at a column the
+        # query never emits.
+        return base + ("\n" + _rename_pipes if _rename_pipes else "")
 
     _, group_cols = _native_promql_result_shape(promql_expr)
     if "_timeseries" not in group_cols:
-        # Append RENAME pipes so downstream Lens code still sees Prometheus label
-        # names even when the expression used resolved field names (e.g.
-        # ``sum by (`service.instance.id`)`` → column ``service.instance.id``
-        # must be renamed back to ``instance`` for parity with the ES|QL path).
-        if _label_rename_map:
-            rename_pipes = "\n".join(
-                f"| RENAME {_esql_identifier(resolved_field)}"
-                f" AS {_esql_identifier(prom_label)}"
-                for resolved_field, prom_label in _label_rename_map.items()
-            )
-            return base + "\n" + rename_pipes
-        return base
+        return base + ("\n" + _rename_pipes if _rename_pipes else "")
 
     # The ``step`` column only exists on range queries; an instant query must
     # not KEEP it (referencing a column the command never emits is a 400).

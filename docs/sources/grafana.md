@@ -436,8 +436,22 @@ OTel Collector target (`mapping.mode: otel`, index
 Prometheus label `instance`, the emitted matcher becomes
 `` `service.instance.id`=~?Node `` and a `| RENAME `service.instance.id` AS
 instance` pipe restores the original column name for downstream Lens code.
-Without `--es-url`, or when discovery is inconclusive, the native path keeps
-bare Prometheus label names (no change from previous behaviour).
+The `RENAME` covers `by (…)` labels, which are the grouping labels that become
+result columns; `without (…)` and the vector-matching modifiers
+(`on`/`ignoring`/`group_left`/`group_right`) are resolved in the expression but
+produce no column to rename.
+
+Two cases keep bare Prometheus label names, unchanged from previous behaviour:
+
+- **Without `--es-url`**, or when discovery is inconclusive. Offline runs emit
+  exactly what they emitted before.
+- **On the Prometheus-namespaced field profiles** (`--field-profile
+  prometheus_native`, `prometheus_remote_write`, `prometheus_metrics`, or
+  `auto` resolving to one of them). There, labels are stored at `labels.<name>`
+  / `prometheus.labels.<name>` and the Elasticsearch PROMQL command resolves
+  bare matcher and grouping keys against those namespaced fields on its own, so
+  rewriting the key is unnecessary — and would pair a namespaced label key with
+  a bare metric name. The same condition gates both degrades below.
 
 One asymmetry to be aware of: Elasticsearch's PROMQL command automatically
 resolves bare datapoint attributes (labels stored at `attributes.*` in the OTel
@@ -458,6 +472,16 @@ degrade when metric-scoped resolution maps the same Prometheus label to
 different target fields: choosing either field would silently mis-handle the
 other operand. This is **the fourth degrade gate** documented in
 `docs/command-contract.md`.
+
+**Migrated alerting rules take the same two decisions.** A rule whose PromQL
+hits either case is routed through the ES|QL translator instead of native
+PROMQL; when the translator has no form for the expression either, the rule
+carries no source-faithful query and is reported as `manual_required` with
+`payload_status: blocked_no_source_faithful_query`. A rule has no panel notes
+to carry a degrade explanation, so read the rule's payload status rather than
+looking for a `Native PROMQL skipped` note. This matters more for rules than
+for panels: an alert on a label that resolves to an absent field matches zero
+series, and a rule that never fires is a quieter failure than an empty panel.
 
 > **Verify requires live data.** Without `--es-url`, or before telemetry lands,
 > per-field status may be `unknown` — the planned layout still drives emitted

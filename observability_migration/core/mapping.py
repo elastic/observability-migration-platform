@@ -1135,10 +1135,12 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
     # keeps the decision explicit and durable if that ever changes.)
     try:
         from observability_migration.adapters.source.grafana.panels import (
+            _conflicting_native_promql_labels,
             _promql_has_unmatchable_vector_match,
             _promql_label_matcher_has_template_variable,
             _promql_uses_rule_pack_label_overrides,
             _record_passthrough_native_labels,
+            _unresolvable_native_promql_labels,
         )
         primary_expr = str(_primary_source_query(ir).get("expr", "") or "")
         has_control_bound_matcher = _promql_label_matcher_has_template_variable(primary_expr)
@@ -1154,14 +1156,29 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
         # Elasticsearch (issue #376), so route those through the ES|QL
         # translator rather than emitting a rule that never fires.
         requires_esql_for_vector_match = _promql_has_unmatchable_vector_match(primary_expr)
+        # The same two #448 label-resolution gates the dashboard path applies in
+        # ``_translate_panel_native_promql``. A rule has no panel notes to carry
+        # a degrade explanation, so decide here instead of letting
+        # ``build_native_promql_query`` raise (which would abort the whole
+        # alert batch) or emitting a matcher that matches zero series (a rule
+        # that silently never fires — the failure mode #448 is about).
+        requires_esql_for_label_fields = bool(
+            _conflicting_native_promql_labels(primary_expr, resolver)
+            or _unresolvable_native_promql_labels(primary_expr, resolver)
+        )
     except ImportError:
         has_control_bound_matcher = False
         requires_esql_for_label_rules = False
         requires_esql_for_vector_match = False
+        requires_esql_for_label_fields = False
     if has_control_bound_matcher:
         return ""
 
-    if requires_esql_for_label_rules or requires_esql_for_vector_match:
+    if (
+        requires_esql_for_label_rules
+        or requires_esql_for_vector_match
+        or requires_esql_for_label_fields
+    ):
         return _esql_translated_alert_query(ir, primary_expr, data_view, resolver)
 
     exact_rank_spec = _grafana_unified_exact_topk_bottomk_spec(ir)
@@ -1170,12 +1187,19 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
             from observability_migration.adapters.source.grafana.panels import build_native_promql_query
         except ImportError:
             return ""
-        base_query = build_native_promql_query(
-            exact_rank_spec["inner_expr"],
-            index=_default_promql_index(data_view),
-            kibana_type="metric",
-            resolver=resolver,
-        )
+        try:
+            base_query = build_native_promql_query(
+                exact_rank_spec["inner_expr"],
+                index=_default_promql_index(data_view),
+                kibana_type="metric",
+                resolver=resolver,
+            )
+        except ValueError:
+            # The builder declines unsupported expressions and unresolvable
+            # label sets by raising. One rule must not abort the batch, so
+            # degrade this rule to the ES|QL translator (or to no
+            # source-faithful query when that cannot express it either).
+            return _esql_translated_alert_query(ir, primary_expr, data_view, resolver)
         query = "\n".join(
             [
                 base_query,
@@ -1216,14 +1240,19 @@ def _generate_esql_for_alert(ir: AlertingIR, data_view: str, resolver: Any = Non
     # the exported interval metadata and only fall back to the default when none
     # is present (issue #209). Instant alerts never emit ``step=`` (issue #200).
     step_info = None if instant else _grafana_unified_promql_step(ir)
-    query = build_native_promql_query(
-        expr,
-        index=_default_promql_index(data_view),
-        kibana_type="metric",
-        instant=instant,
-        step=step_info[0] if step_info else None,
-        resolver=resolver,
-    )
+    try:
+        query = build_native_promql_query(
+            expr,
+            index=_default_promql_index(data_view),
+            kibana_type="metric",
+            instant=instant,
+            step=step_info[0] if step_info else None,
+            resolver=resolver,
+        )
+    except ValueError:
+        # Same contract as the ``topk``/``bottomk`` branch above: a declined
+        # expression degrades this one rule instead of failing the batch.
+        return _esql_translated_alert_query(ir, expr, data_view, resolver)
     if step_info:
         _record_promql_step_provenance(ir, step_info[0], step_info[1])
 

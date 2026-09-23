@@ -952,13 +952,21 @@ Four further gates still push panels to ES|QL even when the target supports
    native matchers/groupings would not preserve the source series, so the panel
    migrates via ES|QL`.
    Without `--es-url`, no degrade occurs (offline runs keep bare labels as
-   before). A multi-metric expression also degrades when metric-scoped
+   before), and neither does it on the Prometheus-namespaced field profiles
+   (`prometheus_native`, `prometheus_remote_write`, `prometheus_metrics`),
+   where the PROMQL command resolves bare label keys itself. A multi-metric
+   expression also degrades when metric-scoped
    resolution maps the same Prometheus label to different target fields; native
    PROMQL cannot represent both mappings with one grouping/vector-matching name.
    Note that labels stored at `attributes.*` (the OTel datapoint-level
    scope) are already resolved by the ES PROMQL engine without this gate; only
    `resource.attributes.*` labels require explicit resolution. See
    [Grafana source behavior](sources/grafana.md) for the full OTel asymmetry.
+   Migrated **alerting rules** apply the same two decisions: the rule is routed
+   to the ES|QL translator, and when that cannot express the expression either
+   the rule is reported `manual_required` with `payload_status:
+   blocked_no_source_faithful_query` rather than carrying a native matcher that
+   would never fire.
 
 Construct-level unsupported cases can still degrade or require manual review.
 Datadog accepts `--translation-mode` for CLI parity, but it is a no-op because
