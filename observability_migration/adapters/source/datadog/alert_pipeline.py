@@ -30,7 +30,11 @@ from .extract import (
     extract_monitors_from_files,
     selection_metadata_from_datadog_monitor,
 )
-from .report import build_monitor_comparison_results, build_monitor_migration_results
+from .report import (
+    build_monitor_comparison_results,
+    build_monitor_migration_results,
+    print_manual_monitor_reasons,
+)
 from .verification import build_monitor_verification_lookup, validate_monitor_queries
 
 
@@ -117,6 +121,7 @@ def run_alert_pipeline(
     print(f"    Total: {len(monitor_irs)}")
     print(f"    By tier: {by_tier}")
     print(f"    By kind: {by_kind}")
+    print_manual_monitor_reasons(monitor_irs)
     summary: dict[str, Any] = {
         "total": len(raw_monitors),
         "artifacts_dir": str(output_dir),

@@ -35,6 +35,63 @@ def _append_unique(items: list[str], value: str) -> None:
         items.append(value)
 
 
+#: Why a monitor of a given kind cannot be translated, when nothing more
+#: specific was recorded. Keyed on ``AlertIR.kind``.
+_MANUAL_REASON_BY_KIND = {
+    "datadog_anomaly_alert": (
+        "Datadog anomaly detection has no Kibana/ES|QL equivalent; rebuild as a "
+        "threshold rule or an ML job"
+    ),
+}
+_GENERIC_MANUAL_REASON = (
+    "no ES|QL translation was produced for this monitor query; rebuild the rule "
+    "in Kibana"
+)
+
+
+def derive_manual_reason(ir: Any) -> str | None:
+    """Why this monitor needs hand-rebuilding, or ``None`` if it translated.
+
+    A monitor with no translated query is reported as ``manual_required`` with
+    a tier count and nothing else -- and most of them record no ``warnings``
+    either, only generic threshold-semantics ``losses`` that translated
+    monitors carry too. Prefer whatever the translator actually said; fall back
+    to naming the construct so the operator is not left guessing.
+    """
+    if str(getattr(ir, "translated_query", "") or "").strip():
+        return None
+    for warning in getattr(ir, "warnings", None) or []:
+        text = str(warning).strip()
+        if text:
+            return text
+    return _MANUAL_REASON_BY_KIND.get(
+        str(getattr(ir, "kind", "") or ""), _GENERIC_MANUAL_REASON
+    )
+
+
+def summarize_manual_reasons(monitor_irs: list[Any]) -> dict[str, int]:
+    """Group :func:`derive_manual_reason` across monitors, most common first."""
+    counts: dict[str, int] = {}
+    for ir in monitor_irs or []:
+        reason = derive_manual_reason(ir)
+        if reason:
+            counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def print_manual_monitor_reasons(monitor_irs: list[Any]) -> None:
+    """Print why monitors need manual work, mirroring the dashboard reporter."""
+    grouped = summarize_manual_reasons(monitor_irs)
+    if not grouped:
+        return
+    total = sum(grouped.values())
+    print(f"\n    MONITORS NEEDING MANUAL WORK ({total}):")
+    for reason, count in list(grouped.items())[:10]:
+        print(f"      {count:3}  {reason}")
+    if len(grouped) > 10:
+        print(f"      ... and {len(grouped) - 10} more reason(s)")
+
+
 def build_monitor_migration_results(monitor_irs: list[Any]) -> dict[str, Any]:
     """Build the raw monitor migration results artifact."""
     by_tier: dict[str, int] = {}
