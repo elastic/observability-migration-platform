@@ -104,8 +104,19 @@ _SPAN_UNIT_SECONDS = {
     "h": 3600,
     "d": 86400,
     "w": 604800,
+    # Datadog's live-span vocabulary also runs to months and years
+    # (``1mo``/``3mo``/``6mo``/``1y``). Calendar length varies, so they are
+    # taken as 30 and 365 days -- the same approximation Datadog's own
+    # relative ranges make, and the only one a fixed-length ES|QL duration can
+    # express.
+    "mo": 2592000,
+    "y": 31536000,
 }
-_DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>[smhdw])$", re.IGNORECASE)
+# ``mo`` first: ``m`` is *minutes* in this vocabulary, so a greedy single-letter
+# match would read ``1mo`` as one minute plus a stray ``o``. ``fullmatch``
+# rejects that, which is how the month spans silently became the one-hour
+# default rather than being misread.
+_DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>mo|[smhdwy])$", re.IGNORECASE)
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
