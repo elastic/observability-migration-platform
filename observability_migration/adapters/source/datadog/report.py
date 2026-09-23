@@ -36,11 +36,65 @@ def _append_unique(items: list[str], value: str) -> None:
 
 
 #: Why a monitor of a given kind cannot be translated, when nothing more
-#: specific was recorded. Keyed on ``AlertIR.kind``.
+#: specific was recorded. Keyed on ``AlertIR.kind``; every entry of
+#: ``core.mapping.MANUAL_ONLY_KINDS`` needs one, because each has a different
+#: cause and a different thing to build instead. Guarded by
+#: ``tests/test_datadog_monitor_manual_reasons.py``.
+_ALGORITHMIC = (
+    "Datadog {what} is an algorithmic detection with no ES|QL equivalent; "
+    "rebuild as a threshold rule or an ML job"
+)
+_OTHER_DOMAIN = (
+    "Datadog {what} monitors query {data}, not metrics or logs the translator "
+    "can express as ES|QL; rebuild against the equivalent Elastic data"
+)
 _MANUAL_REASON_BY_KIND = {
-    "datadog_anomaly_alert": (
-        "Datadog anomaly detection has no Kibana/ES|QL equivalent; rebuild as a "
-        "threshold rule or an ML job"
+    "datadog_anomaly_alert": _ALGORITHMIC.format(what="anomaly detection"),
+    "datadog_forecast": _ALGORITHMIC.format(what="forecast()"),
+    "datadog_outlier": _ALGORITHMIC.format(what="outliers()"),
+    "datadog_watchdog": _ALGORITHMIC.format(what="Watchdog"),
+    "datadog_watchdog_alert": _ALGORITHMIC.format(what="Watchdog"),
+    "datadog_composite": (
+        "a composite monitor combines other monitors by id; migrate the "
+        "referenced monitors first, then recombine them in Kibana"
+    ),
+    "datadog_service_check": (
+        "service check monitors alert on check status (OK/WARN/CRITICAL) "
+        "rather than a metric query; there is no ES|QL equivalent"
+    ),
+    "datadog_slo": (
+        "SLO monitors alert on an SLO error budget; rebuild with an Elastic "
+        "SLO and its burn-rate rule"
+    ),
+    "datadog_slo_alert": (
+        "SLO monitors alert on an SLO error budget; rebuild with an Elastic "
+        "SLO and its burn-rate rule"
+    ),
+    "datadog_synthetics": (
+        "synthetic monitors are driven by Datadog Synthetic tests; rebuild "
+        "with Elastic Synthetics rather than an alerting rule"
+    ),
+    "datadog_synthetics_alert": (
+        "synthetic monitors are driven by Datadog Synthetic tests; rebuild "
+        "with Elastic Synthetics rather than an alerting rule"
+    ),
+    "datadog_event": _OTHER_DOMAIN.format(what="event", data="the Datadog event stream"),
+    "datadog_event_alert": _OTHER_DOMAIN.format(what="event", data="the Datadog event stream"),
+    "datadog_rum": _OTHER_DOMAIN.format(what="RUM", data="Datadog RUM data"),
+    "datadog_rum_alert": _OTHER_DOMAIN.format(what="RUM", data="Datadog RUM data"),
+    "datadog_apm": _OTHER_DOMAIN.format(what="APM", data="Datadog APM traces"),
+    "datadog_apm_alert": _OTHER_DOMAIN.format(what="APM", data="Datadog APM traces"),
+    "datadog_ci": _OTHER_DOMAIN.format(what="CI", data="Datadog CI Visibility data"),
+    "datadog_ci_alert": _OTHER_DOMAIN.format(what="CI", data="Datadog CI Visibility data"),
+    "datadog_audit": _OTHER_DOMAIN.format(what="audit", data="the Datadog audit trail"),
+    "datadog_audit_alert": _OTHER_DOMAIN.format(what="audit", data="the Datadog audit trail"),
+    "datadog_cost": _OTHER_DOMAIN.format(what="cost", data="Datadog cloud cost data"),
+    "datadog_cost_alert": _OTHER_DOMAIN.format(what="cost", data="Datadog cloud cost data"),
+    "datadog_network": _OTHER_DOMAIN.format(
+        what="network performance", data="Datadog NPM data"
+    ),
+    "datadog_network_alert": _OTHER_DOMAIN.format(
+        what="network performance", data="Datadog NPM data"
     ),
 }
 _GENERIC_MANUAL_REASON = (

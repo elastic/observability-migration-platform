@@ -106,3 +106,55 @@ def test_printing_is_silent_when_there_is_nothing_to_say(capsys):
 
     print_manual_monitor_reasons([_ir(translated="FROM metrics-*")])
     assert capsys.readouterr().out == ""
+
+
+# --- every manual-only kind must name its own reason ---------------------
+
+
+def test_every_manual_only_kind_has_a_specific_reason():
+    """Guard against drift between the kind set and the reasons.
+
+    ``core.mapping.MANUAL_ONLY_KINDS`` is the single source of truth for
+    monitor kinds that can only ever be manual. Each one has a different
+    cause -- a composite monitor references other monitors, a service check
+    watches check status, an SLO alert wants an Elastic SLO -- so falling back
+    to "no ES|QL translation was produced" for any of them wastes the one
+    chance the run has to tell the operator what to build instead.
+    """
+    from observability_migration.core.mapping import MANUAL_ONLY_KINDS
+    from observability_migration.adapters.source.datadog.report import (
+        _GENERIC_MANUAL_REASON,
+    )
+
+    missing = []
+    for kind in sorted(MANUAL_ONLY_KINDS):
+        if not kind.startswith("datadog_"):
+            continue
+        reason = derive_manual_reason(_ir(kind=kind))
+        if not reason or reason == _GENERIC_MANUAL_REASON:
+            missing.append(kind)
+    assert not missing, f"no specific reason for: {missing}"
+
+
+@pytest.mark.parametrize(
+    "kind,expect",
+    [
+        ("datadog_composite", "composite"),
+        ("datadog_service_check", "check"),
+        ("datadog_slo_alert", "slo"),
+        ("datadog_synthetics_alert", "synthetic"),
+        ("datadog_forecast", "forecast"),
+        ("datadog_outlier", "outlier"),
+        ("datadog_watchdog_alert", "watchdog"),
+    ],
+)
+def test_the_reason_names_the_construct(kind, expect):
+    assert expect in derive_manual_reason(_ir(kind=kind)).lower()
+
+
+def test_an_unknown_kind_still_falls_back_rather_than_crashing():
+    from observability_migration.adapters.source.datadog.report import (
+        _GENERIC_MANUAL_REASON,
+    )
+
+    assert derive_manual_reason(_ir(kind="datadog_something_new")) == _GENERIC_MANUAL_REASON
