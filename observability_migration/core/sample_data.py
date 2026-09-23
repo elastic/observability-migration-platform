@@ -245,7 +245,7 @@ def seed_sample_data(
         batch_docs=batch_docs,
         on_progress=on_progress,
     )
-    truncation = lookback_truncation_warning(contract)
+    truncation = lookback_truncation_warning(contract, data_hours=data_hours)
     if truncation:
         summary.warnings.append(truncation)
     summary.warnings.extend(unmappable_field_report(contract))

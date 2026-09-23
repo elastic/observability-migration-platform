@@ -103,3 +103,52 @@ def test_generated_timestamps_stay_inside_the_writable_window():
         assert stamp >= oldest_allowed, f"{stamp} predates the writable window"
         seen += 1
     assert seen, "expected at least one document"
+
+
+# ---------------------------------------------------------------------------
+# An explicit --data-hours is bounded by the same ceiling as the contract
+# ---------------------------------------------------------------------------
+
+def test_an_explicit_data_hours_cannot_exceed_the_tsds_ceiling():
+    """`--data-hours 240` generated documents 10 days old against a template
+    that accepts 7, so Elasticsearch rejected them outright -- the same failure
+    the contract clamp fixed, reached through the flag instead."""
+    import datetime
+
+    from observability_migration.core.telemetry_data import (
+        MAX_TSDS_LOOKBACK_SECONDS,
+        _document_timestamps,
+    )
+
+    now = datetime.datetime.now(datetime.UTC)
+    stamps = _document_timestamps(now, data_hours=240, interval_sec=3600)
+    outside = [t for t in stamps if (now - t).total_seconds() > MAX_TSDS_LOOKBACK_SECONDS]
+    assert not outside, f"{len(outside)} documents fall outside the writable window"
+
+
+def test_a_data_hours_within_the_ceiling_is_untouched():
+    import datetime
+
+    from observability_migration.core.telemetry_data import _document_timestamps
+
+    now = datetime.datetime.now(datetime.UTC)
+    stamps = _document_timestamps(now, data_hours=2, interval_sec=60)
+    span_hours = (now - min(stamps)).total_seconds() / 3600
+    assert 1.9 <= span_hours <= 2.1, span_hours
+
+
+def test_the_truncation_warning_reports_an_over_ceiling_data_hours():
+    """Silently halving what the operator asked for reads as missing data."""
+    warning = lookback_truncation_warning({}, data_hours=240)
+    assert warning
+    assert "10" in warning or "240" in warning
+
+
+def test_the_truncation_warning_stays_quiet_for_a_normal_data_hours():
+    assert lookback_truncation_warning({}, data_hours=2) is None
+
+
+def test_the_widest_of_contract_and_data_hours_is_reported():
+    warning = lookback_truncation_warning(_contract("14 days"), data_hours=480)
+    assert warning
+    assert "20" in warning or "480" in warning, warning

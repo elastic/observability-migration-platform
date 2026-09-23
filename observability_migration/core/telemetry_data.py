@@ -44,10 +44,20 @@ def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = Non
     # index is ``metrics-*.prometheus-*``, which used to resolve to
     # ``metrics-*.prometheus-default`` -- a name Elasticsearch refuses to
     # create, so that profile could not be seeded at all.
-    return _WILDCARD_RUN_RE.sub("generic", candidate)
+    #
+    # Each wildcard is replaced by something it actually matches, because the
+    # generated stream has to be found by the pattern it came from. A single
+    # substitution for both wildcards broke that for ``?``: ``metrics-?-*``
+    # became ``metrics-generic-default``, and since ``?`` matches exactly one
+    # character the dashboard's own index pattern no longer matched the data
+    # seeded for it.
+    candidate = _STAR_RUN_RE.sub("generic", candidate)
+    return candidate.replace("?", "x")
 
 
-_WILDCARD_RUN_RE = re.compile(r"[*?]+")
+#: A run of ``*`` collapses to one safe multi-character token; ``?`` is handled
+#: separately because it matches exactly one character.
+_STAR_RUN_RE = re.compile(r"\*+")
 
 
 # Elasticsearch caps index.look_back_time at 7d for a time-series index
@@ -870,8 +880,15 @@ def _document_timestamps(
     points so those historical windows are non-empty without exploding the
     document count at the dense ``interval_sec``.
     """
-    data_hours = max(0.0, float(data_hours or 0.0))
-    lookback_hours = max(data_hours, float(lookback_hours or 0.0))
+    # The same ceiling ``_contract_lookback_hours`` applies, applied to the
+    # explicit request too. ``--data-hours 240`` used to generate timestamps 10
+    # days old against a template that accepts 7, and Elasticsearch rejected
+    # every one of them ("the document timestamp [...] is outside of ranges of
+    # currently writable indices") -- the contract path's bug, reached through
+    # the flag.
+    max_hours = MAX_TSDS_LOOKBACK_SECONDS / 3600.0
+    data_hours = min(max(0.0, float(data_hours or 0.0)), max_hours)
+    lookback_hours = min(max(data_hours, float(lookback_hours or 0.0)), max_hours)
     total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
     timestamps = {
         now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
@@ -923,19 +940,28 @@ def _contract_lookback_hours(contract: dict[str, Any]) -> float:
     return max_seconds / 3600.0 if max_seconds else 0.0
 
 
-def lookback_truncation_warning(contract: dict[str, Any]) -> str | None:
-    """Tell the operator when the contract wants more history than a TSDS holds.
+def lookback_truncation_warning(
+    contract: dict[str, Any], data_hours: float = 0.0
+) -> str | None:
+    """Tell the operator when more history was asked for than a TSDS holds.
 
     Panels whose time range exceeds the window will show a shorter series than
     the source dashboard. That is an Elasticsearch limit, not a translation
     gap, but staying silent about it looks like missing data.
+
+    Covers both routes to an over-long window: a contract ``minimum_lookback``
+    and an explicit ``--data-hours``. Reporting only the first left an operator
+    who passed ``--data-hours 240`` with silently truncated data and no notice.
     """
-    requested = _requested_lookback_seconds(contract)
+    requested = max(
+        _requested_lookback_seconds(contract),
+        int(max(0.0, float(data_hours or 0.0)) * 3600),
+    )
     if requested <= MAX_TSDS_LOOKBACK_SECONDS:
         return None
     requested_days = requested / (24 * 60 * 60)
     return (
-        f"dashboards request {requested_days:.0f} days of history but a "
+        f"seeding was asked for {requested_days:.0f} days of history but a "
         f"time-series index accepts at most {MAX_TSDS_LOOKBACK_SECONDS // (24 * 60 * 60)}d "
         "of backfill; seeding the most recent 7d. Panels with longer time "
         "ranges will show a shorter series than the source."
