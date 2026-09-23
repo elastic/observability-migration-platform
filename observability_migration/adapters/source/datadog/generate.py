@@ -24,7 +24,10 @@ from observability_migration.core.assets.native_dashboard import NativeDashboard
 from observability_migration.core.assets.visual import VisualIR
 from observability_migration.core.reporting.report import _panel_query_index
 from observability_migration.targets.kibana.dashboards_api import native_dashboard_from_ir
-from observability_migration.targets.kibana.emit.esql_utils import extract_esql_shape
+from observability_migration.targets.kibana.emit.esql_utils import (
+    esql_identifier,
+    extract_esql_shape,
+)
 from observability_migration.targets.kibana.emit.layout import (
     PANEL_SIZE_CONSTRAINTS,
     apply_style_guide_layout,
@@ -95,14 +98,16 @@ PANEL_PRESENTATION_KINDS = ("markdown", "esql", "lens", "links", "image")
 
 
 def _quote_esql_identifier(name: str) -> str:
-    value = str(name or "").strip()
-    if not value:
-        return value
-    if value.startswith("`") and value.endswith("`"):
-        return value
-    if re.fullmatch(r"[A-Za-z_][\w.]*", value):
-        return value
-    return f"`{value}`"
+    """Quote a dotted field path for ES|QL, per segment and idempotently.
+
+    This used to treat its argument as a single token: the "already quoted"
+    guard matched only a *fully* backticked string, so a per-segment-quoted
+    name arriving from the translator (``prometheus.labels.`client-id```) was
+    wrapped a second time into ``` `prometheus.labels.`client-id`` ```, which
+    Elasticsearch rejects with "token recognition error at: '-'". Every
+    ``prometheus*`` profile emitted that for any tag needing quotes.
+    """
+    return esql_identifier(str(name or "").strip())
 
 
 def _panel_presentation_kind(panel: dict[str, Any]) -> str:
@@ -1868,6 +1873,11 @@ def _infer_keep_fields(query: str) -> list[str]:
     ]
 
 
+def _esql_eval_alias_re(name: str) -> re.Pattern[str]:
+    """Match ``| EVAL <name> =`` for an already-spliced synthetic column."""
+    return re.compile(rf"\bEVAL\s+{re.escape(name)}\s*=", re.IGNORECASE)
+
+
 def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> tuple[str, str]:
     """Splice a composite Y column into a heatmap query.
 
@@ -1876,7 +1886,20 @@ def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> t
     the composite is a real output column), adding ``<name>`` to that ``KEEP``.
     When the query has no ``KEEP`` stage the ``EVAL`` is appended after the last
     ``STATS`` stage. Returns ``(new_query, column_name)``.
+
+    Idempotent, because the splice mutates ``TranslationResult.esql_query`` in
+    place: a second pass over the same result sees the synthetic column among
+    the query's own grouping dimensions and would concatenate it into its own
+    definition. ES|QL rejects that outright -- an ``EVAL`` cannot read the
+    column it is defining -- so the panel fails to render with
+    ``Unknown column [<name>]`` rather than merely carrying a redundant stage.
     """
+    if _esql_eval_alias_re(name).search(query):
+        return query, name
+    # A caller that infers dimensions from an already-composited query hands
+    # the synthetic column back in; it is an output of this stage, never an
+    # input to it.
+    dims = [dim for dim in dims if dim != name]
     concat_args: list[str] = []
     for index, dim in enumerate(dims):
         if index:

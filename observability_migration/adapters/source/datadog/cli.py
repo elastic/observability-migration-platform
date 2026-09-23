@@ -82,6 +82,7 @@ from .planner import plan_widget
 from .preflight import (
     PreflightResult,
     build_target_readiness_contract,
+    preflight_status_label,
     run_preflight,
     save_target_readiness_contract,
 )
@@ -270,6 +271,34 @@ def _load_configured_field_map(args: argparse.Namespace) -> FieldMapProfile:
     return field_map
 
 
+def empty_extraction_message(args: Any) -> str:
+    """Explain an empty dashboard extraction in terms of the mode in use.
+
+    Both callers used to print the files-mode sentence unconditionally, so an
+    API run with a mistyped ``--dashboard-ids`` interpolated an unset
+    ``--input-dir`` as ``..`` and told the operator to fix a flag they never
+    passed.
+    """
+    if str(getattr(args, "input_mode", "") or "") == "api":
+        ids = str(getattr(args, "dashboard_ids", "") or "").strip()
+        if ids:
+            return (
+                f"  ERROR: no Datadog dashboards matched --dashboard-ids {ids}. "
+                "Check the ids against the dashboard list in Datadog "
+                "(the id is the last path segment of the dashboard URL)."
+            )
+        return (
+            "  ERROR: no Datadog dashboards returned by the Datadog API. "
+            "Check DD_API_KEY / DD_APP_KEY / DD_SITE reach the intended org, "
+            "and that any --select-* filters are not excluding everything."
+        )
+    return (
+        f"  ERROR: no Datadog dashboards found under {getattr(args, 'input_dir', None)}. "
+        "Point --input-dir at a directory of Datadog dashboard JSON "
+        "exports (each with a top-level 'widgets' key)."
+    )
+
+
 def _run_dashboard_pipeline(
     *,
     args: argparse.Namespace,
@@ -281,12 +310,7 @@ def _run_dashboard_pipeline(
 ) -> dict[str, Any]:
     raw_dashboards = _extract(args)
     if not raw_dashboards:
-        print(
-            f"  ERROR: no Datadog dashboards found under {args.input_dir}. "
-            "Point --input-dir at a directory of Datadog dashboard JSON "
-            "exports (each with a top-level 'widgets' key).",
-            file=sys.stderr,
-        )
+        print(empty_extraction_message(args), file=sys.stderr)
         sys.exit(1)
 
     criteria = _selection_criteria_or_exit(args)
@@ -781,7 +805,7 @@ def _print_preflight_summary(preflight: PreflightResult) -> None:
     block_count = len(preflight.blocking_issues)
     warn_count = len(preflight.warnings)
     info_count = len([issue for issue in preflight.issues if issue.level == "info"])
-    status = "pass" if preflight.passed and not preflight.issues else "issues" if preflight.issues else "pass"
+    status = preflight_status_label(preflight.passed)
     print(f"    Preflight: {status}  Block: {block_count}  Warn: {warn_count}  Info: {info_count}")
     for issue in preflight.issues[:5]:
         prefix = issue.widget_id + ": " if issue.widget_id else ""
@@ -1275,7 +1299,18 @@ def _upload_all_dashboards(
             seen_dashboard_ids=uploaded_dashboard_ids,
         )
         dr.uploaded = upload_result["success"]
-        dr.upload_error = "" if upload_result["success"] else upload_result["output"][:500]
+        # An empty source dashboard is a no-op, not a failed upload: real
+        # accounts carry scratch dashboards with no widgets, and calling those
+        # errors buries the failures that matter.
+        nothing_to_upload = bool(upload_result.get("nothing_to_upload"))
+        dr.upload_skipped_reason = (
+            f"{stem}: the source dashboard has no panels" if nothing_to_upload else ""
+        )
+        dr.upload_error = (
+            ""
+            if upload_result["success"] or nothing_to_upload
+            else upload_result["output"][:500]
+        )
         dr.upload_warnings = upload_warnings_from_reasons(
             upload_result.get("unmapped_reasons", {})
         )
@@ -1284,6 +1319,8 @@ def _upload_all_dashboards(
         dr.uploaded_kibana_url = upload_result["kibana_url"]
         if upload_result["success"]:
             print(f"    Uploaded: {stem}")
+        elif nothing_to_upload:
+            print(f"    UPLOAD SKIPPED: {stem}: the source dashboard has no panels")
         else:
             print(f"    UPLOAD FAILED: {stem}: {dr.upload_error[:200]}")
         # Named per panel, not just counted: an HTTP 200 upload that dropped

@@ -482,6 +482,10 @@ class DashboardResult:
     upload_attempted: bool = False
     uploaded: bool | None = None
     upload_error: str = ""
+    # Why an attempted upload sent nothing without anything being wrong: a
+    # source dashboard with no panels. Kept apart from ``upload_error`` so the
+    # console and the manifest can skip it rather than report a failure.
+    upload_skipped_reason: str = ""
     upload_warnings: list[str] = field(default_factory=list)
     # Leaf panels Kibana silently dropped while accepting the upload with an
     # HTTP 200 (``{"title", "reason", "section", "grid"}`` each).
@@ -546,8 +550,14 @@ class DashboardResult:
             "status": "not_run", "error": "", "warnings": [], "dropped_panels": [],
         }
         if self.upload_attempted or self.upload_error:
+            if self.uploaded and not self.upload_error:
+                status = "pass"
+            elif self.upload_skipped_reason and not self.upload_error:
+                status = "skipped"
+            else:
+                status = "fail"
             upload_status = {
-                "status": "pass" if self.uploaded and not self.upload_error else "fail",
+                "status": status,
                 "error": self.upload_error or "",
                 "warnings": list(self.upload_warnings or []),
                 # Panels Kibana dropped behind an HTTP 200 upload, so the

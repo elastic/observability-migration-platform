@@ -281,7 +281,7 @@ Datadog.
 | `--logs-index` | Grafana, Datadog | The index / data stream written into translated Loki / LogQL (log) panels | Defaults to the source/profile log index (`logs-*`) when unset, not `--data-view`; the log analog of `--esql-index`. |
 | `--translation-mode {auto,native,esql}` | Grafana (Datadog accepts as no-op) | Override Grafana's native-PROMQL/ES\|QL selection | Defaults to `auto` (probe-driven). `esql` forces the ES\|QL translator for every panel. `native` *requests* native `PROMQL` wherever it is safe — panels whose PromQL matchers bind dashboard variables (e.g. `instance=~"$instance"`) prefer native `PROMQL` by default and when `--kibana-url` reports Kibana 9.5+; only a verified Kibana `< 9.5` forces those panels onto ES\|QL. Datadog: no-op. |
 | `--no-curated-packs` | Grafana | Disable automatic curated-pack merge for known dashboards | By default packs (e.g. Redis 763, Node Exporter 1860) merge under any `--rules-file` when `gnetId` or exact title matches. Use this to exercise the core translator alone. |
-| `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. |
+| `--preflight` | Grafana, Datadog | Probe target field capabilities and write a readiness contract before migration | Grafana writes `required_target_contract.json`; Datadog writes `target_readiness_contract.json`. Requires `--es-url` for live field discovery; offline runs record every field as `unknown`. The printed `Preflight: pass`/`issues` verdict follows the same rule as the manifest's `preflight.passed`: only a **block**-level issue fails a preflight, so a run reporting warnings alone still reads `pass` and the `Warn`/`Info` counts beside the verdict carry the detail. |
 | `--validate` | Grafana, Datadog | Run verification-packet ES\|QL validation against Elasticsearch after translation | Requires `--es-url`. Distinct from the lighter native-`PROMQL` parse check that already runs when `--es-url` is set and PROMQL panels exist. Auto-applies safe query fixes and manualizes broken ones before upload. |
 | `--upload` | Grafana, Datadog dashboards | Upload dashboards during the migration run | Uses the in-memory native Dashboards API payload; still writes `native/*.native.json`, `ir/*.ir.json`, and reports for review/audit. |
 | `--ensure-data-views` | Grafana, Datadog dashboards | Create the Kibana data views referenced by migrated controls before upload | Forwarded to the source adapter. Upload already ensures referenced patterns automatically; use this flag when you want the ensure step without relying only on the upload path. Prefer `obs-migrate cluster ensure-data-views` for an explicit cluster-only ensure. |
@@ -1514,6 +1514,24 @@ contract produced zero control fields. The second case used to seed
 "successfully" while omitting every field the dashboard filters on, so the
 seeded documents matched no control selection and every filtered panel rendered
 empty.
+
+The JSON report carries `ingested`, `errors`, `docs_per_stream`, and — when
+relevant — two diagnostic keys:
+
+- `error_samples`: up to three rejection reasons from Elasticsearch. A bare
+  `"errors": 53256` is undiagnosable; a TSDS dimension collision, a mapping
+  conflict and an out-of-window timestamp all look identical without the
+  reason.
+- `warnings`: seeding decisions that will show up as missing data in Kibana:
+  - **Backfill truncated.** A time-series index accepts at most `7d` of
+    backfill (`index.look_back_time` is capped at `7d` by Elasticsearch), so a
+    dashboard declaring a longer range gets the most recent 7 days and a panel
+    with a longer time range shows a shorter series than the source.
+  - **Field not seeded.** A field that must be an *object* because a deeper
+    field exists (`service` alongside `service.name`) cannot also be a leaf, so
+    it is skipped in both the mapping and the documents. The warning names the
+    deeper field, because the fix is to rename one of the two in the source.
+    Panels grouping on the skipped field show `Unknown column`.
 
 ```bash
 # Seed synthetic data for a single migrated artifact directory.

@@ -327,6 +327,39 @@ for both on Serverless). Full command examples are in
 | Interaction audit | `targets/kibana/interaction_{audit,scenarios,driver,runner}.py` | control selection reaches intended panels with adapter-specific evidence (see below) |
 | Numeric parity | `obs-migrate compare` + `verifier.corpus_gate` | native PROMQL and translated ES\|QL are numerically close |
 | Trend guard | `verifier.benchmark_gate` | success metrics + denominators don't drop vs a compatible baseline |
+| Filter semantics | `verifier.filter_semantics_gate` | an emitted tag-filter `WHERE` clause selects *exactly* the intended rows, per field profile and per target field type (see below) |
+
+### Filter semantics (the right-rows gate)
+
+`live_validate` asks whether Elasticsearch *accepts* a query; this gate asks
+whether the query *selects the right rows*. Nothing else in the pyramid does:
+
+* `live_validate` classifies `LIKE "web-%"` as `ok` — it is well-formed ES|QL.
+* The render audit sees the resulting empty panel as `unexpected_empty` /
+  `data_gap`, a **warn**, indistinguishable from telemetry not being seeded.
+* `obs-migrate compare` only covers panels the native PROMQL oracle applies to,
+  so a Datadog tag filter is outside it.
+
+A filter that quietly selects the wrong rows therefore passed every layer. Two
+real escapes, both fixed:
+
+| Source scope | Was emitted | Real effect |
+|---|---|---|
+| `{host:web-*}` | `host.name LIKE "web-%"` | matched **nothing** — panel rendered empty |
+| `{!host:canary*}` | `host.name NOT LIKE "canary%"` | matched **everything** — the exclusion did nothing |
+
+ES|QL `LIKE` wildcards are `*` and `?`; `%` and `_` are literal characters.
+
+The gate seeds one throwaway index per (field profile, field type), emits every
+tag-filter shape through the real translator, executes it, and asserts the
+returned document count equals the expected selection. It also asserts that the
+numeric and string mappings of the same tag select the *same* rows — the
+property a field profile must preserve. Validity alone is not a pass.
+
+It needs only a cluster, not migration output, so the local no-SSO stack is
+enough. The driver's HTTP layer is injectable and covered offline by
+`tests/test_filter_semantics_gate.py`; the literal-typing matrix it guards is
+covered offline by `tests/test_filter_literal_type_matrix.py`.
 
 ### Render audit (the render-truth gate)
 
@@ -374,7 +407,17 @@ audit below.
   defect is not excused by accompanying gaps), when a problem cannot be read,
   when a named column *does* exist, when a second failure mode is present, or
   when `--es-url` field caps are unavailable so absence cannot be confirmed —
-  `detail` records which of those applied. Construction bugs (`is not yet
+  `detail` records which of those applied.
+- **A column the panel's own query defines is never a `field_gap`.** Absence
+  from the target is the *expected* state for a synthetic `EVAL`/`STATS`/
+  `RENAME` output, so it explains nothing: the error can only be a construction
+  bug. The classifier takes each panel's query-defined columns
+  (`query_defined_columns_by_panel`) and keeps the verdict at `render_error`
+  when the unknown column is one of them. Without this, a Datadog dashboard
+  emitting `EVAL series_group = CONCAT(..., TO_STRING(series_group))` — an EVAL
+  reading the column it defines, which Elasticsearch rejects outright — was
+  filed as a data-readiness warning and the gate passed a panel that could not
+  render. Construction bugs (`is not yet
   implemented`, `Output has changed from`, `Couldn't parse Elasticsearch ES|QL
   query`, `Parameter [?x] value not found`) are never downgraded, no matter what
   else the panel says.

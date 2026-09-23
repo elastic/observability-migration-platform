@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from observability_migration import __version__
+from observability_migration.core.reporting.report import print_data_readiness
 from observability_migration.core.reporting.summary_md import (
     AttentionItem,
     DashboardRow,
@@ -21,6 +22,7 @@ from observability_migration.core.reporting.summary_md import (
 )
 
 from .models import DashboardResult
+from .preflight import preflight_status_label
 
 
 def _maybe_to_dict(value: Any) -> Any:
@@ -32,6 +34,117 @@ def _maybe_to_dict(value: Any) -> Any:
 def _append_unique(items: list[str], value: str) -> None:
     if value and value not in items:
         items.append(value)
+
+
+#: Why a monitor of a given kind cannot be translated, when nothing more
+#: specific was recorded. Keyed on ``AlertIR.kind``; every entry of
+#: ``core.mapping.MANUAL_ONLY_KINDS`` needs one, because each has a different
+#: cause and a different thing to build instead. Guarded by
+#: ``tests/test_datadog_monitor_manual_reasons.py``.
+_ALGORITHMIC = (
+    "Datadog {what} is an algorithmic detection with no ES|QL equivalent; "
+    "rebuild as a threshold rule or an ML job"
+)
+_OTHER_DOMAIN = (
+    "Datadog {what} monitors query {data}, not metrics or logs the translator "
+    "can express as ES|QL; rebuild against the equivalent Elastic data"
+)
+_MANUAL_REASON_BY_KIND = {
+    "datadog_anomaly_alert": _ALGORITHMIC.format(what="anomaly detection"),
+    "datadog_forecast": _ALGORITHMIC.format(what="forecast()"),
+    "datadog_outlier": _ALGORITHMIC.format(what="outliers()"),
+    "datadog_watchdog": _ALGORITHMIC.format(what="Watchdog"),
+    "datadog_watchdog_alert": _ALGORITHMIC.format(what="Watchdog"),
+    "datadog_composite": (
+        "a composite monitor combines other monitors by id; migrate the "
+        "referenced monitors first, then recombine them in Kibana"
+    ),
+    "datadog_service_check": (
+        "service check monitors alert on check status (OK/WARN/CRITICAL) "
+        "rather than a metric query; there is no ES|QL equivalent"
+    ),
+    "datadog_slo": (
+        "SLO monitors alert on an SLO error budget; rebuild with an Elastic "
+        "SLO and its burn-rate rule"
+    ),
+    "datadog_slo_alert": (
+        "SLO monitors alert on an SLO error budget; rebuild with an Elastic "
+        "SLO and its burn-rate rule"
+    ),
+    "datadog_synthetics": (
+        "synthetic monitors are driven by Datadog Synthetic tests; rebuild "
+        "with Elastic Synthetics rather than an alerting rule"
+    ),
+    "datadog_synthetics_alert": (
+        "synthetic monitors are driven by Datadog Synthetic tests; rebuild "
+        "with Elastic Synthetics rather than an alerting rule"
+    ),
+    "datadog_event": _OTHER_DOMAIN.format(what="event", data="the Datadog event stream"),
+    "datadog_event_alert": _OTHER_DOMAIN.format(what="event", data="the Datadog event stream"),
+    "datadog_rum": _OTHER_DOMAIN.format(what="RUM", data="Datadog RUM data"),
+    "datadog_rum_alert": _OTHER_DOMAIN.format(what="RUM", data="Datadog RUM data"),
+    "datadog_apm": _OTHER_DOMAIN.format(what="APM", data="Datadog APM traces"),
+    "datadog_apm_alert": _OTHER_DOMAIN.format(what="APM", data="Datadog APM traces"),
+    "datadog_ci": _OTHER_DOMAIN.format(what="CI", data="Datadog CI Visibility data"),
+    "datadog_ci_alert": _OTHER_DOMAIN.format(what="CI", data="Datadog CI Visibility data"),
+    "datadog_audit": _OTHER_DOMAIN.format(what="audit", data="the Datadog audit trail"),
+    "datadog_audit_alert": _OTHER_DOMAIN.format(what="audit", data="the Datadog audit trail"),
+    "datadog_cost": _OTHER_DOMAIN.format(what="cost", data="Datadog cloud cost data"),
+    "datadog_cost_alert": _OTHER_DOMAIN.format(what="cost", data="Datadog cloud cost data"),
+    "datadog_network": _OTHER_DOMAIN.format(
+        what="network performance", data="Datadog NPM data"
+    ),
+    "datadog_network_alert": _OTHER_DOMAIN.format(
+        what="network performance", data="Datadog NPM data"
+    ),
+}
+_GENERIC_MANUAL_REASON = (
+    "no ES|QL translation was produced for this monitor query; rebuild the rule "
+    "in Kibana"
+)
+
+
+def derive_manual_reason(ir: Any) -> str | None:
+    """Why this monitor needs hand-rebuilding, or ``None`` if it translated.
+
+    A monitor with no translated query is reported as ``manual_required`` with
+    a tier count and nothing else -- and most of them record no ``warnings``
+    either, only generic threshold-semantics ``losses`` that translated
+    monitors carry too. Prefer whatever the translator actually said; fall back
+    to naming the construct so the operator is not left guessing.
+    """
+    if str(getattr(ir, "translated_query", "") or "").strip():
+        return None
+    for warning in getattr(ir, "warnings", None) or []:
+        text = str(warning).strip()
+        if text:
+            return text
+    return _MANUAL_REASON_BY_KIND.get(
+        str(getattr(ir, "kind", "") or ""), _GENERIC_MANUAL_REASON
+    )
+
+
+def summarize_manual_reasons(monitor_irs: list[Any]) -> dict[str, int]:
+    """Group :func:`derive_manual_reason` across monitors, most common first."""
+    counts: dict[str, int] = {}
+    for ir in monitor_irs or []:
+        reason = derive_manual_reason(ir)
+        if reason:
+            counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def print_manual_monitor_reasons(monitor_irs: list[Any]) -> None:
+    """Print why monitors need manual work, mirroring the dashboard reporter."""
+    grouped = summarize_manual_reasons(monitor_irs)
+    if not grouped:
+        return
+    total = sum(grouped.values())
+    print(f"\n    MONITORS NEEDING MANUAL WORK ({total}):")
+    for reason, count in list(grouped.items())[:10]:
+        print(f"      {count:3}  {reason}")
+    if len(grouped) > 10:
+        print(f"      ... and {len(grouped) - 10} more reason(s)")
 
 
 def build_monitor_migration_results(monitor_irs: list[Any]) -> dict[str, Any]:
@@ -251,8 +364,15 @@ def print_report(results: list[DashboardResult]) -> None:
             print(f"    Groups: {groups} (structural, not migrated)")
 
         if dr.upload_attempted:
-            upload_status = "pass" if dr.uploaded and not dr.upload_error else "fail"
+            if dr.uploaded and not dr.upload_error:
+                upload_status = "pass"
+            elif dr.upload_skipped_reason and not dr.upload_error:
+                upload_status = "skipped"
+            else:
+                upload_status = "fail"
             print(f"    Upload: {upload_status}")
+            if dr.upload_skipped_reason and not dr.upload_error:
+                print(f"    UPLOAD SKIPPED: {dr.upload_skipped_reason}")
             if dr.upload_error:
                 print(f"    UPLOAD ERROR: {dr.upload_error}")
             for dropped in dr.upload_dropped_panels or []:
@@ -276,7 +396,7 @@ def print_report(results: list[DashboardResult]) -> None:
             preflight_warns = sum(1 for issue in dr.preflight_issues if issue.get("level") == "warn")
             preflight_info = sum(1 for issue in dr.preflight_issues if issue.get("level") == "info")
             print(
-                f"    Preflight: {'pass' if dr.preflight_passed else 'issues'}  "
+                f"    Preflight: {preflight_status_label(dr.preflight_passed)}  "
                 f"Block: {preflight_blocks}  Warn: {preflight_warns}  Info: {preflight_info}"
             )
             for issue in dr.preflight_issues[:5]:
@@ -293,6 +413,8 @@ def print_report(results: list[DashboardResult]) -> None:
                 print(f"      - {p.title}: {reason_str}")
             if len(nf_panels) > 5:
                 print(f"      ... and {len(nf_panels) - 5} more")
+
+    print_data_readiness(results)
 
     print(f"\n{'=' * 70}")
     print(

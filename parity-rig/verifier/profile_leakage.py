@@ -56,10 +56,45 @@ _STRIP_STRINGS = re.compile(r"\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'")
 _FIELD_TOKEN = re.compile(r"[\w.]+")
 
 
+#: Profiles that name the same physical layout under a different source or a
+#: different metric vocabulary. Datadog calls the Metricbeat/Agent Prometheus
+#: layout ``prometheus``; Grafana calls it ``prometheus_metrics``. Datadog's
+#: ``default`` and ``elastic_agent`` both emit the same native/ECS *namespaces*
+#: as ``otel`` (``host.name``, ``deployment.environment``) -- ``elastic_agent``
+#: differs only in its 18 metric renames, which these rules do not police --
+#: so the forbidden namespaces are identical.
+#:
+#: Without an entry a profile has no rules and passes the gate vacuously, which
+#: is why the caller refuses to run one that is missing (see
+#: :func:`profiles_without_rules`).
+_PROFILE_ALIASES = {
+    "prometheus": "prometheus_metrics",
+    "default": "otel",
+    "elastic_agent": "otel",
+}
+
+
+def _rules_for(profile: str):
+    return _FORBIDDEN.get(profile) or _FORBIDDEN.get(_PROFILE_ALIASES.get(profile, ""))
+
+
+def profiles_without_rules(profiles) -> list[str]:
+    """Profiles this module cannot check, so a caller can refuse a vacuous pass.
+
+    A gate that silently reports OK for a profile it has no rules for reads as
+    coverage while proving nothing.
+    """
+    return [
+        profile
+        for profile in profiles
+        if profile != "auto" and not _rules_for(profile)
+    ]
+
+
 def check_profile_leakage(query: str, profile: str) -> list[str]:
     if profile == "auto":
         return []  # auto resolves to a concrete profile at migrate time
-    rules = _FORBIDDEN.get(profile)
+    rules = _rules_for(profile)
     if not rules:
         return []
     scrubbed = _STRIP_STRINGS.sub('""', query or "")

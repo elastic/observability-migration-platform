@@ -13,6 +13,10 @@ from typing import Any
 
 import requests
 
+from observability_migration.core.verification.field_capabilities import (
+    OBJECT_CONTAINER_TYPES,
+)
+
 # ---------------------------------------------------------------------------
 # Source-side probes (Prometheus / Loki metadata — no ES data needed)
 # ---------------------------------------------------------------------------
@@ -781,8 +785,15 @@ def build_target_schema_contract(
         if resolver:
             exists = resolver.field_exists(field_name)
             if exists is True:
-                status = "confirmed"
                 field_type = resolver.field_type(field_name)
+                # A dotted path's parent node is reported by _field_caps but
+                # cannot be queried (ES|QL: "Unknown column [service], did you
+                # mean [service.name]?"), so it is not proof the field exists.
+                status = (
+                    "missing"
+                    if str(field_type or "").lower() in OBJECT_CONTAINER_TYPES
+                    else "confirmed"
+                )
             elif exists is False:
                 status = "missing"
         field_status[field_name] = {

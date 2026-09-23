@@ -1541,7 +1541,9 @@ class TestTranslation(unittest.TestCase):
         result = self._translate_metric_widget(
             "sum:istio.mesh.request.count.total{(response_code:2* OR response_code:3*) AND $cluster_name}.as_count()"
         )
-        self.assertIn("response_code LIKE \"2%\"", result.esql_query)
+        # ES|QL globs are ``*``/``?``; ``%`` is a literal there. Verified
+        # against ES 9.6.0 -- see tests/test_datadog_tag_filter_wildcards.py.
+        self.assertIn("response_code LIKE \"2*\"", result.esql_query)
         self.assertIn("OR", result.esql_query)
         self.assertNotIn("`(response_code`", result.esql_query)
         self.assertFalse(any("template variable" in w.lower() for w in result.warnings), result.warnings)
@@ -2441,7 +2443,7 @@ class TestTranslation(unittest.TestCase):
     def test_wildcard_filter_translated(self):
         result = self._translate_metric_widget("avg:system.cpu.user{host:web*}", force_esql=True)
         self.assertIn("LIKE", result.esql_query)
-        self.assertIn("web%", result.esql_query)
+        self.assertIn("web*", result.esql_query)
 
     def test_hyphenated_group_by_is_quoted(self):
         result = self._translate_metric_widget(

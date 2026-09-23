@@ -54,6 +54,7 @@ from observability_migration.targets.kibana.render_audit import (
     interaction_regression,
     metric_fields_by_panel,
     panel_titles_in_order,
+    query_defined_columns_by_panel,
     scope_report_to_dashboard,
     segment_panels,
     source_indices_by_panel,
@@ -636,9 +637,14 @@ def run_audit_cli(
             report, fetch=fetch_fields, cache=caps_by_index
         )
         metrics_by_title = metric_fields_by_panel(report)
+        # The columns each panel's query creates for itself: an ``Unknown
+        # column`` naming one of those is a construction bug, not a gap in the
+        # target's data (see ``classify_panel``).
+        query_columns_by_title = query_defined_columns_by_panel(report)
         verdict = classify_render_per_panel(
             segments,
             breakdown_by_title=breakdown_fields_by_panel(report),
+            query_columns_by_title=query_columns_by_title,
             expects_data_titles=expects_data_by_panel(report),
             metrics_by_title=metrics_by_title,
             available_fields=available_fields,
@@ -714,6 +720,7 @@ def run_audit_cli(
             available_fields=available_fields,
             expects_data_titles=expects_data_by_panel(report),
             metrics_by_title=metrics_by_title,
+            query_columns_by_title=query_columns_by_title,
             target_fields_by_title=fields_by_title,
             panel_titles=panel_titles_in_order(report),
         )

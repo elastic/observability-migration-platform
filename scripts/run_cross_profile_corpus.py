@@ -30,18 +30,47 @@ sys.path.insert(0, str(_REPO_ROOT / "parity-rig"))
 from verifier.profile_leakage import (  # noqa: E402
     check_profile_leakage,
     extract_esql_queries,
+    profiles_without_rules,
 )
 
-PROFILES = [
-    "otel",
-    "prometheus_native",
-    "prometheus_metrics",
-    "prometheus_remote_write",
-    "passthrough",
-]
+
+#: Field profiles per source. Datadog has no ``prometheus_remote_write`` and
+#: names the Metricbeat layout ``prometheus``; sharing one list silently
+#: skipped the Datadog profiles entirely, so the leakage gate only ever ran
+#: against Grafana.
+def _source_profiles() -> dict[str, list[str]]:
+    """Every selectable field profile, taken from the adapters themselves.
+
+    Hand-keeping this list let two Datadog profiles (``elastic_agent`` and
+    ``default``) escape the gate entirely while both spellings of the
+    Prometheus layout were listed twice -- the redundancy hid the omission, and
+    the fail-closed rule check never saw that the missing profiles had no
+    leakage rules. Reading the registry means a new profile joins the gate by
+    existing, or trips :func:`profiles_without_rules` on its first run.
+
+    ``auto`` is excluded: it resolves to a concrete profile at migrate time and
+    is covered through whichever that turns out to be.
+    """
+    from observability_migration.adapters.source.datadog.field_map import (
+        BUILTIN_PROFILES,
+    )
+    from observability_migration.adapters.source.grafana.cli import (
+        _GRAFANA_FIELD_PROFILES,
+    )
+
+    return {
+        "grafana": [p for p in _GRAFANA_FIELD_PROFILES if p != "auto"],
+        "datadog": sorted(BUILTIN_PROFILES),
+    }
 
 
-def migrate(input_dir: str, out_dir: str, profile: str, index: str) -> None:
+PROFILES_BY_SOURCE = _source_profiles()
+PROFILES = PROFILES_BY_SOURCE["grafana"]
+
+
+def migrate(
+    input_dir: str, out_dir: str, profile: str, index: str, source: str = "grafana"
+) -> None:
     """Run the CLI migrate for one profile into ``out_dir`` (raises on failure)."""
     subprocess.run(
         [
@@ -50,7 +79,7 @@ def migrate(input_dir: str, out_dir: str, profile: str, index: str) -> None:
             "observability_migration.app.cli",
             "migrate",
             "--source",
-            "grafana",
+            source,
             "--input-mode",
             "files",
             "--input-dir",
@@ -116,12 +145,18 @@ def diff_native(out_dir: str, baseline_dir: str) -> list[str]:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Migrate every Grafana dashboard in --input-dir under each field "
+            "Migrate every dashboard in --input-dir under each field "
             "profile and gate on profile-leakage, feasibility parity vs "
             "prometheus_native, and (optionally) native byte-identity."
         )
     )
-    ap.add_argument("--input-dir", required=True, help="Directory of Grafana dashboard JSON files.")
+    ap.add_argument("--input-dir", required=True, help="Directory of source dashboard JSON files.")
+    ap.add_argument(
+        "--source",
+        choices=sorted(PROFILES_BY_SOURCE),
+        default="grafana",
+        help="Source vendor to migrate under (default: grafana).",
+    )
     ap.add_argument(
         "--index",
         default="metrics-*",
@@ -130,8 +165,8 @@ def main() -> None:
     ap.add_argument(
         "--profiles",
         nargs="*",
-        default=PROFILES,
-        help=f"Field profiles to migrate under (default: {' '.join(PROFILES)}).",
+        default=None,
+        help="Field profiles to migrate under (default: every profile of --source).",
     )
     ap.add_argument(
         "--baseline-native",
@@ -142,12 +177,21 @@ def main() -> None:
         ),
     )
     args = ap.parse_args()
+    if not args.profiles:
+        args.profiles = PROFILES_BY_SOURCE[args.source]
+
+    unchecked = profiles_without_rules(args.profiles)
+    if unchecked:
+        # Fail closed: a profile with no rules would report a clean pass while
+        # proving nothing about it.
+        print(f"no profile-leakage rules for: {', '.join(unchecked)}")
+        sys.exit(2)
 
     baseline_count: int | None = None
     failures: list[str] = []
     for profile in args.profiles:
         out = tempfile.mkdtemp(prefix=f"xprof-{profile}-")
-        migrate(args.input_dir, out, profile, args.index)
+        migrate(args.input_dir, out, profile, args.index, source=args.source)
         count = feasible_count(out)
         if profile == "prometheus_native":
             baseline_count = count

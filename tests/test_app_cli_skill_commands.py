@@ -634,6 +634,7 @@ class SeedSampleDataSubcommandTests(unittest.TestCase):
             errors = 0
             docs_per_stream = {"logs-generic-default": 5}
             error_samples: list = []
+            warnings: list = []
 
         def fake_seed(artifact_dirs, request, **kwargs):
             captured["artifact_dirs"] = [str(p) for p in artifact_dirs]
@@ -678,6 +679,7 @@ class SeedSampleDataSubcommandTests(unittest.TestCase):
             errors = 0
             docs_per_stream = {"logs-generic-default": 5}
             error_samples: list = []
+            warnings: list = []
 
         def fake_seed(artifact_dirs, request, *, on_progress=None, **kwargs):
             if on_progress is not None:

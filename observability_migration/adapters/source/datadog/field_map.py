@@ -177,6 +177,20 @@ class FieldMapProfile:
             or self.log_field_caps.get(field_name)
         )
 
+    def has_live_field_capabilities(self, context: str = "") -> bool:
+        """True when live ``_field_caps`` were loaded for this context.
+
+        Absence of a field is only *provable* when discovery returned
+        something. Offline runs (no ``--es-url``) and an index that does not
+        exist yet both yield empty caps, where a "field is missing" warning
+        would be a guess rather than a finding.
+        """
+        if context == "metric":
+            return bool(self.metric_field_caps or self.field_caps)
+        if context == "log":
+            return bool(self.log_field_caps or self.field_caps)
+        return bool(self.field_caps or self.metric_field_caps or self.log_field_caps)
+
     def is_numeric_field(self, field_name: str, context: str = "") -> bool:
         return is_numeric_field(self.field_capability(field_name, context=context))
 

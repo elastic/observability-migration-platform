@@ -14,6 +14,7 @@ from unittest import mock
 from observability_migration.core import telemetry_data as td
 from observability_migration.core.telemetry_contract import build_telemetry_contract
 from observability_migration.core.telemetry_data import (
+    MAX_TSDS_LOOKBACK_SECONDS,
     _contract_index_patterns,
     _expand_patterns,
     _value_profile,
@@ -1598,7 +1599,17 @@ class IngestAccountingTests(unittest.TestCase):
 
 class ContractLookbackSeedTests(unittest.TestCase):
     """Seed windows must cover ``minimum_lookback`` so week-over-week panels
-    are not empty when the CLI only asked for a few recent hours."""
+    are not empty when the CLI only asked for a few recent hours -- up to the
+    7d ceiling a time-series index enforces.
+
+    Elasticsearch rejects ``index.look_back_time`` above 7d outright
+    ("must be <= [7d]", verified against ES 9.6.0), and rejects any document
+    older than that window ("the document timestamp [...] is outside of ranges
+    of currently writable indices"). This suite used to assert a 13-day span
+    for a 14-day contract, which measured 53,256 rejected documents out of
+    125,532 on the in-repo Datadog corpus. The window now clamps to what the
+    index will accept, and ``lookback_truncation_warning`` tells the operator
+    when a dashboard wanted more."""
 
     def test_generate_documents_extends_window_to_contract_lookback(self):
         now = datetime.datetime(2026, 7, 28, 12, 0, tzinfo=datetime.UTC)
@@ -1632,10 +1643,39 @@ class ContractLookbackSeedTests(unittest.TestCase):
             for _, d in docs
         )
         span_hours = (timestamps[-1] - timestamps[0]).total_seconds() / 3600.0
-        # Must reach well beyond the 3h request into the 14-day lookback window.
-        self.assertGreaterEqual(span_hours, 13 * 24)
-        # But must not explode into millions of docs: long lookback is sparse.
+        # Must still reach well beyond the 3h the CLI asked for...
+        self.assertGreater(span_hours, 3)
+        # ...out to the 7d ceiling the index enforces, and no further: every
+        # older document would be rejected at ingest.
+        self.assertGreaterEqual(span_hours, 6 * 24)
+        self.assertLessEqual(span_hours, 7 * 24)
+        # Must not explode into millions of docs: long lookback is sparse.
         self.assertLess(len(docs), 500)
+        # Every timestamp must be inside the writable window.
+        oldest_allowed = now - datetime.timedelta(seconds=MAX_TSDS_LOOKBACK_SECONDS)
+        self.assertGreaterEqual(timestamps[0], oldest_allowed)
+
+    def test_a_contract_within_the_ceiling_is_covered_exactly(self):
+        """A 3-day request needs no clamping at all."""
+        now = datetime.datetime(2026, 7, 28, 12, 0, tzinfo=datetime.UTC)
+        contract = {
+            "streams": {
+                "metrics-*": {
+                    "minimum_lookback": "3 days",
+                    "fields": {"m": {"role": "metric", "metric_kind": "gauge"}},
+                }
+            }
+        }
+        docs = list(
+            generate_documents(contract, now=now, data_hours=1, interval_sec=3600)
+        )
+        timestamps = sorted(
+            datetime.datetime.fromisoformat(d["@timestamp"].replace("Z", "+00:00"))
+            for _, d in docs
+        )
+        span_hours = (timestamps[-1] - timestamps[0]).total_seconds() / 3600.0
+        self.assertGreaterEqual(span_hours, 2 * 24)
+        self.assertLessEqual(span_hours, 3 * 24)
 
 
 if __name__ == "__main__":

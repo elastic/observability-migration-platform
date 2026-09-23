@@ -30,13 +30,41 @@ def concrete_stream_name(index_pattern: str, stream: dict[str, Any] | None = Non
     if value in {"metrics-*", "logs-*", "traces-*"}:
         return f"{value[:-2]}-generic-default"
     if value.endswith("-*"):
-        return f"{value[:-2]}-default"
-    if "*" in value or "?" in value:
+        candidate = f"{value[:-2]}-default"
+    elif "*" in value or "?" in value:
         prefix = value.split("*", 1)[0].rstrip("-")
         if prefix in {"metrics", "logs", "traces"}:
-            return f"{prefix}-generic-default"
-        return f"{prefix or 'metrics'}-generic-default"
-    return value
+            candidate = f"{prefix}-generic-default"
+        else:
+            candidate = f"{prefix or 'metrics'}-generic-default"
+    else:
+        return value
+    # A data stream name cannot contain a wildcard, and the ``-*`` suffix
+    # branch above only strips a *trailing* one. The prometheus_native metric
+    # index is ``metrics-*.prometheus-*``, which used to resolve to
+    # ``metrics-*.prometheus-default`` -- a name Elasticsearch refuses to
+    # create, so that profile could not be seeded at all.
+    #
+    # Each wildcard is replaced by something it actually matches, because the
+    # generated stream has to be found by the pattern it came from. A single
+    # substitution for both wildcards broke that for ``?``: ``metrics-?-*``
+    # became ``metrics-generic-default``, and since ``?`` matches exactly one
+    # character the dashboard's own index pattern no longer matched the data
+    # seeded for it.
+    candidate = _STAR_RUN_RE.sub("generic", candidate)
+    return candidate.replace("?", "x")
+
+
+#: A run of ``*`` collapses to one safe multi-character token; ``?`` is handled
+#: separately because it matches exactly one character.
+_STAR_RUN_RE = re.compile(r"\*+")
+
+
+# Elasticsearch caps index.look_back_time at 7d for a time-series index
+# (docs.elastic.co/reference/elasticsearch/index-settings/time-series). Both
+# the index setting and the document-generation window derive from this, so a
+# contract asking for more cannot produce unindexable documents.
+MAX_TSDS_LOOKBACK_SECONDS = 7 * 24 * 60 * 60
 
 
 def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str, Any]:
@@ -57,12 +85,12 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     routing_path: list[str] = []
 
     fields = stream.get("fields") or {}
-    _dotted_prefixes = _dotted_field_prefixes(fields)
+    _skip = unmappable_field_names(stream)
     for field_name, info in sorted(fields.items()):
         if field_name.startswith("data_stream.") or field_name in props:
             continue
-        if "." not in field_name and field_name in _dotted_prefixes:
-            continue  # skip flat field whose name is also a dotted-child prefix
+        if field_name in _skip:
+            continue  # unmappable name, or a path that must be an object
         if info.get("role") == "metric":
             props[field_name] = {"type": "double"}
             if is_metrics:
@@ -85,21 +113,44 @@ def plan_index_template(index_pattern: str, stream: dict[str, Any]) -> dict[str,
     for field_name in _generated_dimension_fields(stream):
         if field_name.startswith("data_stream.") or field_name in props:
             continue
-        if "." not in field_name and field_name in _dotted_prefixes:
-            continue  # skip flat field that conflicts with dotted children
+        if field_name in _skip:
+            continue  # unmappable name, or a path that must be an object
         if is_metrics:
             props[field_name] = {"type": "keyword", "time_series_dimension": True}
             routing_path.append(field_name)
         else:
             props[field_name] = {"type": "keyword"}
 
+    # Elasticsearch caps mapping fields at 1000 by default. A realistic corpus
+    # blows straight past it -- the 47 DataDog/integrations-core dashboards
+    # declare 1043 metric properties -- and the whole template is then rejected
+    # with "template after composition is invalid", leaving every panel
+    # unseeded. The template knows its own property count, so it raises the
+    # ceiling to clear it with headroom for the dimensions added below.
+    field_limit = max(1000, int(len(props) * 1.5) + 200)
+
     template: dict[str, Any] = {
         "index_patterns": [concrete_name],
         "data_stream": {},
         "priority": 1000,
         "template": {
-            "settings": {"index": {"codec": "best_compression"}},
-            "mappings": {"properties": props},
+            "settings": {
+                "index": {
+                    "codec": "best_compression",
+                    "mapping.total_fields.limit": field_limit,
+                }
+            },
+            # A dotted name is stored as a literal leaf rather than an object
+            # path. Without this, Elasticsearch refuses a mapping that holds
+            # both `redis.keys` and `redis.keys.evicted` ("can't merge a non
+            # object mapping [redis.keys] with an object mapping") -- and
+            # Datadog's namespace is full of such pairs. That is an
+            # Elasticsearch *default*, not a limit: `subobjects: false`
+            # accepts the pair and composes with `index.mode: time_series`
+            # (verified on 9.6.0). Elastic's own OTel metrics mapping reaches
+            # the same place with `passthrough` objects. The generator already
+            # emits flat dotted document keys, which is what this requires.
+            "mappings": {"subobjects": False, "properties": props},
         },
     }
     if is_metrics:
@@ -244,10 +295,13 @@ def generate_documents(
         is_metrics = stream_type == "metrics"
         dataset = _dataset_from_stream(concrete_name)
         namespace = _namespace_from_stream(concrete_name)
+        # Same exclusions the template applies: a document carrying a key the
+        # mapping skipped is rejected in full, not just for that field.
+        skip_fields = unmappable_field_names(stream)
         all_metric_fields = {
             field_name: info
             for field_name, info in (stream.get("fields") or {}).items()
-            if info.get("role") == "metric"
+            if info.get("role") == "metric" and field_name not in skip_fields
         }
         # Split the stream into metric families that each only carry the
         # dimensions they actually co-occur with in a query. Without this, a
@@ -276,7 +330,11 @@ def generate_documents(
                         "data_stream.type": stream_type,
                         "data_stream.dataset": dataset,
                         "data_stream.namespace": namespace,
-                        **dimensions,
+                        **{
+                            name: value
+                            for name, value in dimensions.items()
+                            if name not in skip_fields
+                        },
                     }
                     _seed_metric_fields(
                         doc,
@@ -425,12 +483,79 @@ _IDENTITY_FALLBACK_DIMENSIONS = ("instance", "job", "service.name", "host.name")
 
 
 def _dotted_field_prefixes(field_names: Iterable[str]) -> set[str]:
-    """Return the set of bare-name prefixes that have at least one dotted child."""
-    return {
-        name.split(".", 1)[0]
-        for name in field_names
-        if "." in name and not name.startswith("data_stream.")
-    }
+    """Return every ancestor path that has at least one dotted child.
+
+    ``a.b.c`` contributes ``a`` and ``a.b``: each has to be an *object* in the
+    mapping, so a same-named leaf field cannot also exist. Previously only the
+    bare head (``a``) was returned, so a dotted leaf that was also a parent
+    (``a.b`` alongside ``a.b.c``) slipped through and made the whole composed
+    template invalid.
+    """
+    prefixes: set[str] = set()
+    for name in field_names:
+        if "." not in name or name.startswith("data_stream."):
+            continue
+        parts = name.split(".")
+        for stop in range(1, len(parts)):
+            prefixes.add(".".join(parts[:stop]))
+    return prefixes
+
+
+def unmappable_field_names(stream: dict[str, Any]) -> frozenset[str]:
+    """Field names this stream must not map *or* emit.
+
+    Only an empty path segment qualifies: ``subobjects: false`` on the emitted
+    template makes a dotted name a literal leaf, so a parent/child pair such as
+    ``redis.keys`` + ``redis.keys.evicted`` is mappable and no longer skipped.
+    Skipping in the template alone would not be enough anyway -- a document
+    still carrying a skipped key is rejected in full -- so
+    ``plan_index_template`` and ``generate_documents`` share this set.
+    """
+    names = [*(stream.get("fields") or {}), *_generated_dimension_fields(stream)]
+    return frozenset(name for name in names if _is_unmappable_field_name(name))
+
+
+def unmappable_field_report(contract: dict[str, Any]) -> list[str]:
+    """Human-readable lines for every field a stream cannot map or emit.
+
+    Excluding these is correct -- Elasticsearch cannot hold ``service`` as a
+    leaf and ``service.name`` as an object in one index -- but excluding them
+    silently turns into an unexplained "Unknown column" in Kibana. Naming the
+    deeper field that forced each exclusion tells the operator what to rename.
+    """
+    lines: list[str] = []
+    for pattern, stream in sorted((contract.get("streams") or {}).items()):
+        if not isinstance(stream, dict):
+            continue
+        skipped = unmappable_field_names(stream)
+        if not skipped:
+            continue
+        names = [*(stream.get("fields") or {}), *_generated_dimension_fields(stream)]
+        for name in sorted(skipped):
+            deeper = sorted(n for n in names if n.startswith(f"{name}."))
+            if deeper:
+                lines.append(
+                    f"{pattern}: '{name}' not seeded -- it must be an object because "
+                    f"'{deeper[0]}' exists; panels using '{name}' will show "
+                    "'Unknown column'. Rename one of the two in the source."
+                )
+            else:
+                lines.append(
+                    f"{pattern}: '{name}' not seeded -- the name has an empty path "
+                    "segment and cannot be a mapping field."
+                )
+    return lines
+
+
+def _is_unmappable_field_name(name: str) -> bool:
+    """True when the name cannot become a mapping property.
+
+    An empty path segment (``a.b.``, ``.a``, ``a..b``) forces its parent to be
+    both a leaf and an object, which Elasticsearch rejects for the *entire*
+    composed template -- so one bad name would otherwise cost every field in
+    the stream its mapping, and every panel its data.
+    """
+    return not name or any(segment == "" for segment in name.split("."))
 
 
 def _metric_families(
@@ -473,6 +598,20 @@ def _metric_families(
             matched = _requirement_metric_targets(metric_name, metric_fields)
             for target_name in matched:
                 metric_dims[target_name] |= dims
+    # A dashboard control filters *every* panel, so its field has to be on
+    # every document -- it is not a per-query dimension. Unioning only the
+    # requirement dimensions left an unrelated metric without the field
+    # whenever some other panel's query happened to mention it, and the
+    # control's selection then excluded that metric's documents entirely.
+    dashboard_controls: set[str] = set()
+    for field_name in stream.get("control_fields") or []:
+        dashboard_controls.update(
+            _requirement_dimension_targets(field_name, stream_fields, metric_fields)
+        )
+    if dashboard_controls:
+        for metric_name in metric_dims:
+            metric_dims[metric_name] |= dashboard_controls
+
     # A ratio numerator must travel with its denominator (same document) and
     # share its dimensions so the bound holds per series.
     for metric_name, info in metric_fields.items():
@@ -741,8 +880,15 @@ def _document_timestamps(
     points so those historical windows are non-empty without exploding the
     document count at the dense ``interval_sec``.
     """
-    data_hours = max(0.0, float(data_hours or 0.0))
-    lookback_hours = max(data_hours, float(lookback_hours or 0.0))
+    # The same ceiling ``_contract_lookback_hours`` applies, applied to the
+    # explicit request too. ``--data-hours 240`` used to generate timestamps 10
+    # days old against a template that accepts 7, and Elasticsearch rejected
+    # every one of them ("the document timestamp [...] is outside of ranges of
+    # currently writable indices") -- the contract path's bug, reached through
+    # the flag.
+    max_hours = MAX_TSDS_LOOKBACK_SECONDS / 3600.0
+    data_hours = min(max(0.0, float(data_hours or 0.0)), max_hours)
+    lookback_hours = min(max(data_hours, float(lookback_hours or 0.0)), max_hours)
     total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
     timestamps = {
         now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
@@ -767,8 +913,8 @@ def _document_timestamps(
     return sorted(timestamps)
 
 
-def _contract_lookback_hours(contract: dict[str, Any]) -> float:
-    """Return the maximum ``minimum_lookback`` across streams, in hours."""
+def _requested_lookback_seconds(contract: dict[str, Any]) -> int:
+    """Widest lookback any stream asks for, before the TSDS ceiling is applied."""
     max_seconds = 0
     for stream in (contract.get("streams") or {}).values():
         if not isinstance(stream, dict):
@@ -778,7 +924,48 @@ def _contract_lookback_hours(contract: dict[str, Any]) -> float:
             int(stream.get("_lookback_seconds") or 0),
             _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
         )
+    return max_seconds
+
+
+def _contract_lookback_hours(contract: dict[str, Any]) -> float:
+    """Hours of history to generate, clamped to what a TSDS index will accept.
+
+    ``_look_back_time`` clamps the index setting to the 7d Elasticsearch
+    maximum, so generating past that produced documents the write index
+    rejects outright ("the document timestamp [...] is outside of ranges of
+    currently writable indices"). Both sides now share
+    :data:`MAX_TSDS_LOOKBACK_SECONDS` so they cannot drift apart again.
+    """
+    max_seconds = min(_requested_lookback_seconds(contract), MAX_TSDS_LOOKBACK_SECONDS)
     return max_seconds / 3600.0 if max_seconds else 0.0
+
+
+def lookback_truncation_warning(
+    contract: dict[str, Any], data_hours: float = 0.0
+) -> str | None:
+    """Tell the operator when more history was asked for than a TSDS holds.
+
+    Panels whose time range exceeds the window will show a shorter series than
+    the source dashboard. That is an Elasticsearch limit, not a translation
+    gap, but staying silent about it looks like missing data.
+
+    Covers both routes to an over-long window: a contract ``minimum_lookback``
+    and an explicit ``--data-hours``. Reporting only the first left an operator
+    who passed ``--data-hours 240`` with silently truncated data and no notice.
+    """
+    requested = max(
+        _requested_lookback_seconds(contract),
+        int(max(0.0, float(data_hours or 0.0)) * 3600),
+    )
+    if requested <= MAX_TSDS_LOOKBACK_SECONDS:
+        return None
+    requested_days = requested / (24 * 60 * 60)
+    return (
+        f"seeding was asked for {requested_days:.0f} days of history but a "
+        f"time-series index accepts at most {MAX_TSDS_LOOKBACK_SECONDS // (24 * 60 * 60)}d "
+        "of backfill; seeding the most recent 7d. Panels with longer time "
+        "ranges will show a shorter series than the source."
+    )
 
 
 def _ensure_dimension_value_coverage(
@@ -1366,13 +1553,11 @@ def _data_stream_part(value: str) -> str:
 
 def _look_back_time(stream: dict[str, Any]) -> str:
     seconds = max(
-        7 * 24 * 60 * 60,
+        MAX_TSDS_LOOKBACK_SECONDS,
         int(stream.get("_lookback_seconds") or 0),
         _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
     )
-    # ES hard cap: index.look_back_time max is 7d (docs.elastic.co/reference/elasticsearch/index-settings/time-series).
-    # Anything above 7d is rejected by Elasticsearch at index creation time.
-    seconds = min(seconds, 7 * 24 * 60 * 60)
+    seconds = min(seconds, MAX_TSDS_LOOKBACK_SECONDS)
     days = max(1, math.ceil(seconds / (24 * 60 * 60)))
     return f"{days}d"
 
@@ -1415,6 +1600,7 @@ class IngestSummary:
     errors: int = 0
     docs_per_stream: dict[str, int] = dataclasses.field(default_factory=dict)
     error_samples: list[str] = dataclasses.field(default_factory=list)
+    warnings: list[str] = dataclasses.field(default_factory=list)
 
 
 def _flush_into_summary(
@@ -1489,9 +1675,30 @@ def _flush_into_summary(
         summary.error_samples.append(f"{missing} document(s) had no bulk result line")
 
 
+def _error_reason_chain(error: Any) -> str:
+    """Flatten an Elasticsearch error and its ``caused_by`` chain.
+
+    The outermost reason is often a wrapper ("template after composition is
+    invalid") whose leaf carries the only actionable detail ("Limit of total
+    fields [1000] has been exceeded"). Dropping the chain turns a one-setting
+    fix into an unexplained failure.
+    """
+    reasons: list[str] = []
+    node = error
+    while isinstance(node, dict):
+        reason = str(node.get("reason") or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        node = node.get("caused_by")
+    if not reasons:
+        return str(error)
+    return " <- ".join(reasons)
+
+
 def _raise_on_error(result: dict[str, Any], action: str) -> None:
     if isinstance(result, dict) and result.get("error"):
-        reason = result["error"].get("reason") if isinstance(result["error"], dict) else str(result["error"])
+        error = result["error"]
+        reason = _error_reason_chain(error) if isinstance(error, dict) else str(error)
         raise RuntimeError(f"Failed to {action}: {reason}")
 
 
