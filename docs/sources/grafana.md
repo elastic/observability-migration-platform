@@ -996,8 +996,14 @@ Use that doc for:
   decides routing either: prose mentioning `or`, `topk(` or
   `histogram_quantile(` no longer disqualifies a panel from the native path, and
   a comment can no longer hide a distinct-metric ratio from the vector-matching
-  rule above. An expression that is nothing but comments has no query to emit
-  and is reported `not_feasible` rather than shipping an empty selector.
+  rule above. A comment *inside* an otherwise native-eligible expression is
+  likewise not a reason to decline it: a comment between `on`/`ignoring` and its
+  label list is removed before the shape check runs, so the expression takes the
+  same routing decision as its comment-free spelling and still reaches the native
+  `PROMQL` path on a capable target — the requirement is that the matcher is
+  *seen*, not that it is refused. An expression that is nothing but comments has
+  no query to emit and is reported `not_feasible` rather than shipping an empty
+  selector.
 - **Range-vector windows and counter typing.** Passing `--es-url` adds
   validation and schema discovery; it does not change which translation strategy
   a range-vector panel gets. `rate()` / `irate()` / `increase()` stay on the
