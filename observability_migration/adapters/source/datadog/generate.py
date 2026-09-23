@@ -1873,6 +1873,11 @@ def _infer_keep_fields(query: str) -> list[str]:
     ]
 
 
+def _esql_eval_alias_re(name: str) -> re.Pattern[str]:
+    """Match ``| EVAL <name> =`` for an already-spliced synthetic column."""
+    return re.compile(rf"\bEVAL\s+{re.escape(name)}\s*=", re.IGNORECASE)
+
+
 def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> tuple[str, str]:
     """Splice a composite Y column into a heatmap query.
 
@@ -1881,7 +1886,20 @@ def _composite_y_column(query: str, dims: list[str], name: str = "y_group") -> t
     the composite is a real output column), adding ``<name>`` to that ``KEEP``.
     When the query has no ``KEEP`` stage the ``EVAL`` is appended after the last
     ``STATS`` stage. Returns ``(new_query, column_name)``.
+
+    Idempotent, because the splice mutates ``TranslationResult.esql_query`` in
+    place: a second pass over the same result sees the synthetic column among
+    the query's own grouping dimensions and would concatenate it into its own
+    definition. ES|QL rejects that outright -- an ``EVAL`` cannot read the
+    column it is defining -- so the panel fails to render with
+    ``Unknown column [<name>]`` rather than merely carrying a redundant stage.
     """
+    if _esql_eval_alias_re(name).search(query):
+        return query, name
+    # A caller that infers dimensions from an already-composited query hands
+    # the synthetic column back in; it is an output of this stage, never an
+    # input to it.
+    dims = [dim for dim in dims if dim != name]
     concat_args: list[str] = []
     for index, dim in enumerate(dims):
         if index:
