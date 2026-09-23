@@ -1,0 +1,29 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 7187 Kubernetes Resource Requests (revision 1).
+
+schema_version: 1
+gnet_id: 7187
+gnet_revision: 1
+dashboard_title: "Kubernetes Resource Requests"
+maintainer: "community"
+
+panels:
+  - title: "CPU Cores"
+    panel_id: 1
+    fidelity: APPROXIMATE
+    notes: "Cluster sum of allocatable, requested, and limit CPU. Source min/max of per-instance sums is one node."
+  - title: "CPU Cores"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Requested CPU percent of allocatable, summed across the cluster. *_cpu_cores reshaped onto resource=cpu."
+  - title: "Memory"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "Cluster sum of allocatable, requested, and limit memory in bytes."
+  - title: "Memory"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "Requested memory percent of allocatable, summed across the cluster. *_memory_bytes reshaped onto resource=memory."
