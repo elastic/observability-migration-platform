@@ -407,7 +407,17 @@ audit below.
   defect is not excused by accompanying gaps), when a problem cannot be read,
   when a named column *does* exist, when a second failure mode is present, or
   when `--es-url` field caps are unavailable so absence cannot be confirmed —
-  `detail` records which of those applied. Construction bugs (`is not yet
+  `detail` records which of those applied.
+- **A column the panel's own query defines is never a `field_gap`.** Absence
+  from the target is the *expected* state for a synthetic `EVAL`/`STATS`/
+  `RENAME` output, so it explains nothing: the error can only be a construction
+  bug. The classifier takes each panel's query-defined columns
+  (`query_defined_columns_by_panel`) and keeps the verdict at `render_error`
+  when the unknown column is one of them. Without this, a Datadog dashboard
+  emitting `EVAL series_group = CONCAT(..., TO_STRING(series_group))` — an EVAL
+  reading the column it defines, which Elasticsearch rejects outright — was
+  filed as a data-readiness warning and the gate passed a panel that could not
+  render. Construction bugs (`is not yet
   implemented`, `Output has changed from`, `Couldn't parse Elasticsearch ES|QL
   query`, `Parameter [?x] value not found`) are never downgraded, no matter what
   else the panel says.
