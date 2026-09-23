@@ -33,26 +33,38 @@ from verifier.profile_leakage import (  # noqa: E402
     profiles_without_rules,
 )
 
+
 #: Field profiles per source. Datadog has no ``prometheus_remote_write`` and
 #: names the Metricbeat layout ``prometheus``; sharing one list silently
 #: skipped the Datadog profiles entirely, so the leakage gate only ever ran
 #: against Grafana.
-PROFILES_BY_SOURCE = {
-    "grafana": [
-        "otel",
-        "prometheus_native",
-        "prometheus_metrics",
-        "prometheus_remote_write",
-        "passthrough",
-    ],
-    "datadog": [
-        "otel",
-        "prometheus_native",
-        "prometheus_metrics",
-        "prometheus",
-        "passthrough",
-    ],
-}
+def _source_profiles() -> dict[str, list[str]]:
+    """Every selectable field profile, taken from the adapters themselves.
+
+    Hand-keeping this list let two Datadog profiles (``elastic_agent`` and
+    ``default``) escape the gate entirely while both spellings of the
+    Prometheus layout were listed twice -- the redundancy hid the omission, and
+    the fail-closed rule check never saw that the missing profiles had no
+    leakage rules. Reading the registry means a new profile joins the gate by
+    existing, or trips :func:`profiles_without_rules` on its first run.
+
+    ``auto`` is excluded: it resolves to a concrete profile at migrate time and
+    is covered through whichever that turns out to be.
+    """
+    from observability_migration.adapters.source.datadog.field_map import (
+        BUILTIN_PROFILES,
+    )
+    from observability_migration.adapters.source.grafana.cli import (
+        _GRAFANA_FIELD_PROFILES,
+    )
+
+    return {
+        "grafana": [p for p in _GRAFANA_FIELD_PROFILES if p != "auto"],
+        "datadog": sorted(BUILTIN_PROFILES),
+    }
+
+
+PROFILES_BY_SOURCE = _source_profiles()
 PROFILES = PROFILES_BY_SOURCE["grafana"]
 
 

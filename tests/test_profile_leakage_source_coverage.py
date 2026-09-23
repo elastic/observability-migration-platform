@@ -66,3 +66,74 @@ def test_every_datadog_profile_the_gate_runs_has_rules_or_is_declared():
     for source, profiles in PROFILES_BY_SOURCE.items():
         missing = profiles_without_rules(profiles)
         assert not missing, f"{source}: no leakage rules for {missing}"
+
+
+# ---------------------------------------------------------------------------
+# The profile list must come from the registry, not a hand-kept copy
+# ---------------------------------------------------------------------------
+
+def test_datadog_coverage_includes_every_built_in_profile():
+    """A hand-maintained list silently omitted ``elastic_agent`` and
+    ``default`` while carrying both spellings of the Prometheus layout, so the
+    fail-closed rule check never saw the profiles that had no rules."""
+    from observability_migration.adapters.source.datadog.field_map import (
+        BUILTIN_PROFILES,
+    )
+    from scripts.run_cross_profile_corpus import PROFILES_BY_SOURCE
+
+    missing = set(BUILTIN_PROFILES) - set(PROFILES_BY_SOURCE["datadog"])
+    assert not missing, f"profiles escaping the cross-profile gate: {sorted(missing)}"
+
+
+def test_grafana_coverage_includes_every_selectable_profile():
+    from observability_migration.adapters.source.grafana.cli import (
+        _GRAFANA_FIELD_PROFILES,
+    )
+    from scripts.run_cross_profile_corpus import PROFILES_BY_SOURCE
+
+    # ``auto`` resolves to a concrete profile at migrate time and is checked
+    # through whichever that is.
+    selectable = set(_GRAFANA_FIELD_PROFILES) - {"auto"}
+    missing = selectable - set(PROFILES_BY_SOURCE["grafana"])
+    assert not missing, f"profiles escaping the cross-profile gate: {sorted(missing)}"
+
+
+def test_every_covered_profile_has_leakage_rules():
+    """The gate fails closed on a profile with no rules, so a covered profile
+    without them would block the run rather than pass it vacuously -- either
+    way the rules have to exist."""
+    from verifier.profile_leakage import profiles_without_rules
+
+    from scripts.run_cross_profile_corpus import PROFILES_BY_SOURCE
+
+    for source, profiles in PROFILES_BY_SOURCE.items():
+        unruled = profiles_without_rules(profiles)
+        assert not unruled, f"{source}: no leakage rules for {unruled}"
+
+
+def test_elastic_agent_rejects_foreign_namespaces():
+    """It emits the native/ECS spellings (``host.name``), so a Prometheus or
+    dotted-metric namespace in its output is a leak."""
+    from verifier.profile_leakage import check_profile_leakage
+
+    for query in (
+        'FROM metrics-* | WHERE labels.pod == "x"',
+        "FROM metrics-* | STATS AVG(metrics.system_cpu)",
+        'FROM metrics-* | WHERE prometheus.labels.job == "x"',
+    ):
+        assert check_profile_leakage(query, "elastic_agent"), query
+
+
+def test_default_profile_rejects_foreign_namespaces():
+    from verifier.profile_leakage import check_profile_leakage
+
+    assert check_profile_leakage('FROM metrics-* | WHERE labels.pod == "x"', "default")
+
+
+def test_the_native_profiles_accept_their_own_spellings():
+    """The rules must not fire on the layout the profile actually emits."""
+    from verifier.profile_leakage import check_profile_leakage
+
+    query = 'FROM metrics-* | WHERE host.name == "h" AND deployment.environment == "prod"'
+    for profile in ("elastic_agent", "default", "otel"):
+        assert not check_profile_leakage(query, profile), profile
