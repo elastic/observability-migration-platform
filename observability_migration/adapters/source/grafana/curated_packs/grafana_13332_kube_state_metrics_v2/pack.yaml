@@ -1,0 +1,512 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 13332
+# https://grafana.com/grafana/dashboards/13332-kube-state-metrics-v2/
+#
+# kube-state-metrics v2 (revision 12). Modern resource= labels on the cluster
+# tiles; two container request tiles still use the pre-split
+# `_cpu_cores` / `_memory_bytes` names. `changes()` has no ES|QL equivalent
+# and is approximated with DELTA over 30 minutes. Tables whose PromQL has a
+# legend but no by() are grouped explicitly so they list one row per object.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    kube_pod_info: gauge
+    kube_pod_status_phase: gauge
+    kube_pod_status_reason: gauge
+    kube_pod_container_status_running: gauge
+    kube_pod_container_status_waiting: gauge
+    kube_pod_container_status_terminated: gauge
+    kube_pod_container_status_restarts_total: counter
+    kube_pod_container_resource_requests: gauge
+    kube_pod_container_resource_limits: gauge
+    kube_pod_container_resource_requests_cpu_cores: gauge
+    kube_pod_container_resource_requests_memory_bytes: gauge
+    kube_node_info: gauge
+    kube_node_spec_unschedulable: gauge
+    kube_node_status_condition: gauge
+    kube_node_status_allocatable: gauge
+    kube_node_status_capacity: gauge
+    kube_namespace_created: gauge
+    kube_deployment_status_replicas: gauge
+    kube_deployment_status_replicas_updated: gauge
+    kube_deployment_status_replicas_unavailable: gauge
+    kube_statefulset_status_replicas: gauge
+    kube_statefulset_status_replicas_ready: gauge
+    kube_hpa_status_current_replicas: gauge
+    kube_hpa_spec_max_replicas: gauge
+    kube_hpa_spec_min_replicas: gauge
+    kube_job_status_succeeded: gauge
+    kube_job_status_active: gauge
+    kube_job_status_failed: gauge
+    kube_job_status_completion_time: gauge
+    kube_persistentvolumeclaim_status_phase: gauge
+    kube_persistentvolumeclaim_resource_requests_storage_bytes: gauge
+
+panel:
+  query_overrides:
+    - title_match: "Cluster Pod Requested"
+      primary_format: percent
+      approximation_note: "Requested pods / allocatable pods, shown as a percent."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
+        | STATS used = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})), alloc = SUM(CASE({{label:resource}} == "pods", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL))
+        | EVAL percent = CASE(alloc > 0, used / alloc * 100, NULL)
+        | KEEP percent
+    - title_match: "Cluster CPU Requested"
+      primary_format: percent
+      approximation_note: "CPU requests / allocatable CPU, shown as a percent."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
+        | STATS used = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL))
+        | EVAL percent = CASE(alloc > 0, used / alloc * 100, NULL)
+        | KEEP percent
+    - title_match: "Cluster Memory  Requested"
+      primary_format: percent
+      approximation_note: "Memory requests / allocatable memory, shown as a percent."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
+        | STATS used = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL))
+        | EVAL percent = CASE(alloc > 0, used / alloc * 100, NULL)
+        | KEEP percent
+    - title_match: "Cluster CPU Capacity"
+      kibana_type_override: line
+      approximation_note: "Grafana's CPU capacity legend swaps allocatable and capacity; Kibana names each series after the metric it plots."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_node_status_capacity:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS capacity = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}}), NULL)), allocatable = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), requested = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), `limit` = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, capacity, allocatable, requested, `limit`
+        | SORT time_bucket ASC
+    - title_match: "Node NotReady"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE {{label:condition}} == "Ready"
+        | WHERE {{label:status}} == "false"
+        | WHERE {{metric:kube_node_status_condition:gauge}} IS NOT NULL
+        | STATS not_ready = MAX(LAST_OVER_TIME({{metric:kube_node_status_condition:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | WHERE not_ready == 1
+        | EVAL node = {{label:node}}
+        | STATS not_ready = MAX(not_ready) BY time_bucket, node
+        | KEEP time_bucket, node, not_ready
+        | SORT time_bucket ASC
+    - title_match: "Node Pressure"
+      kibana_type_override: line
+      approximation_note: "Disk, memory, and PID pressure are one series per node. Disk pressure also follows the node control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE ({{label:condition}} == "DiskPressure" OR {{label:condition}} == "MemoryPressure" OR {{label:condition}} == "PIDPressure")
+        | WHERE {{label:status}} == "true"
+        | WHERE {{metric:kube_node_status_condition:gauge}} IS NOT NULL
+        | STATS pressure = MAX(LAST_OVER_TIME({{metric:kube_node_status_condition:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}, {{label:condition}}
+        | WHERE pressure == 1
+        | EVAL legend = CONCAT(TO_STRING({{label:node}}), " ", TO_STRING({{label:condition}}))
+        | STATS pressure = MAX(pressure) BY time_bucket, legend
+        | KEEP time_bucket, legend, pressure
+        | SORT time_bucket ASC
+    - title_match: "Deployment Replicas - Up To Date"
+      kibana_type_override: datatable
+      approximation_note: "Grouped by deployment and namespace. The source legend names deployment but the PromQL has no by()."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_deployment_status_replicas:gauge}} IS NOT NULL
+        | STATS replicas = MAX(LAST_OVER_TIME({{metric:kube_deployment_status_replicas:gauge}})) BY {{label:namespace}}, {{label:deployment}}
+        | EVAL namespace = {{label:namespace}}, deployment = {{label:deployment}}
+        | STATS replicas = MAX(replicas) BY namespace, deployment
+        | KEEP namespace, deployment, replicas
+        | SORT replicas DESC
+    - title_match: "Statefulset Replicas - Up To Date"
+      kibana_type_override: datatable
+      approximation_note: "Ready replicas per StatefulSet. The source table has no by()."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_statefulset_status_replicas_ready:gauge}} IS NOT NULL
+        | STATS ready = MAX(LAST_OVER_TIME({{metric:kube_statefulset_status_replicas_ready:gauge}})) BY {{label:namespace}}, {{label:statefulset}}
+        | EVAL namespace = {{label:namespace}}, statefulset = {{label:statefulset}}
+        | STATS ready = MAX(ready) BY namespace, statefulset
+        | KEEP namespace, statefulset, ready
+        | SORT ready DESC
+    - title_match: "Pods restart in 30m"
+      kibana_type_override: datatable
+      approximation_note: "changes() over 30m is the counter increase. ES|QL DELTA rejects counter fields, so this is RATE (per second) times 1800 on the latest 30-minute bucket."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
+        | STATS per_sec = SUM(RATE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:namespace}}, {{label:pod}}, {{label:container}}
+        | WHERE time_bucket >= ?_tend - 45 minutes
+        | EVAL restarts = per_sec * 1800
+        | WHERE restarts > 1
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}
+        | STATS restarts = MAX(restarts) BY namespace, pod, container
+        | KEEP namespace, pod, container, restarts
+        | SORT restarts DESC
+    - title_match: "Evicted"
+      kibana_type_override: datatable
+      approximation_note: "Current evicted pods. Grafana draws a 0/1 timeseries."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:reason}} == "Evicted"
+        | WHERE {{metric:kube_pod_status_reason:gauge}} IS NOT NULL
+        | STATS evicted = MAX(LAST_OVER_TIME({{metric:kube_pod_status_reason:gauge}})) BY {{label:namespace}}, {{label:pod}}
+        | WHERE evicted == 1
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}
+        | STATS evicted = MAX(evicted) BY namespace, pod
+        | KEEP namespace, pod, evicted
+    - title_match: "Containers Restarts (Last 30 Minutes)"
+      approximation_note: "changes() over 30m is the counter increase. ES|QL DELTA rejects counter fields, so this is RATE (per second) times 1800 on the latest 30-minute bucket."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
+        | STATS per_sec = SUM(RATE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 45 minutes
+        | EVAL restarts = per_sec * 1800
+        | STATS restarts = SUM(restarts)
+        | KEEP restarts
+    - title_match: "CPU Cores Requested by Containers"
+      approximation_note: "kube_pod_container_resource_requests_cpu_cores reshaped to resource=cpu on the modern requests metric."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:resource}} == "cpu"
+        | WHERE {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS cores = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | KEEP cores
+    - title_match: "Memory Requested By Containers"
+      primary_format: bytes
+      approximation_note: "kube_pod_container_resource_requests_memory_bytes reshaped to resource=memory, shown as bytes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{label:resource}} == "memory"
+        | WHERE {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS bytes = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | KEEP bytes
+    - title_match: "hpa"
+      kibana_type_override: line
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_max_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_min_replicas:gauge}} IS NOT NULL
+        | STATS Current = AVG(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_max_replicas:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_min_replicas:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:hpa}}
+        | EVAL hpa = {{label:hpa}}
+        | STATS Current = AVG(Current), Max = AVG(Max), Min = AVG(Min) BY time_bucket, hpa
+        | KEEP time_bucket, hpa, Current, Max, Min
+        | SORT time_bucket ASC
+    - title_match: "current==max"
+      kibana_type_override: datatable
+      approximation_note: "HPAs whose current replicas equal the max, as a table. Also follows the cluster and namespace controls."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_max_replicas:gauge}} IS NOT NULL
+        | STATS current = MAX(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), max = MAX(LAST_OVER_TIME({{metric:kube_hpa_spec_max_replicas:gauge}})) BY {{label:namespace}}, {{label:hpa}}
+        | WHERE current == max
+        | EVAL namespace = {{label:namespace}}, hpa = {{label:hpa}}
+        | STATS current = MAX(current), max = MAX(max) BY namespace, hpa
+        | KEEP namespace, hpa, current, max
+        | SORT current DESC
+    - title_match: "current==min"
+      kibana_type_override: datatable
+      approximation_note: "HPAs whose current replicas equal the min, as a table. Also follows the cluster and namespace controls."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_min_replicas:gauge}} IS NOT NULL
+        | STATS current = MAX(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), min = MAX(LAST_OVER_TIME({{metric:kube_hpa_spec_min_replicas:gauge}})) BY {{label:namespace}}, {{label:hpa}}
+        | WHERE current == min
+        | EVAL namespace = {{label:namespace}}, hpa = {{label:hpa}}
+        | STATS current = MAX(current), min = MAX(min) BY namespace, hpa
+        | KEEP namespace, hpa, current, min
+        | SORT current DESC
+    - title_match: "Job last success time from now"
+      kibana_type_override: datatable
+      approximation_note: "Days since completion, one row per job. Grafana collapses the series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_job_status_completion_time:gauge}} > 0
+        | STATS completed_ms = MAX(LAST_OVER_TIME({{metric:kube_job_status_completion_time:gauge}}) * 1000) BY {{label:namespace}}, {{label:job_name}}
+        | EVAL days = DATE_DIFF("days", TO_DATETIME(completed_ms), NOW())
+        | WHERE days > 1
+        | EVAL namespace = {{label:namespace}}, job = {{label:job_name}}
+        | STATS days = MAX(days) BY namespace, job
+        | KEEP namespace, job, days
+        | SORT days DESC
+    - title_match: "Job failed"
+      kibana_type_override: datatable
+      approximation_note: "Jobs with failed pod count greater than 1, one row per job."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE {{metric:kube_job_status_failed:gauge}} IS NOT NULL
+        | STATS failed = MAX(LAST_OVER_TIME({{metric:kube_job_status_failed:gauge}})) BY {{label:namespace}}, {{label:job_name}}
+        | WHERE failed > 1
+        | EVAL namespace = {{label:namespace}}, job = {{label:job_name}}
+        | STATS failed = MAX(failed) BY namespace, job
+        | KEEP namespace, job, failed
+        | SORT failed DESC
+    - title_match: "pvc"
+      kibana_type_override: datatable
+      approximation_note: "Requested storage in GiB, one row per claim. The source table has no by()."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kube_persistentvolumeclaim_resource_requests_storage_bytes:gauge}} IS NOT NULL
+        | STATS bytes = MAX(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_resource_requests_storage_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL GiB = bytes / 1024 / 1024 / 1024
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS GiB = MAX(GiB) BY namespace, claim
+        | KEEP namespace, claim, GiB
+        | SORT GiB DESC
+
+  layout_overrides:
+    - title_match: "Statefuleset"
+      title: "StatefulSets"
+    - title_match: "Cluster Pod Requested"
+      title: "Cluster pod requested"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "Cluster CPU Requested"
+      title: "Cluster CPU requested"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 16, y: 0}
+    - title_match: "Cluster Memory  Requested"
+      title: "Cluster memory requested"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 32, y: 0}
+    - title_match: "Cluster Pod Capacity"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 0, y: 8}
+    - title_match: "Cluster CPU Capacity"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 16, y: 8}
+    - title_match: "Cluster Mem Capacity"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 32, y: 8}
+    - title_match: "Number Of Nodes"
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 0, y: 0}
+    - title_match: "Nodes Unavailable"
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 12, y: 0}
+    - title_match: "Node NotReady"
+      hide_title: false
+      legend_position: right
+      size: {w: 12, h: 10}
+      position: {x: 24, y: 0}
+    - title_match: "Node Pressure"
+      hide_title: false
+      legend_position: right
+      size: {w: 12, h: 10}
+      position: {x: 36, y: 0}
+    - title_match: "node number"
+      title: "Node count"
+      hide_title: false
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 10}
+    - title_match: "Deployment Replicas - Up To Date"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Deployment Replicas"
+      hide_title: false
+      size: {w: 8, h: 14}
+      position: {x: 24, y: 0}
+    - title_match: "Deployment Replicas - Updated"
+      hide_title: false
+      size: {w: 8, h: 14}
+      position: {x: 32, y: 0}
+    - title_match: "Deployment Replicas - Unavailable"
+      hide_title: false
+      size: {w: 8, h: 14}
+      position: {x: 40, y: 0}
+    - title_match: "Statefulset Replicas - Up To Date"
+      title: "StatefulSet replicas ready"
+      hide_title: false
+      size: {w: 18, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Statefulset replicas"
+      title: "StatefulSet ready"
+      hide_title: false
+      legend_position: right
+      size: {w: 30, h: 14}
+      position: {x: 18, y: 0}
+    - title_match: "Pods Running"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "Pods Succeeded"
+      hide_title: false
+      size: {w: 9, h: 8}
+      position: {x: 12, y: 0}
+    - title_match: "Pods Failed"
+      hide_title: false
+      size: {w: 9, h: 8}
+      position: {x: 21, y: 0}
+    - title_match: "Pods Pending"
+      hide_title: false
+      size: {w: 9, h: 8}
+      position: {x: 30, y: 0}
+    - title_match: "Pods Unknown"
+      hide_title: false
+      size: {w: 9, h: 8}
+      position: {x: 39, y: 0}
+    - title_match: "Pods restart in 30m"
+      title: "Pods restarted in 30m"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 8}
+    - title_match: "Evicted"
+      title: "Evicted pods"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 8}
+    - title_match: "Containers Running"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "Containers Waiting"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 12, y: 0}
+    - title_match: "Containers Terminated"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 24, y: 0}
+    - title_match: "Containers Restarts (Last 30 Minutes)"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 36, y: 0}
+    - title_match: "CPU Cores Requested by Containers"
+      hide_title: false
+      size: {w: 24, h: 8}
+      position: {x: 0, y: 8}
+    - title_match: "Memory Requested By Containers"
+      hide_title: false
+      size: {w: 24, h: 8}
+      position: {x: 24, y: 8}
+    - title_match: "hpa"
+      panel_id: 82
+      title: "HPA replicas"
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "total-hpa-current"
+      title: "HPA current replicas"
+      hide_title: false
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 14}
+    - title_match: "current==max"
+      title: "HPAs at max replicas"
+      hide_title: false
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 26}
+    - title_match: "current==min"
+      title: "HPAs at min replicas"
+      hide_title: false
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 26}
+    - title_match: "Jobs Succeeded"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "Jobs Active"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 16, y: 0}
+    - title_match: "Jobs Failed"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 32, y: 0}
+    - title_match: "Job last success time from now"
+      title: "Jobs completed more than a day ago"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 8}
+    - title_match: "Job failed"
+      title: "Jobs failed more than once"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 8}
+    - title_match: "pvc is bound"
+      title: "PVCs bound"
+      hide_title: false
+      size: {w: 24, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "pvc is not bound"
+      title: "PVCs not bound"
+      hide_title: false
+      size: {w: 24, h: 8}
+      position: {x: 24, y: 0}
+    - title_match: "pvc"
+      panel_id: 67
+      title: "PVC storage requested"
+      hide_title: false
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 8}
