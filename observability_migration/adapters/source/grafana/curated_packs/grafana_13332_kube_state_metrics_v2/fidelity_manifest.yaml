@@ -64,7 +64,7 @@ panels:
     notes: "Ready/spec ratio by StatefulSet. Same-bucket percent."
   - title: "Pods restart in 30m"
     fidelity: APPROXIMATE
-    notes: "changes() over 30m approximated as RATE * 1800 on the latest bucket, per pod and container."
+    notes: "changes() over 30m approximated as RATE * 1800 on the latest 30-minute bucket per pod and container."
   - title: "Evicted"
     fidelity: APPROXIMATE
     notes: "Current evicted pods as a table."
@@ -94,7 +94,7 @@ panels:
     notes: "sum(kube_pod_container_status_terminated)."
   - title: "Containers Restarts (Last 30 Minutes)"
     fidelity: APPROXIMATE
-    notes: "sum(changes()) approximated as RATE times 1800s on the latest 30-minute bucket."
+    notes: "sum(changes()) approximated as RATE times 1800s on the latest 30-minute bucket per series."
   - title: "CPU Cores Requested by Containers"
     fidelity: APPROXIMATE
     notes: "Old _cpu_cores metric reshaped to resource=cpu."
@@ -103,16 +103,16 @@ panels:
     notes: "Old _memory_bytes metric reshaped to resource=memory and shown as bytes."
   - title: "hpa"
     fidelity: PERFECT
-    notes: "Current, max, and min replicas by HPA. Kibana title is HPA replicas."
+    notes: "Current, max, and min replicas. Same-named HPAs stay separate as namespace/hpa. Kibana title is HPA replicas."
   - title: "total-hpa-current"
     fidelity: PERFECT
     notes: "Sum of current replicas. Kibana title is HPA current replicas."
   - title: "current==max"
     fidelity: APPROXIMATE
-    notes: "Table of HPAs at their max. Follows cluster and namespace."
+    notes: "Table of HPAs at their max. Source has no cluster or namespace matcher, so the table stays global."
   - title: "current==min"
     fidelity: APPROXIMATE
-    notes: "Table of HPAs at their min. Follows cluster and namespace."
+    notes: "Table of HPAs at their min. Source has no cluster or namespace matcher, so the table stays global."
   - title: "Jobs Succeeded"
     fidelity: PERFECT
     notes: "sum(kube_job_status_succeeded)."

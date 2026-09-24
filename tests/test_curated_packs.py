@@ -5939,8 +5939,78 @@ def test_13332_restart_changes_become_delta_by_pod():
     assert "RATE" in query
     assert "30 minutes" in query
     assert "1800" in query
+    assert "LAST(per_sec, time_bucket)" in query
+    assert "45 minutes" not in query
+    assert query.index("LAST(per_sec, time_bucket)") < query.index("per_sec * 1800")
     assert "k8s.pod.name" in query
     assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_13332_restart_stat_keeps_one_bucket_per_series():
+    panel = {
+        "id": 41,
+        "type": "singlestat",
+        "title": "Containers Restarts (Last 30 Minutes)",
+        "targets": [
+            {
+                "expr": (
+                    "sum(changes(kube_pod_container_status_restarts_total"
+                    '{namespace=~"$namespace",cluster=~"$cluster"}[30m]))'
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "LAST(per_sec, time_bucket)" in query
+    assert "45 minutes" not in query
+    assert "k8s.pod.name" in query
+    assert query.index("LAST(per_sec, time_bucket)") < query.index("per_sec * 1800")
+    assert query.index("per_sec * 1800") < query.index("SUM(restarts)")
+
+
+def test_13332_hpa_chart_splits_namespace_and_name():
+    panel = {
+        "id": 82,
+        "type": "graph",
+        "title": "hpa",
+        "targets": [
+            {
+                "expr": 'kube_hpa_status_current_replicas{cluster=~"$cluster",namespace=~"$namespace"}',
+                "legendFormat": "current_{{hpa}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "k8s.namespace.name" in query
+    assert "CONCAT" in query
+    assert "BY time_bucket, hpa" in query
+
+
+def test_13332_hpa_limit_tables_stay_global():
+    panel = {
+        "id": 90,
+        "type": "graph",
+        "title": "current==max",
+        "targets": [
+            {
+                "expr": 'kube_hpa_status_current_replicas{hpa=~".*"} == kube_hpa_spec_max_replicas{hpa=~".*"}',
+                "legendFormat": "{{hpa}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "?cluster" not in query
+    assert "?namespace" not in query
+    assert "current == max" in query
 
 
 def test_13332_cpu_request_tile_uses_resource_label():
@@ -6096,6 +6166,48 @@ def test_11454_predict_linear_is_days_of_growth():
     assert "available / growth < 7" in query
 
 
+def test_11454_infra_current_table_fits_a_week():
+    panel = {
+        "id": 38,
+        "type": "table",
+        "title": "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current",
+        "targets": [
+            {
+                "expr": (
+                    "predict_linear(kubelet_volume_stats_available_bytes"
+                    '{namespace=~"(openshift-.*|kube-.*|default|logging)"}[1w],'
+                    " 7 * 24 * 60 * 60) < 0"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+    }
+    result, query, yaml_panel = _translate_11454(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "168 hours" in query
+    assert "24 hours" not in query
+    assert "available / growth * 7" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+    user = {
+        "id": 39,
+        "type": "table",
+        "title": "User Namespace Volumes Full in Week Based on Daily Use Rate - Current",
+        "targets": [
+            {
+                "expr": "predict_linear(kubelet_volume_stats_available_bytes[1d], 7 * 24 * 60 * 60) < 0",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+    }
+    _, user_query, _ = _translate_11454(user)
+    assert "24 hours" in user_query
+    assert "168 hours" not in user_query
+    assert "available / growth," in user_query or "available / growth)" in user_query
+
+
 def test_11454_use_rate_windows_stay_distinct():
     def _panel(title, window):
         return {
@@ -6203,7 +6315,10 @@ def test_12660_space_chart_is_capacity_minus_available():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "capacity - available" in query
     assert "free_bytes = available" in query
-    assert "?volume" in query
+    assert "== ?cluster" in query
+    assert "== ?namespace" in query
+    assert "== ?volume" in query
+    assert "RLIKE" not in query
     assert '== "kubelet"' in query
     assert "metrics_path" not in query
     assert yaml_panel["esql"]["type"] == "line"
@@ -6353,7 +6468,7 @@ def test_7187_registry_entry_present():
     assert entry["gnet_revision"] == 1
 
 
-def test_7187_cpu_chart_sums_the_cluster():
+def test_7187_cpu_chart_is_per_node_min_max():
     panel = {
         "id": 1,
         "type": "graph",
@@ -6371,6 +6486,9 @@ def test_7187_cpu_chart_sums_the_cluster():
     assert "cpu_cores" not in query
     assert 'resource == "cpu"' in query or "== \"cpu\"" in query
     assert "SUM(LAST_OVER_TIME" in query
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
+    assert "MAX(limits)" in query
     assert "min(" not in query
     assert yaml_panel["esql"]["type"] == "line"
 
@@ -6391,6 +6509,8 @@ def test_7187_cpu_percent_is_requested_over_allocatable():
     }
     result, query, yaml_panel = _translate_7187(panel)
     assert result.status == "migrated_with_warnings", result.reasons
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
     assert "requested / allocatable * 100" in query
     assert yaml_panel["esql"]["primary"]["format"]["suffix"] == "%"
 
@@ -6413,6 +6533,9 @@ def test_7187_memory_uses_resource_memory_and_bytes():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "memory_bytes" not in query
     assert '== "memory"' in query
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
+    assert "MAX(limits)" in query
     metrics = yaml_panel["esql"].get("metrics") or []
     assert metrics
     assert all(metric.get("format", {}).get("type") == "bytes" for metric in metrics)

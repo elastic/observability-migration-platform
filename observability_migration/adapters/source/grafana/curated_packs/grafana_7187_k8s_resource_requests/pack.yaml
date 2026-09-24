@@ -7,9 +7,9 @@
 #
 # Kubernetes Resource Requests (revision 1). Pre-1.14 metric names
 # (*_cpu_cores, *_memory_bytes) are read from the resource-labeled gauges.
-# Grafana's min/max of per-instance sums is the smallest or largest node;
-# these panels sum the cluster so the percent is total requests over total
-# allocatable.
+# Grafana plots min(sum by instance) of allocatable and max(sum by instance)
+# of requests and limits: the smallest node and the busiest node. The percent
+# tiles divide that max request by that min allocatable.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -29,48 +29,52 @@ panel:
   query_overrides:
     - title_match: "CPU Cores"
       panel_id: 1
-      approximation_note: "Cluster sum of allocatable, requested, and limit CPU. Grafana plotted min or max of the per-instance sum, which is one node rather than the cluster."
+      approximation_note: "Smallest node's allocatable CPU and busiest node's requested and limit CPU. Pre-1.14 *_cpu_cores names are the resource=cpu gauges."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:resource}} == "cpu"
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested), limits = MAX(limits) BY time_bucket
         | KEEP time_bucket, allocatable, requested, limits
         | SORT time_bucket ASC
     - title_match: "CPU Cores"
       panel_id: 2
       primary_format: percent
-      approximation_note: "Requested CPU as a percent of allocatable CPU, both summed across the cluster. The pre-1.14 *_cpu_cores names are the resource=cpu gauges."
+      approximation_note: "Busiest node's requested CPU divided by the smallest node's allocatable CPU, as a percent. The pre-1.14 *_cpu_cores names are the resource=cpu gauges."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:resource}} == "cpu"
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
-        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested)
         | EVAL percent = CASE(allocatable > 0, requested / allocatable * 100, NULL)
         | KEEP percent
     - title_match: "Memory"
       panel_id: 3
-      approximation_note: "Cluster sum of allocatable, requested, and limit memory in bytes. Grafana plotted min or max of the per-instance sum."
+      approximation_note: "Smallest node's allocatable memory and busiest node's requested and limit memory, in bytes. Pre-1.14 *_memory_bytes names are the resource=memory gauges."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:resource}} == "memory"
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested), limits = MAX(limits) BY time_bucket
         | KEEP time_bucket, allocatable, requested, limits
         | SORT time_bucket ASC
     - title_match: "Memory"
       panel_id: 4
       primary_format: percent
-      approximation_note: "Requested memory as a percent of allocatable memory, both summed across the cluster. The pre-1.14 *_memory_bytes names are the resource=memory gauges."
+      approximation_note: "Busiest node's requested memory divided by the smallest node's allocatable memory, as a percent. The pre-1.14 *_memory_bytes names are the resource=memory gauges."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:resource}} == "memory"
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
-        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested)
         | EVAL percent = CASE(allocatable > 0, requested / allocatable * 100, NULL)
         | KEEP percent
 

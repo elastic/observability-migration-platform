@@ -7,7 +7,9 @@
 #
 # Cluster volume dashboard (revision 14). predict_linear() and PromQL `and`
 # inside count() have no ES|QL equivalent. Fill-in-a-week is approximated as
-# available bytes / one-day growth of used bytes. The pinned textbox default
+# available bytes / one-day growth of used bytes. The infrastructure "current"
+# table is the exception: its predict_linear range is a week, so that slope is
+# a week of growth scaled back to a daily rate. The pinned textbox default
 # is 80. OpenShift pv_collector_* counts are replaced with
 # kube_persistentvolumeclaim_status_phase. rate() lookbacks of 1h / 1d / 1w
 # stay distinct via DELTA windows. The Grafana alert list has no Kibana
@@ -83,16 +85,16 @@ panel:
         | KEEP volumes
     - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current"
       kibana_type_override: datatable
-      approximation_note: "Volumes whose one-day used-byte growth would consume available space in under 7 days."
+      approximation_note: "predict_linear(available[1w], 7d) < 0. A week of used-byte growth is scaled to a daily rate so days left stays under 7."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tend - 168 hours AND @timestamp <= ?_tend
         | WHERE {{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)"
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
-        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE bucket >= ?_tend - 2 hours
         | STATS available = MIN(available), growth = MAX(growth) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | EVAL days_left = CASE(growth > 0, available / growth, NULL)
+        | EVAL days_left = CASE(growth > 0, available / growth * 7, NULL)
         | WHERE days_left < 7
         | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
         | STATS days_left = MIN(days_left), available = MAX(available) BY namespace, claim
