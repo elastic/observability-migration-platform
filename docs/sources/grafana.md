@@ -241,9 +241,9 @@ Filesystem KPIs `LAST_OVER_TIME` per device then `SUM`. Unlike 315, `$Node` is
 kept: `kubernetes_io_hostname` rewrites to canonical `instance`, the plugin
 populates from `label_values(machine_cpu_cores, instance)` and marks the control
 multi-select so first paint is Grafana All. Duplicate Used/Total tiles are
-renamed Memory/CPU/Filesystem used/total on a 48-col strip. Title fallback
-cannot distinguish 1621 from 315 (identical grafana.com titles); detection is
-gnetId-only.
+renamed Memory/CPU/Filesystem used/total on a 48-col strip. A copy that drops
+`gnetId` is 1621 when a panel query still contains `^/dev/.*$`; otherwise the
+shared title stays on 315.
 
 The Kubernetes Pod Metrics (747) pack is pod-scoped cAdvisor plus
 kube-state-metrics. Heapster `pod_name` / `io_kubernetes_pod_name` rewrite to

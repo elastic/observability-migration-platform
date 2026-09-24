@@ -78,7 +78,7 @@ panel:
         | WHERE (MV_CONTAINS(TO_STRING(?Pod), ".*") OR MV_CONTAINS(TO_STRING(?Pod), {{label:pod}}))
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL AND {{label:pod_ip}} IS NOT NULL
         | STATS ip = VALUES({{label:pod_ip}}) BY {{label:pod}}
-        | RENAME `{{label:pod}}` AS pod
+        | EVAL pod = TO_STRING({{label:pod}})
         | KEEP pod, ip
         | SORT pod ASC
       status_override: migrated
@@ -103,7 +103,7 @@ panel:
         | WHERE (MV_CONTAINS(TO_STRING(?Pod), ".*") OR MV_CONTAINS(TO_STRING(?Pod), {{label:pod}}))
         | WHERE {{metric:kube_pod_container_info:gauge}} IS NOT NULL AND {{label:container}} IS NOT NULL
         | STATS container = VALUES({{label:container}}) BY {{label:pod}}
-        | RENAME `{{label:pod}}` AS pod
+        | EVAL pod = TO_STRING({{label:pod}})
         | KEEP pod, container
         | SORT pod ASC
       status_override: migrated

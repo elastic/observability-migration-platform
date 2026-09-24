@@ -100,16 +100,27 @@ def test_registry_pack_names_and_paths_are_unique():
 
 def test_registry_title_hints_are_unique():
     """The title fallback matches a dashboard that stripped its ``gnetId`` (and
-    possibly its tags) on exact ``title_hint`` alone. Two packs sharing a
-    ``title_hint`` would make that fallback pick one arbitrarily, so keep them
-    distinct (case-insensitive)."""
+    possibly its tags) on exact ``title_hint`` alone. Two packs may share a
+    title only when each extra pack declares a distinct ``query_contains``
+    fragment and one pack stays the unsigned default.
+    """
+    from collections import defaultdict
+
     entries = load_curated_registry()
-    titles = [
-        (entry.get("title_hint") or "").strip().lower()
-        for entry in entries
-        if (entry.get("title_hint") or "").strip()
-    ]
-    assert len(set(titles)) == len(titles), f"duplicate title_hint in registry: {titles}"
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in entries:
+        hint = (entry.get("title_hint") or "").strip().lower()
+        if hint:
+            groups[hint].append(entry)
+    for hint, group in groups.items():
+        if len(group) == 1:
+            continue
+        signatures = [str(entry.get("query_contains") or "").strip() for entry in group]
+        unsigned = [sig for sig in signatures if not sig]
+        signed = [sig for sig in signatures if sig]
+        assert len(unsigned) <= 1, f"{hint} has more than one unsigned title fallback"
+        assert signed, f"{hint} duplicates need query_contains"
+        assert len(set(signed)) == len(signed), f"duplicate query_contains for {hint}: {signed}"
 
 
 def test_registry_provenance_pin_fields_are_well_formed():
@@ -5915,6 +5926,47 @@ def test_1621_is_not_the_315_pack():
     assert getattr(resolved_315, "_curated_pack_name", "") == "grafana_315_kubernetes_cadvisor"
 
 
+def test_1621_without_gnet_id_matches_the_broad_device_query():
+    """A copy that dropped gnetId still gets 1621 when the filesystem matcher is ^/dev/.*$."""
+    shared = {
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "type": "singlestat",
+                "title": "Cluster filesystem usage",
+                "targets": [
+                    {
+                        "expr": 'sum (container_fs_usage_bytes{device=~"^/dev/.*$",id="/"})',
+                        "refId": "A",
+                    }
+                ],
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(shared, RulePackConfig())
+    assert getattr(resolved, "_curated_pack_name", "") == "grafana_1621_kubernetes_cadvisor"
+
+    narrow = {
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "type": "singlestat",
+                "title": "Cluster filesystem usage",
+                "targets": [
+                    {
+                        "expr": 'sum (container_fs_usage_bytes{device=~"^/dev/[sv]d[a-z][1-9]$",id="/"})',
+                        "refId": "A",
+                    }
+                ],
+            }
+        ],
+    }
+    resolved_315 = resolve_pack_for_dashboard(narrow, RulePackConfig())
+    assert getattr(resolved_315, "_curated_pack_name", "") == "grafana_315_kubernetes_cadvisor"
+
+
 def test_1621_keeps_node_via_instance_not_ignored_hostname():
     resolved, _ = _resolve_1621()
     assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
@@ -6116,6 +6168,38 @@ def test_747_text_panel_becomes_pod_ip_datatable():
     assert "?Pod" in query
     assert "IS NOT NULL" in query
     assert yaml_panel.get("esql", {}).get("type") == "datatable"
+    breakdowns = [item.get("field") for item in yaml_panel["esql"].get("breakdowns") or []]
+    metrics = [item.get("field") for item in yaml_panel["esql"].get("metrics") or []]
+    assert breakdowns == ["pod"]
+    assert "ip" in metrics
+    assert "pod" not in metrics
+
+
+def test_747_pod_container_datatable_groups_by_pod():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 35,
+        "type": "text",
+        "title": "Pod Container",
+        "content": "# $container",
+        "mode": "markdown",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "datatable"
+    breakdowns = [item.get("field") for item in esql.get("breakdowns") or []]
+    metrics = [item.get("field") for item in esql.get("metrics") or []]
+    assert breakdowns == ["pod"]
+    assert "container" in metrics
+    assert "pod" not in metrics
 
 
 def test_747_restarts_uses_counter_total_and_exact_pod():
