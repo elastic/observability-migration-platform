@@ -8,8 +8,9 @@
 # kube-state-metrics v2 (revision 12). Modern resource= labels on the cluster
 # tiles; two container request tiles still use the pre-split
 # `_cpu_cores` / `_memory_bytes` names. `changes()` has no ES|QL equivalent
-# and is approximated with DELTA over 30 minutes. Tables whose PromQL has a
-# legend but no by() are grouped explicitly so they list one row per object.
+# and is RATE on the latest 30-minute bucket per series, times 1800. Tables
+# whose PromQL has a legend but no by() are grouped explicitly so they list
+# one row per object. HPA min/max tables stay cluster-wide.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -159,7 +160,7 @@ panel:
         | SORT ready DESC
     - title_match: "Pods restart in 30m"
       kibana_type_override: datatable
-      approximation_note: "changes() over 30m is the counter increase. ES|QL DELTA rejects counter fields, so this is RATE (per second) times 1800 on the latest 30-minute bucket."
+      approximation_note: "changes() over 30m is the counter increase. ES|QL DELTA rejects counter fields, so this is RATE (per second) times 1800 on the latest 30-minute bucket per pod and container."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -167,7 +168,8 @@ panel:
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
         | STATS per_sec = SUM(RATE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:namespace}}, {{label:pod}}, {{label:container}}
-        | WHERE time_bucket >= ?_tend - 45 minutes
+        | WHERE time_bucket >= ?_tend - 30 minutes
+        | STATS per_sec = LAST(per_sec, time_bucket) BY {{label:namespace}}, {{label:pod}}, {{label:container}}
         | EVAL restarts = per_sec * 1800
         | WHERE restarts > 1
         | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}
@@ -190,15 +192,16 @@ panel:
         | STATS evicted = MAX(evicted) BY namespace, pod
         | KEEP namespace, pod, evicted
     - title_match: "Containers Restarts (Last 30 Minutes)"
-      approximation_note: "changes() over 30m is the counter increase. ES|QL DELTA rejects counter fields, so this is RATE (per second) times 1800 on the latest 30-minute bucket."
+      approximation_note: "sum(changes()) over 30m. ES|QL DELTA rejects counter fields, so each series contributes RATE times 1800 from its latest 30-minute bucket only."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
-        | STATS per_sec = SUM(RATE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(30 minutes)
-        | WHERE time_bucket >= ?_tend - 45 minutes
+        | STATS per_sec = SUM(RATE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:namespace}}, {{label:pod}}, {{label:container}}
+        | WHERE time_bucket >= ?_tend - 30 minutes
+        | STATS per_sec = LAST(per_sec, time_bucket) BY {{label:namespace}}, {{label:pod}}, {{label:container}}
         | EVAL restarts = per_sec * 1800
         | STATS restarts = SUM(restarts)
         | KEEP restarts
@@ -233,19 +236,17 @@ panel:
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_max_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_min_replicas:gauge}} IS NOT NULL
-        | STATS Current = AVG(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_max_replicas:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_min_replicas:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:hpa}}
-        | EVAL hpa = {{label:hpa}}
+        | STATS Current = AVG(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), Max = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_max_replicas:gauge}})), Min = AVG(LAST_OVER_TIME({{metric:kube_hpa_spec_min_replicas:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:hpa}}
+        | EVAL hpa = CONCAT(COALESCE(TO_STRING({{label:namespace}}), ""), "/", COALESCE(TO_STRING({{label:hpa}}), ""))
         | STATS Current = AVG(Current), Max = AVG(Max), Min = AVG(Min) BY time_bucket, hpa
         | KEEP time_bucket, hpa, Current, Max, Min
         | SORT time_bucket ASC
     - title_match: "current==max"
       kibana_type_override: datatable
-      approximation_note: "HPAs whose current replicas equal the max, as a table. Also follows the cluster and namespace controls."
+      approximation_note: "HPAs whose current replicas equal the max, as a table. The source matcher is hpa=~\".*\" with no cluster or namespace filter, so this stays global like the current-replicas chart."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_max_replicas:gauge}} IS NOT NULL
         | STATS current = MAX(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), max = MAX(LAST_OVER_TIME({{metric:kube_hpa_spec_max_replicas:gauge}})) BY {{label:namespace}}, {{label:hpa}}
         | WHERE current == max
@@ -255,12 +256,10 @@ panel:
         | SORT current DESC
     - title_match: "current==min"
       kibana_type_override: datatable
-      approximation_note: "HPAs whose current replicas equal the min, as a table. Also follows the cluster and namespace controls."
+      approximation_note: "HPAs whose current replicas equal the min, as a table. The source matcher is hpa=~\".*\" with no cluster or namespace filter, so this stays global like the current-replicas chart."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE {{metric:kube_hpa_status_current_replicas:gauge}} IS NOT NULL OR {{metric:kube_hpa_spec_min_replicas:gauge}} IS NOT NULL
         | STATS current = MAX(LAST_OVER_TIME({{metric:kube_hpa_status_current_replicas:gauge}})), min = MAX(LAST_OVER_TIME({{metric:kube_hpa_spec_min_replicas:gauge}})) BY {{label:namespace}}, {{label:hpa}}
         | WHERE current == min
