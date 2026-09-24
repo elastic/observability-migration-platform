@@ -1,0 +1,114 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15760 Kubernetes / Views / Pods (revision 41).
+
+schema_version: 1
+gnet_id: 15760
+gnet_revision: 41
+dashboard_title: "Kubernetes / Views / Pods"
+maintainer: "community"
+
+panels:
+  - title: "Created by"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+  - title: "Running on"
+    panel_id: 33
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+  - title: "Pod IP"
+    panel_id: 41
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+  - title: "Priority Class"
+    panel_id: 52
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string. Pods with an empty priority class are omitted, matching the source."
+  - title: "QOS Class"
+    panel_id: 53
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+  - title: "Last Terminated Reason"
+    panel_id: 56
+    fidelity: APPROXIMATE
+    notes: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+  - title: "Last Terminated Exit Code"
+    panel_id: 57
+    fidelity: APPROXIMATE
+    notes: "Exit code per container. The source stat showed one number for the whole selection."
+  - title: "Total pod CPU Requests usage"
+    panel_id: 39
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "Total pod CPU Limits usage"
+    panel_id: 48
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "Total pod RAM Requests usage"
+    panel_id: 40
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "Total pod RAM Limits usage"
+    panel_id: 49
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "Resources by container"
+    panel_id: 38
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes."
+  - title: "CPU Usage / Requests & Limits by container"
+    panel_id: 50
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "Memory Usage / Requests & Limits by container"
+    panel_id: 30
+    fidelity: APPROXIMATE
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+  - title: "CPU Usage by container"
+    panel_id: 29
+    fidelity: APPROXIMATE
+    notes: "Cores by container. The cAdvisor id is not a second series; Lens has one breakdown. Empty container names are omitted."
+  - title: "Memory Usage by container"
+    panel_id: 51
+    fidelity: APPROXIMATE
+    notes: "Working set by container. max_over_time is the max in each bucket. The cAdvisor id is not a second series."
+  - title: "CPU Throttled seconds by container"
+    panel_id: 59
+    fidelity: APPROXIMATE
+    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container."
+  - title: "OOM Events by container"
+    panel_id: 60
+    fidelity: APPROXIMATE
+    notes: "Increase over the dashboard time range, by container. The source axis max of 1 is kept."
+  - title: "Container Restarts by container"
+    panel_id: 61
+    fidelity: APPROXIMATE
+    notes: "Increase over the dashboard time range, by container. An empty job selection shows every job; a chosen job keeps only that series. The source axis max of 1 is kept."
+  - title: "Pods with Container Issues"
+    panel_id: 63
+    fidelity: APPROXIMATE
+    notes: "Pods waiting on image pull or crash loop, cluster-wide, matching the source query which does not use the namespace or pod controls."
+  - title: "Unscheduled Pods"
+    panel_id: 64
+    fidelity: APPROXIMATE
+    notes: "Pods whose scheduled condition is false, cluster-wide, matching the source query."
+  - title: "Network - Bandwidth"
+    panel_id: 31
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network - Packets Rate"
+    panel_id: 34
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network - Packets Dropped"
+    panel_id: 36
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network - Errors"
+    panel_id: 37
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
