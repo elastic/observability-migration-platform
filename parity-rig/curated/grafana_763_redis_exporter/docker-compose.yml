@@ -386,7 +386,7 @@ services:
 
   # Synthetic Kubernetes exporter (cAdvisor + kube-state-metrics + node_exporter
   # + cluster-autoscaler + app HTTP) so the Kubernetes curated packs
-  # (Grafana 315, 6417, 741, 3831, 1471) validate on real data.
+  # (Grafana 315, 1621, 747, 6417, 741, 3831, 1471) validate on real data.
   k8s_exporter:
     image: python:3.11-slim
     container_name: redis-rig-k8s-exporter

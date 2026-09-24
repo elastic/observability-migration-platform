@@ -1,0 +1,95 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 1621 (Kubernetes cluster monitoring via Prometheus)
+# https://grafana.com/grafana/dashboards/1621
+#
+# Fork of 315 whose Cluster Filesystem usage sums every cAdvisor `/dev/*`
+# partition instead of `/dev/[sv]d[a-z][1-9]`. `$Node` is kept (via instance)
+# rather than dropped.
+
+schema_version: 1
+gnet_id: 1621
+gnet_revision: 1
+dashboard_title: "Kubernetes cluster monitoring (via Prometheus)"
+maintainer: "community"
+
+panels:
+  - title: "Network I/O pressure"
+    fidelity: PERFECT
+    notes: "sum(rate(receive/transmit)) butterfly named Received/Sent; bound to $Node via labels.instance."
+
+  - title: "Cluster memory usage"
+    fidelity: APPROXIMATE
+    notes: "root-cgroup working set / machine_memory_bytes. requires: machine_memory_bytes + id=/ series. Cross-metric ratio."
+  - title: "Cluster CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "root-cgroup CPU rate / machine_cpu_cores. requires: machine_cpu_cores + id=/ series."
+  - title: "Cluster filesystem usage"
+    fidelity: PERFECT
+    notes: "1621 differentiator vs 315: SUM of every device starting with /dev/ (nvme, extra disks included). Per-device LAST_OVER_TIME then SUM. requires: container_fs_* with a /dev/ device label."
+  - title: "Memory used"
+    fidelity: APPROXIMATE
+    notes: "sum(container_memory_working_set_bytes{id=/}). Kibana title renamed from duplicate Used."
+  - title: "Memory total"
+    fidelity: APPROXIMATE
+    notes: "sum(machine_memory_bytes)."
+  - title: "CPU used"
+    fidelity: APPROXIMATE
+    notes: "sum(rate(container_cpu_usage_seconds_total{id=/}))."
+  - title: "CPU total"
+    fidelity: APPROXIMATE
+    notes: "sum(machine_cpu_cores)."
+  - title: "Filesystem used"
+    fidelity: PERFECT
+    notes: "All /dev/* partitions (not 315's [sv]d[a-z][1-9] regex)."
+  - title: "Filesystem total"
+    fidelity: PERFECT
+    notes: "All /dev/* partition limits."
+
+  - title: "Pods CPU usage (1m avg)"
+    fidelity: PERFECT
+    notes: "Curated ES|QL groups by canonical pod; Node bound via instance."
+  - title: "Pods memory usage"
+    fidelity: PERFECT
+    notes: "LAST_OVER_TIME working set by pod."
+  - title: "Pods network I/O (1m avg)"
+    fidelity: PERFECT
+    notes: "Received/Sent by pod (native butterfly would emit Value B)."
+
+  - title: "Containers CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "k8s pod/container series only; docker/rkt dropped."
+  - title: "Containers memory usage"
+    fidelity: APPROXIMATE
+    notes: "As above."
+  - title: "Containers network I/O (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "As above; Received/Sent by pod."
+
+  - title: "System services CPU usage (1m avg)"
+    fidelity: GAP
+    notes: "systemd_service_name absent on modern cAdvisor; impossible-filter override → honest empty."
+  - title: "System services memory usage"
+    fidelity: GAP
+    notes: "Same systemd gap."
+  - title: "All processes CPU usage (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "Grouped by cgroup id excluding /."
+  - title: "All processes memory usage"
+    fidelity: APPROXIMATE
+    notes: "As above."
+  - title: "All processes network I/O (1m avg)"
+    fidelity: APPROXIMATE
+    notes: "As above; Received/Sent."
+
+summary:
+  total_panels: 21
+  perfect: 7
+  approximate: 12
+  gap: 2
+  notes: >
+    Same cAdvisor lineage as 315, but filesystem KPIs aggregate every /dev/*
+    partition (the reason this dashboard exists) and $Node filters via
+    instance instead of being dropped. Duplicate Used/Total titles are renamed
+    Memory/CPU/Filesystem used/total on a 48-col Kibana KPI strip.

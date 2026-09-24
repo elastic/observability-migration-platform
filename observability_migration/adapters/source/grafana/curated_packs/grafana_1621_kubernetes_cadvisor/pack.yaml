@@ -1,0 +1,349 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 1621
+# https://grafana.com/grafana/dashboards/1621
+#
+# Source: community "Kubernetes cluster monitoring (via Prometheus)".
+# Revision 1. schemaVersion 12 (old `rows[]` layout), 21 panels across 13 rows.
+# Same dashboard as 315 except Cluster Filesystem usage aggregates every
+# cAdvisor `device=~"^/dev/.*$"` partition instead of 315's
+# `^/dev/[sv]d[a-z][1-9]$` (misses nvme / extra disks).
+# Metric family: cAdvisor container_* + machine_* (NOT kube-state-metrics).
+#
+# Unlike 315 this pack keeps `$Node` working: kubernetes_io_hostname rewrites
+# to canonical instance and plugin.py populates from machine_cpu_cores.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    container_cpu_usage_seconds_total: counter
+    container_network_receive_bytes_total: counter
+    container_network_transmit_bytes_total: counter
+    container_memory_working_set_bytes: gauge
+    container_fs_usage_bytes: gauge
+    container_fs_limit_bytes: gauge
+    machine_cpu_cores: gauge
+    machine_memory_bytes: gauge
+
+  # Source→canonical only; the resolver namespaces per --field-profile.
+  label_rewrites:
+    pod_name: pod
+    container_name: container
+    kubernetes_io_hostname: instance
+
+  source_label_names:
+    pod: pod_name
+    container: container_name
+    instance: kubernetes_io_hostname
+
+  # Dead cAdvisor selector labels. Do NOT ignore kubernetes_io_hostname — it
+  # is rewritten to instance so $Node actually filters.
+  ignored_labels:
+    - image
+    - name
+
+controls:
+  field_overrides:
+    Node: instance
+    node: instance
+
+panel:
+  query_overrides:
+    # --- Cluster KPI strip ------------------------------------------------
+    - title_match: "Cluster memory usage"
+      panel_id: 4
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | STATS used = SUM(CASE({{label:id}} == "/", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(total > 0, used / total, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Cluster CPU usage (1m avg)"
+      panel_id: 6
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | STATS used = SUM(CASE({{label:id}} == "/", RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | EVAL computed_value = CASE(total > 0, used / total, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    # 1621's differentiator vs 315: aggregate every /dev/* partition, not just
+    # /dev/[sv]d[a-z][1-9]. Per-device LAST_OVER_TIME then SUM so mixed-device
+    # series do not collapse incorrectly.
+    - title_match: "Cluster filesystem usage"
+      panel_id: 7
+      primary_format: percentunit
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} == "/" AND STARTS_WITH(TO_STRING({{label:device}}), "/dev/")
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}})), limit = SUM(LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:device}}
+        | STATS usage = SUM(usage), limit = SUM(limit) BY time_bucket
+        | EVAL computed_value = CASE(limit > 0, usage / limit, NULL)
+        | WHERE computed_value IS NOT NULL
+        | SORT time_bucket DESC
+        | LIMIT 1
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Used"
+      panel_id: 9
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} == "/"
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 10
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Used"
+      panel_id: 11
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} == "/"
+        | STATS computed_value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 12
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | STATS computed_value = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}}))
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Used"
+      panel_id: 13
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} == "/" AND STARTS_WITH(TO_STRING({{label:device}}), "/dev/")
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}})) BY {{label:device}}
+        | STATS computed_value = SUM(usage)
+        | KEEP computed_value
+      status_override: migrated
+    - title_match: "Total"
+      panel_id: 14
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} == "/" AND STARTS_WITH(TO_STRING({{label:device}}), "/dev/")
+        | STATS limit = SUM(LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}})) BY {{label:device}}
+        | STATS computed_value = SUM(limit)
+        | KEEP computed_value
+      status_override: migrated
+
+    - title_match: "Network I/O pressure"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)
+        | KEEP time_bucket, Received, Sent
+        | SORT time_bucket ASC
+      status_override: migrated
+
+    - title_match: "Containers CPU usage (1m avg)"
+      approximation_note: "Dropped obsolete docker (name!~^k8s_) and rkt (rkt_container_name) runtime series; modern cAdvisor only emits the k8s pod/container series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
+        | KEEP time_bucket, `{{label:pod}}`, `{{label:container}}`, value
+        | SORT time_bucket ASC
+    - title_match: "Containers memory usage"
+      approximation_note: "Dropped obsolete docker and rkt runtime series; modern cAdvisor only emits the k8s pod/container series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} IS NOT NULL AND {{label:container}} != "POD"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}, {{label:container}}
+        | KEEP time_bucket, `{{label:pod}}`, `{{label:container}}`, value
+        | SORT time_bucket ASC
+    - title_match: "Containers network I/O (1m avg)"
+      approximation_note: "Dropped obsolete docker and rkt runtime series; only the k8s pod series remain (received positive, sent negative)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, Received, Sent
+        | SORT time_bucket ASC
+    - title_match: "Pods network I/O (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:pod}} IS NOT NULL AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, Received, Sent
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "All processes CPU usage (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `{{label:id}}`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "All processes memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:id}} IS NOT NULL AND {{label:id}} != "/"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `{{label:id}}`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "All processes network I/O (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{label:id}} IS NOT NULL AND {{label:id}} != "/" AND ({{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL)
+        | STATS Received = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), Sent = 0 - SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:id}}
+        | KEEP time_bucket, `{{label:id}}`, Received, Sent
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Pods CPU usage (1m avg)"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "Pods memory usage"
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (MV_CONTAINS(TO_STRING(?Node), ".*") OR MV_CONTAINS(TO_STRING(?Node), {{label:instance}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:pod}} IS NOT NULL
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:pod}}
+        | KEEP time_bucket, `{{label:pod}}`, value
+        | SORT time_bucket ASC
+      status_override: migrated
+    - title_match: "System services CPU usage (1m avg)"
+      approximation_note: "systemd system-service series (systemd_service_name) are a pre-1.16 cAdvisor relabel artifact; modern cAdvisor does not emit them, so this panel is an honest empty (data_gap)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} == "__systemd_service__"
+        | STATS value = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:container}}
+        | KEEP time_bucket, `{{label:container}}`, value
+        | SORT time_bucket ASC
+    - title_match: "System services memory usage"
+      approximation_note: "systemd system-service series are a pre-1.16 cAdvisor relabel artifact; modern cAdvisor does not emit them, so this panel is an honest empty (data_gap)."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} == "__systemd_service__"
+        | STATS value = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(20, ?_tstart, ?_tend), {{label:container}}
+        | KEEP time_bucket, `{{label:container}}`, value
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "Network I/O pressure"
+      size: {w: 48, h: 12}
+    - title_match: "Cluster memory usage"
+      panel_id: 4
+      position: {x: 0, y: 0}
+      size: {w: 16, h: 12}
+    - title_match: "Cluster CPU usage (1m avg)"
+      panel_id: 6
+      position: {x: 16, y: 0}
+      size: {w: 16, h: 12}
+    - title_match: "Cluster filesystem usage"
+      panel_id: 7
+      position: {x: 32, y: 0}
+      size: {w: 16, h: 12}
+    - title_match: "Used"
+      panel_id: 9
+      title: "Memory used"
+      position: {x: 0, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Total"
+      panel_id: 10
+      title: "Memory total"
+      position: {x: 8, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Used"
+      panel_id: 11
+      title: "CPU used"
+      position: {x: 16, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Total"
+      panel_id: 12
+      title: "CPU total"
+      position: {x: 24, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Used"
+      panel_id: 13
+      title: "Filesystem used"
+      position: {x: 32, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Total"
+      panel_id: 14
+      title: "Filesystem total"
+      position: {x: 40, y: 12}
+      size: {w: 8, h: 8}
+    - title_match: "Pods CPU usage (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "Pods memory usage"
+      size: {w: 48, h: 12}
+    - title_match: "Pods network I/O (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "Containers CPU usage (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "Containers memory usage"
+      size: {w: 48, h: 12}
+    - title_match: "Containers network I/O (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "All processes CPU usage (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "All processes memory usage"
+      size: {w: 48, h: 12}
+    - title_match: "All processes network I/O (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "System services CPU usage (1m avg)"
+      size: {w: 48, h: 12}
+    - title_match: "System services memory usage"
+      size: {w: 48, h: 12}

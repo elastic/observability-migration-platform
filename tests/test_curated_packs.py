@@ -100,16 +100,27 @@ def test_registry_pack_names_and_paths_are_unique():
 
 def test_registry_title_hints_are_unique():
     """The title fallback matches a dashboard that stripped its ``gnetId`` (and
-    possibly its tags) on exact ``title_hint`` alone. Two packs sharing a
-    ``title_hint`` would make that fallback pick one arbitrarily, so keep them
-    distinct (case-insensitive)."""
+    possibly its tags) on exact ``title_hint`` alone. Two packs may share a
+    title only when each extra pack declares a distinct ``query_contains``
+    fragment and one pack stays the unsigned default.
+    """
+    from collections import defaultdict
+
     entries = load_curated_registry()
-    titles = [
-        (entry.get("title_hint") or "").strip().lower()
-        for entry in entries
-        if (entry.get("title_hint") or "").strip()
-    ]
-    assert len(set(titles)) == len(titles), f"duplicate title_hint in registry: {titles}"
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in entries:
+        hint = (entry.get("title_hint") or "").strip().lower()
+        if hint:
+            groups[hint].append(entry)
+    for hint, group in groups.items():
+        if len(group) == 1:
+            continue
+        signatures = [str(entry.get("query_contains") or "").strip() for entry in group]
+        unsigned = [sig for sig in signatures if not sig]
+        signed = [sig for sig in signatures if sig]
+        assert len(unsigned) <= 1, f"{hint} has more than one unsigned title fallback"
+        assert signed, f"{hint} duplicates need query_contains"
+        assert len(set(signed)) == len(signed), f"duplicate query_contains for {hint}: {signed}"
 
 
 def test_registry_provenance_pin_fields_are_well_formed():
@@ -180,7 +191,7 @@ def test_registry_pins_match_community_corpus_when_revision_aligns():
         for entry in corpus["dashboards"]
     }
     # New packs in this PR. 9628 is pack rev 1 vs corpus rev 8 — no join.
-    new_pack_ids = {7362, 9628, 14114, 12485, 315, 6417, 741, 8171, 3831, 1471}
+    new_pack_ids = {7362, 9628, 14114, 12485, 315, 1621, 747, 6417, 741, 8171, 3831, 1471}
     mismatches = []
     for entry in load_curated_registry():
         gnet_id = int(entry["gnet_id"])
@@ -5880,3 +5891,524 @@ def test_1471_memory_total_uses_last_over_time():
     assert "container_memory_usage_bytes" in query
     assert "container_spec_memory_limit_bytes" in query
     assert "`limit`" in query or "limit" in query
+
+
+# ---------------------------------------------------------------------------
+# Grafana 1621 — Kubernetes cluster monitoring (cAdvisor, /dev/* filesystem)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_1621():
+    dashboard = {
+        "gnetId": 1621,
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def test_1621_registry_entry_present():
+    entry = find_curated_pack(gnet_id=1621, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_1621_kubernetes_cadvisor"
+    assert entry["gnet_revision"] == 1
+    assert entry["dashboard_sha256"] == (
+        "d714551536ca794e3088ac535e59b3d2f93dd705e3b60f84d6f3c42da40fe9d4"
+    )
+
+
+def test_1621_is_not_the_315_pack():
+    """Same title as 315; gnetId 1621 must not resolve the 315 pack."""
+    resolved, _ = _resolve_1621()
+    assert getattr(resolved, "_curated_pack_name", "") == "grafana_1621_kubernetes_cadvisor"
+    resolved_315, _ = _resolve_315()
+    assert getattr(resolved_315, "_curated_pack_name", "") == "grafana_315_kubernetes_cadvisor"
+
+
+def test_1621_without_gnet_id_matches_the_broad_device_query():
+    """A copy that dropped gnetId still gets 1621 when the filesystem matcher is ^/dev/.*$."""
+    shared = {
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "type": "singlestat",
+                "title": "Cluster filesystem usage",
+                "targets": [
+                    {
+                        "expr": 'sum (container_fs_usage_bytes{device=~"^/dev/.*$",id="/"})',
+                        "refId": "A",
+                    }
+                ],
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(shared, RulePackConfig())
+    assert getattr(resolved, "_curated_pack_name", "") == "grafana_1621_kubernetes_cadvisor"
+
+    narrow = {
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "type": "singlestat",
+                "title": "Cluster filesystem usage",
+                "targets": [
+                    {
+                        "expr": 'sum (container_fs_usage_bytes{device=~"^/dev/[sv]d[a-z][1-9]$",id="/"})',
+                        "refId": "A",
+                    }
+                ],
+            }
+        ],
+    }
+    resolved_315 = resolve_pack_for_dashboard(narrow, RulePackConfig())
+    assert getattr(resolved_315, "_curated_pack_name", "") == "grafana_315_kubernetes_cadvisor"
+
+
+def test_1621_keeps_node_via_instance_not_ignored_hostname():
+    resolved, _ = _resolve_1621()
+    assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
+    assert "kubernetes_io_hostname" not in resolved.ignored_labels
+    assert resolved.control_field_overrides.get("Node") == "instance"
+
+
+def test_1621_filesystem_aggregates_all_dev_partitions():
+    resolved, resolver = _resolve_1621()
+    panel = {
+        "id": 7,
+        "type": "singlestat",
+        "title": "Cluster filesystem usage",
+        "targets": [
+            {
+                "expr": (
+                    'sum (container_fs_usage_bytes{device=~"^/dev/.*$",id="/"}'
+                    ") / sum (container_fs_limit_bytes{device=~\"^/dev/.*$\",id=\"/\"}) * 100"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "STARTS_WITH" in query
+    assert "/dev/" in query
+    assert "[sv]d" not in query
+    assert "?Node" in query
+    assert "container_fs_usage_bytes" in query
+    assert "container_fs_limit_bytes" in query
+
+
+def test_1621_pods_cpu_binds_node_and_groups_by_pod():
+    resolved, resolver = _resolve_1621()
+    panel = {
+        "id": 17,
+        "type": "graph",
+        "title": "Pods CPU usage (1m avg)",
+        "targets": [
+            {
+                "expr": (
+                    "sum (rate (container_cpu_usage_seconds_total"
+                    '{image!="",name=~"^k8s_.*",kubernetes_io_hostname=~"^$Node$"}[1m]))'
+                    " by (pod_name)"
+                ),
+                "legendFormat": "{{ pod_name }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "k8s.pod.name" in query
+    assert "RATE(container_cpu_usage_seconds_total)" in query
+    assert "?Node" in query
+    assert "kubernetes_io_hostname" not in query
+
+
+def test_1621_layout_renames_duplicate_used_total():
+    resolved, _ = _resolve_1621()
+    by_id = {str(item.get("panel_id") or ""): item for item in resolved.panel_layout_overrides}
+    assert by_id["9"]["title"] == "Memory used"
+    assert by_id["10"]["title"] == "Memory total"
+    assert by_id["11"]["title"] == "CPU used"
+    assert by_id["12"]["title"] == "CPU total"
+    assert by_id["13"]["title"] == "Filesystem used"
+    assert by_id["14"]["title"] == "Filesystem total"
+    assert by_id["4"]["position"] == {"x": 0, "y": 0}
+    assert by_id["6"]["position"] == {"x": 16, "y": 0}
+    assert by_id["7"]["position"] == {"x": 32, "y": 0}
+
+
+def test_1621_plugin_rewrites_node_to_multi_select_instance():
+    dashboard = {
+        "gnetId": 1621,
+        "title": "Kubernetes cluster monitoring (via Prometheus)",
+        "tags": ["kubernetes"],
+        "templating": {
+            "list": [
+                {
+                    "name": "Node",
+                    "type": "query",
+                    "query": "label_values(kubernetes_io_hostname)",
+                    "includeAll": True,
+                    "allValue": ".*",
+                    "multi": False,
+                }
+            ]
+        },
+        "rows": [
+            {
+                "title": "Total usage",
+                "panels": [
+                    {
+                        "id": 12,
+                        "type": "singlestat",
+                        "title": "Total",
+                        "targets": [{"expr": "sum(machine_cpu_cores)", "refId": "A"}],
+                        "span": 2,
+                    }
+                ],
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    by_name = {c.get("variable_name"): c for c in controls}
+    assert "Node" in by_name, controls
+    node = by_name["Node"]
+    assert node.get("multiple") is True
+    assert "machine_cpu_cores" in str(node.get("query") or "")
+    assert "kubernetes_io_hostname" not in str(node.get("query") or "")
+
+
+# ---------------------------------------------------------------------------
+# Grafana 747 — Kubernetes Pod Metrics
+# ---------------------------------------------------------------------------
+
+
+def _resolve_747():
+    dashboard = {
+        "gnetId": 747,
+        "title": "Kubernetes Pod Metrics",
+        "tags": ["kubernetes"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def test_747_registry_entry_present():
+    entry = find_curated_pack(gnet_id=747, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_747_kubernetes_pod_metrics"
+    assert entry["gnet_revision"] == 2
+
+
+def test_747_maps_restarts_and_heapster_labels():
+    resolved, _ = _resolve_747()
+
+    def _target(name):
+        entry = resolved.metric_map[name]
+        return getattr(entry, "target", str(entry))
+
+    assert _target("kube_pod_container_status_restarts").endswith(
+        "kube_pod_container_status_restarts_total"
+    )
+    assert resolved.metric_kinds["kube_pod_container_status_restarts_total"] == "counter"
+    assert resolved.label_rewrites["pod_name"] == "pod"
+    assert resolved.label_rewrites["io_kubernetes_pod_name"] == "pod"
+    assert resolved.label_rewrites["kubernetes_io_hostname"] == "instance"
+
+
+def test_747_text_panel_becomes_pod_ip_datatable():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 34,
+        "type": "text",
+        "title": "Pod IP Address",
+        "content": "# $Pod_ip",
+        "mode": "markdown",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "markdown" not in yaml_panel
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "kube_pod_info" in query
+    assert "pod_ip" in query
+    assert "?Pod" in query
+    assert "IS NOT NULL" in query
+    assert yaml_panel.get("esql", {}).get("type") == "datatable"
+    breakdowns = [item.get("field") for item in yaml_panel["esql"].get("breakdowns") or []]
+    metrics = [item.get("field") for item in yaml_panel["esql"].get("metrics") or []]
+    assert breakdowns == ["pod"]
+    assert "ip" in metrics
+    assert "pod" not in metrics
+
+
+def test_747_pod_container_datatable_groups_by_pod():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 35,
+        "type": "text",
+        "title": "Pod Container",
+        "content": "# $container",
+        "mode": "markdown",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    esql = yaml_panel.get("esql") or {}
+    assert esql.get("type") == "datatable"
+    breakdowns = [item.get("field") for item in esql.get("breakdowns") or []]
+    metrics = [item.get("field") for item in esql.get("metrics") or []]
+    assert breakdowns == ["pod"]
+    assert "container" in metrics
+    assert "pod" not in metrics
+
+
+def test_747_restarts_uses_counter_total_and_exact_pod():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 41,
+        "type": "singlestat",
+        "title": "Container restarts",
+        "targets": [
+            {
+                "expr": 'kube_pod_container_status_restarts{pod=~"$Pod.*$"}',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "kube_pod_container_status_restarts_total" in query
+    assert "kube_pod_container_status_restarts{" not in query
+    assert "?Pod" in query
+    assert "IS NOT NULL" in query
+
+
+def test_747_pods_cpu_groups_by_canonical_pod():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 17,
+        "type": "graph",
+        "title": "Pods CPU usage",
+        "targets": [
+            {
+                "expr": (
+                    "sum (rate (container_cpu_usage_seconds_total"
+                    '{image!="",name=~"^k8s_.*",pod_name=~"^$Pod$"}[1m]))'
+                    " by (io_kubernetes_pod_name)"
+                ),
+                "legendFormat": "{{ io_kubernetes_pod_name }}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "k8s.pod.name" in query
+    assert "io_kubernetes_pod_name" not in query
+    assert "?Pod" in query
+
+
+def test_747_network_names_received_and_sent():
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 16,
+        "type": "graph",
+        "title": "Pods network I/O",
+        "targets": [
+            {
+                "expr": (
+                    "sum (rate (container_network_receive_bytes_total"
+                    '{pod_name=~"^$Pod$"}[1m])) by (io_kubernetes_pod_name)'
+                ),
+                "legendFormat": "-> {{ io_kubernetes_pod_name }}",
+                "refId": "A",
+            },
+            {
+                "expr": (
+                    "- sum (rate (container_network_transmit_bytes_total"
+                    '{pod_name=~"^$Pod$"}[1m])) by (io_kubernetes_pod_name)'
+                ),
+                "legendFormat": "<- {{ io_kubernetes_pod_name }}",
+                "refId": "B",
+            },
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "Received" in query and "Sent" in query
+
+
+def test_747_plugin_rewrites_node_and_marks_pod_multi():
+    dashboard = {
+        "gnetId": 747,
+        "title": "Kubernetes Pod Metrics",
+        "tags": ["kubernetes"],
+        "templating": {
+            "list": [
+                {
+                    "name": "Node",
+                    "type": "query",
+                    "query": "label_values(kubernetes_io_hostname)",
+                    "includeAll": True,
+                    "allValue": ".*",
+                    "multi": False,
+                },
+                {
+                    "name": "Pod",
+                    "type": "query",
+                    "query": "label_values(kube_pod_info, pod)",
+                    "includeAll": True,
+                    "allValue": ".*",
+                    "multi": False,
+                },
+                {
+                    "name": "Pod_ip",
+                    "type": "query",
+                    "query": "label_values(kube_pod_info, pod_ip)",
+                    "hide": 2,
+                },
+            ]
+        },
+        "rows": [
+            {
+                "title": "Pod Info",
+                "panels": [
+                    {
+                        "id": 41,
+                        "type": "singlestat",
+                        "title": "Container restarts",
+                        "targets": [
+                            {
+                                "expr": (
+                                    'kube_pod_container_status_restarts{pod=~"$Pod.*$"}'
+                                ),
+                                "refId": "A",
+                            }
+                        ],
+                        "span": 3,
+                    }
+                ],
+            }
+        ],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+    )
+    payload = result.dashboard_ir.to_yaml_dict()
+    controls = payload.get("controls") or []
+    by_name = {c.get("variable_name"): c for c in controls}
+    assert "Node" in by_name and "Pod" in by_name, controls
+    assert "Pod_ip" not in by_name
+    assert by_name["Node"].get("multiple") is True
+    assert by_name["Pod"].get("multiple") is True
+    assert "machine_cpu_cores" in str(by_name["Node"].get("query") or "")
+    assert "kube_pod_info" in str(by_name["Pod"].get("query") or "")
+
+
+def test_747_memory_used_requires_pod_label():
+    """PromQL pod=~ excludes series with no pod; MV_CONTAINS(null) does not."""
+    resolved, resolver = _resolve_747()
+    panel = {
+        "id": 36,
+        "type": "singlestat",
+        "title": "Used",
+        "targets": [
+            {
+                "expr": 'sum (container_memory_working_set_bytes{pod_name=~"^$Pod$"})',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert "k8s.pod.name IS NOT NULL" in query
+    assert "container_memory_working_set_bytes" in query
+    assert "?Pod" in query
+
+
+def test_747_layout_renames_cpu_total_to_node_cpu():
+    resolved, _ = _resolve_747()
+    by_id = {str(item.get("panel_id") or ""): item for item in resolved.panel_layout_overrides}
+    assert by_id["36"]["title"] == "Memory used"
+    assert by_id["37"]["title"] == "Memory total"
+    assert by_id["38"]["title"] == "CPU used"
+    assert by_id["39"]["title"] == "Node CPU"
+    assert by_id["4"]["position"] == {"x": 0, "y": 0}
+    assert by_id["6"]["position"] == {"x": 24, "y": 0}
+

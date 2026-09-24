@@ -4095,20 +4095,34 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         )
 
     if panel_type == "text":
-        content = _normalized_text_panel_content(panel)
-        yaml_panel["markdown"] = {"content": content or "*(migrated text panel)*"}
-        if not str(panel.get("title") or "").strip():
-            yaml_panel["hide_title"] = True
-        panel_result = PanelResult(title, panel_type, "markdown", "migrated", 1.0)
-        return yaml_panel, _enrich_panel_result(
-            panel_result,
-            panel=panel,
-            datasource=datasource,
-            query_language="text",
-            notes=panel_notes,
-            inventory=panel_inventory,
-            yaml_panel=yaml_panel,
-        )
+        # Curated packs may replace Grafana markdown that only interpolates
+        # template variables (``# $Pod_ip``) with a live ES|QL metric tile.
+        # Without an override, keep the existing markdown path.
+        _text_override = None
+        if rule_pack.panel_query_overrides:
+            _text_override = _select_panel_pack_override(
+                rule_pack.panel_query_overrides,
+                title,
+                section_title=section_title,
+                panel_id=panel.get("id") or panel.get("panelId") or "",
+            )
+        if not (
+            _text_override and str(_text_override.get("esql_query") or "").strip()
+        ):
+            content = _normalized_text_panel_content(panel)
+            yaml_panel["markdown"] = {"content": content or "*(migrated text panel)*"}
+            if not str(panel.get("title") or "").strip():
+                yaml_panel["hide_title"] = True
+            panel_result = PanelResult(title, panel_type, "markdown", "migrated", 1.0)
+            return yaml_panel, _enrich_panel_result(
+                panel_result,
+                panel=panel,
+                datasource=datasource,
+                query_language="text",
+                notes=panel_notes,
+                inventory=panel_inventory,
+                yaml_panel=yaml_panel,
+            )
 
     if panel_analysis.get("mixed_datasource"):
         reasons = ["Mixed datasource or query-language panel targets require manual redesign"]

@@ -402,7 +402,7 @@ def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
     title = str(dashboard.get("title") or "")
     tags = list(dashboard.get("tags") or [])
 
-    entry = find_curated_pack(gnet_id=gnet_id, title=title, tags=tags)
+    entry = find_curated_pack(gnet_id=gnet_id, title=title, tags=tags, dashboard=dashboard)
     if entry is None:
         return None
 
