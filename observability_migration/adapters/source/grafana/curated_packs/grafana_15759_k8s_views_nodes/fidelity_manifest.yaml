@@ -1,0 +1,154 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15759 Kubernetes / Views / Nodes (revision 40).
+
+schema_version: 1
+gnet_id: 15759
+gnet_revision: 40
+dashboard_title: "Kubernetes / Views / Nodes"
+maintainer: "community"
+
+panels:
+  - title: "CPU  Usage"
+    panel_id: 7
+    fidelity: APPROXIMATE
+    notes: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree."
+  - title: "RAM Usage"
+    panel_id: 13
+    fidelity: APPROXIMATE
+    notes: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit."
+  - title: "Pods on node"
+    panel_id: 24
+    fidelity: APPROXIMATE
+    notes: "Count of pods on the selected node. The info series is 1 per pod; the tile sums that count."
+  - title: "List of pods on node"
+    panel_id: 5
+    fidelity: APPROXIMATE
+    notes: "Namespace and pod for the selected node. The stock grouping was the node and cluster, so the table did not list pods."
+  - title: "CPU Used"
+    panel_id: 9
+    fidelity: PERFECT
+    notes: "Stock translation matches the source expression. Layout uses the 48-column grid."
+  - title: "CPU Total"
+    panel_id: 11
+    fidelity: PERFECT
+    notes: "Stock translation matches the source expression. Layout uses the 48-column grid."
+  - title: "RAM Used"
+    panel_id: 15
+    fidelity: PERFECT
+    notes: "Stock translation matches the source expression. Layout uses the 48-column grid."
+  - title: "RAM Total"
+    panel_id: 17
+    fidelity: PERFECT
+    notes: "Stock translation matches the source expression. Layout uses the 48-column grid."
+  - title: "uptime"
+    panel_id: 18
+    fidelity: PERFECT
+    notes: "Stock translation matches the source expression. Layout uses the 48-column grid."
+  - title: "CPU Usage"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Percent of the selected instance in each CPU mode. Idle stays, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Memory Usage"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "RAM used, total, cache, buffers, and free, plus swap used and total, for the selected instance. The instance is a filter, not a series."
+  - title: "CPU usage by Pod"
+    panel_id: 26
+    fidelity: APPROXIMATE
+    notes: "Cores by pod on the selected node. Empty-image pause containers are included. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Memory usage by Pod"
+    panel_id: 28
+    fidelity: APPROXIMATE
+    notes: "Working set summed by pod on the selected node."
+  - title: "Number of CPU Core Throttled"
+    panel_id: 66
+    fidelity: APPROXIMATE
+    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "System Load"
+    panel_id: 48
+    fidelity: APPROXIMATE
+    notes: "1, 5, and 15 minute load for the selected instance. The instance is a filter, not a series."
+  - title: "Context Switches & Interrupts"
+    panel_id: 46
+    fidelity: APPROXIMATE
+    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "File Descriptors"
+    panel_id: 49
+    fidelity: APPROXIMATE
+    notes: "Allocated and maximum file descriptors for the selected instance."
+  - title: "Time Sync"
+    panel_id: 50
+    fidelity: APPROXIMATE
+    notes: "Estimated error and maximum error, in seconds, for the selected instance."
+  - title: "Network usage (bytes/s)"
+    panel_id: 20
+    fidelity: APPROXIMATE
+    notes: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network errors"
+    panel_id: 61
+    fidelity: APPROXIMATE
+    notes: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network usage (packet/s)"
+    panel_id: 62
+    fidelity: APPROXIMATE
+    notes: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Network total drops"
+    panel_id: 64
+    fidelity: APPROXIMATE
+    notes: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "TCP Currently Established"
+    panel_id: 60
+    fidelity: APPROXIMATE
+    notes: "Established TCP connections for the selected instance."
+  - title: "NF Conntrack"
+    panel_id: 63
+    fidelity: APPROXIMATE
+    notes: "Conntrack entries and the limit for the selected instance."
+  - title: "Persistent Volumes - Usage in %"
+    panel_id: 30
+    fidelity: APPROXIMATE
+    notes: "Used bytes over capacity per claim on the selected node. The ratio stays 0-1, matching percentunit and the source axis. Same-bucket division."
+  - title: "Persistent Volumes - Usage in GB"
+    panel_id: 34
+    fidelity: APPROXIMATE
+    notes: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value."
+  - title: "Persistent Volumes - Inodes"
+    panel_id: 32
+    fidelity: APPROXIMATE
+    notes: "Used inodes as a percent of total inodes, per claim on the selected node."
+  - title: "FS usage in %"
+    panel_id: 33
+    fidelity: APPROXIMATE
+    notes: "100 minus available over size, per mountpoint, for the selected instance."
+  - title: "FS inode usage in %"
+    panel_id: 59
+    fidelity: APPROXIMATE
+    notes: "100 minus free files over total files, per mountpoint, for the selected instance."
+  - title: "Reads by disk (bytes)"
+    panel_id: 52
+    fidelity: APPROXIMATE
+    notes: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Writes by disk (bytes)"
+    panel_id: 57
+    fidelity: APPROXIMATE
+    notes: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Completed reads by disk"
+    panel_id: 51
+    fidelity: APPROXIMATE
+    notes: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Completed writes by disk"
+    panel_id: 56
+    fidelity: APPROXIMATE
+    notes: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "Disk(s) io/s"
+    panel_id: 58
+    fidelity: APPROXIMATE
+    notes: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+  - title: "FS - Device Errors"
+    panel_id: 55
+    fidelity: APPROXIMATE
+    notes: "Device errors summed by mountpoint for the selected instance."
