@@ -376,19 +376,41 @@ class NativeEligibilityGateTests(unittest.TestCase):
         # ``on(device)``. The gate must see it: otherwise the expression skips
         # both halves and an incapable target gets a native query it answers with
         # a hard error instead of an ES|QL panel.
+        #
+        # Being seen is the whole requirement — the comment must then decide
+        # nothing. Comments are stripped before the expression is flattened
+        # (issue #443), so ``_clean_promql_for_native`` produces the same valid
+        # ``... / on (device) ...`` it produces for the comment-free spelling and
+        # a capable target routes both identically. An earlier revision asserted
+        # ``False`` for the capable case, reasoning that flattening would fold the
+        # operand after the comment into the comment line; that ordering no longer
+        # exists, and keeping the assertion would have let comment prose decide
+        # routing — the thing #443 fixed, and the rule
+        # ``docs/sources/grafana.md`` states as "comment text never decides
+        # routing either".
         for matcher in ("on", "ignoring"):
             expr = (
                 f"sum by (device) ({RX}) / {matcher} # which labels\n"
                 f"(device) sum by (device) ({TX})"
             )
+            comment_free = (
+                f"sum by (device) ({RX}) / {matcher}(device) sum by (device) ({TX})"
+            )
             with self.subTest(matcher=matcher):
+                # #440's bug: the matcher is visible, so an incapable target
+                # declines instead of being handed a query it cannot plan.
                 self.assertFalse(can_use_native_promql(expr, runtime_features={}))
-                # A capable target declines too, and that is the safe answer:
-                # ``_clean_promql_for_native`` flattens the expression to one
-                # line, which would fold the operand after the comment into it.
-                # The shape check runs on that flattened text and reports an
-                # indeterminate operand, so the panel keeps ES|QL either way.
-                self.assertFalse(can_use_native_promql(expr, runtime_features=CAPABLE))
+                # And a capable target accepts it, because what is left after
+                # stripping is the documented native-eligible shape -- an
+                # aggregation on both sides of the matched operator.
+                self.assertTrue(can_use_native_promql(expr, runtime_features=CAPABLE))
+                # Stronger than either line above, and guards both directions at
+                # once: whatever the verdict is, the comment does not change it.
+                for features in ({}, CAPABLE):
+                    self.assertEqual(
+                        can_use_native_promql(expr, runtime_features=features),
+                        can_use_native_promql(comment_free, runtime_features=features),
+                    )
 
     def test_a_comment_does_not_hide_an_unconditionally_blocked_construct(self):
         # Same root cause, other gate: the sanitizer feeds every structural
@@ -410,6 +432,28 @@ class NativeEligibilityGateTests(unittest.TestCase):
             with self.subTest(quote=quote):
                 self.assertFalse(can_use_native_promql(expr, runtime_features={}))
                 self.assertTrue(can_use_native_promql(expr, runtime_features=CAPABLE))
+
+    def test_an_escaped_backtick_in_a_label_value_does_not_delete_the_matcher(self):
+        # The scanner treats a backslash as an escape in all three string forms,
+        # matching the parser every gate downstream uses, so this label value
+        # leaves the backquoted string open and the ``#`` is data. A scanner that
+        # treated backticks as raw instead dropped out of string state at the
+        # escaped backtick and deleted ``#c`} / on(device) ...`` as a comment --
+        # taking the matcher with it. The gate then saw a plain aggregation and
+        # offered native PROMQL to a target that cannot evaluate ``on()``, which
+        # is exactly the hiding this issue is about. ``panels.py`` carried such a
+        # copy, shadowing the canonical one, until it was removed (issue #455).
+        expr = (
+            f"sum by (device) ({RX}{{path=`a\\`b#c`}})"
+            f" / on(device) sum by (device) ({TX})"
+        )
+        # The mechanism: the matcher survives sanitization.
+        self.assertIn("on(device)", panels._sanitize_promql_structure(expr))
+        # The consequence: neither target goes native. The string really is
+        # unterminated for the parser, so the shape check reports an
+        # indeterminate operand -- the safe answer for input that does not parse.
+        self.assertFalse(can_use_native_promql(expr, runtime_features={}))
+        self.assertFalse(can_use_native_promql(expr, runtime_features=CAPABLE))
 
     def test_comment_handling_does_not_weaken_the_flattening_based_gates(self):
         # ``_promql_has_known_server_bug`` and ``_promql_has_unsupported_comparison``
