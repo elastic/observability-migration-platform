@@ -139,9 +139,11 @@ packs:
 
   - gnet_id: 1621
     name: grafana_1621_kubernetes_cadvisor
-    # Title is identical to 315; leave title_hint empty so title-only fallback
-    # keeps resolving 315 (the original). 1621 is gnetId-only.
-    title_hint: ""
+    # Same grafana.com title as 315. A copy that dropped gnetId is 1621 only
+    # when a panel query still has this filesystem matcher; otherwise the
+    # unsigned 315 title_hint wins.
+    title_hint: "Kubernetes cluster monitoring (via Prometheus)"
+    query_contains: '^/dev/.*$'
     tags_hint: ["kubernetes"]
     path: grafana_1621_kubernetes_cadvisor
     gnet_revision: 1

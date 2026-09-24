@@ -118,7 +118,9 @@ def resolve_pack_for_dashboard(dashboard: dict, base_pack: RulePackConfig) -> Ru
    re-imports often strip both `gnetId` and tags; an empty tag list still
    matches. When the dashboard still has tags *and* the pack declares
    `tags_hint`, require overlap so a similarly titled unrelated dashboard
-   does not pick up the pack.
+   does not pick up the pack. Packs that share a title declare
+   `query_contains`; the fragment that appears in a panel `expr` wins, and
+   the pack with no fragment stays the default.
 3. Returns `None` if nothing matches
 
 **Merge semantics** — same logic as `load_rule_pack_files` today:
