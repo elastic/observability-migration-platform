@@ -14,16 +14,16 @@ panels:
   - title: "CPU Cores"
     panel_id: 1
     fidelity: APPROXIMATE
-    notes: "Cluster sum of allocatable, requested, and limit CPU. Source min/max of per-instance sums is one node."
+    notes: "Smallest node's allocatable CPU and the busiest node's requests and limits. *_cpu_cores reshaped onto resource=cpu."
   - title: "CPU Cores"
     panel_id: 2
     fidelity: APPROXIMATE
-    notes: "Requested CPU percent of allocatable, summed across the cluster. *_cpu_cores reshaped onto resource=cpu."
+    notes: "Busiest-node CPU request over smallest-node allocatable. *_cpu_cores reshaped onto resource=cpu."
   - title: "Memory"
     panel_id: 3
     fidelity: APPROXIMATE
-    notes: "Cluster sum of allocatable, requested, and limit memory in bytes."
+    notes: "Smallest node's allocatable memory and the busiest node's requests and limits, in bytes."
   - title: "Memory"
     panel_id: 4
     fidelity: APPROXIMATE
-    notes: "Requested memory percent of allocatable, summed across the cluster. *_memory_bytes reshaped onto resource=memory."
+    notes: "Busiest-node memory request over smallest-node allocatable. *_memory_bytes reshaped onto resource=memory."

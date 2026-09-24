@@ -28,7 +28,7 @@ panels:
     notes: "pv_collector_unbound_pvc_count replaced with phase!=Bound."
   - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current"
     fidelity: APPROXIMATE
-    notes: "Table of infrastructure volumes with days of space left under 7."
+    notes: "predict_linear over 1w extrapolated 7d. Week of used-byte growth scaled to a daily rate; days left under 7."
   - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
     fidelity: APPROXIMATE
     notes: "Count of at-risk infrastructure volumes over time."

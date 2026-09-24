@@ -6,8 +6,9 @@
 # https://grafana.com/grafana/dashboards/12660-kubernetes-persistent-volumes/
 #
 # Kubernetes / Persistent Volumes (revision 1). One volume at a time, selected
-# by cluster, namespace, and persistentvolumeclaim. Used bytes are
-# capacity minus available, matching the graph. The percent tiles use the
+# by cluster, namespace, and persistentvolumeclaim, as exact matches.
+# Used bytes are capacity minus available, matching the graph. The percent
+# tiles use the
 # same sum across instance and node so they agree with the chart when more
 # than one kubelet reports the volume. The scrape path selector is omitted:
 # metrics_path is not stored as a metric dimension, and a WHERE on it is an
@@ -31,9 +32,9 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:job}} == "kubelet"
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
-        | WHERE (?volume == "" OR ({{label:persistentvolumeclaim}} RLIKE ?volume OR ({{label:persistentvolumeclaim}} IS NULL AND "" RLIKE ?volume)))
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
         | WHERE {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
         | STATS capacity = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL used_bytes = capacity - available
@@ -48,9 +49,9 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:job}} == "kubelet"
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
-        | WHERE (?volume == "" OR ({{label:persistentvolumeclaim}} RLIKE ?volume OR ({{label:persistentvolumeclaim}} IS NULL AND "" RLIKE ?volume)))
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
         | WHERE {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
         | STATS capacity = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}}))
         | EVAL percent = CASE(capacity > 0, (capacity - available) / capacity * 100, NULL)
@@ -62,9 +63,9 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:job}} == "kubelet"
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
-        | WHERE (?volume == "" OR ({{label:persistentvolumeclaim}} RLIKE ?volume OR ({{label:persistentvolumeclaim}} IS NULL AND "" RLIKE ?volume)))
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
         | WHERE {{metric:kubelet_volume_stats_inodes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_inodes_used:gauge}} IS NOT NULL
         | STATS inodes = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes:gauge}})), used = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes_used:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL used_inodes = used
@@ -79,9 +80,9 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:job}} == "kubelet"
-        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
-        | WHERE (?volume == "" OR ({{label:persistentvolumeclaim}} RLIKE ?volume OR ({{label:persistentvolumeclaim}} IS NULL AND "" RLIKE ?volume)))
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
         | WHERE {{metric:kubelet_volume_stats_inodes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_inodes_used:gauge}} IS NOT NULL
         | STATS inodes = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes:gauge}})), used = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes_used:gauge}}))
         | EVAL percent = CASE(inodes > 0, used / inodes * 100, NULL)
