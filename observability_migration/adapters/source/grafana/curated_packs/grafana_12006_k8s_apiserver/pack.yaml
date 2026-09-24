@@ -1,0 +1,152 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 12006
+# https://grafana.com/grafana/dashboards/12006-kubernetes-apiserver/
+#
+# Kubernetes apiserver (revision 1). Latency charts name p95, p90, and p50.
+# histogram_quantile on *_bucket series is PERCENTILE of the duration gauge
+# (t-digest samples, not Prometheus bucket interpolation). Request rate stays
+# one series per verb. CONNECT and WATCH stay off the request-latency chart.
+# The two bottom charts share one row.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    apiserver_request_total: counter
+    etcd_helper_cache_hit_total: counter
+    etcd_helper_cache_miss_total: counter
+    apiserver_request_duration_seconds: gauge
+    apiserver_request_duration_seconds_bucket: counter
+    etcd_request_duration_seconds: gauge
+    etcd_request_duration_seconds_bucket: counter
+    workqueue_queue_duration_seconds: gauge
+    workqueue_queue_duration_seconds_bucket: counter
+    workqueue_work_duration_seconds: gauge
+    workqueue_work_duration_seconds_bucket: counter
+
+  live_optional_metrics:
+    - apiserver_request_total
+    - apiserver_request_duration_seconds
+    - apiserver_request_duration_seconds_bucket
+    - workqueue_queue_duration_seconds
+    - workqueue_queue_duration_seconds_bucket
+    - workqueue_work_duration_seconds
+    - workqueue_work_duration_seconds_bucket
+    - etcd_helper_cache_hit_total
+    - etcd_helper_cache_miss_total
+    - etcd_request_duration_seconds
+    - etcd_request_duration_seconds_bucket
+
+panel:
+  query_overrides:
+    - title_match: "apiserver request rate"
+      panel_id: 8
+      kibana_type_override: line
+      approximation_note: "Requests per second by verb. The 5m rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:apiserver_request_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:apiserver_request_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:verb}}
+        | EVAL verb = {{label:verb}}
+        | STATS requests = AVG(requests) BY time_bucket, verb
+        | KEEP time_bucket, verb, requests
+        | SORT time_bucket ASC
+    - title_match: "workqueue service time"
+      panel_id: 10
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of workqueue queue duration. Prometheus histogram_quantile on the bucket series is PERCENTILE of the duration gauge."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:workqueue_queue_duration_seconds:gauge}} IS NOT NULL OR {{metric:workqueue_queue_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS p95 = PERCENTILE({{metric:workqueue_queue_duration_seconds:gauge}}, 95), p90 = PERCENTILE({{metric:workqueue_queue_duration_seconds:gauge}}, 90), p50 = PERCENTILE({{metric:workqueue_queue_duration_seconds:gauge}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+    - title_match: "apiserver request latency"
+      panel_id: 2
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of request duration. CONNECT and WATCH are excluded, matching the source. histogram_quantile is PERCENTILE of the duration gauge."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:verb}} != "CONNECT" AND {{label:verb}} != "WATCH"
+        | WHERE {{metric:apiserver_request_duration_seconds:gauge}} IS NOT NULL OR {{metric:apiserver_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS p95 = PERCENTILE({{metric:apiserver_request_duration_seconds:gauge}}, 95), p90 = PERCENTILE({{metric:apiserver_request_duration_seconds:gauge}}, 90), p50 = PERCENTILE({{metric:apiserver_request_duration_seconds:gauge}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+    - title_match: "workqueue processing time"
+      panel_id: 12
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of workqueue processing duration. histogram_quantile is PERCENTILE of the duration gauge."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:workqueue_work_duration_seconds:gauge}} IS NOT NULL OR {{metric:workqueue_work_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS p95 = PERCENTILE({{metric:workqueue_work_duration_seconds:gauge}}, 95), p90 = PERCENTILE({{metric:workqueue_work_duration_seconds:gauge}}, 90), p50 = PERCENTILE({{metric:workqueue_work_duration_seconds:gauge}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+    - title_match: "etcd request latency"
+      panel_id: 4
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of etcd request duration. histogram_quantile is PERCENTILE of the duration gauge."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:etcd_request_duration_seconds:gauge}} IS NOT NULL OR {{metric:etcd_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS p95 = PERCENTILE({{metric:etcd_request_duration_seconds:gauge}}, 95), p90 = PERCENTILE({{metric:etcd_request_duration_seconds:gauge}}, 90), p50 = PERCENTILE({{metric:etcd_request_duration_seconds:gauge}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+    - title_match: "etcd helper cache hit ratio"
+      panel_id: 6
+      kibana_type_override: line
+      approximation_note: "Cache hits divided by hits plus misses. The ratio stays 0-1, matching the source axis."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:etcd_helper_cache_hit_total:counter}} IS NOT NULL OR {{metric:etcd_helper_cache_miss_total:counter}} IS NOT NULL
+        | STATS hits = SUM(RATE({{metric:etcd_helper_cache_hit_total:counter}})), misses = SUM(RATE({{metric:etcd_helper_cache_miss_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL ratio = CASE(hits + misses > 0, hits / (hits + misses), NULL)
+        | KEEP time_bucket, ratio
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "apiserver request rate"
+      panel_id: 8
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "workqueue service time"
+      panel_id: 10
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 0}
+    - title_match: "apiserver request latency"
+      panel_id: 2
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 14}
+    - title_match: "workqueue processing time"
+      panel_id: 12
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 14}
+    - title_match: "etcd request latency"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 28}
+    - title_match: "etcd helper cache hit ratio"
+      panel_id: 6
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 28}

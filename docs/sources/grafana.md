@@ -355,6 +355,35 @@ they keep the source axis max of 1. The issue and unscheduled tables stay
 cluster-wide, as in the source queries. The job control filters restarts;
 leaving it empty shows every job.
 
+The global view (15757) turns the CPU and memory bargauges into Real,
+Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
+reading a kube-prometheus-stack cluster shows after the source averages or
+sums the two OS series. Requests and limits stay ratios of machine capacity
+on the gauges and absolute cores or bytes on the stat tiles. The resource
+count chart names each object; namespaces use `kube_namespace_created`, and
+object types the target did not ingest are left off the chart. Namespace
+charts drop the Windows `+ on(namespace)` join. Received traffic is positive
+and transmitted is negative. Virtual devices matching `veth`, `azv`, or `lxc`
+stay off the device chart. An empty job selection is every job. The
+`resolution` variable is a scrape step; chart buckets follow the dashboard
+time range.
+
+The persistent-volume dashboard (13646) approximates `predict_linear` full-in
+2 days, 5 days, and 1 week as available bytes divided by one day of used-byte
+growth. The warning tile counts claims at or above 80% used, the revision-2
+textbox default. The claim table shows capacity, used, and available in GiB,
+used percent, and the phase name. Storage class and volume name are omitted
+because the info series does not share the kubelet label set. Hourly, daily,
+and weekly rates keep those windows (`DELTA` over 1 hour, 24 hours, and 168
+hours). An empty namespace selection is every namespace.
+
+The apiserver dashboard (12006) names latency series p95, p90, and p50.
+`histogram_quantile` on the bucket series is `PERCENTILE` of the duration
+gauge. Request rate stays one series per verb. CONNECT and WATCH stay off
+the request-latency chart. The cache hit ratio is hits divided by hits plus
+misses and stays on a 0–1 scale. The etcd latency chart shares a row with
+the cache hit ratio.
+
 The node view (15759) lists pods on the selected node. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
 underneath and the pod list beside both rows. Uptime stays a plain duration:

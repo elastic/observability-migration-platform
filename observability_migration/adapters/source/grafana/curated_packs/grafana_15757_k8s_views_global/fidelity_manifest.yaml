@@ -1,0 +1,118 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15757 Kubernetes / Views / Global (revision 43).
+
+schema_version: 1
+gnet_id: 15757
+gnet_revision: 43
+dashboard_title: "Kubernetes / Views / Global"
+maintainer: "community"
+
+panels:
+  - title: "Global CPU  Usage"
+    panel_id: 77
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, and Limits tiles. Windows is omitted, so Real is the Linux busy fraction. The ratio stays 0-1."
+  - title: "Global RAM Usage"
+    panel_id: 78
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, and Limits tiles. Windows is omitted. The ratio stays 0-1."
+  - title: "Nodes"
+    panel_id: 63
+    fidelity: APPROXIMATE
+    notes: "Count of kube_node_info rows, one per node."
+  - title: "Namespaces"
+    panel_id: 59
+    fidelity: PERFECT
+    notes: "Count of kube_namespace_created."
+  - title: "Running Pods"
+    panel_id: 62
+    fidelity: PERFECT
+    notes: "Sum of the Running phase series."
+  - title: "CPU Usage"
+    panel_id: 37
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, Limits, and Total in cores. Windows is omitted."
+  - title: "RAM Usage"
+    panel_id: 39
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, Limits, and Total in bytes. Windows is omitted."
+  - title: "Kubernetes Resource Count"
+    panel_id: 52
+    fidelity: APPROXIMATE
+    notes: "Named series per object. Namespaces use kube_namespace_created. Absent object types are omitted."
+  - title: "Cluster CPU Utilization"
+    panel_id: 72
+    fidelity: APPROXIMATE
+    notes: "Linux busy fraction. Windows is omitted. The ratio stays 0-1."
+  - title: "Cluster Memory Utilization"
+    panel_id: 55
+    fidelity: APPROXIMATE
+    notes: "Linux memory in use. Windows is omitted. The ratio stays 0-1."
+  - title: "CPU Utilization by namespace"
+    panel_id: 46
+    fidelity: APPROXIMATE
+    notes: "Cores by namespace. The Windows join is omitted. POD containers are excluded."
+  - title: "Memory Utilization by namespace"
+    panel_id: 50
+    fidelity: APPROXIMATE
+    notes: "Working set by namespace. The Windows join is omitted."
+  - title: "CPU Utilization by instance"
+    panel_id: 54
+    fidelity: APPROXIMATE
+    notes: "Busy fraction by instance. The source legend says node. Windows is omitted."
+  - title: "Memory Utilization by instance"
+    panel_id: 73
+    fidelity: APPROXIMATE
+    notes: "Used bytes by instance. Windows is omitted."
+  - title: "CPU Throttled seconds by namespace"
+    panel_id: 82
+    fidelity: APPROXIMATE
+    notes: "Namespaces above zero only. POD containers are excluded."
+  - title: "CPU Core Throttled by instance"
+    panel_id: 83
+    fidelity: APPROXIMATE
+    notes: "Throttled cores by instance. An empty job selection is every job."
+  - title: "Kubernetes Pods QoS classes"
+    panel_id: 84
+    fidelity: APPROXIMATE
+    notes: "Pods by QoS class. The extra total-pods line is not drawn again."
+  - title: "Kubernetes Pods Status Reason"
+    panel_id: 85
+    fidelity: APPROXIMATE
+    notes: "Pods by status reason."
+  - title: "OOM Events by namespace"
+    panel_id: 87
+    fidelity: APPROXIMATE
+    notes: "Increase over the dashboard time range, namespaces above zero."
+  - title: "Container Restarts by namespace"
+    panel_id: 88
+    fidelity: APPROXIMATE
+    notes: "Increase over the dashboard time range, namespaces above zero."
+  - title: "Global Network Utilization by device"
+    panel_id: 44
+    fidelity: APPROXIMATE
+    notes: "Received positive, transmitted negative, virtual devices excluded. Windows is omitted."
+  - title: "Network Saturation - Packets dropped"
+    panel_id: 53
+    fidelity: APPROXIMATE
+    notes: "Received drops positive, transmitted drops negative. Windows is omitted."
+  - title: "Network Received by namespace"
+    panel_id: 79
+    fidelity: APPROXIMATE
+    notes: "Received positive, transmitted negative, by namespace. The Windows join is omitted."
+  - title: "Total Network Received (with all virtual devices) by instance"
+    panel_id: 80
+    fidelity: APPROXIMATE
+    notes: "Both directions by instance, including virtual devices. Windows is omitted."
+  - title: "Network Received (without loopback)  by instance"
+    panel_id: 56
+    fidelity: APPROXIMATE
+    notes: "Loopback and virtual devices excluded. Windows is omitted."
+  - title: "Network Received (loopback only) by instance"
+    panel_id: 81
+    fidelity: APPROXIMATE
+    notes: "Loopback only. Received positive, transmitted negative."

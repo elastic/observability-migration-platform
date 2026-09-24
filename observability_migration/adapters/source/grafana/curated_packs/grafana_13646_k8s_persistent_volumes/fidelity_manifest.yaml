@@ -1,0 +1,62 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 13646 kubernetes-persistent-volumes (revision 2).
+
+schema_version: 1
+gnet_id: 13646
+gnet_revision: 2
+dashboard_title: "kubernetes-persistent-volumes"
+maintainer: "community"
+
+panels:
+  - title: "PVCs Full in 2 days - Based on Daily Usage"
+    panel_id: 22
+    fidelity: APPROXIMATE
+    notes: "predict_linear over 2 days approximated as available / one-day used-byte growth."
+  - title: "PVCs Full in 5 days - Based on Daily Usage"
+    panel_id: 28
+    fidelity: APPROXIMATE
+    notes: "Same one-day growth approximation, for a 5-day horizon."
+  - title: "PVCs Full in 1 Week - Based on Daily Usage"
+    panel_id: 27
+    fidelity: APPROXIMATE
+    notes: "Same one-day growth approximation, for a 7-day horizon."
+  - title: "PVCs Above Warning Threshold"
+    panel_id: 21
+    fidelity: APPROXIMATE
+    notes: "Claims at or above 80% used. The textbox default is 80."
+  - title: "PVCs in Pending State"
+    panel_id: 24
+    fidelity: APPROXIMATE
+    notes: "Count of Pending phase series. Shows 0 when other claims exist."
+  - title: "PVCs in Lost State"
+    panel_id: 23
+    fidelity: APPROXIMATE
+    notes: "Count of Lost phase series."
+  - title: "Persistent Volume Claim"
+    panel_id: 29
+    fidelity: APPROXIMATE
+    notes: "GiB and used percent per claim, with phase name. Storage class and volume name are omitted."
+  - title: "Storage Class"
+    panel_id: 7
+    fidelity: APPROXIMATE
+    notes: "Storage class, provisioner, reclaim policy, and volume binding mode."
+  - title: "All Running PVCs Used Bytes"
+    panel_id: 9
+    fidelity: APPROXIMATE
+    notes: "Used bytes, one series per namespace / claim."
+  - title: "Hourly Volume Usage Rate"
+    panel_id: 11
+    fidelity: APPROXIMATE
+    notes: "DELTA over 1 hour divided by 3600."
+  - title: "Daily Volume Usage Rate"
+    panel_id: 12
+    fidelity: APPROXIMATE
+    notes: "DELTA over 24 hours divided by 86400."
+  - title: "Weekly Volume Usage Rate"
+    panel_id: 13
+    fidelity: APPROXIMATE
+    notes: "DELTA over 168 hours divided by 604800. Points are daily."
