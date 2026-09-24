@@ -1,0 +1,38 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 12006 Kubernetes apiserver (revision 1).
+
+schema_version: 1
+gnet_id: 12006
+gnet_revision: 1
+dashboard_title: "Kubernetes apiserver"
+maintainer: "community"
+
+panels:
+  - title: "apiserver request rate"
+    panel_id: 8
+    fidelity: APPROXIMATE
+    notes: "Requests per second by verb. The 5m rate window follows the dashboard time range."
+  - title: "workqueue service time"
+    panel_id: 10
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+  - title: "apiserver request latency"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50. CONNECT and WATCH stay excluded."
+  - title: "workqueue processing time"
+    panel_id: 12
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+  - title: "etcd request latency"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge. Shares a row with the cache hit ratio."
+  - title: "etcd helper cache hit ratio"
+    panel_id: 6
+    fidelity: APPROXIMATE
+    notes: "Hits divided by hits plus misses. The ratio stays 0-1."

@@ -235,3 +235,30 @@ packs:
     gnet_revision: 40
     dashboard_sha256: "008c4e78d094610c809ba0c36086af939cc4c0077103724fc3419b5f975796dd"
     description: "Node view — pod list, instance-scoped CPU and memory, filesystem and disk, mirrored network"
+
+  - gnet_id: 15757
+    name: grafana_15757_k8s_views_global
+    title_hint: "Kubernetes / Views / Global"
+    tags_hint: ["kubernetes"]
+    path: grafana_15757_k8s_views_global
+    gnet_revision: 43
+    dashboard_sha256: "d859386ea6505791f5eca2804fab2922c06b03a0473019177a4ac5784f43bd4c"
+    description: "Global view — Real/Requests/Limits tiles, resource counts, namespace and instance charts, mirrored network"
+
+  - gnet_id: 13646
+    name: grafana_13646_k8s_persistent_volumes
+    title_hint: "kubernetes-persistent-volumes"
+    tags_hint: []
+    path: grafana_13646_k8s_persistent_volumes
+    gnet_revision: 2
+    dashboard_sha256: "7f5e137459616501cbef01012ce3f92c5c17e91677b4112b51fe520a7f37c0e7"
+    description: "Persistent volumes — fill-in-N-days slope, 80% warning, GiB claim table, hourly/daily/weekly rates"
+
+  - gnet_id: 12006
+    name: grafana_12006_k8s_apiserver
+    title_hint: "Kubernetes apiserver"
+    tags_hint: []
+    path: grafana_12006_k8s_apiserver
+    gnet_revision: 1
+    dashboard_sha256: "238b95b69f704e19ad7c65e2c3834f29e26c2e2ede62cd8b8829f5350182d69a"
+    description: "Apiserver — request rate by verb, named p95/p90/p50 latency, cache hit ratio"
