@@ -68,6 +68,29 @@ Links, annotations, transformations, and legacy alert tasks are derived from
 dashboard JSON during migration. They are not fetched as separate first-class
 Grafana API assets in the current migration surface.
 
+### File Export Scope
+
+File-based dashboard migration uses `--source files` on the dedicated CLI and
+`--input-mode files` on `obs-migrate migrate --source grafana`, with
+`--input-dir` pointing at a directory of Grafana dashboard JSON exports.
+
+From Grafana's Share → Export dialog, use the **default** export: Model =
+**Classic**, format = **JSON**. You do not need to open Advanced options.
+API-shaped exports (`{"dashboard": {...}, "meta": {...}}`) saved as `.json`
+are also accepted.
+
+Not supported today:
+- Grafana V1 / V2 resource export models (`apiVersion` / `kind` / `metadata` /
+  `spec` wrappers)
+- YAML exports
+
+Those shapes are skipped by the extractor and surface as `no Grafana
+dashboards found ... expected top-level 'panels' or 'rows' key`.
+
+The "Share dashboard with another instance" / "Export for sharing externally"
+toggles only replace datasource uid/name with placeholders in report metadata;
+they do not change whether migration accepts the file.
+
 ## Execution Pipeline
 
 The dedicated Grafana CLI is not just a translator. It is the most complete
