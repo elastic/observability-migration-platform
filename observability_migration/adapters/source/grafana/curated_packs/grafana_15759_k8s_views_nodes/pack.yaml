@@ -1,0 +1,695 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 15759
+# https://grafana.com/grafana/dashboards/15759-kubernetes-views-nodes/
+#
+# Kubernetes / Views / Nodes (revision 40). The pod list is pods, not the node label. Multi-series charts filter on the selected instance instead of splitting a series per instance. The nodename regex on the instance control is not re-applied; pick the instance that matches the node. The resolution variable is a scrape step.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    container_cpu_usage_seconds_total: counter
+    node_context_switches_total: counter
+    node_cpu_core_throttles_total: counter
+    node_cpu_seconds_total: counter
+    node_disk_read_bytes_total: counter
+    node_disk_reads_completed_total: counter
+    node_disk_writes_completed_total: counter
+    node_disk_written_bytes_total: counter
+    node_intr_total: counter
+    node_network_receive_bytes_total: counter
+    node_network_receive_drop_total: counter
+    node_network_receive_errs_total: counter
+    node_network_receive_packets_total: counter
+    node_network_transmit_bytes_total: counter
+    node_network_transmit_drop_total: counter
+    node_network_transmit_errs_total: counter
+    node_network_transmit_packets_total: counter
+    container_memory_working_set_bytes: gauge
+    kube_node_info: gauge
+    kube_pod_info: gauge
+    kubelet_volume_stats_capacity_bytes: gauge
+    kubelet_volume_stats_inodes: gauge
+    kubelet_volume_stats_inodes_used: gauge
+    kubelet_volume_stats_used_bytes: gauge
+    machine_cpu_cores: gauge
+    machine_memory_bytes: gauge
+    node_boot_time_seconds: gauge
+    node_disk_io_now: gauge
+    node_filefd_allocated: gauge
+    node_filefd_maximum: gauge
+    node_filesystem_avail_bytes: gauge
+    node_filesystem_device_error: gauge
+    node_filesystem_files: gauge
+    node_filesystem_files_free: gauge
+    node_filesystem_size_bytes: gauge
+    node_load1: gauge
+    node_load15: gauge
+    node_load5: gauge
+    node_memory_Buffers_bytes: gauge
+    node_memory_Cached_bytes: gauge
+    node_memory_MemAvailable_bytes: gauge
+    node_memory_MemFree_bytes: gauge
+    node_memory_MemTotal_bytes: gauge
+    node_memory_SwapFree_bytes: gauge
+    node_memory_SwapTotal_bytes: gauge
+    node_netstat_Tcp_CurrEstab: gauge
+    node_nf_conntrack_entries: gauge
+    node_nf_conntrack_entries_limit: gauge
+    node_time_seconds: gauge
+    node_timex_estimated_error_seconds: gauge
+    node_timex_maxerror_seconds: gauge
+    node_uname_info: gauge
+
+panel:
+  query_overrides:
+    - title_match: "CPU  Usage"
+      panel_id: 7
+      kibana_type_override: metric
+      approximation_note: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal"
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:cpu}}
+        | STATS busy = AVG(busy) BY time_bucket
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS busy = AVG(busy)
+        | EVAL percent = busy
+        | KEEP percent
+    - title_match: "RAM Usage"
+      panel_id: 13
+      kibana_type_override: metric
+      approximation_note: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL
+        | STATS total = SUM(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS total = AVG(total), available = AVG(available)
+        | EVAL percent = CASE(total > 0, (total - available) / total, NULL)
+        | KEEP percent
+    - title_match: "Pods on node"
+      panel_id: 24
+      kibana_type_override: metric
+      approximation_note: "Count of pods on the selected node. The info series is 1 per pod; the tile sums that count."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:pod}}
+        | STATS pods = COUNT(*)
+        | KEEP pods
+    - title_match: "List of pods on node"
+      panel_id: 5
+      kibana_type_override: datatable
+      approximation_note: "Namespace and pod for the selected node. The stock grouping was the node and cluster, so the table did not list pods."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}
+        | STATS info = MAX(info) BY namespace, pod
+        | KEEP namespace, pod, info
+        | SORT namespace ASC, pod ASC
+    - title_match: "CPU Usage"
+      panel_id: 2
+      approximation_note: "Percent of the selected instance in each CPU mode. Idle stays, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS rate = AVG(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:mode}}
+        | EVAL mode = {{label:mode}}
+        | EVAL percent = rate * 100
+        | STATS percent = AVG(percent) BY time_bucket, mode
+        | KEEP time_bucket, mode, percent
+        | SORT time_bucket ASC
+    - title_match: "Memory Usage"
+      panel_id: 3
+      approximation_note: "RAM used, total, cache, buffers, and free, plus swap used and total, for the selected instance. The instance is a filter, not a series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | STATS total = AVG(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), free = AVG(LAST_OVER_TIME({{metric:node_memory_MemFree_bytes:gauge}})), cached = AVG(LAST_OVER_TIME({{metric:node_memory_Cached_bytes:gauge}})), buffers = AVG(LAST_OVER_TIME({{metric:node_memory_Buffers_bytes:gauge}})), swap_total = AVG(LAST_OVER_TIME({{metric:node_memory_SwapTotal_bytes:gauge}})), swap_free = AVG(LAST_OVER_TIME({{metric:node_memory_SwapFree_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL RAM_Used = (total - free) - (cached + buffers), RAM_Total = total, RAM_Cache = cached, RAM_Buffer = buffers, RAM_Free = free, SWAP_Used = swap_total - swap_free, SWAP_Total = swap_total
+        | KEEP time_bucket, RAM_Used, RAM_Total, RAM_Cache, RAM_Buffer, RAM_Free, SWAP_Used, SWAP_Total
+        | SORT time_bucket ASC
+    - title_match: "CPU usage by Pod"
+      panel_id: 26
+      approximation_note: "Cores by pod on the selected node. Empty-image pause containers are included. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS cores = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
+        | EVAL pod = {{label:pod}}
+        | STATS cores = AVG(cores) BY time_bucket, pod
+        | KEEP time_bucket, pod, cores
+        | SORT time_bucket ASC
+    - title_match: "Memory usage by Pod"
+      panel_id: 28
+      approximation_note: "Working set summed by pod on the selected node."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+        | STATS memory_bytes = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
+        | EVAL pod = {{label:pod}}
+        | STATS memory_bytes = AVG(memory_bytes) BY time_bucket, pod
+        | KEEP time_bucket, pod, memory_bytes
+        | SORT time_bucket ASC
+    - title_match: "Number of CPU Core Throttled"
+      panel_id: 66
+      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_cpu_core_throttles_total:counter}} IS NOT NULL
+        | STATS throttled = SUM(RATE({{metric:node_cpu_core_throttles_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, throttled
+        | SORT time_bucket ASC
+    - title_match: "System Load"
+      panel_id: 48
+      approximation_note: "1, 5, and 15 minute load for the selected instance. The instance is a filter, not a series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | STATS load_1m = AVG(LAST_OVER_TIME({{metric:node_load1:gauge}})), load_5m = AVG(LAST_OVER_TIME({{metric:node_load5:gauge}})), load_15m = AVG(LAST_OVER_TIME({{metric:node_load15:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, load_1m, load_5m, load_15m
+        | SORT time_bucket ASC
+    - title_match: "Context Switches & Interrupts"
+      panel_id: 46
+      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_context_switches_total:counter}} IS NOT NULL OR {{metric:node_intr_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:node_context_switches_total:counter}})), tx = SUM(RATE({{metric:node_intr_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL context_switches = rx, interrupts = tx
+        | KEEP time_bucket, context_switches, interrupts
+        | SORT time_bucket ASC
+    - title_match: "File Descriptors"
+      panel_id: 49
+      approximation_note: "Allocated and maximum file descriptors for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_filefd_allocated:gauge}} IS NOT NULL OR {{metric:node_filefd_maximum:gauge}} IS NOT NULL
+        | STATS allocated = AVG(LAST_OVER_TIME({{metric:node_filefd_allocated:gauge}})), maximum = AVG(LAST_OVER_TIME({{metric:node_filefd_maximum:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, allocated, maximum
+        | SORT time_bucket ASC
+    - title_match: "Time Sync"
+      panel_id: 50
+      approximation_note: "Estimated error and maximum error, in seconds, for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_timex_estimated_error_seconds:gauge}} IS NOT NULL OR {{metric:node_timex_maxerror_seconds:gauge}} IS NOT NULL
+        | STATS estimated_error = AVG(LAST_OVER_TIME({{metric:node_timex_estimated_error_seconds:gauge}})), max_error = AVG(LAST_OVER_TIME({{metric:node_timex_maxerror_seconds:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, estimated_error, max_error
+        | SORT time_bucket ASC
+    - title_match: "Network usage (bytes/s)"
+      panel_id: 20
+      approximation_note: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:node_network_receive_bytes_total:counter}})), tx = SUM(RATE({{metric:node_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network errors"
+      panel_id: 61
+      approximation_note: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_network_receive_errs_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_errs_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:node_network_receive_errs_total:counter}})), tx = SUM(RATE({{metric:node_network_transmit_errs_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network usage (packet/s)"
+      panel_id: 62
+      approximation_note: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_network_receive_packets_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_packets_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:node_network_receive_packets_total:counter}})), tx = SUM(RATE({{metric:node_network_transmit_packets_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network total drops"
+      panel_id: 64
+      approximation_note: "In is positive and out is negative so the directions mirror. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_network_receive_drop_total:counter}} IS NOT NULL OR {{metric:node_network_transmit_drop_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:node_network_receive_drop_total:counter}})), tx = SUM(RATE({{metric:node_network_transmit_drop_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "TCP Currently Established"
+      panel_id: 60
+      approximation_note: "Established TCP connections for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_netstat_Tcp_CurrEstab:gauge}} IS NOT NULL
+        | STATS established = AVG(LAST_OVER_TIME({{metric:node_netstat_Tcp_CurrEstab:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, established
+        | SORT time_bucket ASC
+    - title_match: "NF Conntrack"
+      panel_id: 63
+      approximation_note: "Conntrack entries and the limit for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_nf_conntrack_entries:gauge}} IS NOT NULL OR {{metric:node_nf_conntrack_entries_limit:gauge}} IS NOT NULL
+        | STATS entries = AVG(LAST_OVER_TIME({{metric:node_nf_conntrack_entries:gauge}})), limit = AVG(LAST_OVER_TIME({{metric:node_nf_conntrack_entries_limit:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, entries, limit
+        | SORT time_bucket ASC
+    - title_match: "Persistent Volumes - Usage in %"
+      panel_id: 30
+      approximation_note: "Used bytes over capacity per claim on the selected node. The ratio stays 0-1, matching percentunit and the source axis. Same-bucket division."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | EVAL legend = CONCAT(TO_STRING(namespace), " / ", TO_STRING(claim))
+        | EVAL percent = CASE(capacity > 0, used / capacity, NULL)
+        | STATS percent = AVG(percent) BY time_bucket, legend
+        | KEEP time_bucket, legend, percent
+        | SORT time_bucket ASC
+    - title_match: "Persistent Volumes - Usage in GB"
+      panel_id: 34
+      kibana_type_override: datatable
+      approximation_note: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
+        | STATS used_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS used_bytes = AVG(used_bytes), capacity_bytes = AVG(capacity_bytes) BY namespace, claim
+        | KEEP namespace, claim, used_bytes, capacity_bytes
+        | SORT namespace ASC, claim ASC
+    - title_match: "Persistent Volumes - Inodes"
+      panel_id: 32
+      approximation_note: "Used inodes as a percent of total inodes, per claim on the selected node."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{metric:kubelet_volume_stats_inodes_used:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_inodes:gauge}} IS NOT NULL
+        | STATS used = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes_used:gauge}})), total = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:persistentvolumeclaim}}
+        | EVAL claim = {{label:persistentvolumeclaim}}
+        | EVAL percent = CASE(total > 0, used / total * 100, NULL)
+        | STATS percent = AVG(percent) BY time_bucket, claim
+        | KEEP time_bucket, claim, percent
+        | SORT time_bucket ASC
+    - title_match: "FS usage in %"
+      panel_id: 33
+      approximation_note: "100 minus available over size, per mountpoint, for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_filesystem_avail_bytes:gauge}} IS NOT NULL OR {{metric:node_filesystem_size_bytes:gauge}} IS NOT NULL
+        | STATS avail = AVG(LAST_OVER_TIME({{metric:node_filesystem_avail_bytes:gauge}})), size = AVG(LAST_OVER_TIME({{metric:node_filesystem_size_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:mountpoint}}
+        | EVAL mountpoint = {{label:mountpoint}}
+        | EVAL percent = CASE(size > 0, 100 - ((avail * 100) / size), NULL)
+        | STATS percent = AVG(percent) BY time_bucket, mountpoint
+        | KEEP time_bucket, mountpoint, percent
+        | SORT time_bucket ASC
+    - title_match: "FS inode usage in %"
+      panel_id: 59
+      approximation_note: "100 minus free files over total files, per mountpoint, for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_filesystem_files_free:gauge}} IS NOT NULL OR {{metric:node_filesystem_files:gauge}} IS NOT NULL
+        | STATS free = AVG(LAST_OVER_TIME({{metric:node_filesystem_files_free:gauge}})), total = AVG(LAST_OVER_TIME({{metric:node_filesystem_files:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:mountpoint}}
+        | EVAL mountpoint = {{label:mountpoint}}
+        | EVAL percent = CASE(total > 0, 100 - (free / total * 100), NULL)
+        | STATS percent = AVG(percent) BY time_bucket, mountpoint
+        | KEEP time_bucket, mountpoint, percent
+        | SORT time_bucket ASC
+    - title_match: "Reads by disk (bytes)"
+      panel_id: 52
+      approximation_note: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_disk_read_bytes_total:counter}} IS NOT NULL
+        | STATS bytes = AVG(RATE({{metric:node_disk_read_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
+        | EVAL device = {{label:device}}
+        | STATS bytes = AVG(bytes) BY time_bucket, device
+        | KEEP time_bucket, device, bytes
+        | SORT time_bucket ASC
+    - title_match: "Writes by disk (bytes)"
+      panel_id: 57
+      approximation_note: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_disk_written_bytes_total:counter}} IS NOT NULL
+        | STATS bytes = AVG(RATE({{metric:node_disk_written_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
+        | EVAL device = {{label:device}}
+        | STATS bytes = AVG(bytes) BY time_bucket, device
+        | KEEP time_bucket, device, bytes
+        | SORT time_bucket ASC
+    - title_match: "Completed reads by disk"
+      panel_id: 51
+      approximation_note: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_disk_reads_completed_total:counter}} IS NOT NULL
+        | STATS reads = AVG(RATE({{metric:node_disk_reads_completed_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
+        | EVAL device = {{label:device}}
+        | STATS reads = AVG(reads) BY time_bucket, device
+        | KEEP time_bucket, device, reads
+        | SORT time_bucket ASC
+    - title_match: "Completed writes by disk"
+      panel_id: 56
+      approximation_note: "Per device on the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_disk_writes_completed_total:counter}} IS NOT NULL
+        | STATS writes = AVG(RATE({{metric:node_disk_writes_completed_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
+        | EVAL device = {{label:device}}
+        | STATS writes = AVG(writes) BY time_bucket, device
+        | KEEP time_bucket, device, writes
+        | SORT time_bucket ASC
+    - title_match: "Disk(s) io/s"
+      panel_id: 58
+      approximation_note: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_disk_io_now:gauge}} IS NOT NULL
+        | STATS io = AVG(LAST_OVER_TIME({{metric:node_disk_io_now:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:device}}
+        | EVAL device = {{label:device}}
+        | STATS io = AVG(io) BY time_bucket, device
+        | KEEP time_bucket, device, io
+        | SORT time_bucket ASC
+    - title_match: "FS - Device Errors"
+      panel_id: 55
+      approximation_note: "Device errors summed by mountpoint for the selected instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_filesystem_device_error:gauge}} IS NOT NULL
+        | STATS errors = SUM(LAST_OVER_TIME({{metric:node_filesystem_device_error:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:mountpoint}}
+        | EVAL mountpoint = {{label:mountpoint}}
+        | STATS errors = AVG(errors) BY time_bucket, mountpoint
+        | KEEP time_bucket, mountpoint, errors
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "Overview"
+      collapsed: false
+    - title_match: "CPU  Usage"
+      panel_id: 7
+      hide_title: false
+      size: {w: 8, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "RAM Usage"
+      panel_id: 13
+      hide_title: false
+      size: {w: 8, h: 12}
+      position: {x: 8, y: 0}
+    - title_match: "Pods on node"
+      panel_id: 24
+      hide_title: false
+      size: {w: 8, h: 12}
+      position: {x: 16, y: 0}
+    - title_match: "List of pods on node"
+      panel_id: 5
+      hide_title: false
+      size: {w: 24, h: 18}
+      position: {x: 24, y: 0}
+    - title_match: "CPU Used"
+      panel_id: 9
+      hide_title: false
+      size: {w: 4, h: 6}
+      position: {x: 0, y: 12}
+    - title_match: "CPU Total"
+      panel_id: 11
+      hide_title: false
+      size: {w: 4, h: 6}
+      position: {x: 4, y: 12}
+    - title_match: "RAM Used"
+      panel_id: 15
+      hide_title: false
+      size: {w: 5, h: 6}
+      position: {x: 8, y: 12}
+    - title_match: "RAM Total"
+      panel_id: 17
+      hide_title: false
+      size: {w: 5, h: 6}
+      position: {x: 13, y: 12}
+    - title_match: "uptime"
+      panel_id: 18
+      title: "Uptime"
+      hide_title: false
+      size: {w: 6, h: 6}
+      position: {x: 18, y: 12}
+    - title_match: "Resources"
+      collapsed: false
+    - title_match: "CPU Usage"
+      panel_id: 2
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 13}
+      position: {x: 0, y: 0}
+    - title_match: "Memory Usage"
+      panel_id: 3
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 13}
+      position: {x: 24, y: 0}
+    - title_match: "CPU usage by Pod"
+      panel_id: 26
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 18}
+    - title_match: "Memory usage by Pod"
+      panel_id: 28
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 18}
+    - title_match: "Number of CPU Core Throttled"
+      panel_id: 66
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 34}
+    - title_match: "System"
+      collapsed: false
+    - title_match: "System Load"
+      panel_id: 48
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Context Switches & Interrupts"
+      panel_id: 46
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "File Descriptors"
+      panel_id: 49
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Time Sync"
+      panel_id: 50
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
+    - title_match: "Network"
+      collapsed: false
+    - title_match: "Network usage (bytes/s)"
+      panel_id: 20
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Network errors"
+      panel_id: 61
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "Network usage (packet/s)"
+      panel_id: 62
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Network total drops"
+      panel_id: 64
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
+    - title_match: "TCP Currently Established"
+      panel_id: 60
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 32}
+    - title_match: "NF Conntrack"
+      panel_id: 63
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 32}
+    - title_match: "Kubernetes Storage"
+      collapsed: false
+    - title_match: "Persistent Volumes - Usage in %"
+      panel_id: 30
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Persistent Volumes - Usage in GB"
+      panel_id: 34
+      hide_title: false
+      size: {w: 24, h: 20}
+      position: {x: 24, y: 0}
+    - title_match: "Persistent Volumes - Inodes"
+      panel_id: 32
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Node Storage"
+      collapsed: false
+    - title_match: "FS usage in %"
+      panel_id: 33
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "FS inode usage in %"
+      panel_id: 59
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "Reads by disk (bytes)"
+      panel_id: 52
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Writes by disk (bytes)"
+      panel_id: 57
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
+    - title_match: "Completed reads by disk"
+      panel_id: 51
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 32}
+    - title_match: "Completed writes by disk"
+      panel_id: 56
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 32}
+    - title_match: "Disk(s) io/s"
+      panel_id: 58
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 48}
+    - title_match: "FS - Device Errors"
+      panel_id: 55
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 48}
