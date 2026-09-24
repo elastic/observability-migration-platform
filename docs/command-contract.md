@@ -914,7 +914,12 @@ probe-driven default: `auto` is the normal path, `native` requests native
 PROMQL wherever the translator can safely emit it, and `esql` disables native
 PROMQL so Grafana panels use ES|QL translation.
 
-Two further gates still push panels to ES|QL even when the target supports
+When `--es-url` is set, migrate prints a `Target PromQL profile:` block
+summarizing each probe — `PROMQL command`, `PROMQL label matcher params`, and
+`PROMQL vector matching (on/ignoring/group_*)` — so you can see which native
+capabilities this target actually accepted before reading per-panel notes.
+
+Three further gates still push panels to ES|QL even when the target supports
 `PROMQL`:
 
 1. **Control-bound PromQL matchers** (common on Redis 763: `instance=~"$instance"`).
@@ -928,6 +933,16 @@ Two further gates still push panels to ES|QL even when the target supports
    translator. Same-metric Grafana fallbacks (`rate(M[$interval]) or irate(M[5m])`)
    collapse to the left operand before the native path, matching ES|QL
    translation. True set-union `or` / `and` / `unless` still degrades.
+3. **Vector matching operand shape.** `on(...)` / `ignoring(...)` /
+   `group_left` / `group_right` go native only on a target whose vector-matching
+   probe succeeded (Serverless / Stack 9.6+) *and* where both operands have a
+   statically determinable label set — in practice an aggregation (`sum by (d)
+   (…)` or a bare `sum(…)`), optionally wrapped in functions or arithmetic, or
+   `vector(n)`. A raw selector, a `rate()`/`*_over_time()` over one, or
+   `without (...)` is indeterminate and stays on ES|QL; the panel's notes say
+   which of the two conditions declined. Native vector-matching panels raise the
+   dashboard's `minimum_kibana_version` to `9.6.0`. See
+   [Grafana source behavior](sources/grafana.md).
 
 Construct-level unsupported cases can still degrade or require manual review.
 Datadog accepts `--translation-mode` for CLI parity, but it is a no-op because

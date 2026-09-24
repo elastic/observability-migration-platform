@@ -112,7 +112,15 @@ LLM_HOOK: Callable[[PanelRecord, Classification], Classification] | None = None
 
 _UNKNOWN_COLUMN_RE = re.compile(r"unknown column \[([^\]]+)\]", re.IGNORECASE)
 _BINARY_OPERATOR_RE = re.compile(r"binary operator", re.IGNORECASE)
-_LABEL_SET_RE = re.compile(r"cannot infer label set", re.IGNORECASE)
+# Both spellings Elasticsearch uses when it cannot determine an operand's label
+# set. The second is the vector-matching analyzer added with ``on()``/
+# ``ignoring()``/``group_*`` support (elastic/elasticsearch#155634): reaching T5
+# with it means the native vector-matching gate let an operand shape through
+# (issue #440).
+_LABEL_SET_RE = re.compile(
+    r"cannot infer label set|requires operands with concrete label sets",
+    re.IGNORECASE,
+)
 _COUNTER_REQUIRED_RE = re.compile(r"requires a counter metric", re.IGNORECASE)
 _CIRCUIT_BREAKER_RES = (
     re.compile(r"data too large", re.IGNORECASE),
@@ -239,7 +247,8 @@ def _classify_rules(
     # but didn't. We split into two distinct subcategories so the fix
     # location is unambiguous in the suggested action.
     if _LABEL_SET_RE.search(error) or _BINARY_OPERATOR_RE.search(error):
-        which = "cannot infer label set" if _LABEL_SET_RE.search(error) else "binary operator"
+        label_set_match = _LABEL_SET_RE.search(error)
+        which = label_set_match.group(0).lower() if label_set_match else "binary operator"
         return Classification(
             category=CATEGORY_TRANSLATOR_BUG,
             confidence=0.9,

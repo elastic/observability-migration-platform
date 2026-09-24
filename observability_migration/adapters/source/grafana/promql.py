@@ -780,11 +780,22 @@ def resolve_counter_range_translation(range_func, metric, is_counter, resolver, 
             warning = uncertainty if uncertainty else template.format(metric=metric)
         return fallback_func, warning, is_counter
     warning = None
-    if not is_counter and range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
+    if range_func in _COUNTER_ONLY_RANGE_FUNCTIONS:
         # Source rate()/irate() is counter-only; trust it over the gauge
         # heuristic, but surface the disagreement when live caps refute it.
+        # Gate on target evidence alone, and independently of ``is_counter``: a
+        # rule-pack ``counter`` pin suppresses the *degrade* (above) and already
+        # makes ``is_counter`` true, but it must not suppress this disclosure --
+        # otherwise a pinned metric emits RATE/IRATE the target rejects at
+        # runtime while the panel is reported clean.
         is_counter = True
-        if resolver and resolver.refutes_counter(metric):
+        target_refutes = getattr(resolver, "target_refutes_counter", None) if resolver else None
+        refuted = (
+            target_refutes(metric)
+            if callable(target_refutes)
+            else bool(resolver and resolver.refutes_counter(metric))
+        )
+        if refuted:
             warning = _target_gauge_disagreement_warning(range_func, metric)
     return inner_func, warning, is_counter
 
@@ -939,6 +950,10 @@ class FormulaPlan:
     # comparison indicator (``CASE(cond, 1, 0)``). A parent division uses this to
     # re-render the indicator with a NULL false-branch so it never divides by 0.
     bool_compare_cond: str = ""
+    # Set when ``expr`` contains a PromQL comparison used without ``bool``, which
+    # filters rather than computes: ``CASE(cond, <value>, NULL)`` yields NULL for
+    # the elements PromQL drops. The translator turns that into a real row drop.
+    filter_compare: bool = False
     # Set when ``expr`` is a cross-metric PromQL ``or`` rendered as a
     # ``COALESCE(left, right, ...)`` union (left precedence, right fills the
     # gaps). The translator uses this to emit the correct set-union note instead
@@ -1010,6 +1025,63 @@ def _grafana_param_name(value: str) -> str | None:
         return None
     name = str(value)[len(_GRAFANA_PARAM_VALUE_PREFIX):]
     return name or None
+
+
+def _strip_promql_comments(expr):
+    """Remove PromQL ``#`` comments, preserving each comment's newline.
+
+    A comment runs from an unquoted ``#`` to the end of its line, so it has to
+    go while that extent is still exact — before any caller collapses newlines.
+    Both cleaning entry points flatten whitespace, and doing that first let a
+    comment swallow the rest of the expression: on the native path the truncated
+    text became the emitted query, and on the ES|QL path comment prose was read
+    as query structure (issue #443).
+
+    The newline itself is kept so the remaining operands stay separated once
+    whitespace is collapsed; dropping it would join ``sum(a)`` and ``+ sum(b)``
+    into different text than Prometheus sees.
+
+    A ``#`` inside a string literal is a label value, not a comment, so the scan
+    tracks quote state across all three PromQL string forms: double, single, and
+    backquoted raw. The regex-based ``_strip_promql_string_literals`` helpers
+    cannot stand in here because they do not know the backquoted form. A
+    backslash is treated as an escape inside every form, matching
+    ``promql-parser``; that also errs toward staying in string state, which
+    keeps text rather than deleting it.
+    """
+    text = str(expr or "")
+    if "#" not in text:
+        return text
+    out = []
+    quote = ""
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote:
+            out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "\"'`":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "#":
+            newline = text.find("\n", index)
+            if newline == -1:
+                break
+            index = newline
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def substitute_grafana_range_macros(expr):
@@ -1130,6 +1202,12 @@ def _normalize_count_scalar(expr):
 def preprocess_grafana_macros(expr, rule_pack=None):
     """Replace Grafana-specific macros with valid PromQL placeholders."""
     default_window = (rule_pack.default_rate_window if rule_pack else "5m") or "5m"
+    # Comments first, while their end-of-line extent is still exact. Everything
+    # downstream treats this result as query structure — the complexity
+    # classifier and warning patterns scan it, so a comment merely *mentioning*
+    # ``predict_linear`` used to raise "predict_linear has no ES|QL equivalent"
+    # against a plain ``sum(rate(...))`` (issue #443).
+    expr = _strip_promql_comments(expr)
     expr = _normalize_count_scalar(expr)
     # Grafana's dynamic step macros ($__interval / $__rate_interval /
     # $__auto_interval_* / $interval) resolve at render time from the selected
@@ -1588,6 +1666,12 @@ def template_vars_in_label_selectors(expr):
 def classify_promql_complexity(expr, rule_pack=None):
     """Classify a PromQL expression's translation complexity."""
     rule_pack = rule_pack or RulePackConfig()
+    # The rule-pack patterns match function and operator names anywhere in the
+    # text, so a comment that merely names an untranslatable construct would be
+    # reported as if the expression used it (issue #443). Callers inside the
+    # pipeline pass an already-cleaned expression; this keeps the exported
+    # helper honest for the ones that do not.
+    expr = _strip_promql_comments(expr)
     for rule in rule_pack.not_feasible_patterns:
         if re.search(rule.pattern, expr, re.IGNORECASE):
             return "not_feasible", rule.reason
@@ -3840,6 +3924,142 @@ def promql_has_unmatchable_distinct_metric_binop(expr):
     return False
 
 
+# --- Native PROMQL explicit vector matching (issue #440) --------------------
+#
+# Elasticsearch gained PromQL vector matching — ``on(...)``, ``ignoring(...)``,
+# ``group_left``, ``group_right`` — in elastic/elasticsearch#155634 (Serverless
+# and Stack 9.6). It is narrower than Prometheus's: an explicitly matched binary
+# operation is only planned when Elasticsearch can determine each operand's
+# label set *statically*. Otherwise it fails at analysis time with
+# ``vector matching requires operands with concrete label sets``, which in Kibana
+# is a hard panel error rather than an empty result.
+#
+# Verified live against Elasticsearch 9.6.0-SNAPSHOT (rows/status per operand
+# shape, matcher present on every case):
+#
+#   sum by (d) (A)            / on(d) sum by (d) (B)        HTTP 200
+#   sum(A)                    / on(d) sum(B)                HTTP 200
+#   abs(sum by (d) (A))       / on(d) sum by (d) (B)        HTTP 200
+#   vector(1)                 / on(d) sum by (d) (B)        HTTP 200
+#   sum by (d) (A) / sum by (d) (B) / on(d) sum by (d) (B)  HTTP 200
+#   sum without (d) (A)       / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   A                         / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   rate(A[5m])               / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#   A / B                     / on(d) sum by (d) (B)        HTTP 400 (concrete)
+#
+# The separating rule: an aggregation *pins* the result label set (``by (L)`` →
+# exactly ``L``; no modifier → the empty set), and ``vector()`` is nameless and
+# labelless, so those are concrete. ``without (L)`` means "every label except
+# L", and a raw selector (or anything that only propagates one) can carry any
+# label the data happens to have, so those are indeterminate. Functions, unary
+# minus, parentheses and nested arithmetic propagate their operand's label set,
+# so they are concrete exactly when their vector operand is.
+_AGG_MODIFIER_WITHOUT = "AggModifierType.Without"
+
+
+def _ast_label_set_is_concrete(node):
+    """Whether Elasticsearch can statically determine *node*'s result label set.
+
+    Returns ``_PROMQL_SCALAR_OPERAND`` for a scalar (scalars take no part in
+    vector matching), else a bool. Unrecognized nodes answer False so an
+    unmodelled construct keeps the ES|QL fallback rather than emitting a query
+    that fails at analysis time.
+    """
+    node_type = type(node).__name__
+
+    if node_type in ("ParenExpr", "UnaryExpr"):
+        return _ast_label_set_is_concrete(node.expr)
+
+    if node_type in ("NumberLiteral", "StringLiteral"):
+        return _PROMQL_SCALAR_OPERAND
+
+    if node_type == "AggregateExpr":
+        # ``topk``/``bottomk`` select whole series, so they keep the inner
+        # labels instead of pinning a new set — the same reason they keep
+        # ``__name__``. (They are blocked from the native path outright by
+        # ``_PROMQL_UNSUPPORTED_RE``; modelled here so this predicate is
+        # faithful on its own terms.)
+        if str(getattr(node, "op", "") or "").lower() in _NAME_PRESERVING_AGG_OPS:
+            return _ast_label_set_is_concrete(node.expr)
+        modifier = getattr(node, "modifier", None)
+        if modifier is None:
+            # Aggregation with no by/without collapses to one labelless series.
+            return True
+        return str(getattr(modifier, "type", "")) != _AGG_MODIFIER_WITHOUT
+
+    if node_type == "Call":
+        func = getattr(node, "func", None)
+        func_name = str(getattr(func, "name", "") or "").lower()
+        if func_name == "vector":
+            return True
+        if "scalar" in str(getattr(func, "return_type", "")).lower():
+            return _PROMQL_SCALAR_OPERAND
+        # A function propagates its vector argument's label set.
+        saw_vector = False
+        for arg in list(getattr(node, "args", []) or []):
+            arg_state = _ast_label_set_is_concrete(arg)
+            if arg_state is _PROMQL_SCALAR_OPERAND:
+                continue
+            saw_vector = True
+            if not arg_state:
+                return False
+        return True if saw_vector else _PROMQL_SCALAR_OPERAND
+
+    if node_type == "BinaryExpr":
+        sides = [
+            state
+            for state in (
+                _ast_label_set_is_concrete(node.lhs),
+                _ast_label_set_is_concrete(node.rhs),
+            )
+            if state is not _PROMQL_SCALAR_OPERAND
+        ]
+        if not sides:
+            return _PROMQL_SCALAR_OPERAND
+        return all(sides)
+
+    # VectorSelector / MatrixSelector / SubqueryExpr and anything unmodelled.
+    return False
+
+
+def promql_vector_matching_has_indeterminate_operand(expr):
+    """True when *expr* explicitly vector-matches an operand ES cannot plan.
+
+    Answers the shape half of the native-PROMQL decision for ``on()`` /
+    ``ignoring()`` / ``group_left`` / ``group_right`` (issue #440); the target
+    half is the ``promql_vector_matching`` runtime feature. Every explicitly
+    matched binary operation in the expression is checked, including nested
+    ones, because Elasticsearch rejects the query if any single one of them has
+    an operand whose label set is indeterminate.
+
+    Set operators are reported as indeterminate regardless of operand shape:
+    Elasticsearch rejects ``or``/``and``/``unless`` combined with
+    ``on``/``ignoring`` outright (``set operator [or] with on/ignoring is not
+    supported at this time``, elasticsearch#158181 still open).
+
+    *expr* must already be macro-resolved (``_clean_promql_for_native``). An
+    unparseable expression answers True so it keeps the ES|QL fallback.
+    """
+    if promql_parser is None or not expr or not str(expr).strip():
+        return True
+    try:
+        ast = promql_parser.parse(_trim_outer_parens(str(expr).strip()))
+    except Exception:
+        return True
+
+    for node in _iter_ast_nodes(ast):
+        if type(node).__name__ != "BinaryExpr":
+            continue
+        if getattr(getattr(node, "modifier", None), "matching", None) is None:
+            continue
+        if str(getattr(node, "op", "") or "").lower() in _SET_OPERATORS:
+            return True
+        for operand in (node.lhs, node.rhs):
+            if _ast_label_set_is_concrete(operand) is not True:
+                return True
+    return False
+
+
 def _parse_fragment(expr, depth=0):
     """Parse a PromQL expression into a PromQLFragment using the AST parser.
 
@@ -4017,12 +4237,20 @@ def _frag_has_incompatible_target_fields(frag, resolver):
 
 
 def _matcher_has_dropped_variable(m):
+    """Return True when *m* lost a Grafana variable rather than a static filter.
+
+    A literal ``=~".*"`` is not one of them: it is a match-all regex that also
+    matches an absent label, so omitting it changes nothing. Reporting it as a
+    dropped variable pointed operators at a cause that was not there (#375).
+    Variables arrive here as parameter sentinels, ``label_var`` forms, or a raw
+    ``$var`` token — never pre-expanded to ``.*``, which only happens on the
+    native PROMQL cleaning path that never reaches this translator.
+    """
     value = str(m.get("value", ""))
     if _grafana_param_name(value):
         return True
     return (
         bool(re.search(r"\$\w", value))
-        or (m.get("op") == "=~" and value.strip() == ".*")
         or value.startswith("label_")
         or value.startswith("^label_")
     )
@@ -4303,9 +4531,11 @@ def _collapse_summary_ts_query(parts, output_group_fields, keep_fields, keep_tim
         # filter yields an empty scalar panel even though older buckets have
         # data. After dropping nulls, keep the penultimate non-null bucket to
         # avoid the incomplete window-edge rate spike documented above.
-        parts.append("| WHERE " + " AND ".join(
+        null_skip = "| WHERE " + " AND ".join(
             f"{_esql_identifier(field)} IS NOT NULL" for field in keep_fields
-        ))
+        )
+        if not parts or parts[-1] != null_skip:
+            parts.append(null_skip)
         parts.append("| SORT time_bucket DESC")
         parts.append("| LIMIT 2")
         parts.append("| SORT time_bucket ASC")
@@ -7339,11 +7569,25 @@ def _build_formula_plan(
         # a boolean, so the result composes with surrounding arithmetic.
         if frag.extra.get("bool_compare"):
             condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+            indicator = f"CASE({condition}, 1, 0)"
+            # An operand that is itself a bare comparison is already NULL for the
+            # elements PromQL dropped, and a NULL condition falls through to
+            # CASE's default — turning a dropped element back into a real 0.
+            # Keep it NULL so the row is dropped rather than charted as a false
+            # negative (#375).
+            filtered = [
+                f"{plan.expr} IS NOT NULL"
+                for plan in (left_plan, right_plan)
+                if plan.filter_compare
+            ]
+            if filtered:
+                indicator = f"CASE({' AND '.join(filtered)}, {indicator}, NULL)"
             return FormulaPlan(
                 specs=left_plan.specs + right_plan.specs,
-                expr=f"CASE({condition}, 1, 0)",
+                expr=indicator,
                 warnings=warnings,
                 bool_compare_cond=condition,
+                filter_compare=bool(filtered),
             )
 
         # Guard a ``bool`` indicator used as a divisor: 1 stays 1, but the false
@@ -7355,12 +7599,31 @@ def _build_formula_plan(
                 specs=left_plan.specs + right_plan.specs,
                 expr=f"({left_plan.expr} / {divisor})",
                 warnings=warnings,
+                filter_compare=left_plan.filter_compare or right_plan.filter_compare,
             )
+
+        # A comparison without ``bool`` is a filter, not arithmetic: PromQL keeps
+        # the elements that satisfy it — carrying the *vector* operand's own
+        # value — and drops the rest. ``(a == b)`` would instead label every
+        # series with a boolean, losing both the filter and the value (#375).
+        # The scalar side is never the result, so a scalar left operand
+        # (``0.5 < node_load1``) still yields the right-hand vector's value.
+        if frag.binary_op in _COMPARISON_OPERATORS:
+            value_plan = left_plan if left_plan.specs else right_plan
+            if value_plan.specs:
+                condition = f"{left_plan.expr} {frag.binary_op} {right_plan.expr}"
+                return FormulaPlan(
+                    specs=left_plan.specs + right_plan.specs,
+                    expr=f"CASE({condition}, {value_plan.expr}, NULL)",
+                    warnings=warnings,
+                    filter_compare=True,
+                )
 
         return FormulaPlan(
             specs=left_plan.specs + right_plan.specs,
             expr=_esql_binary_expr(left_plan.expr, frag.binary_op, right_plan.expr),
             warnings=warnings,
+            filter_compare=left_plan.filter_compare or right_plan.filter_compare,
         )
 
     # label_join(v, dst, sep, src1, ...) — the outer label-join is a pure

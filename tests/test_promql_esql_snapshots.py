@@ -622,6 +622,22 @@ CASES: list[tuple[str, str, str]] = [
         "node_memory_SwapFree_bytes / (node_memory_SwapTotal_bytes > bool 0)",
         "timeseries",
     ),
+    # --- comparison without ``bool``: a filter, not an indicator -------------
+    # kube-state-metrics-v2 "current==max": PromQL keeps only the HPAs sitting
+    # at their maximum, each with its own replica count. Must render
+    # CASE(cond, <lhs>, NULL) plus the NULL drop, never a per-series boolean.
+    (
+        "vector_comparison_filters_to_matching_series",
+        "kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas",
+        "timeseries",
+    ),
+    # The scalar side is never the result: a scalar left operand still returns
+    # the right-hand vector's own value for the elements that survive.
+    (
+        "vector_comparison_scalar_on_left",
+        "0.5 < node_load1",
+        "timeseries",
+    ),
     (
         "histogram_bucket_rate_by_le",
         "sum(rate(http_request_duration_seconds_bucket[5m])) by (le)",
