@@ -1,0 +1,29 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 12660 Kubernetes / Persistent Volumes (revision 1).
+
+schema_version: 1
+gnet_id: 12660
+gnet_revision: 1
+dashboard_title: "Kubernetes / Persistent Volumes"
+maintainer: "community"
+
+panels:
+  - title: "Volume Space Usage"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Used bytes are capacity minus available. The metrics_path scrape selector is omitted."
+  - title: "Volume Space Usage"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "Percent used sums capacity and available across instance and node, matching the chart."
+  - title: "Volume inodes Usage"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "Used and free inodes. The metrics_path scrape selector is omitted."
+  - title: "Volume inodes Usage"
+    panel_id: 5
+    fidelity: APPROXIMATE
+    notes: "Percent of inodes used, summed the same way as the inode chart."

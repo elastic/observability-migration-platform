@@ -306,6 +306,49 @@ and drop Grafana's limit/request reference lines (Lens XY has one breakdown).
 Response-time panels approximate `histogram_quantile` with `PERCENTILE` of
 the duration gauge.
 
+The kube-state-metrics v2 (13332) pack keeps the modern `resource=` cluster
+tiles and shows them as percents. Container CPU and memory request tiles still
+authored against `kube_pod_container_resource_requests_cpu_cores` /
+`_memory_bytes` are reshaped onto `kube_pod_container_resource_requests`.
+`changes()` on the restart counter is `RATE` on the latest 30-minute
+bucket per series, times 1800 seconds (ES|QL `DELTA` rejects counter fields).
+Earlier buckets in that window are not added. Deployment, StatefulSet, job, and PVC
+tables group by the object the Grafana legend named. The HPA chart splits
+series by namespace and name. HPAs sitting on their min or max are tables
+and stay cluster-wide, because those source queries do not filter cluster
+or namespace. The CPU capacity chart names capacity, allocatable,
+requested, and limit after the metric each series plots. Cluster memory
+capacity is shown in bytes; the source axis unit is `bits`. Cluster, node,
+and namespace controls stay on the queries.
+
+The cluster volume dashboard (11454) approximates `predict_linear` fill-in-a-week
+as available bytes divided by one day of used-byte growth. The infrastructure
+"current" table is the exception: its source range is a week, so that slope is
+a week of growth scaled back to a daily rate. The pack replaces the
+0/1 alert-history graphs with a count of volumes at risk. PVCs at or above the
+revision-14 textbox default of 80% are a count, a table, and an hourly count.
+Hourly, daily, and weekly use-rate charts keep those windows (`DELTA` over
+1 hour, 24 hours, and 168 hours) and one series per claim. Weekly points are
+one per day so the line stays inside the dashboard time range. OpenShift
+`pv_collector_*` counts are `kube_persistentvolumeclaim_status_phase`. The
+Grafana alert list is a gap.
+
+The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
+are capacity minus available, and free inodes are total minus used. The
+percent tiles use that same sum, so a volume reported by more than one kubelet
+stays a single number. Cluster, namespace, and volume controls are exact
+matches on the queries, along with the kubelet job. The scrape `metrics_path` selector is
+omitted; that label is not stored as a metric dimension. The two source rows
+are both titled `Dashboard Row`; Kibana names them Bytes and Inodes.
+
+The resource-requests dashboard (7187) reads the pre-1.14
+`*_cpu_cores` and `*_memory_bytes` names from
+`kube_node_status_allocatable`, `kube_pod_container_resource_requests`, and
+`kube_pod_container_resource_limits` with `resource` `cpu` or `memory`.
+Charts plot the smallest node's allocatable and the busiest node's requests
+and limits. The percent tiles divide that busiest-node request by that
+smallest-node allocatable. Memory stays in bytes.
+
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
 recording the exact grafana.com revision the pack authors read, re-checkable

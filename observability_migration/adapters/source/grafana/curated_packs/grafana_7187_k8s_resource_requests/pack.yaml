@@ -1,0 +1,106 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 7187
+# https://grafana.com/grafana/dashboards/7187-kubernetes-resource-requests/
+#
+# Kubernetes Resource Requests (revision 1). Pre-1.14 metric names
+# (*_cpu_cores, *_memory_bytes) are read from the resource-labeled gauges.
+# Grafana plots min(sum by instance) of allocatable and max(sum by instance)
+# of requests and limits: the smallest node and the busiest node. The percent
+# tiles divide that max request by that min allocatable.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    kube_node_status_allocatable: gauge
+    kube_node_status_allocatable_cpu_cores: gauge
+    kube_node_status_allocatable_memory_bytes: gauge
+    kube_pod_container_resource_requests: gauge
+    kube_pod_container_resource_requests_cpu_cores: gauge
+    kube_pod_container_resource_requests_memory_bytes: gauge
+    kube_pod_container_resource_limits: gauge
+    kube_pod_container_resource_limits_cpu_cores: gauge
+    kube_pod_container_resource_limits_memory_bytes: gauge
+
+panel:
+  query_overrides:
+    - title_match: "CPU Cores"
+      panel_id: 1
+      approximation_note: "Smallest node's allocatable CPU and busiest node's requested and limit CPU. Pre-1.14 *_cpu_cores names are the resource=cpu gauges."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:resource}} == "cpu"
+        | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested), limits = MAX(limits) BY time_bucket
+        | KEEP time_bucket, allocatable, requested, limits
+        | SORT time_bucket ASC
+    - title_match: "CPU Cores"
+      panel_id: 2
+      primary_format: percent
+      approximation_note: "Busiest node's requested CPU divided by the smallest node's allocatable CPU, as a percent. The pre-1.14 *_cpu_cores names are the resource=cpu gauges."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:resource}} == "cpu"
+        | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested)
+        | EVAL percent = CASE(allocatable > 0, requested / allocatable * 100, NULL)
+        | KEEP percent
+    - title_match: "Memory"
+      panel_id: 3
+      approximation_note: "Smallest node's allocatable memory and busiest node's requested and limit memory, in bytes. Pre-1.14 *_memory_bytes names are the resource=memory gauges."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:resource}} == "memory"
+        | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested), limits = MAX(limits) BY time_bucket
+        | KEEP time_bucket, allocatable, requested, limits
+        | SORT time_bucket ASC
+    - title_match: "Memory"
+      panel_id: 4
+      primary_format: percent
+      approximation_note: "Busiest node's requested memory divided by the smallest node's allocatable memory, as a percent. The pre-1.14 *_memory_bytes names are the resource=memory gauges."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:resource}} == "memory"
+        | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS allocatable = SUM(LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}})), requested = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY {{label:instance}}
+        | STATS allocatable = MIN(allocatable), requested = MAX(requested)
+        | EVAL percent = CASE(allocatable > 0, requested / allocatable * 100, NULL)
+        | KEEP percent
+
+  layout_overrides:
+    - title_match: "CPU Cores"
+      panel_id: 1
+      title: "CPU cores"
+      hide_title: false
+      legend_position: right
+      size: {w: 36, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "CPU Cores"
+      panel_id: 2
+      title: "CPU requested"
+      hide_title: false
+      size: {w: 12, h: 14}
+      position: {x: 36, y: 0}
+    - title_match: "Memory"
+      panel_id: 3
+      hide_title: false
+      legend_position: right
+      size: {w: 36, h: 14}
+      position: {x: 0, y: 14}
+    - title_match: "Memory"
+      panel_id: 4
+      title: "Memory requested"
+      hide_title: false
+      size: {w: 12, h: 14}
+      position: {x: 36, y: 14}

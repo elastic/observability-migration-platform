@@ -5880,3 +5880,736 @@ def test_1471_memory_total_uses_last_over_time():
     assert "container_memory_usage_bytes" in query
     assert "container_spec_memory_limit_bytes" in query
     assert "`limit`" in query or "limit" in query
+
+
+# ---------------------------------------------------------------------------
+# Grafana 13332 — kube-state-metrics v2
+# ---------------------------------------------------------------------------
+
+
+def _resolve_13332():
+    dashboard = {
+        "gnetId": 13332,
+        "title": "kube-state-metrics-v2",
+        "tags": ["kubernetes", "kubernetes-app"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_13332(panel):
+    resolved, resolver = _resolve_13332()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_13332_registry_entry_present():
+    entry = find_curated_pack(gnet_id=13332, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_13332_kube_state_metrics_v2"
+    assert entry["gnet_revision"] == 12
+
+
+def test_13332_restart_changes_become_delta_by_pod():
+    panel = {
+        "id": 68,
+        "type": "table-old",
+        "title": "Pods restart in 30m",
+        "targets": [
+            {
+                "expr": (
+                    'changes(kube_pod_container_status_restarts_total'
+                    '{namespace=~"$namespace",cluster=~"$cluster"}[30m])>1'
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 9},
+    }
+    result, query, yaml_panel = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "changes(" not in query
+    assert "RATE" in query
+    assert "30 minutes" in query
+    assert "1800" in query
+    assert "LAST(per_sec, time_bucket)" in query
+    assert "45 minutes" not in query
+    assert query.index("LAST(per_sec, time_bucket)") < query.index("per_sec * 1800")
+    assert "k8s.pod.name" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_13332_restart_stat_keeps_one_bucket_per_series():
+    panel = {
+        "id": 41,
+        "type": "singlestat",
+        "title": "Containers Restarts (Last 30 Minutes)",
+        "targets": [
+            {
+                "expr": (
+                    "sum(changes(kube_pod_container_status_restarts_total"
+                    '{namespace=~"$namespace",cluster=~"$cluster"}[30m]))'
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "LAST(per_sec, time_bucket)" in query
+    assert "45 minutes" not in query
+    assert "k8s.pod.name" in query
+    assert query.index("LAST(per_sec, time_bucket)") < query.index("per_sec * 1800")
+    assert query.index("per_sec * 1800") < query.index("SUM(restarts)")
+
+
+def test_13332_hpa_chart_splits_namespace_and_name():
+    panel = {
+        "id": 82,
+        "type": "graph",
+        "title": "hpa",
+        "targets": [
+            {
+                "expr": 'kube_hpa_status_current_replicas{cluster=~"$cluster",namespace=~"$namespace"}',
+                "legendFormat": "current_{{hpa}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status in {"migrated", "migrated_with_warnings"}, result.reasons
+    assert "k8s.namespace.name" in query
+    assert "CONCAT" in query
+    assert "BY time_bucket, hpa" in query
+
+
+def test_13332_hpa_limit_tables_stay_global():
+    panel = {
+        "id": 90,
+        "type": "graph",
+        "title": "current==max",
+        "targets": [
+            {
+                "expr": 'kube_hpa_status_current_replicas{hpa=~".*"} == kube_hpa_spec_max_replicas{hpa=~".*"}',
+                "legendFormat": "{{hpa}}",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "?cluster" not in query
+    assert "?namespace" not in query
+    assert "current == max" in query
+
+
+def test_13332_cpu_request_tile_uses_resource_label():
+    panel = {
+        "id": 43,
+        "type": "singlestat",
+        "title": "CPU Cores Requested by Containers",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_pod_container_resource_requests_cpu_cores'
+                    '{namespace=~"$namespace",cluster=~"$cluster"})'
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 3},
+    }
+    result, query, _yaml = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert 'resource == "cpu"' in query
+    assert "kube_pod_container_resource_requests_cpu_cores" not in query
+    assert "RLIKE ?namespace" in query
+
+
+def test_13332_cluster_ratios_are_percents_on_one_row():
+    panel = {
+        "id": 4,
+        "type": "singlestat",
+        "title": "Cluster Pod Requested",
+        "targets": [
+            {
+                "expr": (
+                    'sum(kube_pod_info{cluster=~"$cluster",node=~"$node"}) / '
+                    'sum(kube_node_status_allocatable{cluster=~"$cluster",resource="pods",node=~"$node"})'
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+    }
+    result, query, yaml_panel = _translate_13332(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "* 100" in query
+    assert yaml_panel["esql"]["primary"]["format"]["suffix"] == "%"
+
+
+def test_13332_layout_fills_the_cluster_row():
+    dashboard = {
+        "gnetId": 13332,
+        "title": "kube-state-metrics-v2",
+        "tags": ["kubernetes", "kubernetes-app"],
+        "panels": [
+            {
+                "type": "row",
+                "title": "Cluster",
+                "collapsed": False,
+                "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                "panels": [
+                    {
+                        "id": 4,
+                        "type": "singlestat",
+                        "title": "Cluster Pod Requested",
+                        "targets": [
+                            {
+                                "expr": (
+                                    'sum(kube_pod_info{node=~"$node"}) / '
+                                    'sum(kube_node_status_allocatable{resource="pods",node=~"$node"})'
+                                ),
+                                "refId": "A",
+                            }
+                        ],
+                        "gridPos": {"x": 0, "y": 1, "w": 6, "h": 4},
+                    }
+                ],
+            }
+        ],
+    }
+    resolved, resolver = _resolve_13332()
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    section = result.dashboard_ir.to_yaml_dict()["panels"][0]
+    tile = section["section"]["panels"][0]
+    assert tile["title"] == "Cluster pod requested"
+    assert tile["size"] == {"w": 16, "h": 8}
+    assert tile["position"] == {"x": 0, "y": 0}
+
+
+# ---------------------------------------------------------------------------
+# Grafana 11454 — K8s / Storage / Volumes / Cluster
+# ---------------------------------------------------------------------------
+
+
+def _resolve_11454():
+    dashboard = {
+        "gnetId": 11454,
+        "title": "K8s / Storage / Volumes / Cluster",
+        "tags": ["openshift", "k8s", "storage"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_11454(panel):
+    resolved, resolver = _resolve_11454()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_11454_registry_entry_present():
+    entry = find_curated_pack(gnet_id=11454, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_11454_k8s_storage_volumes"
+    assert entry["gnet_revision"] == 14
+
+
+def test_11454_predict_linear_is_days_of_growth():
+    panel = {
+        "id": 30,
+        "type": "singlestat",
+        "title": "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate",
+        "targets": [
+            {
+                "expr": (
+                    'count((kubelet_volume_stats_available_bytes'
+                    '{namespace=~"(openshift-.*|kube-.*|default|logging)"}) and '
+                    "(predict_linear(kubelet_volume_stats_available_bytes"
+                    '{namespace=~"(openshift-.*|kube-.*|default|logging)"}[1d],'
+                    " 7 * 24 * 60 * 60) < 0)) or vector(0)"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 7, "h": 3},
+    }
+    result, query, _yaml = _translate_11454(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "predict_linear" not in query
+    assert "24 hours" in query
+    assert "openshift-.*" in query
+    assert "available / growth < 7" in query
+
+
+def test_11454_infra_current_table_fits_a_week():
+    panel = {
+        "id": 38,
+        "type": "table",
+        "title": "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current",
+        "targets": [
+            {
+                "expr": (
+                    "predict_linear(kubelet_volume_stats_available_bytes"
+                    '{namespace=~"(openshift-.*|kube-.*|default|logging)"}[1w],'
+                    " 7 * 24 * 60 * 60) < 0"
+                ),
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+    }
+    result, query, yaml_panel = _translate_11454(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "168 hours" in query
+    assert "24 hours" not in query
+    assert "available / growth * 7" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+    user = {
+        "id": 39,
+        "type": "table",
+        "title": "User Namespace Volumes Full in Week Based on Daily Use Rate - Current",
+        "targets": [
+            {
+                "expr": "predict_linear(kubelet_volume_stats_available_bytes[1d], 7 * 24 * 60 * 60) < 0",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+    }
+    _, user_query, _ = _translate_11454(user)
+    assert "24 hours" in user_query
+    assert "168 hours" not in user_query
+    assert "available / growth," in user_query or "available / growth)" in user_query
+
+
+def test_11454_use_rate_windows_stay_distinct():
+    def _panel(title, window):
+        return {
+            "id": 17,
+            "type": "graph",
+            "title": title,
+            "targets": [
+                {
+                    "expr": f"rate(kubelet_volume_stats_used_bytes [{window}])",
+                    "legendFormat": "{{namespace}} ({{persistentvolumeclaim}})",
+                    "refId": "A",
+                }
+            ],
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 6},
+        }
+
+    _, hourly, _ = _translate_11454(_panel("Hourly Volume Use Rate", "1h"))
+    _, daily, _ = _translate_11454(_panel("Daily Volume Use Rate", "1d"))
+    _, weekly, weekly_panel = _translate_11454(_panel("Weekly Volume Use Rate", "1w"))
+    assert "1 hour" in hourly and "3600" in hourly
+    assert "24 hours" in daily and "86400" in daily
+    assert "168 hours" in weekly and "604800" in weekly
+    assert weekly_panel["esql"]["type"] == "line"
+    assert "legend" in weekly
+
+
+def test_11454_bound_pvcs_use_phase_not_pv_collector():
+    panel = {
+        "id": 4,
+        "type": "singlestat",
+        "title": "Bound PVCs",
+        "targets": [
+            {"expr": "(sum (pv_collector_bound_pvc_count)) or vector(0)", "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 2, "h": 4},
+    }
+    result, query, _yaml = _translate_11454(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "pv_collector_bound_pvc_count" not in query
+    assert 'phase == "Bound"' in query
+
+
+def test_11454_fidelity_manifest_has_no_unknown():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_11454_k8s_storage_volumes" / "fidelity_manifest.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    fidelities = {panel["fidelity"] for panel in manifest["panels"]}
+    assert "UNKNOWN" not in fidelities
+    assert "GAP" in fidelities
+    assert len(manifest["panels"]) == 20
+
+
+# ---------------------------------------------------------------------------
+# Grafana 12660 — Kubernetes / Persistent Volumes
+# ---------------------------------------------------------------------------
+
+
+def _resolve_12660():
+    dashboard = {
+        "gnetId": 12660,
+        "title": "Kubernetes / Persistent Volumes",
+        "tags": ["kubernetes-mixin"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_12660(panel):
+    resolved, resolver = _resolve_12660()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_12660_registry_entry_present():
+    entry = find_curated_pack(gnet_id=12660, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_12660_k8s_persistent_volumes"
+    assert entry["gnet_revision"] == 1
+
+
+def test_12660_space_chart_is_capacity_minus_available():
+    panel = {
+        "id": 2,
+        "type": "graph",
+        "title": "Volume Space Usage",
+        "targets": [
+            {
+                "expr": 'kubelet_volume_stats_capacity_bytes{persistentvolumeclaim="$volume"}',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 18, "h": 8},
+    }
+    result, query, yaml_panel = _translate_12660(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "capacity - available" in query
+    assert "free_bytes = available" in query
+    assert "== ?cluster" in query
+    assert "== ?namespace" in query
+    assert "== ?volume" in query
+    assert "RLIKE" not in query
+    assert '== "kubelet"' in query
+    assert "metrics_path" not in query
+    assert yaml_panel["esql"]["type"] == "line"
+
+
+def test_12660_space_percent_agrees_with_the_chart():
+    panel = {
+        "id": 3,
+        "type": "singlestat",
+        "title": "Volume Space Usage",
+        "format": "percent",
+        "targets": [{"expr": "kubelet_volume_stats_capacity_bytes * 100", "refId": "A"}],
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+    }
+    result, query, yaml_panel = _translate_12660(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "(capacity - available) / capacity * 100" in query
+    assert yaml_panel["esql"]["primary"]["format"]["suffix"] == "%"
+
+
+def test_12660_inodes_free_is_total_minus_used():
+    panel = {
+        "id": 4,
+        "type": "graph",
+        "title": "Volume inodes Usage",
+        "targets": [{"expr": "kubelet_volume_stats_inodes_used", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 18, "h": 8},
+    }
+    result, query, _yaml = _translate_12660(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "free_inodes = inodes - used" in query
+    assert "kubelet_volume_stats_inodes" in query
+    assert "metrics_path" not in query
+
+
+def test_12660_layout_names_the_rows_and_fills_48_columns():
+    dashboard = {
+        "gnetId": 12660,
+        "title": "Kubernetes / Persistent Volumes",
+        "tags": ["kubernetes-mixin"],
+        "rows": [
+            {
+                "title": "Dashboard Row",
+                "panels": [
+                    {
+                        "id": 2,
+                        "type": "graph",
+                        "title": "Volume Space Usage",
+                        "span": 9,
+                        "targets": [{"expr": "kubelet_volume_stats_capacity_bytes", "refId": "A"}],
+                    },
+                    {
+                        "id": 3,
+                        "type": "singlestat",
+                        "title": "Volume Space Usage",
+                        "span": 3,
+                        "format": "percent",
+                        "targets": [{"expr": "kubelet_volume_stats_capacity_bytes", "refId": "A"}],
+                    },
+                ],
+            },
+            {
+                "title": "Dashboard Row",
+                "panels": [
+                    {
+                        "id": 4,
+                        "type": "graph",
+                        "title": "Volume inodes Usage",
+                        "span": 9,
+                        "targets": [{"expr": "kubelet_volume_stats_inodes_used", "refId": "A"}],
+                    },
+                    {
+                        "id": 5,
+                        "type": "singlestat",
+                        "title": "Volume inodes Usage",
+                        "span": 3,
+                        "format": "percent",
+                        "targets": [{"expr": "kubelet_volume_stats_inodes_used", "refId": "A"}],
+                    },
+                ],
+            },
+        ],
+    }
+    resolved, resolver = _resolve_12660()
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    assert [panel["title"] for panel in panels] == ["Bytes", "Inodes"]
+    chart, tile = panels[0]["section"]["panels"]
+    assert chart["size"] == {"w": 36, "h": 14}
+    assert tile["title"] == "Space used"
+    assert tile["size"] == {"w": 12, "h": 14}
+    assert tile["position"] == {"x": 36, "y": 0}
+    errors = dashboard_schema_errors(panels)
+    assert errors == [], errors
+
+
+def test_12660_fidelity_manifest_has_no_unknown():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_12660_k8s_persistent_volumes" / "fidelity_manifest.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    fidelities = {panel["fidelity"] for panel in manifest["panels"]}
+    assert "UNKNOWN" not in fidelities
+    assert len(manifest["panels"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# Grafana 7187 — Kubernetes Resource Requests
+# ---------------------------------------------------------------------------
+
+
+def _resolve_7187():
+    dashboard = {
+        "gnetId": 7187,
+        "title": "Kubernetes Resource Requests",
+        "tags": ["kubernetes"],
+    }
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_7187(panel):
+    resolved, resolver = _resolve_7187()
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_7187_registry_entry_present():
+    entry = find_curated_pack(gnet_id=7187, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_7187_k8s_resource_requests"
+    assert entry["gnet_revision"] == 1
+
+
+def test_7187_cpu_chart_is_per_node_min_max():
+    panel = {
+        "id": 1,
+        "type": "graph",
+        "title": "CPU Cores",
+        "targets": [
+            {
+                "expr": "min(sum(kube_pod_container_resource_requests_cpu_cores) by (instance))",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 18, "h": 8},
+    }
+    result, query, yaml_panel = _translate_7187(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "cpu_cores" not in query
+    assert 'resource == "cpu"' in query or "== \"cpu\"" in query
+    assert "SUM(LAST_OVER_TIME" in query
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
+    assert "MAX(limits)" in query
+    assert "min(" not in query
+    assert yaml_panel["esql"]["type"] == "line"
+
+
+def test_7187_cpu_percent_is_requested_over_allocatable():
+    panel = {
+        "id": 2,
+        "type": "singlestat",
+        "title": "CPU Cores",
+        "format": "percent",
+        "targets": [
+            {
+                "expr": "max(sum(kube_pod_container_resource_requests_cpu_cores) by (instance)) * 100",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+    }
+    result, query, yaml_panel = _translate_7187(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
+    assert "requested / allocatable * 100" in query
+    assert yaml_panel["esql"]["primary"]["format"]["suffix"] == "%"
+
+
+def test_7187_memory_uses_resource_memory_and_bytes():
+    panel = {
+        "id": 3,
+        "type": "graph",
+        "title": "Memory",
+        "yaxes": [{"format": "bytes", "show": True}, {"format": "short", "show": True}],
+        "targets": [
+            {
+                "expr": "min(sum(kube_node_status_allocatable_memory_bytes) by (instance))",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 8, "w": 18, "h": 8},
+    }
+    result, query, yaml_panel = _translate_7187(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "memory_bytes" not in query
+    assert '== "memory"' in query
+    assert "MIN(allocatable)" in query
+    assert "MAX(requested)" in query
+    assert "MAX(limits)" in query
+    metrics = yaml_panel["esql"].get("metrics") or []
+    assert metrics
+    assert all(metric.get("format", {}).get("type") == "bytes" for metric in metrics)
+
+
+def test_7187_layout_pairs_each_chart_with_its_percent():
+    dashboard = {
+        "gnetId": 7187,
+        "title": "Kubernetes Resource Requests",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "id": 1,
+                "type": "graph",
+                "title": "CPU Cores",
+                "targets": [{"expr": "kube_node_status_allocatable_cpu_cores", "refId": "A"}],
+                "gridPos": {"x": 0, "y": 0, "w": 18, "h": 8},
+            },
+            {
+                "id": 2,
+                "type": "singlestat",
+                "title": "CPU Cores",
+                "format": "percent",
+                "targets": [{"expr": "kube_pod_container_resource_requests_cpu_cores", "refId": "A"}],
+                "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+            },
+            {
+                "id": 3,
+                "type": "graph",
+                "title": "Memory",
+                "yaxes": [{"format": "bytes"}, {"format": "short"}],
+                "targets": [{"expr": "kube_node_status_allocatable_memory_bytes", "refId": "A"}],
+                "gridPos": {"x": 0, "y": 8, "w": 18, "h": 8},
+            },
+            {
+                "id": 4,
+                "type": "singlestat",
+                "title": "Memory",
+                "format": "percent",
+                "targets": [{"expr": "kube_pod_container_resource_requests_memory_bytes", "refId": "A"}],
+                "gridPos": {"x": 18, "y": 8, "w": 6, "h": 8},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_7187()
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    assert [panel["title"] for panel in panels] == [
+        "CPU cores",
+        "CPU requested",
+        "Memory",
+        "Memory requested",
+    ]
+    assert panels[0]["size"] == {"w": 36, "h": 14}
+    assert panels[1]["position"] == {"x": 36, "y": 0}
+    assert panels[2]["position"] == {"x": 0, "y": 14}
+    assert panels[3]["size"] == {"w": 12, "h": 14}
+    errors = dashboard_schema_errors(panels)
+    assert errors == [], errors
+
+
+def test_7187_fidelity_manifest_has_no_unknown():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_7187_k8s_resource_requests" / "fidelity_manifest.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    fidelities = {panel["fidelity"] for panel in manifest["panels"]}
+    assert "UNKNOWN" not in fidelities
+    assert len(manifest["panels"]) == 4

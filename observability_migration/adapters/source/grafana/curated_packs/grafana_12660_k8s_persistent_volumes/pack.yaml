@@ -1,0 +1,119 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 12660
+# https://grafana.com/grafana/dashboards/12660-kubernetes-persistent-volumes/
+#
+# Kubernetes / Persistent Volumes (revision 1). One volume at a time, selected
+# by cluster, namespace, and persistentvolumeclaim, as exact matches.
+# Used bytes are capacity minus available, matching the graph. The percent
+# tiles use the
+# same sum across instance and node so they agree with the chart when more
+# than one kubelet reports the volume. The scrape path selector is omitted:
+# metrics_path is not stored as a metric dimension, and a WHERE on it is an
+# unknown column. The kubelet job filter stays.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    kubelet_volume_stats_capacity_bytes: gauge
+    kubelet_volume_stats_available_bytes: gauge
+    kubelet_volume_stats_inodes: gauge
+    kubelet_volume_stats_inodes_used: gauge
+
+panel:
+  query_overrides:
+    - title_match: "Volume Space Usage"
+      panel_id: 2
+      approximation_note: "Used bytes are capacity minus available. The metrics_path selector is omitted because that scrape label is not a stored dimension."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:job}} == "kubelet"
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
+        | WHERE {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
+        | STATS capacity = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL used_bytes = capacity - available
+        | EVAL free_bytes = available
+        | KEEP time_bucket, used_bytes, free_bytes
+        | SORT time_bucket ASC
+    - title_match: "Volume Space Usage"
+      panel_id: 3
+      primary_format: percent
+      approximation_note: "Percent used is the chart's sum of (capacity - available) over capacity, so a volume reported by more than one kubelet stays one number."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:job}} == "kubelet"
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
+        | WHERE {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
+        | STATS capacity = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}}))
+        | EVAL percent = CASE(capacity > 0, (capacity - available) / capacity * 100, NULL)
+        | KEEP percent
+    - title_match: "Volume inodes Usage"
+      panel_id: 4
+      approximation_note: "Free inodes are total minus used. The metrics_path selector is omitted because that scrape label is not a stored dimension."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:job}} == "kubelet"
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
+        | WHERE {{metric:kubelet_volume_stats_inodes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_inodes_used:gauge}} IS NOT NULL
+        | STATS inodes = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes:gauge}})), used = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes_used:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL used_inodes = used
+        | EVAL free_inodes = inodes - used
+        | KEEP time_bucket, used_inodes, free_inodes
+        | SORT time_bucket ASC
+    - title_match: "Volume inodes Usage"
+      panel_id: 5
+      primary_format: percent
+      approximation_note: "Percent of inodes used is the chart's sum of used inodes over total inodes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:job}} == "kubelet"
+        | WHERE {{label:cluster}} == ?cluster
+        | WHERE {{label:namespace}} == ?namespace
+        | WHERE {{label:persistentvolumeclaim}} == ?volume
+        | WHERE {{metric:kubelet_volume_stats_inodes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_inodes_used:gauge}} IS NOT NULL
+        | STATS inodes = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes:gauge}})), used = SUM(LAST_OVER_TIME({{metric:kubelet_volume_stats_inodes_used:gauge}}))
+        | EVAL percent = CASE(inodes > 0, used / inodes * 100, NULL)
+        | KEEP percent
+
+  layout_overrides:
+    - title_match: "Dashboard Row"
+      title: "Bytes"
+    - title_match: "Dashboard Row (2)"
+      title: "Inodes"
+    - title_match: "Volume Space Usage"
+      panel_id: 2
+      hide_title: false
+      legend_position: right
+      size: {w: 36, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Volume Space Usage"
+      panel_id: 3
+      title: "Space used"
+      hide_title: false
+      size: {w: 12, h: 14}
+      position: {x: 36, y: 0}
+    - title_match: "Volume inodes Usage"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 36, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Volume inodes Usage"
+      panel_id: 5
+      title: "Inodes used"
+      hide_title: false
+      size: {w: 12, h: 14}
+      position: {x: 36, y: 0}

@@ -181,3 +181,39 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52"
     description: "Kubernetes App Metrics — Heapster label remap, $namespace/$container populate, HTTP native/nginx/haproxy series, cAdvisor ratios"
+
+  - gnet_id: 13332
+    name: grafana_13332_kube_state_metrics_v2
+    title_hint: "kube-state-metrics-v2"
+    tags_hint: ["kubernetes", "kubernetes-app"]
+    path: grafana_13332_kube_state_metrics_v2
+    gnet_revision: 12
+    dashboard_sha256: "1cd308bcd7bcbb4bda2cb089c91e7ba164f237bdd39effc8fdccd45961b5bf97"
+    description: "kube-state-metrics v2 — resource-split requests, restart DELTA, per-object tables, 48-col sections"
+
+  - gnet_id: 11454
+    name: grafana_11454_k8s_storage_volumes
+    title_hint: "K8s / Storage / Volumes / Cluster"
+    tags_hint: ["openshift", "k8s", "storage"]
+    path: grafana_11454_k8s_storage_volumes
+    gnet_revision: 14
+    dashboard_sha256: "ad674d50a254959cf652638cf0d1d0a7a8706f17a803468f0613fbc206c5a3bd"
+    description: "Cluster volume usage — fill-in-a-week slope, PVC percent table, hourly/daily/weekly rates, KSM phase counts"
+
+  - gnet_id: 12660
+    name: grafana_12660_k8s_persistent_volumes
+    title_hint: "Kubernetes / Persistent Volumes"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_12660_k8s_persistent_volumes
+    gnet_revision: 1
+    dashboard_sha256: "c97b492b88ecbd8e9b71f97406cb5650fb89eff22e8ae42996dfc8de91be8462"
+    description: "One persistent volume — used and free bytes and inodes, with percent tiles bound to cluster, namespace, and volume"
+
+  - gnet_id: 7187
+    name: grafana_7187_k8s_resource_requests
+    title_hint: "Kubernetes Resource Requests"
+    tags_hint: ["kubernetes"]
+    path: grafana_7187_k8s_resource_requests
+    gnet_revision: 1
+    dashboard_sha256: "3c877a83770e88c52b8890ee56d2154da08f7e02faac70de51fe3548b533054b"
+    description: "Cluster CPU and memory requests versus allocatable — resource-label reshape, cluster sums, percent tiles"

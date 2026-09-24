@@ -1,0 +1,353 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 11454
+# https://grafana.com/grafana/dashboards/11454-k8s-storage-volumes-cluster/
+#
+# Cluster volume dashboard (revision 14). predict_linear() and PromQL `and`
+# inside count() have no ES|QL equivalent. Fill-in-a-week is approximated as
+# available bytes / one-day growth of used bytes. The infrastructure "current"
+# table is the exception: its predict_linear range is a week, so that slope is
+# a week of growth scaled back to a daily rate. The pinned textbox default
+# is 80. OpenShift pv_collector_* counts are replaced with
+# kube_persistentvolumeclaim_status_phase. rate() lookbacks of 1h / 1d / 1w
+# stay distinct via DELTA windows. The Grafana alert list has no Kibana
+# equivalent.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    kubelet_volume_stats_available_bytes: gauge
+    kubelet_volume_stats_used_bytes: gauge
+    kubelet_volume_stats_capacity_bytes: gauge
+    kube_persistentvolumeclaim_info: gauge
+    kube_persistentvolumeclaim_status_phase: gauge
+    pv_collector_bound_pvc_count: gauge
+    pv_collector_unbound_pvc_count: gauge
+
+panel:
+  query_overrides:
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate"
+      approximation_note: "predict_linear(available[1d], 7d) < 0 approximated as available / one-day used-byte growth under 7 days. Infrastructure namespaces stay openshift-*, kube-*, default, and logging."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)"
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE bucket >= ?_tend - 2 hours
+        | STATS available = MIN(available), growth = MAX(growth) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL at_risk = CASE(growth > 0 AND available / growth < 7, 1, 0)
+        | STATS volumes = SUM(at_risk)
+        | KEEP volumes
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate"
+      approximation_note: "Same one-day growth approximation as the infrastructure tile, for namespaces outside openshift-*, kube-*, default, and logging."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE NOT ({{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)")
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE bucket >= ?_tend - 2 hours
+        | STATS available = MIN(available), growth = MAX(growth) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL at_risk = CASE(growth > 0 AND available / growth < 7, 1, 0)
+        | STATS volumes = SUM(at_risk)
+        | KEEP volumes
+    - title_match: "Running PVCs Above % Used Warning Threshold"
+      approximation_note: "Count of PVCs at or above 80% used. Revision 14's textbox default is 80; curated overrides replace the query after the textbox is inlined."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL hot = CASE(capacity > 0 AND used / capacity >= 0.8, 1, 0)
+        | STATS volumes = SUM(hot)
+        | KEEP volumes
+    - title_match: "Unbound PVCs"
+      approximation_note: "OpenShift pv_collector_unbound_pvc_count replaced with kube_persistentvolumeclaim_status_phase where phase is not Bound."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:phase}} != "Bound"
+        | WHERE {{metric:kube_persistentvolumeclaim_status_phase:gauge}} IS NOT NULL
+        | STATS volumes = SUM(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_status_phase:gauge}}))
+        | KEEP volumes
+    - title_match: "Bound PVCs"
+      approximation_note: "OpenShift pv_collector_bound_pvc_count replaced with kube_persistentvolumeclaim_status_phase where phase is Bound."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:phase}} == "Bound"
+        | WHERE {{metric:kube_persistentvolumeclaim_status_phase:gauge}} IS NOT NULL
+        | STATS volumes = SUM(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_status_phase:gauge}}))
+        | KEEP volumes
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+      kibana_type_override: datatable
+      approximation_note: "predict_linear(available[1w], 7d) < 0. A week of used-byte growth is scaled to a daily rate so days left stays under 7."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tend - 168 hours AND @timestamp <= ?_tend
+        | WHERE {{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)"
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE bucket >= ?_tend - 2 hours
+        | STATS available = MIN(available), growth = MAX(growth) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL days_left = CASE(growth > 0, available / growth * 7, NULL)
+        | WHERE days_left < 7
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS days_left = MIN(days_left), available = MAX(available) BY namespace, claim
+        | KEEP namespace, claim, days_left, available
+        | SORT days_left ASC
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+      kibana_type_override: datatable
+      approximation_note: "User-namespace volumes whose one-day growth would fill available space in under 7 days."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE NOT ({{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)")
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE bucket >= ?_tend - 2 hours
+        | STATS available = MIN(available), growth = MAX(growth) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL days_left = CASE(growth > 0, available / growth, NULL)
+        | WHERE days_left < 7
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS days_left = MIN(days_left), available = MAX(available) BY namespace, claim
+        | KEEP namespace, claim, days_left, available
+        | SORT days_left ASC
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+      kibana_type_override: line
+      approximation_note: "Count of infrastructure volumes predicted full within a week, instead of Grafana's 0/1 spike per series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)"
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL at_risk = CASE(growth > 0 AND available / growth < 7, 1, 0)
+        | STATS volumes = SUM(at_risk) BY time_bucket
+        | KEEP time_bucket, volumes
+        | SORT time_bucket ASC
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+      kibana_type_override: line
+      approximation_note: "Count of user-namespace volumes predicted full within a week, instead of Grafana's 0/1 spike per series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE NOT ({{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)")
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL at_risk = CASE(growth > 0 AND available / growth < 7, 1, 0)
+        | STATS volumes = SUM(at_risk) BY time_bucket
+        | KEEP time_bucket, volumes
+        | SORT time_bucket ASC
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+      kibana_type_override: line
+      approximation_note: "Projected bytes left after 7 days of the current one-day growth, for infrastructure volumes already predicted to go negative."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)"
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL projected_bytes = available - growth * 7
+        | WHERE projected_bytes < 0
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
+        | STATS projected_bytes = AVG(projected_bytes) BY time_bucket, legend
+        | KEEP time_bucket, legend, projected_bytes
+        | SORT time_bucket ASC
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+      kibana_type_override: line
+      approximation_note: "Projected bytes left after 7 days of growth for user-namespace volumes already predicted to go negative."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE NOT ({{label:namespace}} RLIKE "(openshift-.*|kube-.*|default|logging)")
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL projected_bytes = available - growth * 7
+        | WHERE projected_bytes < 0
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
+        | STATS projected_bytes = AVG(projected_bytes) BY time_bucket, legend
+        | KEEP time_bucket, legend, projected_bytes
+        | SORT time_bucket ASC
+    - title_match: "Running PVCs Above % Used Warning Threshold Stats - Current"
+      kibana_type_override: datatable
+      approximation_note: "PVCs at or above 80% used, with used, capacity, and percent. The 80 default is revision 14's textbox."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), free = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL percent_used = CASE(capacity > 0, used / capacity * 100, NULL)
+        | WHERE percent_used >= 80
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS percent_used = MAX(percent_used), used = MAX(used), capacity = MAX(capacity), free = MAX(free) BY namespace, claim
+        | KEEP namespace, claim, percent_used, used, capacity, free
+        | SORT percent_used DESC
+    - title_match: "Running PVCs Above % Used Warning Threshold - History"
+      kibana_type_override: line
+      approximation_note: "Count of PVCs at or above 80% used over time, instead of a 0/1 series per claim."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
+        | STATS used = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL hot = CASE(capacity > 0 AND used / capacity >= 0.8, 1, 0)
+        | STATS volumes = SUM(hot) BY time_bucket
+        | KEEP time_bucket, volumes
+        | SORT time_bucket ASC
+    - title_match: "PVC Stats"
+      kibana_type_override: datatable
+      approximation_note: "Used, capacity, free, and percent per claim. The source info/unless existence targets are dropped; rows are claims with kubelet stats."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), free = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL percent_used = CASE(capacity > 0, used / capacity * 100, NULL)
+        | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
+        | STATS percent_used = MAX(percent_used), used = MAX(used), capacity = MAX(capacity), free = MAX(free) BY namespace, claim
+        | KEEP namespace, claim, percent_used, used, capacity, free
+        | SORT percent_used DESC
+    - title_match: "Hourly Volume Use Rate"
+      kibana_type_override: line
+      approximation_note: "rate(used_bytes[1h]) on the used-bytes gauge, as DELTA over 1 hour divided by 3600, one series per claim."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 1 hour)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL bytes_per_sec = growth / 3600
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
+        | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend
+        | KEEP time_bucket, legend, bytes_per_sec
+        | SORT time_bucket ASC
+    - title_match: "Daily Volume Use Rate"
+      kibana_type_override: line
+      approximation_note: "rate(used_bytes[1d]) as DELTA over 24 hours divided by 86400, one series per claim."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL bytes_per_sec = growth / 86400
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
+        | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend
+        | KEEP time_bucket, legend, bytes_per_sec
+        | SORT time_bucket ASC
+    - title_match: "Weekly Volume Use Rate"
+      kibana_type_override: line
+      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim. Points are daily so the line stays inside the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL bytes_per_sec = growth / 604800
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
+        | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend
+        | KEEP time_bucket, legend, bytes_per_sec
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate"
+      title: "Infra volumes full within a week"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate"
+      title: "User volumes full within a week"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 12, y: 0}
+    - title_match: "Running PVCs Above % Used Warning Threshold"
+      title: "PVCs above 80% used"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 24, y: 0}
+    - title_match: "Unbound PVCs"
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 36, y: 0}
+    - title_match: "Dashboard Alerts"
+      hide_title: false
+      size: {w: 48, h: 6}
+      position: {x: 0, y: 8}
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+      title: "Infra volumes filling this week"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+      title: "Infra projected bytes remaining"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 0}
+    - title_match: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+      title: "Infra volumes at risk"
+      hide_title: false
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 14}
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+      title: "User volumes filling this week"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 26}
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+      title: "User projected bytes remaining"
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 26}
+    - title_match: "User Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+      title: "User volumes at risk"
+      hide_title: false
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 40}
+    - title_match: "Running PVCs Above % Used Warning Threshold Stats - Current"
+      title: "Claims at or above 80%"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 52}
+    - title_match: "Running PVCs Above % Used Warning Threshold - History"
+      title: "PVCs above 80% over time"
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 52}
+    - title_match: "Bound PVCs"
+      hide_title: false
+      size: {w: 16, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "PVC Stats"
+      hide_title: false
+      size: {w: 48, h: 16}
+      position: {x: 0, y: 8}
+    - title_match: "All Running PVCs Used Bytes"
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Running PVCs % Used"
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 14}
+    - title_match: "Hourly Volume Use Rate"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Daily Volume Use Rate"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 14}
+      position: {x: 16, y: 0}
+    - title_match: "Weekly Volume Use Rate"
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 14}
+      position: {x: 32, y: 0}
