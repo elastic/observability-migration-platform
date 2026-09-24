@@ -217,3 +217,21 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "3c877a83770e88c52b8890ee56d2154da08f7e02faac70de51fe3548b533054b"
     description: "Cluster CPU and memory requests versus allocatable — resource-label reshape, cluster sums, percent tiles"
+
+  - gnet_id: 15760
+    name: grafana_15760_k8s_views_pods
+    title_hint: "Kubernetes / Views / Pods"
+    tags_hint: ["kubernetes"]
+    path: grafana_15760_k8s_views_pods
+    gnet_revision: 41
+    dashboard_sha256: "b30b712b67def51760b9543b136978a446602ced8077c51da4824b542fe8c983"
+    description: "Pod view — label tables, request and limit ratios, per-container CPU and memory, mirrored network"
+
+  - gnet_id: 15759
+    name: grafana_15759_k8s_views_nodes
+    title_hint: "Kubernetes / Views / Nodes"
+    tags_hint: ["kubernetes"]
+    path: grafana_15759_k8s_views_nodes
+    gnet_revision: 40
+    dashboard_sha256: "008c4e78d094610c809ba0c36086af939cc4c0077103724fc3419b5f975796dd"
+    description: "Node view — pod list, instance-scoped CPU and memory, filesystem and disk, mirrored network"

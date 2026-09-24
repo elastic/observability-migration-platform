@@ -344,6 +344,31 @@ Grafana's `min`/`max` of a per-instance sum is one node; Kibana sums the
 cluster, and the tiles are requested divided by allocatable as a percent.
 Memory stays in bytes.
 
+The pod view (15760) turns the info stats into tables of the legend labels
+(owner, node, IP, priority, QoS, last termination) for every selected pod.
+Request and limit ratios cannot express the PromQL `and on` running-pod join,
+so they use the namespace, pod, and cluster controls and stay on the 0–1
+scale of the source `percentunit` axis. Per-container CPU drops the cAdvisor
+`id` breakdown. Received traffic is positive and transmitted is negative.
+OOM and restart charts are an increase over the dashboard time range, and
+they keep the source axis max of 1. The issue and unscheduled tables stay
+cluster-wide, as in the source queries. The job control filters restarts;
+leaving it empty shows every job.
+
+The node view (15759) lists pods on the selected node. The overview is one
+row of CPU, memory, and pod count, with used, total, and uptime flush
+underneath and the pod list beside both rows. Uptime stays a plain duration:
+Kibana metric color fills the whole tile, so the source green/yellow/red
+value thresholds are not copied. CPU, memory, load,
+network, and filesystem charts filter on the selected instance instead of
+drawing one series per instance. `percentunit` ratios stay 0–1; panels whose
+source unit is already `percent` stay on a 0–100 scale. The instance dropdown
+does not apply the source `nodename` regex, so choose the instance that
+matches the node. The `resolution` variable is a scrape step; chart buckets
+follow the dashboard time range. `node_disk_io_now` is a gauge of in-progress
+I/O; ES|QL cannot `rate()` a gauge, so that chart shows the last count by
+device.
+
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
 recording the exact grafana.com revision the pack authors read, re-checkable

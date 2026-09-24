@@ -1,0 +1,572 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 15760
+# https://grafana.com/grafana/dashboards/15760-kubernetes-views-pods/
+#
+# Kubernetes / Views / Pods (revision 41). Info stats become tables of the legend labels. Request and limit ratios drop the PromQL and-on running-pod join and keep the namespace, pod, and cluster controls. Charts are lines on the 48-column grid.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    container_cpu_cfs_throttled_seconds_total: counter
+    container_cpu_usage_seconds_total: counter
+    container_network_receive_bytes_total: counter
+    container_network_receive_errors_total: counter
+    container_network_receive_packets_dropped_total: counter
+    container_network_receive_packets_total: counter
+    container_network_transmit_bytes_total: counter
+    container_network_transmit_errors_total: counter
+    container_network_transmit_packets_dropped_total: counter
+    container_network_transmit_packets_total: counter
+    container_oom_events_total: counter
+    kube_pod_container_status_restarts_total: counter
+    container_memory_working_set_bytes: gauge
+    kube_node_info: gauge
+    kube_pod_container_resource_limits: gauge
+    kube_pod_container_resource_requests: gauge
+    kube_pod_container_status_last_terminated_exitcode: gauge
+    kube_pod_container_status_last_terminated_reason: gauge
+    kube_pod_container_status_waiting_reason: gauge
+    kube_pod_info: gauge
+    kube_pod_status_phase: gauge
+    kube_pod_status_qos_class: gauge
+    kube_pod_status_scheduled: gauge
+
+panel:
+  query_overrides:
+    - title_match: "Created by"
+      panel_id: 2
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:created_by_kind}}, {{label:created_by_name}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, created_by_kind = {{label:created_by_kind}}, created_by_name = {{label:created_by_name}}
+        | STATS info = MAX(info) BY namespace, pod, created_by_kind, created_by_name
+        | KEEP namespace, pod, created_by_kind, created_by_name, info
+        | SORT namespace ASC, pod ASC, created_by_kind ASC
+    - title_match: "Running on"
+      panel_id: 33
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:node}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, node = {{label:node}}
+        | STATS info = MAX(info) BY namespace, pod, node
+        | KEEP namespace, pod, node, info
+        | SORT namespace ASC, pod ASC, node ASC
+    - title_match: "Pod IP"
+      panel_id: 41
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:pod_ip}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, pod_ip = {{label:pod_ip}}
+        | STATS info = MAX(info) BY namespace, pod, pod_ip
+        | KEEP namespace, pod, pod_ip, info
+        | SORT namespace ASC, pod ASC, pod_ip ASC
+    - title_match: "Priority Class"
+      panel_id: 52
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string. Pods with an empty priority class are omitted, matching the source."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{label:priority_class}} != ""
+        | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:priority_class}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, priority_class = {{label:priority_class}}
+        | STATS info = MAX(info) BY namespace, pod, priority_class
+        | KEEP namespace, pod, priority_class, info
+        | SORT namespace ASC, pod ASC, priority_class ASC
+    - title_match: "QOS Class"
+      panel_id: 53
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_status_qos_class:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_status_qos_class:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:qos_class}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, qos_class = {{label:qos_class}}
+        | WHERE info > 0
+        | STATS info = MAX(info) BY namespace, pod, qos_class
+        | KEEP namespace, pod, qos_class, info
+        | SORT namespace ASC, pod ASC, qos_class ASC
+    - title_match: "Last Terminated Reason"
+      panel_id: 56
+      kibana_type_override: datatable
+      approximation_note: "A table of the legend labels for every selected pod. The source stat collapsed the info series to 1 and printed one legend string."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_container_status_last_terminated_reason:gauge}} IS NOT NULL
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_container_status_last_terminated_reason:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:reason}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}, reason = {{label:reason}}
+        | STATS info = MAX(info) BY namespace, pod, container, reason
+        | KEEP namespace, pod, container, reason, info
+        | SORT namespace ASC, pod ASC, container ASC
+    - title_match: "Last Terminated Exit Code"
+      panel_id: 57
+      kibana_type_override: datatable
+      approximation_note: "Exit code per container. The source stat showed one number for the whole selection."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:kube_pod_container_status_last_terminated_exitcode:gauge}} IS NOT NULL
+        | STATS exit_code = MAX(LAST_OVER_TIME({{metric:kube_pod_container_status_last_terminated_exitcode:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:container}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}
+        | STATS exit_code = MAX(exit_code) BY namespace, pod, container
+        | KEEP namespace, pod, container, exit_code
+        | SORT namespace ASC, pod ASC, container ASC
+    - title_match: "Total pod CPU Requests usage"
+      panel_id: 39
+      kibana_type_override: metric
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL percent = CASE(budget > 0, usage / budget, NULL)
+        | KEEP percent
+    - title_match: "Total pod CPU Limits usage"
+      panel_id: 48
+      kibana_type_override: metric
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL percent = CASE(budget > 0, usage / budget, NULL)
+        | KEEP percent
+    - title_match: "Total pod RAM Requests usage"
+      panel_id: 40
+      kibana_type_override: metric
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL percent = CASE(budget > 0, usage / budget, NULL)
+        | KEEP percent
+    - title_match: "Total pod RAM Limits usage"
+      panel_id: 49
+      kibana_type_override: metric
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL percent = CASE(budget > 0, usage / budget, NULL)
+        | KEEP percent
+    - title_match: "Resources by container"
+      panel_id: 38
+      kibana_type_override: datatable
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS cpu_requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), memory_requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), memory_limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), cpu_cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), memory_bytes = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | WHERE time_bucket >= ?_tend - 2 hours
+        | EVAL container = {{label:container}}
+        | STATS cpu_requests = AVG(cpu_requests), cpu_limits = AVG(cpu_limits), memory_requests = AVG(memory_requests), memory_limits = AVG(memory_limits), cpu_cores = AVG(cpu_cores), memory_bytes = AVG(memory_bytes) BY container
+        | KEEP container, cpu_requests, cpu_limits, cpu_cores, memory_requests, memory_limits, memory_bytes
+        | SORT container ASC
+    - title_match: "CPU Usage / Requests & Limits by container"
+      panel_id: 50
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | EVAL requests_pct = CASE(requests > 0, usage / requests, NULL), limits_pct = CASE(limits > 0, usage / limits, NULL)
+        | STATS requests_pct = AVG(requests_pct), limits_pct = AVG(limits_pct) BY time_bucket, container
+        | KEEP time_bucket, container, requests_pct, limits_pct
+        | SORT time_bucket ASC
+    - title_match: "Memory Usage / Requests & Limits by container"
+      panel_id: 30
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | EVAL requests_pct = CASE(requests > 0, usage / requests, NULL), limits_pct = CASE(limits > 0, usage / limits, NULL)
+        | STATS requests_pct = AVG(requests_pct), limits_pct = AVG(limits_pct) BY time_bucket, container
+        | KEEP time_bucket, container, requests_pct, limits_pct
+        | SORT time_bucket ASC
+    - title_match: "CPU Usage by container"
+      panel_id: 29
+      approximation_note: "Cores by container. The cAdvisor id is not a second series; Lens has one breakdown. Empty container names are omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{label:container}} != ""
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
+        | STATS cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | STATS cores = AVG(cores) BY time_bucket, container
+        | KEEP time_bucket, container, cores
+        | SORT time_bucket ASC
+    - title_match: "Memory Usage by container"
+      panel_id: 51
+      approximation_note: "Working set by container. max_over_time is the max in each bucket. The cAdvisor id is not a second series."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{label:container}} != ""
+        | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+        | STATS memory_bytes = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | STATS memory_bytes = AVG(memory_bytes) BY time_bucket, container
+        | KEEP time_bucket, container, memory_bytes
+        | SORT time_bucket ASC
+    - title_match: "CPU Throttled seconds by container"
+      panel_id: 59
+      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_cpu_cfs_throttled_seconds_total:counter}} IS NOT NULL
+        | STATS throttled_seconds = SUM(RATE({{metric:container_cpu_cfs_throttled_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | STATS throttled_seconds = AVG(throttled_seconds) BY time_bucket, container
+        | KEEP time_bucket, container, throttled_seconds
+        | SORT time_bucket ASC
+    - title_match: "OOM Events by container"
+      panel_id: 60
+      approximation_note: "Increase over the dashboard time range, by container. The source axis max of 1 is kept."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_oom_events_total:counter}} IS NOT NULL
+        | STATS oom_events = SUM(INCREASE({{metric:container_oom_events_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | STATS oom_events = AVG(oom_events) BY time_bucket, container
+        | KEEP time_bucket, container, oom_events
+        | SORT time_bucket ASC
+    - title_match: "Container Restarts by container"
+      panel_id: 61
+      approximation_note: "Increase over the dashboard time range, by container. An empty job selection shows every job; a chosen job keeps only that series. The source axis max of 1 is kept."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
+        | STATS restarts = SUM(INCREASE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | EVAL container = {{label:container}}
+        | STATS restarts = AVG(restarts) BY time_bucket, container
+        | KEEP time_bucket, container, restarts
+        | SORT time_bucket ASC
+    - title_match: "Pods with Container Issues"
+      panel_id: 63
+      kibana_type_override: datatable
+      approximation_note: "Pods waiting on image pull or crash loop, cluster-wide, matching the source query which does not use the namespace or pod controls."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:reason}} == "ErrImagePull" OR {{label:reason}} == "ImagePullBackOff" OR {{label:reason}} == "CrashLoopBackOff"
+        | WHERE {{metric:kube_pod_container_status_waiting_reason:gauge}} IS NOT NULL
+        | STATS waiting = MAX(LAST_OVER_TIME({{metric:kube_pod_container_status_waiting_reason:gauge}})) BY {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:reason}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}, reason = {{label:reason}}
+        | WHERE waiting == 1
+        | STATS waiting = MAX(waiting) BY namespace, pod, container, reason
+        | KEEP namespace, pod, container, reason, waiting
+        | SORT namespace ASC, pod ASC
+    - title_match: "Unscheduled Pods"
+      panel_id: 64
+      kibana_type_override: datatable
+      approximation_note: "Pods whose scheduled condition is false, cluster-wide, matching the source query."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:condition}} == "false"
+        | WHERE {{metric:kube_pod_status_scheduled:gauge}} IS NOT NULL
+        | STATS unscheduled = MAX(LAST_OVER_TIME({{metric:kube_pod_status_scheduled:gauge}})) BY {{label:namespace}}, {{label:pod}}
+        | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}
+        | WHERE unscheduled == 1
+        | STATS unscheduled = MAX(unscheduled) BY namespace, pod
+        | KEEP namespace, pod, unscheduled
+        | SORT namespace ASC, pod ASC
+    - title_match: "Network - Bandwidth"
+      panel_id: 31
+      approximation_note: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), tx = SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network - Packets Rate"
+      panel_id: 34
+      approximation_note: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_network_receive_packets_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_packets_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:container_network_receive_packets_total:counter}})), tx = SUM(RATE({{metric:container_network_transmit_packets_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network - Packets Dropped"
+      panel_id: 36
+      approximation_note: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_network_receive_packets_dropped_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_packets_dropped_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:container_network_receive_packets_dropped_total:counter}})), tx = SUM(RATE({{metric:container_network_transmit_packets_dropped_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+    - title_match: "Network - Errors"
+      panel_id: 37
+      approximation_note: "Received is positive and transmitted is negative so the two directions mirror, matching the source. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
+        | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{metric:container_network_receive_errors_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_errors_total:counter}} IS NOT NULL
+        | STATS rx = SUM(RATE({{metric:container_network_receive_errors_total:counter}})), tx = SUM(RATE({{metric:container_network_transmit_errors_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL received = rx, transmitted = -1 * tx
+        | KEEP time_bucket, received, transmitted
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "Information"
+      collapsed: false
+    - title_match: "Created by"
+      panel_id: 2
+      hide_title: false
+      size: {w: 24, h: 6}
+      position: {x: 0, y: 0}
+    - title_match: "Running on"
+      panel_id: 33
+      hide_title: false
+      size: {w: 12, h: 6}
+      position: {x: 24, y: 0}
+    - title_match: "Pod IP"
+      panel_id: 41
+      hide_title: false
+      size: {w: 12, h: 6}
+      position: {x: 36, y: 0}
+    - title_match: "Priority Class"
+      panel_id: 52
+      hide_title: false
+      size: {w: 10, h: 6}
+      position: {x: 0, y: 4}
+    - title_match: "QOS Class"
+      panel_id: 53
+      hide_title: false
+      size: {w: 14, h: 6}
+      position: {x: 10, y: 4}
+    - title_match: "Last Terminated Reason"
+      panel_id: 56
+      hide_title: false
+      size: {w: 12, h: 6}
+      position: {x: 24, y: 4}
+    - title_match: "Last Terminated Exit Code"
+      panel_id: 57
+      hide_title: false
+      size: {w: 12, h: 6}
+      position: {x: 36, y: 4}
+    - title_match: "Resources"
+      collapsed: false
+    - title_match: "Total pod CPU Requests usage"
+      panel_id: 39
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Total pod CPU Limits usage"
+      panel_id: 48
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 6, y: 0}
+    - title_match: "Total pod RAM Requests usage"
+      panel_id: 40
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 12, y: 0}
+    - title_match: "Total pod RAM Limits usage"
+      panel_id: 49
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 18, y: 0}
+    - title_match: "Resources by container"
+      panel_id: 38
+      hide_title: false
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "CPU Usage / Requests & Limits by container"
+      panel_id: 50
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Memory Usage / Requests & Limits by container"
+      panel_id: 30
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
+    - title_match: "CPU Usage by container"
+      panel_id: 29
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 32}
+    - title_match: "Memory Usage by container"
+      panel_id: 51
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 32}
+    - title_match: "CPU Throttled seconds by container"
+      panel_id: 59
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 48}
+    - title_match: "Kubernetes"
+      collapsed: false
+    - title_match: "OOM Events by container"
+      panel_id: 60
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Container Restarts by container"
+      panel_id: 61
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "Pods with Container Issues"
+      panel_id: 63
+      hide_title: false
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Unscheduled Pods"
+      panel_id: 64
+      hide_title: false
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
+    - title_match: "Network"
+      collapsed: false
+    - title_match: "Network - Bandwidth"
+      panel_id: 31
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Network - Packets Rate"
+      panel_id: 34
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "Network - Packets Dropped"
+      panel_id: 36
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 16}
+    - title_match: "Network - Errors"
+      panel_id: 37
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 16}
