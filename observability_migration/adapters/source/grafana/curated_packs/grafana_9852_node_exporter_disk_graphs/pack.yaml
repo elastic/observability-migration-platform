@@ -18,7 +18,8 @@
 #           $Node/$CPU/$Disk, element-wise rate(A)/rate(B) per-device STATS+EVAL
 #           (#376/PR#438), IO Wait per core two-layer Min/Avg/Max split (#355),
 #           $RateInterval interval-variable disclosure (#356).
-#   Pack:   metric_kinds (including the suffix-less node_vmstat_oom_kill counter),
+#   Pack:   metric_kinds (including node_vmstat_oom_kill pinned gauge, because
+#           node_exporter leaves it untyped),
 #           Node→instance / CPU→cpu / Disk→device field pins, named series for
 #           Disk IO (Weighted IO time / Write time / Read time) per device, and
 #           clean per-device column names for the four rate-ratio panels

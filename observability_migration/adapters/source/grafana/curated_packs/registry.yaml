@@ -189,4 +189,4 @@ packs:
     path: grafana_9852_node_exporter_disk_graphs
     gnet_revision: 1
     dashboard_sha256: "273ed2e26432d4d3aca9f008ef589007a1fcf5d09b101528924b755bcfda65a7"
-    description: "node-exporter disk graphs — suffix-less node_vmstat_oom_kill counter pin, per-device rate-ratio joins for disk size/latency, named Disk IO series, Node/CPU/Disk label pins"
+    description: "node-exporter disk graphs — node_vmstat_oom_kill gauge pin (exporter leaves it untyped), per-device rate-ratio joins for disk size/latency, named Disk IO series, Node/CPU/Disk label pins"

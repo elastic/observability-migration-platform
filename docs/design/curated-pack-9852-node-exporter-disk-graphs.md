@@ -13,7 +13,7 @@
 
 Auto-fire a polished Kibana replica of this ~5M-download node-exporter dashboard on `gnetId=9852` with no `--rules-file` from the operator. Specifically:
 
-- Pin the 10 counter and 7 gauge metric kinds so the engine uses correct rate semantics.
+- Pin 9 counter metrics and 8 gauges (`node_vmstat_oom_kill` among them; node_exporter leaves that metric untyped) so the engine uses correct rate semantics.
 - Map `$Node` → `instance`, `$CPU` → `cpu`, `$Disk` → `device` so the populate queries and panel filters resolve to real ES fields.
 - Name the Disk IO series `Weighted IO time` / `Write time` / `Read time` per device (the engine's fusion produces these names but groups by `device + instance`).
 - Clean up the four rate-ratio panels (`Write size`, `Write latency`, `Read size`, `Read latency`) to produce named columns (`Write size`, `Write latency`, etc.) grouped per device.
@@ -65,11 +65,13 @@ The pack exclusively repairs pack-addressable concerns. Engine bugs found while 
 
 On a target whose schema profile is **not** Prometheus — e.g. an OTel collector
 `prometheusreceiver` → `elasticsearch` exporter stream with `mapping.mode: otel`
-— the five panels the engine routes to native PROMQL (OOM killed procs, Disk
-active time, IOPS, Write bandwidth, Read bandwidth) render empty on the default
-command. The native PROMQL path emits bare Prometheus label names, so
-`instance=~"<value>"` matches nothing where the target exposes that dimension as
-`service.instance.id`. It fails silently: HTTP 200, zero rows, no error.
+— four panels the engine routes to native PROMQL (Disk active time, IOPS,
+Write bandwidth, Read bandwidth) render empty on the default command. OOM
+killed procs stays on ES|QL: the gauge pin disagrees with the source `irate()`,
+so the engine degrades it instead of emitting native PROMQL. The native PROMQL
+path emits bare Prometheus label names, so `instance=~"<value>"` matches
+nothing where the target exposes that dimension as `service.instance.id`. It
+fails silently: HTTP 200, zero rows, no error.
 
 This is an engine gap, not a pack gap — the ES|QL path namespaces the same
 labels correctly. Until it is fixed, migrate this dashboard with
