@@ -392,6 +392,17 @@ off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
 
+The system API server dashboard (15761) is the kube-prometheus-stack view.
+Mean latency is the duration-sum rate divided by the duration-count rate,
+times 1000, so the source millisecond unit is true. The 5xx ratio stays on a
+0–1 scale. CPU is `process_cpu_seconds_total` in cores; the source percent
+unit labels that core count. Requests
+by code, by verb, and the stacked instance chart do not filter on job.
+Deprecated APIs list group, version, resource, subresource, and
+removed_release. An empty cluster or job selection is every value. The
+`resolution` variable is a scrape step; chart buckets follow the dashboard
+time range.
+
 The node view (15759) lists pods on the selected node. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
 underneath and the pod list beside both rows. Uptime stays a plain duration:
