@@ -6828,6 +6828,7 @@ def test_views_fidelity_manifests_have_no_unknown():
         "grafana_15757_k8s_views_global": 26,
         "grafana_13646_k8s_persistent_volumes": 12,
         "grafana_12006_k8s_apiserver": 6,
+        "grafana_15761_k8s_system_apiserver": 12,
     }
     for directory, count in expected.items():
         path = Path(pkg.__file__).parent / directory / "fidelity_manifest.yaml"
@@ -6849,6 +6850,104 @@ def test_13646_registry_entry_present():
     assert entry is not None
     assert entry["name"] == "grafana_13646_k8s_persistent_volumes"
     assert entry["gnet_revision"] == 2
+
+
+def test_15761_registry_entry_present():
+    entry = find_curated_pack(gnet_id=15761, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_15761_k8s_system_apiserver"
+    assert entry["gnet_revision"] == 21
+
+
+def test_15761_mean_latency_is_sum_over_count_in_milliseconds():
+    panel = {
+        "id": 53,
+        "type": "timeseries",
+        "title": "API Server - HTTP Requests Latency by instance",
+        "fieldConfig": {"defaults": {"unit": "ms"}},
+        "targets": [
+            {
+                "expr": "sum(rate(apiserver_request_duration_seconds_sum[5m])) by (instance) / sum(rate(apiserver_request_duration_seconds_count[5m])) by (instance)",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(15761, "Kubernetes / System / API Server", panel)
+    assert "apiserver_request_duration_seconds_sum" in query
+    assert "apiserver_request_duration_seconds_count" in query
+    assert "total / n * 1000" in query
+    assert "?job" in query
+    assert yaml_panel["esql"]["type"] == "area"
+
+
+def test_15761_requests_by_code_skip_the_job_filter():
+    panel = {
+        "id": 38,
+        "type": "timeseries",
+        "title": "API Server - HTTP Requests by code",
+        "targets": [{"expr": "sum by (code) (rate(apiserver_request_total[5m]))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15761, "Kubernetes / System / API Server", panel)
+    assert "?job" not in query
+    assert "{{label:code}}" not in query
+    assert "code" in query
+
+
+def test_15761_error_ratio_matches_5xx_codes():
+    panel = {
+        "id": 51,
+        "type": "timeseries",
+        "title": "API Server - Errors by verb",
+        "targets": [{"expr": 'sum by (verb) (rate(apiserver_request_total{code=~"5.."}[5m]))', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(15761, "Kubernetes / System / API Server", panel)
+    assert 'RLIKE "5.."' in query
+    assert "errors / total" in query
+    assert yaml_panel["esql"]["type"] == "area"
+
+
+def test_15761_instance_requests_are_stacked():
+    dashboard = {
+        "gnetId": 15761,
+        "title": "Kubernetes / System / API Server",
+        "tags": ["kubernetes"],
+        "panels": [
+            {
+                "id": 40,
+                "type": "timeseries",
+                "title": "API Server - Stacked HTTP Requests by instance",
+                "targets": [{"expr": "sum(rate(apiserver_request_total[5m])) by (instance)", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+            },
+            {
+                "id": 47,
+                "type": "timeseries",
+                "title": "API Server - CPU Usage by instance",
+                "targets": [{"expr": "rate(process_cpu_seconds_total[5m])", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_views(15761, "Kubernetes / System / API Server")
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    by_title = {panel["title"]: panel for panel in panels}
+    stacked = by_title["API Server - Stacked HTTP Requests by instance"]
+    cpu = by_title["API Server - CPU Usage by instance"]
+    assert stacked["esql"]["type"] == "area"
+    assert stacked["position"] == {"x": 0, "y": 44}
+    assert cpu["position"]["y"] == 56
+    errors = dashboard_schema_errors(panels)
+    assert errors == [], errors
 
 
 def test_12006_registry_entry_present():

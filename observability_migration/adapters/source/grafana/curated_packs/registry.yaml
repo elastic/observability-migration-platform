@@ -262,3 +262,12 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "238b95b69f704e19ad7c65e2c3834f29e26c2e2ede62cd8b8829f5350182d69a"
     description: "Apiserver — request rate by verb, named p95/p90/p50 latency, cache hit ratio"
+
+  - gnet_id: 15761
+    name: grafana_15761_k8s_system_apiserver
+    title_hint: "Kubernetes / System / API Server"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15761_k8s_system_apiserver
+    gnet_revision: 21
+    dashboard_sha256: "5a4c8aa3ae92a33abf3a701dca2a83d0137e5c80fa7943ea53ce928cfe0f7330"
+    description: "System API server — health, deprecated APIs, request rate, mean latency, 5xx ratio"
