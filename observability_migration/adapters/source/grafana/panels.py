@@ -6432,20 +6432,40 @@ def _esql_expr_references_aliases(expression: str, aliases: set[str]) -> bool:
     return False
 
 
-def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str]) -> bool:
+def _quoted_label_is_removed_alias(text: str, removed_aliases: set[str], query: str) -> bool:
+    """True when a display title names a stripped series.
+
+    ``"Requests"`` is the tile for alias ``requests``. ``"Total"`` is not the
+    tile for a removed ``total`` when a longer alias such as ``shown_total``
+    still carries that tile.
+    """
+    folded = text.lower()
+    for alias in removed_aliases:
+        name = alias.lower()
+        exact = text == alias or text.startswith(f"{alias} - ")
+        titled = folded == name or folded.startswith(f"{name} - ")
+        if not exact and not titled:
+            continue
+        if exact:
+            return True
+        longer = re.compile(rf"\b[A-Za-z_][A-Za-z0-9_]*_{re.escape(name)}\b")
+        if any(match.group(0) not in removed_aliases for match in longer.finditer(query or "")):
+            continue
+        return True
+    return False
+
+
+def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str], query: str = "") -> bool:
     """True when an ``MV_APPEND(inner, tail)`` tail is a stripped optional series."""
     if _esql_expr_references_aliases(tail, removed_aliases):
         return True
     stripped = str(tail or "").strip()
     if len(stripped) >= 2 and stripped[0] in {'"', "'"} and stripped[-1] == stripped[0]:
-        text = stripped[1:-1]
-        for alias in removed_aliases:
-            if text == alias or text.startswith(f"{alias} - "):
-                return True
+        return _quoted_label_is_removed_alias(stripped[1:-1], removed_aliases, query)
     return False
 
 
-def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str]) -> str:
+def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str], query: str = "") -> str:
     """Peel ``MV_APPEND(inner, stripped_series)`` layers left by optional omit."""
     expr = str(expression or "").strip()
     while True:
@@ -6457,7 +6477,7 @@ def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str
         if len(parts) != 2:
             return expr
         inner, tail = parts
-        if not _tail_is_removed_unpivot_piece(tail, removed_aliases):
+        if not _tail_is_removed_unpivot_piece(tail, removed_aliases, query):
             return expr
         expr = inner.strip()
 
@@ -6476,18 +6496,26 @@ def _strip_optional_metric_token_from_curated_esql_result(
     removed_aliases: list[str] = []
     stripped_stages: list[str] = []
     removed_alias_set: set[str] = set()
+    # A WHERE stage whose every predicate existed only to select this metric
+    # (``metric IS NOT NULL``) is the series identity. Dropping it while
+    # leaving ``COUNT_DISTINCT(instance)`` counts every series in the index.
+    dropped_series_where = False
     for stage in _split_esql_pipeline(query):
         stripped = str(stage or "").strip()
         upper = stripped.upper()
         if upper.startswith("WHERE "):
             predicates = _split_top_level_boolean_terms(stripped[6:].strip(), "OR")
             kept_predicates = []
+            dropped_metric_predicate = False
             for predicate in predicates:
                 if token_re.search(predicate):
+                    dropped_metric_predicate = True
                     continue
                 if _esql_expr_references_aliases(predicate, removed_alias_set):
                     continue
                 kept_predicates.append(predicate)
+            if not kept_predicates and dropped_metric_predicate:
+                dropped_series_where = True
             if kept_predicates:
                 stripped_stages.append("WHERE " + " OR ".join(kept_predicates))
             continue
@@ -6503,7 +6531,10 @@ def _strip_optional_metric_token_from_curated_esql_result(
             for assignment in assignments:
                 left, right = _split_top_level_assignment(assignment)
                 alias = _canonical_esql_alias(left)
-                if token_re.search(right or assignment):
+                rhs = right if right is not None else assignment
+                if token_re.search(rhs) or _esql_expr_references_aliases(
+                    rhs, removed_alias_set
+                ):
                     if alias:
                         _append_unique(removed_aliases, alias)
                         removed_alias_set.add(alias)
@@ -6534,7 +6565,7 @@ def _strip_optional_metric_token_from_curated_esql_result(
                     left, right = _split_top_level_assignment(assignment)
                     rhs = right if right is not None else assignment
                     rewritten = _unwrap_removed_unpivot_mv_appends(
-                        rhs, removed_alias_set
+                        rhs, removed_alias_set, query
                     )
                     if rewritten != rhs:
                         assignment = (
@@ -6571,8 +6602,22 @@ def _strip_optional_metric_token_from_curated_esql_result(
                 stripped_stages.append("KEEP " + ", ".join(kept_parts))
             continue
         stripped_stages.append(stripped)
+    rebuilt = " | ".join(stripped_stages)
+    # The metric survived only as a presence filter, and that filter is gone.
+    # An aggregation that never mentioned the metric (a distinct instance
+    # count) would otherwise tally every series. Treat that as no series left.
+    if (
+        dropped_series_where
+        and not removed_aliases
+        and not token_re.search(rebuilt)
+    ):
+        return _CuratedOptionalMetricStripResult(
+            query="",
+            removed_aliases=removed_aliases,
+            exhausted=True,
+        )
     return _CuratedOptionalMetricStripResult(
-        query=" | ".join(stripped_stages),
+        query=rebuilt,
         removed_aliases=removed_aliases,
     )
 
@@ -6586,15 +6631,36 @@ def _strip_optional_metric_token_from_curated_esql(query: str, metric_name: str)
     return _strip_optional_metric_token_from_curated_esql_result(query, metric_name).query
 
 
+def _curated_metric_token_names(query: str) -> list[str]:
+    """Logical metric names written as ``{{metric:name}}`` in a curated override."""
+    names: list[str] = []
+    for match in _CURATED_QUERY_TOKEN_RE.finditer(query or ""):
+        if str(match.group("kind") or "").lower() != "metric":
+            continue
+        _append_unique(names, match.group("name"))
+    return names
+
+
 def _omit_absent_optional_metrics_from_curated_query_result(
     query,
     optional_metrics,
     resolver,
 ) -> _CuratedOptionalMetricOmissionResult:
-    """Strip live-optional metric tokens that field-caps prove are absent."""
+    """Strip metric tokens that field-caps prove are absent.
+
+    ``optional_metrics`` is the pack's ``live_optional_metrics`` list. Every
+    ``{{metric:}}`` token in the override is considered too: a column field
+    caps proved missing fails the whole ES|QL query in Kibana, so leaving it
+    in (whether or not the pack marked it optional) turns a renderable panel
+    into an Unknown column error.
+    """
     if not query:
         return _CuratedOptionalMetricOmissionResult(query=query)
-    metrics = [str(name).strip() for name in (optional_metrics or []) if str(name).strip()]
+    metrics: list[str] = []
+    for name in list(optional_metrics or []) + _curated_metric_token_names(str(query)):
+        text = str(name).strip()
+        if text:
+            _append_unique(metrics, text)
     if not metrics or not resolver:
         return _CuratedOptionalMetricOmissionResult(query=query)
     out = str(query)
