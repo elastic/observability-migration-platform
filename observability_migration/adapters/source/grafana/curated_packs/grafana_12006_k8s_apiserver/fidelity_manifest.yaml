@@ -19,19 +19,19 @@ panels:
   - title: "workqueue service time"
     panel_id: 10
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+    notes: "p95, p90, and p50 from workqueue_queue_duration_seconds_bucket. The point is the bucket upper bound."
   - title: "apiserver request latency"
     panel_id: 2
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. CONNECT and WATCH stay excluded."
+    notes: "p95, p90, and p50 from apiserver_request_duration_seconds_bucket. CONNECT and WATCH stay excluded. The point is the bucket upper bound."
   - title: "workqueue processing time"
     panel_id: 12
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+    notes: "p95, p90, and p50 from workqueue_work_duration_seconds_bucket. The point is the bucket upper bound."
   - title: "etcd request latency"
     panel_id: 4
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge. Shares a row with the cache hit ratio."
+    notes: "p95, p90, and p50 from etcd_request_duration_seconds_bucket. The point is the bucket upper bound. Shares a row with the cache hit ratio."
   - title: "etcd helper cache hit ratio"
     panel_id: 6
     fidelity: APPROXIMATE
