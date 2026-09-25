@@ -362,27 +362,35 @@ sums the two OS series. Requests and limits stay ratios of machine capacity
 on the gauges and absolute cores or bytes on the stat tiles. The resource
 count chart names each object; namespaces use `kube_namespace_created`, and
 object types the target did not ingest are left off the chart. Namespace
-charts drop the Windows `+ on(namespace)` join. Received traffic is positive
+charts drop the Windows `+ on(namespace)` join and drop the cAdvisor series
+with an empty container name, matching `image!=""`. Pod network is unfiltered,
+because kubelet reports it on the sandbox series. Received traffic is positive
 and transmitted is negative. Virtual devices matching `veth`, `azv`, or `lxc`
-stay off the device chart. An empty job selection is every job. The
-`resolution` variable is a scrape step; chart buckets follow the dashboard
-time range.
+stay off the device chart. An empty job selection is every job. Requests and
+limits on the CPU and memory gauges use `machine_cpu_cores` and
+`machine_memory_bytes` when those kube-prometheus recording rules are present,
+and node CPU count or MemTotal otherwise. The `resolution` variable is a scrape
+step; chart buckets follow the dashboard time range.
 
 The persistent-volume dashboard (13646) approximates `predict_linear` full-in
-2 days, 5 days, and 1 week as available bytes divided by one day of used-byte
-growth. The warning tile counts claims at or above 80% used, the revision-2
-textbox default. The claim table shows capacity, used, and available in GiB,
-used percent, and the phase name. Storage class and volume name are omitted
-because the info series does not share the kubelet label set. Hourly, daily,
-and weekly rates keep those windows (`DELTA` over 1 hour, 24 hours, and 168
-hours). An empty namespace selection is every namespace.
+2 days, 5 days, and 1 week as available bytes divided by one day of decline
+in available bytes, which is the series `predict_linear` reads. The warning
+tile counts claims at or above 80% used, the revision-2 textbox default. The
+claim table shows capacity, used, and available in GiB, used percent, and the
+phase name. Storage class and volume name stay off that table because the
+info series does not share the kubelet label set. The storage-class table
+uses the kube-state-metrics v2 labels `reclaim_policy` and
+`volume_binding_mode`. Hourly, daily, and weekly rates keep those windows
+(`DELTA` over 1 hour, 24 hours, and 168 hours). An empty namespace selection
+is every namespace.
 
 The apiserver dashboard (12006) names latency series p95, p90, and p50.
-`histogram_quantile` on the bucket series is `PERCENTILE` of the duration
-gauge. Request rate stays one series per verb. CONNECT and WATCH stay off
-the request-latency chart. The cache hit ratio is hits divided by hits plus
-misses and stays on a 0–1 scale. The etcd latency chart shares a row with
-the cache hit ratio.
+kube-apiserver publishes classic `*_bucket` counters, not a duration gauge,
+so each point is the upper bound of the bucket whose cumulative rate crosses
+the quantile. Request rate stays one series per verb. CONNECT and WATCH stay
+off the request-latency chart. The cache hit ratio is hits divided by hits
+plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
+with the cache hit ratio.
 
 The node view (15759) lists pods on the selected node. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush

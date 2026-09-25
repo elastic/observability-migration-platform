@@ -6898,6 +6898,83 @@ def test_15757_network_mirrors_transmit():
     assert "received = rx" in query
 
 
+def test_15757_namespace_cpu_drops_the_cadvisor_parent():
+    panel = {
+        "id": 46,
+        "type": "timeseries",
+        "title": "CPU Utilization by namespace",
+        "targets": [
+            {
+                "expr": 'sum(rate(container_cpu_usage_seconds_total{image!=""}[5m])) by (namespace)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15757, "Kubernetes / Views / Global", panel)
+    assert '!= ""' in query
+    assert '!= "POD"' not in query
+
+
+def test_15757_namespace_network_keeps_the_sandbox_series():
+    panel = {
+        "id": 79,
+        "type": "timeseries",
+        "title": "Network Received by namespace",
+        "targets": [
+            {
+                "expr": "sum(rate(container_network_receive_bytes_total[5m])) by (namespace)",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15757, "Kubernetes / Views / Global", panel)
+    assert '!= "POD"' not in query
+    assert "container_network_receive_bytes_total" in query
+
+
+def test_15757_cpu_tiles_survive_a_missing_recording_rule():
+    """machine_cpu_cores is a kube-prometheus recording rule. A node-exporter
+    cluster without it must still render Real, Requests, Limits, and Total."""
+    dashboard = {"gnetId": 15757, "title": "Kubernetes / Views / Global", "tags": ["kubernetes"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
+    resolver._field_cache = {
+        "metrics.node_cpu_seconds_total": {"double": {"type": "double"}},
+        "metrics.kube_pod_container_resource_requests": {"double": {"type": "double"}},
+        "metrics.kube_pod_container_resource_limits": {"double": {"type": "double"}},
+        "labels.mode": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.cpu": {"keyword": {"type": "keyword"}},
+        "labels.resource": {"keyword": {"type": "keyword"}},
+        "labels.cluster": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": 37,
+        "type": "stat",
+        "title": "CPU Usage",
+        "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 8},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "machine_cpu_cores" not in query
+    assert "cpu_count" in query
+    assert '"Total"' in query
+    assert "metrics.node_cpu_seconds_total" in query
+
+
 def test_15757_overview_tiles_share_one_row():
     dashboard = {
         "gnetId": 15757,
@@ -6982,6 +7059,9 @@ def test_13646_fill_horizons_use_one_day_of_growth():
         }
         _result, query, yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
         assert "DELTA(" in query
+        assert "kubelet_volume_stats_available_bytes" in query
+        assert "drop < 0" in query
+        assert "ROUND(" in query
         assert "24 hours" in query
         assert horizon in query
         assert yaml_panel["esql"]["type"] == "metric"
@@ -7015,6 +7095,22 @@ def test_13646_weekly_rate_uses_a_week_long_delta():
     assert "?k8s_namespace" in query
 
 
+def test_13646_storage_class_uses_kube_state_metrics_v2_labels():
+    panel = {
+        "id": 7,
+        "type": "table",
+        "title": "Storage Class",
+        "targets": [{"expr": "kube_storageclass_info", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
+    assert "reclaim_policy" in query
+    assert "volume_binding_mode" in query
+    assert "reclaimPolicy" not in query
+    assert "volumeBindingMode" not in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
 def test_12006_latency_series_are_named_percentiles():
     panel = {
         "id": 2,
@@ -7030,9 +7126,13 @@ def test_12006_latency_series_are_named_percentiles():
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, yaml_panel = _translate_views(12006, "Kubernetes apiserver", panel)
-    assert "p95 = PERCENTILE(" in query
-    assert "p90 = PERCENTILE(" in query
-    assert "p50 = PERCENTILE(" in query
+    assert "apiserver_request_duration_seconds_bucket" in query
+    assert '"+Inf"' in query
+    assert "ROUND(" in query
+    assert "p95 =" in query
+    assert "p90 =" in query
+    assert "p50 =" in query
+    assert "PERCENTILE(" not in query
     assert '!= "CONNECT"' in query
     assert '!= "WATCH"' in query
     assert "_A" not in query
