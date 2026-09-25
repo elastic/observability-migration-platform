@@ -10,6 +10,7 @@ ES|QL form depends on the target field type of the *base* histogram metric:
 - ``exponential_histogram`` / tdigest -> ``PERCENTILE(field, phi*100)``
 - ``histogram``                       -> ``PERCENTILE(TO_TDIGEST(field), phi*100)``
 - unknown / schema unavailable        -> assume exponential_histogram + warn
+- base field proven absent and ``*_bucket`` is a counter -> not_feasible
 """
 
 from __future__ import annotations
@@ -229,6 +230,32 @@ class HistogramQuantileUnknownFieldTests(unittest.TestCase):
         self.assertFalse(result.esql_query)
         self.assertTrue(
             any("aggregate_metric_double" in w for w in result.warnings), result.warnings
+        )
+
+
+class HistogramQuantileClassicBucketTests(unittest.TestCase):
+    def test_proven_classic_bucket_counter_is_not_feasible(self):
+        resolver = SchemaResolver(RulePackConfig())
+        resolver._field_cache = {
+            "http_request_duration_seconds_bucket": {
+                "long": {
+                    "type": "long",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "indices": [INDEX],
+                },
+            }
+        }
+        resolver._discovery_attempted = True
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+        self.assertTrue(
+            any("classic Prometheus bucket counter" in w for w in result.warnings),
+            result.warnings,
         )
 
 

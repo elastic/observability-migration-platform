@@ -3206,6 +3206,22 @@ def nested_agg_family_rule(context):
     return f"translated nested {frag.outer_agg} expression"
 
 
+def _classic_bucket_counter_proven(resolver, bucket_metric: str, physical_metric: str) -> bool:
+    """True when field caps prove a classic Prometheus ``*_bucket`` counter.
+
+    PromQL always writes ``histogram_quantile`` over a ``*_bucket`` operand,
+    including when the target stores a native histogram under the base name.
+    Refuse ``PERCENTILE()`` only when caps show the base field is absent and
+    the bucket series itself is an ordinary numeric counter.
+    """
+    if resolver is None or not str(bucket_metric or "").endswith("_bucket"):
+        return False
+    if not physical_metric or resolver.field_exists(physical_metric) is not False:
+        return False
+    bucket_type = (resolver.field_type(bucket_metric) or "").strip().lower()
+    return bool(bucket_type) and bucket_type not in {"histogram", "exponential_histogram"}
+
+
 @QUERY_TRANSLATORS.register("histogram_quantile_family", priority=6)
 def histogram_quantile_family_rule(context):
     """Translate ``histogram_quantile(phi, <bucket series>)`` to ES|QL PERCENTILE().
@@ -3325,11 +3341,31 @@ def histogram_quantile_family_rule(context):
         value_expr = physical_metric
     elif field_type == "histogram":
         value_expr = f"TO_TDIGEST({physical_metric})"
+    elif not field_type and _classic_bucket_counter_proven(
+        context.resolver, bucket_metric, physical_metric
+    ):
+        # Field caps proved the base histogram field is absent and the
+        # ``*_bucket`` series is an ordinary counter. PERCENTILE() over a
+        # missing histogram field fails at render; classic ``le`` buckets are
+        # not an Elasticsearch histogram.
+        context.feasibility = "not_feasible"
+        context.confidence = 0.0
+        _append_unique(
+            context.warnings,
+            f"histogram_quantile target field '{physical_metric}' is absent and "
+            f"'{bucket_metric}' is a classic Prometheus bucket counter, not an "
+            "Elasticsearch histogram or exponential_histogram, so it cannot be "
+            "translated to PERCENTILE() (requires manual redesign)",
+        )
+        context.translation_complete = True
+        return "histogram_quantile classic bucket counter"
     elif not field_type:
         # Caps unavailable (offline / empty discovery): assume exponential_histogram
         # so common Prometheus histogram_quantile panels still migrate. A wrong
         # assumption fails at render; positively typed non-histogram fields still
-        # degrade below.
+        # degrade below. PromQL always names the operand ``*_bucket`` even when
+        # the target stores a native histogram, so the suffix alone is not proof
+        # of classic buckets.
         value_expr = physical_metric
         _append_unique(
             context.warnings,

@@ -3518,6 +3518,52 @@ def test_strip_optional_metric_handles_singleton_assignment():
     assert stripped == ""
 
 
+def test_where_only_absent_metric_does_not_count_every_instance():
+    """A presence filter is the series identity. Dropping it must not leave
+    ``COUNT_DISTINCT(instance)`` counting every scraped target."""
+    query = (
+        "TS metrics-*"
+        " | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend"
+        " | WHERE {{metric:traefik_config_reloads_total:counter}} IS NOT NULL"
+        " | STATS instances = COUNT_DISTINCT({{label:instance}})"
+        " | KEEP instances"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(
+        query, "traefik_config_reloads_total"
+    )
+
+    assert stripped == ""
+
+
+def test_absent_metric_token_is_stripped_even_when_not_declared_optional():
+    """Field caps that prove a column missing must drop it from a curated
+    override. Leaving it makes Kibana fail the whole query, including the
+    series that do exist."""
+    rule_pack = RulePackConfig()
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "metrics.node_cpu_seconds_total": {"counter_long": {"type": "counter_long"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL"
+        " OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL"
+        " | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})),"
+        " req = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}))"
+        " | KEEP busy, req"
+    )
+
+    kept = _omit_absent_optional_metrics_from_curated_query(query, [], resolver)
+
+    assert "node_cpu_seconds_total" in kept
+    assert "kube_pod_container_resource_requests" not in kept
+    assert "req" not in kept
+
+
 def test_missing_live_metric_target_is_dropped_from_multi_target_panel():
     rule_pack = RulePackConfig()
     resolver = SchemaResolver(rule_pack)
