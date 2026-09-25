@@ -15,15 +15,15 @@ panels:
   - title: "PVCs Full in 2 days - Based on Daily Usage"
     panel_id: 22
     fidelity: APPROXIMATE
-    notes: "predict_linear over 2 days approximated as available / one-day used-byte growth."
+    notes: "predict_linear over 2 days approximated as available divided by one day of available-byte decline."
   - title: "PVCs Full in 5 days - Based on Daily Usage"
     panel_id: 28
     fidelity: APPROXIMATE
-    notes: "Same one-day growth approximation, for a 5-day horizon."
+    notes: "Same one-day available-byte decline, for a 5-day horizon."
   - title: "PVCs Full in 1 Week - Based on Daily Usage"
     panel_id: 27
     fidelity: APPROXIMATE
-    notes: "Same one-day growth approximation, for a 7-day horizon."
+    notes: "Same one-day available-byte decline, for a 7-day horizon."
   - title: "PVCs Above Warning Threshold"
     panel_id: 21
     fidelity: APPROXIMATE
@@ -43,7 +43,7 @@ panels:
   - title: "Storage Class"
     panel_id: 7
     fidelity: APPROXIMATE
-    notes: "Storage class, provisioner, reclaim policy, and volume binding mode."
+    notes: "Storage class, provisioner, reclaim_policy, and volume_binding_mode from kube-state-metrics v2."
   - title: "All Running PVCs Used Bytes"
     panel_id: 9
     fidelity: APPROXIMATE

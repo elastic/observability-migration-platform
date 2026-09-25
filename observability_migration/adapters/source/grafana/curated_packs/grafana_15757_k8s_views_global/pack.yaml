@@ -11,7 +11,10 @@
 # labeled metric tiles (Real, Requests, Limits). The resolution variable is a
 # scrape step; chart buckets follow the dashboard time range. An empty job
 # selection is every job. Received traffic is positive and transmitted is
-# negative. Pause containers named POD are excluded.
+# negative. CPU and memory drop the cAdvisor series whose container name is
+# empty, which is the pod cgroup parent; that matches image!="" on kubelet
+# and keeps the pause container. Pod network is not filtered, because kubelet
+# reports it on the sandbox series.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -69,20 +72,27 @@ query:
     - kube_configmap_info
     - kube_secret_info
     - kube_networkpolicy_labels
+    - machine_cpu_cores
+    - machine_memory_bytes
+    - container_oom_events_total
+    - machine_cpu_cores
+    - machine_memory_bytes
+    - container_oom_events_total
 
 panel:
   query_overrides:
     - title_match: "Global CPU  Usage"
       panel_id: 77
       kibana_type_override: metric
-      approximation_note: "Real, Requests, and Limits as the source bargauge shows them after it averages the Linux and Windows bars into Real. Windows is omitted, so Real is the Linux busy fraction: sum of non-idle rates divided by CPU count. Requests and limits are divided by machine cores. The ratio stays 0-1 so the percentunit tile can scale to percent points. An empty job selection is every job."
+      approximation_note: "Real, Requests, and Limits as the source bargauge shows them after it averages the Linux and Windows bars into Real. Windows is omitted, so Real is the Linux busy fraction: sum of non-idle rates divided by CPU count. Requests and limits use machine_cpu_cores when that kube-prometheus recording rule is present, and the node CPU count otherwise. The ratio stays 0-1 so the percentunit tile can scale to percent points. An empty job selection is every job."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_cpu_cores:gauge}} IS NOT NULL
         | STATS busy = SUM(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL AND {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal" AND (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}})), RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), cpu_count = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL AND (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}})), CONCAT(COALESCE(TO_STRING({{label:instance}}), ""), "/", COALESCE(TO_STRING({{label:cpu}}), "")), NULL)), req = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), cores = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | EVAL real = CASE(cpu_count > 0, busy / cpu_count, NULL), requests = CASE(cores > 0, req / cores, NULL), limits = CASE(cores > 0, lim / cores, NULL)
+        | EVAL real = CASE(cpu_count > 0, busy / cpu_count, NULL), requests = CASE(cpu_count > 0, req / cpu_count, NULL), limits = CASE(cpu_count > 0, lim / cpu_count, NULL)
+        | EVAL requests = CASE(cores > 0, req / cores, requests), limits = CASE(cores > 0, lim / cores, limits)
         | WHERE time_bucket >= ?_tend - 2 hours
         | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits)
         | EVAL __labels = MV_APPEND(MV_APPEND("Real", "Requests"), "Limits"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), COALESCE(TO_STRING(limits), ""))
@@ -94,14 +104,15 @@ panel:
     - title_match: "Global RAM Usage"
       panel_id: 78
       kibana_type_override: metric
-      approximation_note: "Real, Requests, and Limits. Windows is omitted, so Real is MemTotal minus MemAvailable, divided by MemTotal. Requests and limits are divided by machine memory. The ratio stays 0-1. An empty job selection is every job."
+      approximation_note: "Real, Requests, and Limits. Windows is omitted, so Real is MemTotal minus MemAvailable, divided by MemTotal. Requests and limits are divided by machine_memory_bytes when that kube-prometheus recording rule is present, and by MemTotal otherwise. The ratio stays 0-1. An empty job selection is every job."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
         | STATS total = SUM(CASE(?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}}), NULL)), available = SUM(CASE(?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), machine = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | EVAL real = CASE(total > 0, (total - available) / total, NULL), requests = CASE(machine > 0, req / machine, NULL), limits = CASE(machine > 0, lim / machine, NULL)
+        | EVAL real = CASE(total > 0, (total - available) / total, NULL), requests = CASE(total > 0, req / total, NULL), limits = CASE(total > 0, lim / total, NULL)
+        | EVAL requests = CASE(machine > 0, req / machine, requests), limits = CASE(machine > 0, lim / machine, limits)
         | WHERE time_bucket >= ?_tend - 2 hours
         | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits)
         | EVAL __labels = MV_APPEND(MV_APPEND("Real", "Requests"), "Limits"), __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), COALESCE(TO_STRING(limits), ""))
@@ -149,18 +160,20 @@ panel:
     - title_match: "CPU Usage"
       panel_id: 37
       kibana_type_override: metric
-      approximation_note: "Real, Requests, Limits, and Total in cores. The source sums Linux and Windows into Real; Windows is omitted, so Real is the Linux non-idle rate. An empty job selection is every job."
+      approximation_note: "Real, Requests, Limits, and Total in cores. The source sums Linux and Windows into Real; Windows is omitted, so Real is the Linux non-idle rate. Total is machine_cpu_cores when that recording rule is present, and the node CPU count otherwise. An empty job selection is every job."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_cpu_cores:gauge}} IS NOT NULL
-        | STATS real = SUM(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL AND {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal" AND (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}})), RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS real = SUM(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL AND {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal" AND (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}})), RATE({{metric:node_cpu_seconds_total:counter}}), NULL)), requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), cpu_count = COUNT_DISTINCT(CASE({{metric:node_cpu_seconds_total:counter}} IS NOT NULL AND (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}})), CONCAT(COALESCE(TO_STRING({{label:instance}}), ""), "/", COALESCE(TO_STRING({{label:cpu}}), "")), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL shown_total = cpu_count
+        | EVAL shown_total = CASE(total > 0, total, shown_total)
         | WHERE time_bucket >= ?_tend - 2 hours
-        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), total = AVG(total)
+        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), shown_total = AVG(shown_total)
         | EVAL __ab = MV_APPEND("Real", "Requests"), __cd = MV_APPEND("Limits", "Total")
         | EVAL __labels = MV_APPEND(__ab, __cd)
-        | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(total), ""))
+        | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(shown_total), ""))
         | EVAL __values = MV_APPEND(__vab, __vcd)
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -170,7 +183,7 @@ panel:
     - title_match: "RAM Usage"
       panel_id: 39
       kibana_type_override: metric
-      approximation_note: "Real, Requests, Limits, and Total in bytes. Windows is omitted, so Real is MemTotal minus MemAvailable. An empty job selection is every job."
+      approximation_note: "Real, Requests, Limits, and Total in bytes. Windows is omitted, so Real is MemTotal minus MemAvailable. Total is machine_memory_bytes when that recording rule is present, and MemTotal otherwise. An empty job selection is every job."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -178,11 +191,13 @@ panel:
         | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
         | STATS total_bytes = SUM(CASE(?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}}), NULL)), available = SUM(CASE(?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), total = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL real = total_bytes - available
+        | EVAL shown_total = total_bytes
+        | EVAL shown_total = CASE(total > 0, total, shown_total)
         | WHERE time_bucket >= ?_tend - 2 hours
-        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), total = AVG(total)
+        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), shown_total = AVG(shown_total)
         | EVAL __ab = MV_APPEND("Real", "Requests"), __cd = MV_APPEND("Limits", "Total")
         | EVAL __labels = MV_APPEND(__ab, __cd)
-        | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(total), ""))
+        | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(shown_total), ""))
         | EVAL __values = MV_APPEND(__vab, __vcd)
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -227,12 +242,12 @@ panel:
         | SORT time_bucket ASC
     - title_match: "CPU Utilization by namespace"
       panel_id: 46
-      approximation_note: "Cores by namespace. The Windows join is omitted. Containers named POD are excluded; that is the source image!=\"\" pause filter when the image label is not stored."
+      approximation_note: "Cores by namespace. The Windows join is omitted. The empty container name is the cAdvisor pod parent and is excluded, matching image!=\"\". The pause container stays, because kubelet sets its image."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE {{label:container}} != "POD"
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
         | STATS cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}
         | EVAL namespace = {{label:namespace}}
@@ -241,12 +256,12 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Memory Utilization by namespace"
       panel_id: 50
-      approximation_note: "Working set by namespace. The Windows join is omitted. Containers named POD are excluded."
+      approximation_note: "Working set by namespace. The Windows join is omitted. The empty container name is excluded, matching image!=\"\"."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE {{label:container}} != "POD"
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
         | STATS bytes = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}
         | EVAL namespace = {{label:namespace}}
@@ -285,12 +300,12 @@ panel:
         | SORT time_bucket ASC
     - title_match: "CPU Throttled seconds by namespace"
       panel_id: 82
-      approximation_note: "Throttled seconds by namespace, only namespaces above zero, matching the source comparison. Containers named POD are excluded. The rate window follows the dashboard time range."
+      approximation_note: "Throttled seconds by namespace, only namespaces above zero, matching the source comparison. The empty container name is excluded, matching image!=\"\". The rate window follows the dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE {{label:container}} != "POD"
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_cfs_throttled_seconds_total:counter}} IS NOT NULL
         | STATS throttled = SUM(RATE({{metric:container_cpu_cfs_throttled_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}
         | WHERE throttled > 0
@@ -397,12 +412,11 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Network Received by namespace"
       panel_id: 79
-      approximation_note: "Received is positive and transmitted is negative, by namespace. The Windows join is omitted. Containers named POD are excluded."
+      approximation_note: "Received is positive and transmitted is negative, by namespace. The Windows join is omitted. No container filter: kubelet reports pod network on the sandbox series, and the source query keeps it."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE {{label:container}} != "POD"
         | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS rx = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), tx = SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}
         | EVAL namespace = {{label:namespace}}
