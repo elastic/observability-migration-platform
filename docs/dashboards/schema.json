@@ -3634,6 +3634,33 @@
           "description": "The type of XY chart to display. Defaults to 'area'.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
+        },
+        "layers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ESQLXYLayer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Additional ES|QL queries for a cross-index XY panel. Each layer keeps its own query."
         }
       },
       "required": [
@@ -3756,6 +3783,33 @@
           "description": "The type of XY chart to display. Defaults to 'bar'.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
+        },
+        "layers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ESQLXYLayer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Additional ES|QL queries for a cross-index XY panel. Each layer keeps its own query."
         }
       },
       "required": [
@@ -4206,6 +4260,18 @@
           "description": "The type of chart, which is 'datatable' for this visualization.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -4569,6 +4635,18 @@
           "description": "The type of chart, which is 'gauge' for this visualization.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -4655,6 +4733,18 @@
           ],
           "default": null,
           "description": "The dimension to display on the Y-axis (vertical). Optional for 1D heatmaps."
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -4767,6 +4857,33 @@
           "description": "The type of XY chart to display. Defaults to 'line'.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
+        },
+        "layers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ESQLXYLayer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Additional ES|QL queries for a cross-index XY panel. Each layer keeps its own query."
         }
       },
       "required": [
@@ -5089,6 +5206,18 @@
           "description": "The type of chart, which is 'metric' for this visualization.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -5265,6 +5394,18 @@
           "default": "mosaic",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -5501,6 +5642,18 @@
           "default": "pie",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -6014,6 +6167,18 @@
           "default": "tagcloud",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -6162,6 +6327,18 @@
           "description": "The type of chart, which is 'treemap' for this visualization.",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -6268,6 +6445,18 @@
           "default": "waffle",
           "title": "Type",
           "type": "string"
+        },
+        "time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelTimeRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Panel time override (Grafana timeFrom). The Dashboards API accepts this on every ES|QL chart type."
         }
       },
       "required": [
@@ -15950,6 +16139,130 @@
         }
       },
       "title": "XYValuesConfig",
+      "type": "object"
+    },
+    "PanelTimeRange": {
+      "additionalProperties": false,
+      "description": "Panel-level time override. Same shape the Dashboards API accepts on an ES|QL chart (Grafana timeFrom).",
+      "properties": {
+        "from": {
+          "description": "The start of the time range (for example 'now-1h').",
+          "title": "From",
+          "type": "string"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "absolute",
+                "relative"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "absolute for fixed timestamps, relative for date math re-evaluated at query time.",
+          "title": "Mode"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The end of the time range (for example 'now').",
+          "title": "To"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "title": "PanelTimeRange",
+      "type": "object"
+    },
+    "ESQLXYLayer": {
+      "additionalProperties": false,
+      "description": "One extra ES|QL series on a cross-index XY panel. Carries its own query so a second data stream is not collapsed onto the first.",
+      "properties": {
+        "breakdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ESQLBreakdownTypes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "An optional dimension to split this layer's series by."
+        },
+        "dimension": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ESQLDimensionTypes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The X-axis dimension for this layer."
+        },
+        "metrics": {
+          "description": "Metrics for this layer.",
+          "items": {
+            "$ref": "#/$defs/ESQLXYMetricTypes"
+          },
+          "minItems": 1,
+          "title": "Metrics",
+          "type": "array"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "percentage",
+                "stacked",
+                "unstacked"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stacking mode for a bar or area layer.",
+          "title": "Mode"
+        },
+        "query": {
+          "$ref": "#/$defs/ESQLQueryTypes",
+          "description": "The ES|QL query for this layer."
+        },
+        "type": {
+          "enum": [
+            "area",
+            "bar",
+            "line"
+          ],
+          "description": "The XY series type for this layer.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "metrics",
+        "type"
+      ],
+      "title": "ESQLXYLayer",
       "type": "object"
     }
   },
