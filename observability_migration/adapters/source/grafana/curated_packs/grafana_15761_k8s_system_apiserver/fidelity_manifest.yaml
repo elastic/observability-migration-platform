@@ -1,0 +1,62 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15761 Kubernetes / System / API Server (revision 21).
+
+schema_version: 1
+gnet_id: 15761
+gnet_revision: 21
+dashboard_title: "Kubernetes / System / API Server"
+maintainer: "community"
+
+panels:
+  - title: "API Server - Health Status"
+    panel_id: 42
+    fidelity: APPROXIMATE
+    notes: "Latest up value per instance. An empty job selection is every job."
+  - title: "Deprecated Kubernetes Resources"
+    panel_id: 60
+    fidelity: APPROXIMATE
+    notes: "group, version, resource, subresource, and removed_release. The gauge value is dropped."
+  - title: "API Server - HTTP Requests by code"
+    panel_id: 38
+    fidelity: APPROXIMATE
+    notes: "Requests per second by code. No job filter. The rate window follows the dashboard time range."
+  - title: "API Server - HTTP Requests by verb"
+    panel_id: 39
+    fidelity: APPROXIMATE
+    notes: "Requests per second by verb. No job filter."
+  - title: "API Server - HTTP Requests Latency by instance"
+    panel_id: 53
+    fidelity: APPROXIMATE
+    notes: "Mean latency in milliseconds. Duration sum rate divided by count rate, times 1000."
+  - title: "API Server - HTTP Requests Latency by verb"
+    panel_id: 54
+    fidelity: APPROXIMATE
+    notes: "Mean latency by verb, in milliseconds."
+  - title: "API Server - Errors by Instance"
+    panel_id: 50
+    fidelity: APPROXIMATE
+    notes: "5xx divided by all requests. The fraction stays 0-1."
+  - title: "API Server - Errors by verb"
+    panel_id: 51
+    fidelity: APPROXIMATE
+    notes: "5xx divided by all requests, by verb."
+  - title: "API Server - Stacked HTTP Requests by instance"
+    panel_id: 40
+    fidelity: APPROXIMATE
+    notes: "Requests per second by instance, stacked. No job filter."
+  - title: "API Server - Work Queue by instance"
+    panel_id: 56
+    fidelity: APPROXIMATE
+    notes: "workqueue_depth, latest value per bucket, summed by instance."
+  - title: "API Server - CPU Usage by instance"
+    panel_id: 47
+    fidelity: APPROXIMATE
+    notes: "process CPU rate in cores. The source unit says percent."
+  - title: "API Server - Memory Usage by instance"
+    panel_id: 48
+    fidelity: APPROXIMATE
+    notes: "Resident memory bytes by instance."
