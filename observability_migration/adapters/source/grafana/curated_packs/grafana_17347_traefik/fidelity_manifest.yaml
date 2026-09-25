@@ -1,0 +1,70 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 17347 Traefik Official Kubernetes Dashboard (revision 9).
+
+schema_version: 1
+gnet_id: 17347
+gnet_revision: 9
+dashboard_title: "Traefik Official Kubernetes Dashboard"
+maintainer: "community"
+
+panels:
+  - title: "Traefik Instances"
+    panel_id: 13
+    fidelity: APPROXIMATE
+    notes: "Distinct instances publishing traefik_config_reloads_total."
+  - title: "Requests per Entrypoint"
+    panel_id: 7
+    fidelity: APPROXIMATE
+    notes: "Requests per second by entrypoint. An empty selection is every entrypoint. The rate window follows the dashboard time range."
+  - title: "Apdex score"
+    panel_id: 6
+    fidelity: APPROXIMATE
+    notes: "Source formula for HTTP 200 by method: (0.3s bucket rate + 1.2s bucket rate) / 2 / count rate. The 1.2s bucket is cumulative."
+  - title: "Http Code "
+    panel_id: 14
+    fidelity: APPROXIMATE
+    notes: "HTTP request rate by method and code. A chosen service matches that prefix."
+  - title: "Top slow services"
+    panel_id: 23
+    fidelity: APPROXIMATE
+    notes: "Lifetime average latency, cumulative duration sum over count, in seconds. The @provider suffix is removed. topk(15) is omitted so the series stay stable."
+  - title: "Most requested services"
+    panel_id: 5
+    fidelity: APPROXIMATE
+    notes: "HTTP requests per second by service and code, above zero. The @provider suffix is removed. topk(15) is omitted."
+  - title: "Services failing SLO of 1200ms"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "1 minus the le=1.2 bucket rate over the count rate. Services inside the SLO are left off. The fraction stays 0-1."
+  - title: "Services failing SLO of 300ms"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "1 minus the le=0.3 bucket rate over the count rate. The fraction stays 0-1."
+  - title: "2xx over $interval"
+    panel_id: 17
+    fidelity: APPROXIMATE
+    notes: "HTTP 2xx requests per second. The title drops $interval. topk(15) is omitted."
+  - title: "5xx over $interval"
+    panel_id: 18
+    fidelity: APPROXIMATE
+    notes: "HTTP 5xx requests per second. topk(15) is omitted."
+  - title: "Other codes over $interval"
+    panel_id: 19
+    fidelity: APPROXIMATE
+    notes: "Codes that are neither 2xx nor 5xx. topk(15) is omitted."
+  - title: "Requests Size"
+    panel_id: 20
+    fidelity: APPROXIMATE
+    notes: "HTTP request bytes per second. topk(15) is omitted."
+  - title: "Responses Size"
+    panel_id: 24
+    fidelity: APPROXIMATE
+    notes: "HTTP response bytes per second. topk(15) is omitted."
+  - title: "Connections per Entrypoint"
+    panel_id: 21
+    fidelity: APPROXIMATE
+    notes: "Open connections by entrypoint, latest value per bucket."

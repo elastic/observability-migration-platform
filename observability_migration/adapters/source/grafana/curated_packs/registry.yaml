@@ -271,3 +271,12 @@ packs:
     gnet_revision: 21
     dashboard_sha256: "5a4c8aa3ae92a33abf3a701dca2a83d0137e5c80fa7943ea53ce928cfe0f7330"
     description: "System API server — health, deprecated APIs, request rate, mean latency, 5xx ratio"
+
+  - gnet_id: 17347
+    name: grafana_17347_traefik
+    title_hint: "Traefik Official Kubernetes Dashboard"
+    tags_hint: []
+    path: grafana_17347_traefik
+    gnet_revision: 9
+    dashboard_sha256: "57baaca89a9062312aab8e16caa8271b19229d00eac4092287ecd5549ba166c0"
+    description: "Traefik — entrypoint rate, source Apdex, HTTP codes, SLO miss, request and response bytes"
