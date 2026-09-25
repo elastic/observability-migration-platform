@@ -403,6 +403,17 @@ removed_release. An empty cluster or job selection is every value. The
 `resolution` variable is a scrape step; chart buckets follow the dashboard
 time range.
 
+The Traefik official Kubernetes dashboard (17347) keeps the source Apdex
+formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket
+rate, divided by two, divided by the count rate. The 1.2s bucket is already
+cumulative, so this is not classic Apdex. SLO panels stay on a 0–1 scale and
+drop services that are inside the threshold. Service names drop the
+`@provider` suffix. An empty entrypoint or service selection is every value;
+a chosen service matches that prefix (`service=~"$service.*"`). The
+`interval` variable is a Grafana step, so rates follow the dashboard time
+range and the 2xx, 5xx, and other-code titles no longer mention `$interval`.
+`topk(15)` is omitted so each chart stays one stable time series.
+
 The node view (15759) lists pods on the selected node. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
 underneath and the pod list beside both rows. Uptime stays a plain duration:
