@@ -14030,6 +14030,9 @@ class TestDisplayMetadata(unittest.TestCase):
         area_appearance = extract_xy_appearance(panel, chart_type="area")
         self.assertEqual(area_appearance.get("line_style"), "monotone-x")
         self.assertEqual(area_appearance.get("fill_opacity"), 0.7)
+        line_appearance = extract_xy_appearance(panel, chart_type="line")
+        self.assertEqual(line_appearance.get("line_style"), "monotone-x")
+        self.assertNotIn("fill_opacity", line_appearance)
 
     def test_clean_template_dollar_var(self):
         from observability_migration.targets.kibana.emit.display import clean_template_variables

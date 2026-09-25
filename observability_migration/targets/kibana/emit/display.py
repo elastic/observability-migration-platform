@@ -248,8 +248,9 @@ def extract_xy_appearance(
 ) -> dict[str, Any] | None:
     """Derive Kibana XY appearance options from Grafana panel display config.
 
-    ``line_style`` / ``fill_opacity`` are only valid on line/area panel configs
-    (``BarChartAppearance`` rejects them), so bar charts keep axis options only.
+    ``line_style`` is valid on line and area panels. ``fill_opacity`` is valid
+    only on area (``LineChartAppearance`` rejects it). Bar charts keep axis
+    options only.
     """
     appearance = extract_axis_config(panel) or {}
     defaults = _field_defaults(panel)
@@ -265,9 +266,10 @@ def extract_xy_appearance(
         elif line_interpolation:
             appearance["line_style"] = "linear"
 
-        fill_opacity = _coerce_number(custom.get("fillOpacity"))
-        if fill_opacity is not None and fill_opacity > 0:
-            appearance["fill_opacity"] = max(0.0, min(fill_opacity / 100.0, 1.0))
+        if chart_type == "area":
+            fill_opacity = _coerce_number(custom.get("fillOpacity"))
+            if fill_opacity is not None and fill_opacity > 0:
+                appearance["fill_opacity"] = max(0.0, min(fill_opacity / 100.0, 1.0))
 
     overrides = ((panel.get("fieldConfig") or {}).get("overrides") or [])
     for override in overrides:
