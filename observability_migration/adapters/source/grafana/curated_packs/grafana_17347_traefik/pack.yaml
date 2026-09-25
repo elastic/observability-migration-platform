@@ -1,0 +1,363 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 17347
+# https://grafana.com/grafana/dashboards/17347-traefik-official-kubernetes-dashboard/
+#
+# Traefik Official Kubernetes Dashboard (revision 9). Service names drop the
+# @provider suffix. An empty entrypoint or service selection is every value;
+# a chosen service matches that prefix, as in service=~"$service.*". The
+# interval variable is a Grafana step; rates follow the dashboard time range.
+# topk(15) is not applied: a per-step top 15 cannot stay one stable Lens
+# series, so every positive series remains. Apdex uses the dashboard formula,
+# (le 0.3s + le 1.2s) / 2 / code-200 count, for HTTP 200 by method.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    traefik_config_reloads_total: counter
+    traefik_entrypoint_requests_total: counter
+    traefik_entrypoint_request_duration_seconds_bucket: counter
+    traefik_entrypoint_request_duration_seconds_count: counter
+    traefik_service_requests_total: counter
+    traefik_service_request_duration_seconds_sum: counter
+    traefik_service_request_duration_seconds_count: counter
+    traefik_service_request_duration_seconds_bucket: counter
+    traefik_service_requests_bytes_total: counter
+    traefik_service_responses_bytes_total: counter
+    traefik_open_connections: gauge
+
+  live_optional_metrics:
+    - traefik_config_reloads_total
+    - traefik_entrypoint_requests_total
+    - traefik_entrypoint_request_duration_seconds_bucket
+    - traefik_entrypoint_request_duration_seconds_count
+    - traefik_service_requests_total
+    - traefik_service_request_duration_seconds_sum
+    - traefik_service_request_duration_seconds_count
+    - traefik_service_request_duration_seconds_bucket
+    - traefik_service_requests_bytes_total
+    - traefik_service_responses_bytes_total
+    - traefik_open_connections
+
+panel:
+  query_overrides:
+    - title_match: "Traefik Instances"
+      panel_id: 13
+      kibana_type_override: metric
+      approximation_note: "Count of instances publishing traefik_config_reloads_total."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:traefik_config_reloads_total:counter}} IS NOT NULL
+        | STATS instances = COUNT_DISTINCT({{label:instance}})
+        | KEEP instances
+    - title_match: "Requests per Entrypoint"
+      panel_id: 7
+      kibana_type_override: line
+      approximation_note: "Requests per second by entrypoint. An empty entrypoint selection is every entrypoint. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?entrypoint IS NULL OR ?entrypoint == "" OR ?entrypoint == ".*" OR MV_COUNT(?entrypoint) == 0 OR MV_CONTAINS(TO_STRING(?entrypoint), ".*") OR {{label:entrypoint}} == ?entrypoint OR MV_CONTAINS(TO_STRING(?entrypoint), {{label:entrypoint}}))
+        | WHERE {{metric:traefik_entrypoint_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_entrypoint_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:entrypoint}}
+        | EVAL entrypoint = {{label:entrypoint}}
+        | STATS requests = AVG(requests) BY time_bucket, entrypoint
+        | KEEP time_bucket, entrypoint, requests
+        | SORT time_bucket ASC
+    - title_match: "Apdex score"
+      panel_id: 6
+      kibana_type_override: line
+      approximation_note: "Dashboard Apdex for HTTP 200 by method: (rate of the 0.3s bucket plus rate of the 1.2s bucket) / 2 / rate of the count. The 1.2s bucket is cumulative, so this is the source formula, not classic Apdex."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?entrypoint IS NULL OR ?entrypoint == "" OR ?entrypoint == ".*" OR MV_COUNT(?entrypoint) == 0 OR MV_CONTAINS(TO_STRING(?entrypoint), ".*") OR {{label:entrypoint}} == ?entrypoint OR MV_CONTAINS(TO_STRING(?entrypoint), {{label:entrypoint}}))
+        | WHERE {{label:code}} == "200"
+        | WHERE {{metric:traefik_entrypoint_request_duration_seconds_bucket:counter}} IS NOT NULL OR {{metric:traefik_entrypoint_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS b03 = SUM(CASE({{label:le}} == "0.3", RATE({{metric:traefik_entrypoint_request_duration_seconds_bucket:counter}}), NULL)), b12 = SUM(CASE({{label:le}} == "1.2", RATE({{metric:traefik_entrypoint_request_duration_seconds_bucket:counter}}), NULL)), total = SUM(RATE({{metric:traefik_entrypoint_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:method}}
+        | EVAL method = {{label:method}}
+        | EVAL apdex = CASE(total > 0, (b03 + b12) / 2 / total, NULL)
+        | STATS apdex = AVG(apdex) BY time_bucket, method
+        | KEEP time_bucket, method, apdex
+        | SORT time_bucket ASC
+    - title_match: "Http Code "
+      panel_id: 14
+      kibana_type_override: pie
+      approximation_note: "Mean HTTP request rate by method and code, matching the source reduce. An empty service selection is every service; a chosen service matches that prefix."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:method}}, {{label:code}}
+        | EVAL slice = CONCAT(COALESCE(TO_STRING({{label:method}}), ""), "[", COALESCE(TO_STRING({{label:code}}), ""), "]")
+        | STATS requests = AVG(requests) BY slice
+        | KEEP slice, requests
+    - title_match: "Top slow services"
+      panel_id: 23
+      kibana_type_override: line
+      primary_format: s
+      approximation_note: "Lifetime average latency, cumulative duration sum divided by count, in seconds. The @provider suffix is removed from the service name. topk(15) is omitted so the time series stays stable."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{metric:traefik_service_request_duration_seconds_sum:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS total = SUM(LAST_OVER_TIME({{metric:traefik_service_request_duration_seconds_sum:counter}})), n = SUM(LAST_OVER_TIME({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
+        | EVAL latency = CASE(n > 0, total / n, NULL)
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
+        | STATS latency = AVG(latency) BY time_bucket, series
+        | KEEP time_bucket, series, latency
+        | SORT time_bucket ASC
+    - title_match: "Most requested services"
+      panel_id: 5
+      kibana_type_override: line
+      approximation_note: "HTTP requests per second by service and code, for series above zero. The @provider suffix is removed. topk(15) is omitted so the time series stays stable."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:code}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), code = {{label:code}}
+        | EVAL series = CONCAT("[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
+        | WHERE requests > 0
+        | STATS requests = AVG(requests) BY time_bucket, series
+        | KEEP time_bucket, series, requests
+        | SORT time_bucket ASC
+    - title_match: "Services failing SLO of 1200ms"
+      panel_id: 3
+      kibana_type_override: line
+      approximation_note: "Share of requests slower than 1.2s, 1 minus the le=1.2 bucket rate over the count rate. Services inside the SLO are left off. The fraction stays 0-1."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{metric:traefik_service_request_duration_seconds_bucket:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS inside = SUM(CASE({{label:le}} == "1.2", RATE({{metric:traefik_service_request_duration_seconds_bucket:counter}}), NULL)), total = SUM(RATE({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@"))
+        | EVAL failing = CASE(total > 0, 1 - inside / total, NULL)
+        | WHERE failing > 0
+        | STATS failing = AVG(failing) BY time_bucket, service
+        | KEEP time_bucket, service, failing
+        | SORT time_bucket ASC
+    - title_match: "Services failing SLO of 300ms"
+      panel_id: 4
+      kibana_type_override: line
+      approximation_note: "Share of requests slower than 0.3s. Services inside the SLO are left off. The fraction stays 0-1."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{metric:traefik_service_request_duration_seconds_bucket:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS inside = SUM(CASE({{label:le}} == "0.3", RATE({{metric:traefik_service_request_duration_seconds_bucket:counter}}), NULL)), total = SUM(RATE({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@"))
+        | EVAL failing = CASE(total > 0, 1 - inside / total, NULL)
+        | WHERE failing > 0
+        | STATS failing = AVG(failing) BY time_bucket, service
+        | KEEP time_bucket, service, failing
+        | SORT time_bucket ASC
+    - title_match: "2xx over"
+      panel_id: 17
+      kibana_type_override: line
+      approximation_note: "HTTP 2xx requests per second by method, code, and service. The @provider suffix is removed. topk(15) is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{label:code}} RLIKE "2.."
+        | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
+        | WHERE requests > 0
+        | STATS requests = AVG(requests) BY time_bucket, series
+        | KEEP time_bucket, series, requests
+        | SORT time_bucket ASC
+    - title_match: "5xx over"
+      panel_id: 18
+      kibana_type_override: line
+      approximation_note: "HTTP 5xx requests per second by method, code, and service. topk(15) is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{label:code}} RLIKE "5.."
+        | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
+        | WHERE requests > 0
+        | STATS requests = AVG(requests) BY time_bucket, series
+        | KEEP time_bucket, series, requests
+        | SORT time_bucket ASC
+    - title_match: "Other codes over"
+      panel_id: 19
+      kibana_type_override: line
+      approximation_note: "HTTP requests whose code is neither 2xx nor 5xx. topk(15) is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE NOT ({{label:code}} RLIKE "2.." OR {{label:code}} RLIKE "5..")
+        | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
+        | WHERE requests > 0
+        | STATS requests = AVG(requests) BY time_bucket, series
+        | KEEP time_bucket, series, requests
+        | SORT time_bucket ASC
+    - title_match: "Requests Size"
+      panel_id: 20
+      kibana_type_override: line
+      approximation_note: "HTTP request bytes per second by method and service. topk(15) is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{metric:traefik_service_requests_bytes_total:counter}} IS NOT NULL
+        | STATS bytes = SUM(RATE({{metric:traefik_service_requests_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), " on ", COALESCE(TO_STRING(service), ""))
+        | WHERE bytes > 0
+        | STATS bytes = AVG(bytes) BY time_bucket, series
+        | KEEP time_bucket, series, bytes
+        | SORT time_bucket ASC
+    - title_match: "Responses Size"
+      panel_id: 24
+      kibana_type_override: line
+      approximation_note: "HTTP response bytes per second by method and service. topk(15) is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE {{label:protocol}} == "http"
+        | WHERE {{metric:traefik_service_responses_bytes_total:counter}} IS NOT NULL
+        | STATS bytes = SUM(RATE({{metric:traefik_service_responses_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}
+        | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}
+        | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), " on ", COALESCE(TO_STRING(service), ""))
+        | WHERE bytes > 0
+        | STATS bytes = AVG(bytes) BY time_bucket, series
+        | KEEP time_bucket, series, bytes
+        | SORT time_bucket ASC
+    - title_match: "Connections per Entrypoint"
+      panel_id: 21
+      kibana_type_override: line
+      approximation_note: "Open connections by entrypoint. The gauge is the latest value in each bucket."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?entrypoint IS NULL OR ?entrypoint == "" OR ?entrypoint == ".*" OR MV_COUNT(?entrypoint) == 0 OR MV_CONTAINS(TO_STRING(?entrypoint), ".*") OR {{label:entrypoint}} == ?entrypoint OR MV_CONTAINS(TO_STRING(?entrypoint), {{label:entrypoint}}))
+        | WHERE {{metric:traefik_open_connections:gauge}} IS NOT NULL
+        | STATS connections = SUM(LAST_OVER_TIME({{metric:traefik_open_connections:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:entrypoint}}
+        | EVAL entrypoint = {{label:entrypoint}}
+        | STATS connections = AVG(connections) BY time_bucket, entrypoint
+        | KEEP time_bucket, entrypoint, connections
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "General"
+      collapsed: false
+    - title_match: "Traefik Instances"
+      panel_id: 13
+      hide_title: false
+      size: {w: 12, h: 8}
+      position: {x: 0, y: 0}
+    - title_match: "Http Code "
+      panel_id: 14
+      hide_title: false
+      title: "HTTP codes"
+      size: {w: 12, h: 8}
+      position: {x: 12, y: 0}
+    - title_match: "Requests per Entrypoint"
+      panel_id: 7
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 8}
+      position: {x: 24, y: 0}
+    - title_match: "Apdex score"
+      panel_id: 6
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 8}
+    - title_match: "Top slow services"
+      panel_id: 23
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 8}
+    - title_match: "Most requested services"
+      panel_id: 5
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 20}
+    - title_match: "SLO"
+      collapsed: false
+    - title_match: "Services failing SLO of 1200ms"
+      panel_id: 3
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Services failing SLO of 300ms"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "HTTP Details"
+      collapsed: false
+    - title_match: "2xx over"
+      panel_id: 17
+      hide_title: false
+      title: "2xx"
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "5xx over"
+      panel_id: 18
+      hide_title: false
+      title: "5xx"
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 16, y: 0}
+    - title_match: "Other codes over"
+      panel_id: 19
+      hide_title: false
+      title: "Other codes"
+      legend_position: right
+      size: {w: 16, h: 12}
+      position: {x: 32, y: 0}
+    - title_match: "Requests Size"
+      panel_id: 20
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 12}
+    - title_match: "Responses Size"
+      panel_id: 24
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 12}
+    - title_match: "Connections per Entrypoint"
+      panel_id: 21
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 24}
