@@ -1553,50 +1553,6 @@ def _strip_promql_string_literals(expr):
     return text
 
 
-def _strip_promql_comments(expr):
-    """Drop ``#`` line comments, leaving their newline, so structural regexes see syntax.
-
-    PromQL allows a comment between a token and its parenthesis —
-    ``on # note\\n(instance)`` parses as ``on(instance)`` — so a check that scans
-    for a construct must not be fooled into missing one (issue #440). Quote state
-    is tracked, backticks included, because a ``#`` inside a label value is data.
-
-    Only valid on text that still has its newlines. A comment ends at its
-    newline, so stripping after a flattening pass such as
-    ``_clean_promql_for_native`` would swallow real expression text — which is
-    why this is separate from :func:`_strip_promql_string_literals` rather than
-    folded into it.
-    """
-    text = str(expr or "")
-    out: list[str] = []
-    quote = ""
-    i = 0
-    while i < len(text):
-        char = text[i]
-        if quote:
-            out.append(char)
-            if char == "\\" and quote != "`" and i + 1 < len(text):
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if char == quote:
-                quote = ""
-            i += 1
-            continue
-        if char in "\"'`":
-            quote = char
-            out.append(char)
-            i += 1
-            continue
-        if char == "#":
-            while i < len(text) and text[i] != "\n":
-                i += 1
-            continue
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
 def _sanitize_promql_structure(expr):
     """Blank literals and comments so a structural regex sees only PromQL syntax.
 
