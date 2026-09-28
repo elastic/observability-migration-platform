@@ -142,6 +142,24 @@ def diff_native(out_dir: str, baseline_dir: str) -> list[str]:
     return failures
 
 
+def feasibility_shortfalls(
+    counts: dict[str, int], baseline_profile: str = "prometheus_native"
+) -> list[str]:
+    """Profiles whose runnable-query count fell below the native baseline.
+
+    Order does not matter. A profile that is not in ``counts`` is not the
+    baseline for this run, so there is nothing to compare against.
+    """
+    if baseline_profile not in counts:
+        return []
+    baseline = counts[baseline_profile]
+    return [
+        f"[{profile}] feasible query count {count} < native {baseline}"
+        for profile, count in counts.items()
+        if profile != baseline_profile and count < baseline
+    ]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
@@ -187,26 +205,24 @@ def main() -> None:
         print(f"no profile-leakage rules for: {', '.join(unchecked)}")
         sys.exit(2)
 
-    baseline_count: int | None = None
+    counts: dict[str, int] = {}
     failures: list[str] = []
     for profile in args.profiles:
         out = tempfile.mkdtemp(prefix=f"xprof-{profile}-")
         migrate(args.input_dir, out, profile, args.index, source=args.source)
-        count = feasible_count(out)
-        if profile == "prometheus_native":
-            baseline_count = count
-            if args.baseline_native:
-                failures.extend(diff_native(out, args.baseline_native))
+        counts[profile] = feasible_count(out)
+        if profile == "prometheus_native" and args.baseline_native:
+            failures.extend(diff_native(out, args.baseline_native))
         for f in _native_files(out):
             with open(f, encoding="utf-8") as fh:
                 data = json.load(fh)
             for q in extract_esql_queries(data):
                 for v in check_profile_leakage(q, profile):
                     failures.append(f"[{profile}] {Path(f).name}: {v}")
-        if baseline_count is not None and count < baseline_count:
-            failures.append(
-                f"[{profile}] feasible query count {count} < native {baseline_count}"
-            )
+    # Compare after every profile has a count. The Datadog list is sorted, so
+    # ``prometheus_native`` is last; comparing inside the loop skipped every
+    # profile that ran before the baseline.
+    failures.extend(feasibility_shortfalls(counts))
 
     if failures:
         print("\n".join(failures))

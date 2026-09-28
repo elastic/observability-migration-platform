@@ -34,6 +34,26 @@ from verifier.profile_leakage import (  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts"))
 
 
+def test_feasibility_parity_does_not_depend_on_profile_order():
+    """Datadog's profile list is sorted, so ``prometheus_native`` is last.
+    Comparing inside the loop never checked the profiles that ran first."""
+    from scripts.run_cross_profile_corpus import feasibility_shortfalls
+
+    gaps = feasibility_shortfalls(
+        {
+            "default": 3,
+            "elastic_agent": 10,
+            "otel": 9,
+            "prometheus_native": 10,
+        }
+    )
+    assert "[default] feasible query count 3 < native 10" in gaps
+    assert "[otel] feasible query count 9 < native 10" in gaps
+    assert not any(gap.startswith("[elastic_agent]") for gap in gaps)
+    assert not any(gap.startswith("[prometheus_native]") for gap in gaps)
+    assert feasibility_shortfalls({"default": 1, "otel": 1}) == []
+
+
 def test_datadog_prometheus_aliases_onto_the_metricbeat_rules():
     """`prometheus` (Datadog) == `prometheus_metrics` (Grafana) layout."""
     leaked = "FROM metrics-* | STATS v = AVG(labels.pod)"

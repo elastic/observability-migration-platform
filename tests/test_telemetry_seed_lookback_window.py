@@ -110,9 +110,10 @@ def test_generated_timestamps_stay_inside_the_writable_window():
 # ---------------------------------------------------------------------------
 
 def test_an_explicit_data_hours_cannot_exceed_the_tsds_ceiling():
-    """`--data-hours 240` generated documents 10 days old against a template
-    that accepts 7, so Elasticsearch rejected them outright -- the same failure
-    the contract clamp fixed, reached through the flag instead."""
+    """`--data-hours 240` generated metric documents 10 days old against a
+    template that accepts 7, so Elasticsearch rejected them outright -- the
+    same failure the contract clamp fixed, reached through the flag instead.
+    The ceiling applies only when the stream is a time-series metrics index."""
     import datetime
 
     from observability_migration.core.telemetry_data import (
@@ -121,9 +122,40 @@ def test_an_explicit_data_hours_cannot_exceed_the_tsds_ceiling():
     )
 
     now = datetime.datetime.now(datetime.UTC)
-    stamps = _document_timestamps(now, data_hours=240, interval_sec=3600)
+    stamps = _document_timestamps(
+        now, data_hours=240, interval_sec=3600, apply_tsds_ceiling=True
+    )
     outside = [t for t in stamps if (now - t).total_seconds() > MAX_TSDS_LOOKBACK_SECONDS]
     assert not outside, f"{len(outside)} documents fall outside the writable window"
+
+
+def test_logs_and_traces_keep_a_window_past_the_tsds_ceiling():
+    """The 7d ceiling is ``index.mode: time_series``. Logs and traces do not
+    use that mode, so ``--data-hours 240`` must not shorten them."""
+    import datetime
+
+    from observability_migration.core.telemetry_data import generate_documents
+
+    now = datetime.datetime(2026, 4, 15, 6, 0, tzinfo=datetime.UTC)
+    contract = {
+        "streams": {
+            "logs-*": {"fields": {"message": {"role": "dimension"}}},
+            "traces-*": {"fields": {"trace.id": {"role": "dimension"}}},
+            "metrics-*": {"fields": {"cpu": {"role": "metric", "metric_kind": "gauge"}}},
+        }
+    }
+    oldest: dict[str, float] = {}
+    for name, doc in generate_documents(contract, now=now, data_hours=240, interval_sec=3600):
+        stamp = datetime.datetime.fromisoformat(doc["@timestamp"].replace("Z", "+00:00"))
+        age = (now - stamp).total_seconds() / 3600
+        oldest[name] = max(oldest.get(name, 0.0), age)
+    assert oldest["logs-generic-default"] > 200
+    assert oldest["traces-generic-default"] > 200
+    assert oldest["metrics-generic-default"] <= 168.1
+    assert lookback_truncation_warning(
+        {"streams": {"logs-*": {"fields": {}, "minimum_lookback": "14 days"}}},
+        data_hours=240,
+    ) is None
 
 
 def test_a_data_hours_within_the_ceiling_is_untouched():

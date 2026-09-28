@@ -128,7 +128,6 @@ _DATADOG_SPAN_RE = re.compile(r"(?P<amount>\d+)(?P<unit>mo|[smhdwy])$", re.IGNOR
 
 _TEMPLATE_VAR_RE = re.compile(r"\$\w+(?:\.\w+)*")
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
-_NUMERIC_TAG_VALUE_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _UNRESOLVABLE_TEMPLATE_VARS = {"scope"}
 
 

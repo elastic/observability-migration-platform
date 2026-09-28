@@ -1523,10 +1523,12 @@ relevant — two diagnostic keys:
   conflict and an out-of-window timestamp all look identical without the
   reason.
 - `warnings`: seeding decisions that will show up as missing data in Kibana:
-  - **Backfill truncated.** A time-series index accepts at most `7d` of
-    backfill (`index.look_back_time` is capped at `7d` by Elasticsearch), so a
-    dashboard declaring a longer range gets the most recent 7 days and a panel
-    with a longer time range shows a shorter series than the source.
+  - **Backfill truncated.** A time-series *metrics* index accepts at most `7d`
+    of backfill (`index.look_back_time` is capped at `7d` by Elasticsearch), so
+    a metrics stream declaring a longer range gets the most recent 7 days and a
+    metric panel with a longer time range shows a shorter series than the
+    source. Logs and traces are not time-series indexes, so they keep the
+    requested window.
   - **Field not seeded.** A field that must be an *object* because a deeper
     field exists (`service` alongside `service.name`) cannot also be a leaf, so
     it is skipped in both the mapping and the documents. The warning names the

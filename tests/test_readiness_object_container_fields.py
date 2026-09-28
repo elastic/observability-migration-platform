@@ -46,6 +46,12 @@ def test_none_is_not_a_container():
     assert not is_object_container_field(None)
 
 
+def test_a_flattened_root_is_readable():
+    """ES|QL reads a flattened field directly. Only its subfields need
+    FIELD_EXTRACT, so the root is not a missing path node."""
+    assert not is_object_container_field(FieldCapability(name="labels", type="flattened"))
+
+
 def test_a_container_is_not_reported_as_confirmed():
     """End-to-end: the contract must not call an object node confirmed."""
     from copy import deepcopy
@@ -92,3 +98,47 @@ def test_a_container_is_not_reported_as_confirmed():
     by_name = contract["required_fields"]
     assert by_name["shop.orders.active"]["status"] == "confirmed"
     assert by_name["service"]["status"] == "missing", by_name.get("service")
+
+
+def test_a_flattened_root_is_confirmed_not_missing():
+    from copy import deepcopy
+
+    from observability_migration.adapters.source.datadog.field_map import BUILTIN_PROFILES
+    from observability_migration.adapters.source.datadog.normalize import normalize_dashboard
+    from observability_migration.adapters.source.datadog.preflight import (
+        build_target_readiness_contract,
+    )
+
+    raw = {
+        "title": "Shop",
+        "widgets": [
+            {
+                "id": 1,
+                "definition": {
+                    "type": "timeseries",
+                    "title": "Active orders",
+                    "requests": [
+                        {
+                            "response_format": "timeseries",
+                            "queries": [
+                                {
+                                    "data_source": "metrics",
+                                    "name": "query1",
+                                    "query": "avg:shop.orders.active{service:shop-lab}",
+                                }
+                            ],
+                            "formulas": [{"formula": "query1"}],
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    dashboard = normalize_dashboard(raw)
+    profile = deepcopy(BUILTIN_PROFILES["passthrough"])
+    profile.metric_field_caps = {
+        "service": FieldCapability(name="service", type="flattened"),
+        "shop.orders.active": FieldCapability(name="shop.orders.active", type="double"),
+    }
+    contract = build_target_readiness_contract([dashboard], profile)
+    assert contract["required_fields"]["service"]["status"] == "confirmed"

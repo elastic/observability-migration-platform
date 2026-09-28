@@ -26,7 +26,6 @@ asserted here were executed against that cluster and returned rows.
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 
 import pytest
@@ -229,8 +228,6 @@ def test_grafana_non_le_numeric_matcher_is_still_dropped_with_a_warning(profile_
 # --------------------------------------------------------------------------
 # Cross-source invariant
 # --------------------------------------------------------------------------
-
-_QUOTED_AGAINST_BARE_FIELD = re.compile(r'(?<!TO_STRING\()\b[\w.`]+\s*(?:==|!=)\s*"')
 
 
 @pytest.mark.parametrize("profile_name", DD_PROFILES)

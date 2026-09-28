@@ -279,13 +279,11 @@ def generate_documents(
     now = now or datetime.datetime.now(datetime.UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.UTC)
-    lookback_hours = _contract_lookback_hours(contract)
-    timestamps = _document_timestamps(
-        now,
-        data_hours=data_hours,
-        interval_sec=interval_sec,
-        lookback_hours=lookback_hours,
-    )
+    # Timestamps are chosen per stream. A metric stream is a TSDS index and
+    # cannot accept documents older than 7d; logs and traces are not, so the
+    # same ``--data-hours`` must not shorten them.
+    requested_lookback_hours = _requested_lookback_seconds(contract) / 3600.0
+    timestamps_for_ceiling: dict[bool, list[datetime.datetime]] = {}
     rng = random.Random(42)
     counter_state: dict[tuple[str, str, int], float] = {}
 
@@ -295,6 +293,15 @@ def generate_documents(
         is_metrics = stream_type == "metrics"
         dataset = _dataset_from_stream(concrete_name)
         namespace = _namespace_from_stream(concrete_name)
+        if is_metrics not in timestamps_for_ceiling:
+            timestamps_for_ceiling[is_metrics] = _document_timestamps(
+                now,
+                data_hours=data_hours,
+                interval_sec=interval_sec,
+                lookback_hours=requested_lookback_hours,
+                apply_tsds_ceiling=is_metrics,
+            )
+        timestamps = timestamps_for_ceiling[is_metrics]
         # Same exclusions the template applies: a document carrying a key the
         # mapping skipped is rejected in full, not just for that field.
         skip_fields = unmappable_field_names(stream)
@@ -872,6 +879,7 @@ def _document_timestamps(
     data_hours: float,
     interval_sec: int,
     lookback_hours: float = 0.0,
+    apply_tsds_ceiling: bool = False,
 ) -> list[datetime.datetime]:
     """Build seed timestamps covering the requested recent window.
 
@@ -879,16 +887,21 @@ def _document_timestamps(
     ``minimum_lookback`` for week-over-week panels), also emit sparse older
     points so those historical windows are non-empty without exploding the
     document count at the dense ``interval_sec``.
+
+    ``apply_tsds_ceiling`` is for metric streams only. Their index template
+    sets ``index.mode: time_series``, which rejects any document older than
+    7 days. Logs and traces do not, so the same flag must not shorten them.
     """
-    # The same ceiling ``_contract_lookback_hours`` applies, applied to the
-    # explicit request too. ``--data-hours 240`` used to generate timestamps 10
-    # days old against a template that accepts 7, and Elasticsearch rejected
-    # every one of them ("the document timestamp [...] is outside of ranges of
-    # currently writable indices") -- the contract path's bug, reached through
-    # the flag.
-    max_hours = MAX_TSDS_LOOKBACK_SECONDS / 3600.0
-    data_hours = min(max(0.0, float(data_hours or 0.0)), max_hours)
-    lookback_hours = min(max(data_hours, float(lookback_hours or 0.0)), max_hours)
+    data_hours = max(0.0, float(data_hours or 0.0))
+    lookback_hours = max(data_hours, float(lookback_hours or 0.0))
+    if apply_tsds_ceiling:
+        # ``--data-hours 240`` used to generate timestamps 10 days old against
+        # a metric template that accepts 7, and Elasticsearch rejected every
+        # one of them ("the document timestamp [...] is outside of ranges of
+        # currently writable indices").
+        max_hours = MAX_TSDS_LOOKBACK_SECONDS / 3600.0
+        data_hours = min(data_hours, max_hours)
+        lookback_hours = min(lookback_hours, max_hours)
     total_points = max(2, int(data_hours * 3600 // interval_sec) + 1)
     timestamps = {
         now - datetime.timedelta(seconds=(total_points - idx - 1) * interval_sec)
@@ -940,31 +953,61 @@ def _contract_lookback_hours(contract: dict[str, Any]) -> float:
     return max_seconds / 3600.0 if max_seconds else 0.0
 
 
+def _contract_has_metric_stream(contract: dict[str, Any]) -> bool:
+    streams = contract.get("streams") or {}
+    if not streams:
+        # No contract yet: ``--data-hours`` still describes the metric window
+        # the seeder will apply when a metrics stream shows up.
+        return True
+    for pattern, stream in streams.items():
+        if not isinstance(stream, dict):
+            continue
+        concrete = concrete_stream_name(pattern, stream)
+        if _stream_type_for_contract(pattern, concrete, stream) == "metrics":
+            return True
+    return False
+
+
 def lookback_truncation_warning(
     contract: dict[str, Any], data_hours: float = 0.0
 ) -> str | None:
-    """Tell the operator when more history was asked for than a TSDS holds.
+    """Tell the operator when metric history was asked for past the TSDS limit.
 
-    Panels whose time range exceeds the window will show a shorter series than
-    the source dashboard. That is an Elasticsearch limit, not a translation
-    gap, but staying silent about it looks like missing data.
+    A time-series metrics index rejects documents older than 7 days. Logs and
+    traces do not use that mode, so a logs-only contract is not truncated and
+    does not warn. Panels on a truncated metric stream show a shorter series
+    than the source. That is an Elasticsearch limit, not a translation gap,
+    but staying silent about it looks like missing data.
 
-    Covers both routes to an over-long window: a contract ``minimum_lookback``
-    and an explicit ``--data-hours``. Reporting only the first left an operator
-    who passed ``--data-hours 240`` with silently truncated data and no notice.
+    Covers both routes to an over-long metric window: a contract
+    ``minimum_lookback`` on a metrics stream and an explicit ``--data-hours``.
     """
-    requested = max(
-        _requested_lookback_seconds(contract),
-        int(max(0.0, float(data_hours or 0.0)) * 3600),
-    )
+    if not _contract_has_metric_stream(contract):
+        return None
+    # Only a metrics stream's own lookback counts. A 14-day log span next to a
+    # short metric span must not claim the metrics were truncated.
+    metric_seconds = 0
+    for pattern, stream in (contract.get("streams") or {}).items():
+        if not isinstance(stream, dict):
+            continue
+        concrete = concrete_stream_name(pattern, stream)
+        if _stream_type_for_contract(pattern, concrete, stream) != "metrics":
+            continue
+        metric_seconds = max(
+            metric_seconds,
+            int(stream.get("_lookback_seconds") or 0),
+            _lookback_seconds_from_text(str(stream.get("minimum_lookback") or "")),
+        )
+    requested = max(metric_seconds, int(max(0.0, float(data_hours or 0.0)) * 3600))
     if requested <= MAX_TSDS_LOOKBACK_SECONDS:
         return None
     requested_days = requested / (24 * 60 * 60)
     return (
         f"seeding was asked for {requested_days:.0f} days of history but a "
-        f"time-series index accepts at most {MAX_TSDS_LOOKBACK_SECONDS // (24 * 60 * 60)}d "
-        "of backfill; seeding the most recent 7d. Panels with longer time "
-        "ranges will show a shorter series than the source."
+        f"time-series metrics index accepts at most {MAX_TSDS_LOOKBACK_SECONDS // (24 * 60 * 60)}d "
+        "of backfill; metric streams are seeded with the most recent 7d. "
+        "Logs and traces keep the requested window. Metric panels with longer "
+        "time ranges will show a shorter series than the source."
     )
 
 

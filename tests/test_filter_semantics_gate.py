@@ -22,6 +22,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "parity-rig"))
 
@@ -187,10 +189,8 @@ def test_cleanup_still_happens_when_a_query_raises():
         raise RuntimeError("connection reset")
 
     es = es_of(rows_for)
-    try:
+    with pytest.raises(RuntimeError):
         run_gate("http://es.invalid", profiles=["otel"], request=es)
-    except RuntimeError:
-        pass
     assert es.created, "nothing was created, so the test proves nothing"
     assert sorted(es.deleted) == sorted(es.created)
 
