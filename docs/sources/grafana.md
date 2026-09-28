@@ -448,6 +448,67 @@ loaded, panels that stay on the native path attach a warning
 (`metric_map not applied for <metric>: native PROMQL requires literal target
 metric names`) and are marked `migrated_with_warnings`.
 
+**Label resolution in native PROMQL (issue #448).** When `--es-url` is set and
+discovery succeeds (`discovery_status == ok`), the native PROMQL path now calls
+`resolve_label` for every label matcher key and every grouping label — the same
+resolution that the ES|QL path has used since issue #163. For example, on an
+OTel Collector target (`mapping.mode: otel`, index
+`metrics-prometheusreceiver.otel-default`) where Grafana panels use the
+Prometheus label `instance`, the emitted matcher becomes
+`` `service.instance.id`=~?Node `` and a `| RENAME `service.instance.id` AS
+instance` pipe restores the original column name for downstream Lens code.
+The `RENAME` covers `by (…)` labels, which are the grouping labels that become
+result columns; `without (…)` and the vector-matching modifiers
+(`on`/`ignoring`/`group_left`/`group_right`) are resolved in the expression but
+produce no column to rename.
+
+Two cases keep bare Prometheus label names, unchanged from previous behaviour:
+
+- **Without `--es-url`**, or when discovery is inconclusive. Offline runs emit
+  exactly what they emitted before.
+- **On the Prometheus-namespaced layouts** (`prometheus_native`,
+  `prometheus_remote_write`, `prometheus_metrics`). There, labels are stored at
+  `labels.<name>` / `prometheus.labels.<name>` and the Elasticsearch PROMQL
+  command resolves bare matcher and grouping keys against those namespaced
+  fields on its own, so rewriting the key is unnecessary — and would pair a
+  namespaced label key with a bare metric name. This covers both the profile
+  you selected (`--field-profile prometheus_native`, …, or `auto` resolving to
+  one of them) **and** a layout that live `_field_caps` detect under the
+  default `otel` profile: the plan emits bare/OTel candidate names there (with
+  the `live caps look like <layout>` warning), and resolving `instance` to an
+  OTel guess the target does not have would degrade every such panel. The same
+  condition gates both degrades below.
+
+One asymmetry to be aware of: Elasticsearch's PROMQL command automatically
+resolves bare datapoint attributes (labels stored at `attributes.*` in the OTel
+model) — bare `device=~"vdb"` works even on an OTel target because `device`
+lives at `attributes.device`, and the PROMQL engine resolves `attributes.*`
+itself. However, it does **not** resolve `resource.attributes.*`: a bare
+`instance` matcher returns zero rows because `service.instance.id` is stored at
+`resource.attributes.service.instance.id`, outside the PROMQL engine's
+automatic scope. `resolve_label` already knows this distinction; the fix simply
+wires its output into the native PROMQL emission.
+
+When a matcher or grouping label resolves to a field that live caps prove
+absent, the panel degrades to ES|QL with a note (`Native PROMQL skipped: target
+has no field for PromQL label(s) <names>; native matchers/groupings would not
+preserve the source series, so the panel migrates via ES|QL`) rather than emitting a silently-dead native
+matcher or collapsing a grouping dimension. Multi-metric expressions likewise
+degrade when metric-scoped resolution maps the same Prometheus label to
+different target fields: choosing either field would silently mis-handle the
+other operand. This is **the fourth degrade gate** documented in
+`docs/command-contract.md`.
+
+**Migrated alerting rules take the same two decisions.** A rule whose PromQL
+hits either case is routed through the ES|QL translator instead of native
+PROMQL; when the translator has no form for the expression either, the rule
+carries no source-faithful query and is reported as `manual_required` with
+`payload_status: blocked_no_source_faithful_query`. A rule has no panel notes
+to carry a degrade explanation, so read the rule's payload status rather than
+looking for a `Native PROMQL skipped` note. This matters more for rules than
+for panels: an alert on a label that resolves to an absent field matches zero
+series, and a rule that never fires is a quieter failure than an empty panel.
+
 > **Verify requires live data.** Without `--es-url`, or before telemetry lands,
 > per-field status may be `unknown` — the planned layout still drives emitted
 > queries. After ingest, rerun with a reachable `--es-url` and confirm
