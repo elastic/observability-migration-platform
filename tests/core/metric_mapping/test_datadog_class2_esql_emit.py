@@ -50,7 +50,9 @@ class DatadogClass2EsqlEmitTests(unittest.TestCase):
         self.assertNotIn(result.status, ("not_feasible", "blocked"))
         assert result.esql_query is not None
         self.assertIn('network.direction == "receive"', result.esql_query)
-        self.assertIn("system.network.in.bytes", result.esql_query)
+        # `in` is an ES|QL keyword, so the emitted identifier quotes that
+        # segment; the bare form is rejected by Elasticsearch.
+        self.assertIn("system.network.`in`.bytes", result.esql_query)
 
     def test_variants_select_from_scope_tags(self) -> None:
         from observability_migration.adapters.source.datadog.models import TagFilter
@@ -99,7 +101,9 @@ class DatadogClass2EsqlEmitTests(unittest.TestCase):
         result = translate_widget(widget, plan, profile)
         self.assertNotIn(result.status, ("not_feasible", "blocked"))
         assert result.esql_query is not None
-        self.assertIn("system.network.in.bytes", result.esql_query)
+        # `in` is an ES|QL keyword, so the emitted identifier quotes that
+        # segment; the bare form is rejected by Elasticsearch.
+        self.assertIn("system.network.`in`.bytes", result.esql_query)
         self.assertIn('network.direction == "receive"', result.esql_query)
         self.assertNotIn("system.network.out.bytes", result.esql_query)
         self.assertNotIn('direction == "in"', result.esql_query)
@@ -175,7 +179,7 @@ class DatadogClass2EsqlEmitTests(unittest.TestCase):
             profile,
         )
         self.assertIn("FROM metrics-network-*", result.translated_query)
-        self.assertIn("system.network.in.kbytes", result.translated_query)
+        self.assertIn("system.network.`in`.kbytes", result.translated_query)
         self.assertIn('network.direction == "receive"', result.translated_query)
         self.assertIn("* 0.001", result.translated_query)
         self.assertNotIn('direction == "in"', result.translated_query)
@@ -273,7 +277,7 @@ class DatadogClass2EsqlEmitTests(unittest.TestCase):
             result.warnings,
         )
         assert result.esql_query is not None
-        self.assertNotIn("system.network.in.bytes", result.esql_query)
+        self.assertNotIn("system.network.`in`.bytes", result.esql_query)
 
     def test_to_rate_emits_rate_when_target_is_counter(self) -> None:
         from observability_migration.core.verification.field_capabilities import FieldCapability
