@@ -434,9 +434,12 @@ times 1000, so the source millisecond unit is true. The 5xx ratio stays on a
 unit labels that core count. Requests
 by code, by verb, and the stacked instance chart do not filter on job.
 Deprecated APIs list group, version, resource, subresource, and
-removed_release. An empty cluster or job selection is every value. The
-`resolution` variable is a scrape step; chart buckets follow the dashboard
-time range.
+removed_release. An empty cluster or job selection is every value. When
+field caps prove `apiserver_request_total` is absent, the job dropdown does
+not fall back to every scraped job: health, CPU, and memory would otherwise
+plot node-exporter, cadvisor, and the other processes that expose `up` and
+`process_cpu_seconds_total`. The `resolution` variable is a scrape step;
+chart buckets follow the dashboard time range.
 
 The Traefik official Kubernetes dashboard (17347) keeps the source Apdex
 formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket

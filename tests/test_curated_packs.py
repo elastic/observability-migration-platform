@@ -28,6 +28,7 @@ from observability_migration.adapters.source.grafana.panels import (
     _strip_optional_metric_token_from_curated_esql,
     translate_dashboard,
     translate_panel,
+    translate_variables,
 )
 from observability_migration.adapters.source.grafana.promql import (
     _parse_fragment,
@@ -7429,6 +7430,39 @@ def test_13646_registry_entry_present():
     assert entry is not None
     assert entry["name"] == "grafana_13646_k8s_persistent_volumes"
     assert entry["gnet_revision"] == 2
+
+
+def test_15761_absent_apiserver_metric_does_not_list_every_job():
+    """Health, CPU, and memory filter on $job. If apiserver_request_total is
+    absent, the job dropdown must not list every scraped service.name or those
+    panels plot node-exporter and cadvisor as the API server."""
+    resolved, resolver = _resolve_views(15761, "Kubernetes / System / API Server")
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {
+        "service.name": {"keyword": {"type": "keyword", "aggregatable": True}},
+        "up": {"double": {"type": "double"}},
+        "process_cpu_seconds_total": {"double": {"type": "double"}},
+        "process_resident_memory_bytes": {"double": {"type": "double"}},
+    }
+    controls = translate_variables(
+        [{
+            "type": "query",
+            "name": "job",
+            "multi": True,
+            "current": {},
+            "query": 'label_values(apiserver_request_total{cluster="$cluster"}, job)',
+        }],
+        datasource_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert len(controls) == 1
+    query = controls[0]["query"]
+    assert "__no_matching_series__" in query
+    assert "BY " not in query
+    assert "apiserver_request_total" not in query
+    assert controls[0]["default"] == ["__no_matching_series__"]
 
 
 def test_15761_registry_entry_present():
