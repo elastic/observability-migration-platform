@@ -376,12 +376,15 @@ The pod view (15760) turns the info stats into tables of the legend labels
 (owner, node, IP, priority, QoS, last termination) for every selected pod.
 Request and limit ratios cannot express the PromQL `and on` running-pod join,
 so they use the namespace, pod, and cluster controls and stay on the 0–1
-scale of the source `percentunit` axis. Per-container CPU drops the cAdvisor
+scale of the source `percentunit` axis. Each tile averages that window to one
+value. Empty container names are omitted on those tiles, on Resources by
+container, and on the per-container request charts, so the pod cgroup is not
+summed with each container. Per-container CPU drops the cAdvisor
 `id` breakdown. Received traffic is positive and transmitted is negative.
 OOM and restart charts are an increase over the dashboard time range, and
 they keep the source axis max of 1. The issue and unscheduled tables stay
 cluster-wide, as in the source queries. The job control filters restarts;
-leaving it empty shows every job.
+a blank selection or Grafana's All value `.*` shows every job.
 
 The node view (15759) lists pods on the selected node. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
@@ -393,9 +396,13 @@ drawing one series per instance. `percentunit` ratios stay 0–1; panels whose
 source unit is already `percent` stay on a 0–100 scale. The instance dropdown
 does not apply the source `nodename` regex, so choose the instance that
 matches the node. The `resolution` variable is a scrape step; chart buckets
-follow the dashboard time range. `node_disk_io_now` is a gauge of in-progress
-I/O; ES|QL cannot `rate()` a gauge, so that chart shows the last count by
-device.
+follow the dashboard time range. CPU usage by pod sums cAdvisor
+`container_cpu_usage_seconds_total` by pod on the selected node;
+`node_cpu_seconds_total` has no pod label. Number of CPU Core Throttled is
+the cAdvisor CFS throttle rate, because `node_cpu_core_throttles_total` is
+not a node_exporter, cAdvisor, or kube-state-metrics series.
+`node_disk_io_now` is a gauge of in-progress I/O; ES|QL cannot `rate()` a
+gauge, so that chart shows the last count by device.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins

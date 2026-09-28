@@ -6986,8 +6986,57 @@ def test_15760_cpu_ratio_drops_the_running_pod_join():
     assert "* 100" not in query
     assert " and " not in query
     assert "?pod" in query
+    assert 'k8s.container.name != ""' in query
+    assert "STATS percent = AVG(percent)" in query
     assert yaml_panel["esql"]["type"] == "metric"
     assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
+
+
+def test_15760_ratio_tiles_are_one_value_without_the_pod_cgroup():
+    tiles = (
+        (48, "Total pod CPU Limits usage"),
+        (40, "Total pod RAM Requests usage"),
+        (49, "Total pod RAM Limits usage"),
+    )
+    for panel_id, title in tiles:
+        panel = {
+            "id": panel_id,
+            "type": "gauge",
+            "title": title,
+            "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+            "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m]))", "refId": "A"}],
+            "gridPos": {"x": 0, "y": 0, "w": 3, "h": 8},
+        }
+        _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+        assert 'k8s.container.name != ""' in query
+        assert "STATS percent = AVG(percent)" in query
+        assert yaml_panel["esql"]["type"] == "metric"
+
+
+def test_15760_resources_by_container_drops_the_pod_cgroup():
+    panel = {
+        "id": 38,
+        "type": "table",
+        "title": "Resources by container",
+        "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) by (container)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert 'k8s.container.name != ""' in query
+
+
+def test_15760_last_terminated_reason_drops_inactive_series():
+    panel = {
+        "id": 56,
+        "type": "table",
+        "title": "Last Terminated Reason",
+        "targets": [{"expr": "kube_pod_container_status_last_terminated_reason", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert "info > 0" in query
+    assert "reason" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
 
 
 def test_15760_created_by_is_a_label_table():
@@ -7058,6 +7107,7 @@ def test_15760_restarts_treat_an_empty_job_selection_as_all():
     result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
     assert result.status == "migrated_with_warnings", result.reasons
     assert "?job IS NULL" in query
+    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' in query
     assert "INCREASE" in query
     assert yaml_panel["esql"]["type"] in ("line", "area")
 
@@ -7092,6 +7142,47 @@ def test_15760_layout_uses_the_48_column_grid():
     assert created["size"] == {"w": 24, "h": 6}
     assert created["esql"]["type"] == "datatable"
     assert dashboard_schema_errors(panels) == []
+
+
+def test_15759_cpu_by_pod_uses_cadvisor_not_node_cpu():
+    panel = {
+        "id": 26,
+        "type": "timeseries",
+        "title": "CPU usage by Pod",
+        "targets": [
+            {
+                "expr": 'sum(rate(container_cpu_usage_seconds_total{node="$node", image!=""}[5m])) by (pod)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert "container_cpu_usage_seconds_total" in query
+    assert "node_cpu_seconds_total" not in query
+    assert 'k8s.container.name != ""' in query
+    assert "?node" in query
+    assert "pod" in query
+
+
+def test_15759_throttled_cores_use_cadvisor_cfs():
+    panel = {
+        "id": 66,
+        "type": "timeseries",
+        "title": "Number of CPU Core Throttled",
+        "targets": [
+            {
+                "expr": 'sum(rate(node_cpu_core_throttles_total{instance="$instance"}[5m]))',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert "container_cpu_cfs_throttled_seconds_total" in query
+    assert "node_cpu_core_throttles_total" not in query
+    assert 'k8s.container.name != ""' in query
+    assert "?node" in query
 
 
 def test_15759_pod_list_groups_by_pod():
