@@ -11,9 +11,9 @@ query:
   metrics_dataset_filter: "prometheus"
 
   metric_kinds:
+    container_cpu_cfs_throttled_seconds_total: counter
     container_cpu_usage_seconds_total: counter
     node_context_switches_total: counter
-    node_cpu_core_throttles_total: counter
     node_cpu_seconds_total: counter
     node_disk_read_bytes_total: counter
     node_disk_reads_completed_total: counter
@@ -155,14 +155,15 @@ panel:
         | SORT time_bucket ASC
     - title_match: "CPU usage by Pod"
       panel_id: 26
-      approximation_note: "Cores by pod on the selected node. Empty-image pause containers are included. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      approximation_note: "cAdvisor CPU summed by pod on the selected node. node_cpu_seconds_total has no pod or node label, so a selected node would drop every series. The pod cgroup (empty container name) is omitted so it is not added to the containers. Empty-image pause containers are included. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
-        | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS cores = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
+        | WHERE {{label:container}} != ""
+        | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
+        | STATS cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
         | EVAL pod = {{label:pod}}
         | STATS cores = AVG(cores) BY time_bucket, pod
         | KEEP time_bucket, pod, cores
@@ -183,14 +184,15 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Number of CPU Core Throttled"
       panel_id: 66
-      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      approximation_note: "node_cpu_core_throttles_total is not a node_exporter, cAdvisor, or kube-state-metrics series. This is the cAdvisor CFS throttle rate summed for containers on the selected node. The pod cgroup (empty container name) is omitted. The node-exporter instance would not match kubelet series, so the filter is the node label. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
-        | WHERE {{metric:node_cpu_core_throttles_total:counter}} IS NOT NULL
-        | STATS throttled = SUM(RATE({{metric:node_cpu_core_throttles_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{label:container}} != ""
+        | WHERE {{metric:container_cpu_cfs_throttled_seconds_total:counter}} IS NOT NULL
+        | STATS throttled = SUM(RATE({{metric:container_cpu_cfs_throttled_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | KEEP time_bucket, throttled
         | SORT time_bucket ASC
     - title_match: "System Load"
