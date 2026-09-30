@@ -7536,6 +7536,7 @@ def test_views_fidelity_manifests_have_no_unknown():
         "grafana_13646_k8s_persistent_volumes": 12,
         "grafana_12006_k8s_apiserver": 6,
         "grafana_15761_k8s_system_apiserver": 12,
+        "grafana_17347_traefik": 14,
     }
     for directory, count in expected.items():
         path = Path(pkg.__file__).parent / directory / "fidelity_manifest.yaml"
@@ -7803,6 +7804,242 @@ def test_15761_deprecated_table_has_numeric_metric_and_source_columns():
     rows = [breakdown["field"] for breakdown in table["breakdowns"]]
     assert rows == ["group", "version", "resource", "removed_release"]
     assert "subresource" not in table["query"]
+
+
+def test_17347_registry_entry_present():
+    entry = find_curated_pack(gnet_id=17347, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_17347_traefik"
+    assert entry["gnet_revision"] == 9
+
+
+def test_17347_apdex_uses_the_source_formula():
+    panel = {
+        "id": 6,
+        "type": "timeseries",
+        "title": "Apdex score",
+        "targets": [
+            {
+                "expr": 'sum(rate(traefik_entrypoint_request_duration_seconds_bucket{le="0.3",code="200"}[5m])) by (method)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    assert 'le == "0.3"' in query
+    assert 'le == "1.2"' in query
+    assert '(b03 + b12) / 2 / total' in query
+    assert 'code == "200"' in query
+    assert yaml_panel["esql"]["type"] == "line"
+
+
+def test_17347_service_filter_is_a_prefix_and_drops_provider():
+    panel = {
+        "id": 5,
+        "type": "timeseries",
+        "title": "Most requested services",
+        "targets": [{"expr": "sum(rate(traefik_service_requests_total[5m])) by (service, code)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    # ES|QL RLIKE rejects a computed pattern, so the prefix is STARTS_WITH.
+    assert "STARTS_WITH(TO_STRING(service), TO_STRING(?service))" in query
+    assert "RLIKE CONCAT" not in query
+    # Traefik's router label, not the OTel service.name resource attribute.
+    assert 'SPLIT(service, "@")' in query
+    assert "service.name" not in query
+    assert "topk" not in query
+    assert 'protocol == "http"' in query
+    # Series that share a name once @provider is dropped are summed rates.
+    assert "STATS requests = SUM(requests) BY time_bucket, series" in query
+
+
+def test_17347_no_query_uses_a_computed_rlike_pattern():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    pack = yaml.safe_load((Path(pkg.__file__).parent / "grafana_17347_traefik" / "pack.yaml").read_text())
+    for override in pack["panel"]["query_overrides"]:
+        query = override["esql_query"]
+        # RLIKE takes a string literal or a bare parameter only.
+        assert not re.search(r'RLIKE\s+(?!"|\?\w+\b)', query), override["title_match"]
+
+
+def test_17347_ratios_sum_parts_before_dividing():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    pack = yaml.safe_load((Path(pkg.__file__).parent / "grafana_17347_traefik" / "pack.yaml").read_text())
+    by_id = {override["panel_id"]: override["esql_query"] for override in pack["panel"]["query_overrides"]}
+    for panel_id in (3, 4):
+        assert "STATS inside = SUM(inside), total = SUM(total) BY time_bucket, service" in by_id[panel_id]
+        assert "AVG(failing)" not in by_id[panel_id]
+    assert "STATS total = SUM(total), n = SUM(n) BY time_bucket, series" in by_id[23]
+    assert "AVG(latency)" not in by_id[23]
+    for panel_id in (5, 17, 18, 19, 20, 24):
+        assert "= AVG(" not in by_id[panel_id], panel_id
+
+
+def test_17347_instances_count_the_end_of_the_range():
+    panel = {
+        "id": 13,
+        "type": "stat",
+        "title": "Traefik Instances",
+        "targets": [{"expr": "count(traefik_config_reloads_total)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+    }
+    _result, query, yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    assert "@timestamp >= ?_tend - 5 minutes" in query
+    assert "STATS instances = COUNT_DISTINCT(" in query
+    assert yaml_panel["esql"]["type"] == "metric"
+
+
+def test_17347_service_control_drops_the_provider_suffix():
+    dashboard = {
+        "gnetId": 17347,
+        "title": "Traefik Official Kubernetes Dashboard",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "service",
+                    "type": "query",
+                    "query": {"query": "label_values(traefik_service_requests_total, service)"},
+                    "definition": "label_values(traefik_service_requests_total, service)",
+                    "regex": "/([^@]+)@.*/",
+                    "includeAll": True,
+                    "multi": False,
+                    "current": {},
+                }
+            ]
+        },
+        "panels": [
+            {
+                "id": 5,
+                "type": "timeseries",
+                "title": "Most requested services",
+                "targets": [
+                    {"expr": 'sum(rate(traefik_service_requests_total{service=~"$service.*"}[5m])) by (service)', "refId": "A"}
+                ],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+            }
+        ],
+    }
+    for profile in (None, "prometheus_native"):
+        resolved, _resolver = _resolve_views(17347, "Traefik Official Kubernetes Dashboard")
+        resolver = SchemaResolver(resolved, field_profile=profile) if profile else SchemaResolver(resolved)
+        result = translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=resolved,
+            resolver=resolver,
+        )
+        controls = result.dashboard_ir.to_yaml_dict().get("controls") or []
+        service = next(control for control in controls if control.get("variable_name") == "service")
+        field = "`labels.service`" if profile else "service"
+        query = service["query"]
+        strip = f'EVAL {field} = MV_FIRST(SPLIT(TO_STRING({field}), "@"))'
+        assert strip in query, query
+        assert query.index(strip) < query.index(f"STATS count = COUNT(*) BY {field}")
+        assert "service.name" not in query
+
+
+def test_17347_slow_services_are_cumulative_latency():
+    panel = {
+        "id": 23,
+        "type": "timeseries",
+        "title": "Top slow services",
+        "fieldConfig": {"defaults": {"unit": "s"}},
+        "targets": [
+            {
+                "expr": "traefik_service_request_duration_seconds_sum / traefik_service_request_duration_seconds_count",
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    assert "LAST_OVER_TIME" in query
+    assert "RATE(" not in query
+    assert "total / n" in query
+
+
+def test_17347_slo_keeps_only_failing_services():
+    panel = {
+        "id": 3,
+        "type": "timeseries",
+        "title": "Services failing SLO of 1200ms",
+        "fieldConfig": {"defaults": {"unit": "percentunit"}},
+        "targets": [{"expr": "1 - rate(bucket[5m]) / rate(count[5m])", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    assert 'le == "1.2"' in query
+    assert "1 - inside / total" in query
+    assert "failing > 0" in query
+    assert "protocol" not in query
+    assert yaml_panel["esql"]["type"] == "line"
+
+
+def test_17347_http_code_titles_drop_the_interval_variable():
+    dashboard = {
+        "gnetId": 17347,
+        "title": "Traefik Official Kubernetes Dashboard",
+        "tags": [],
+        "panels": [
+            {
+                "id": 14,
+                "type": "piechart",
+                "title": "Http Code ",
+                "targets": [{"expr": "sum(rate(traefik_service_requests_total[5m])) by (method, code)", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+            },
+            {
+                "id": 17,
+                "type": "timeseries",
+                "title": "2xx over $interval",
+                "targets": [{"expr": 'sum(rate(traefik_service_requests_total{code=~"2.."}[5m]))', "refId": "A"}],
+                "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+            },
+            {
+                "id": 19,
+                "type": "timeseries",
+                "title": "Other codes over $interval",
+                "targets": [{"expr": 'sum(rate(traefik_service_requests_total{code!~"2..|5.."}[5m]))', "refId": "A"}],
+                "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_views(17347, "Traefik Official Kubernetes Dashboard")
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    # Titles are the operator-facing names after layout overrides.
+    titles = {panel["title"] for panel in panels}
+    assert "HTTP codes" in titles
+    assert "2xx" in titles
+    assert "Other codes" in titles
+    codes = next(panel for panel in panels if panel["title"] == "HTTP codes")
+    other = next(panel for panel in panels if panel["title"] == "Other codes")
+    assert codes["esql"]["type"] == "pie"
+    assert "BY slice" in codes["esql"]["query"]
+    # code!~"2..|5.." also matches series with no code label.
+    assert (
+        'WHERE code IS NULL OR NOT (code RLIKE "2.." OR code RLIKE "5..")'
+        in other["esql"]["query"]
+    )
+    assert 'NOT (code RLIKE "2.." OR code RLIKE "5..")' in (other["esql"].get("query") or "")
+    errors = dashboard_schema_errors(panels)
+    assert errors == [], errors
 
 
 def test_12006_registry_entry_present():
