@@ -1,0 +1,38 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 12006 Kubernetes apiserver (revision 1).
+
+schema_version: 1
+gnet_id: 12006
+gnet_revision: 1
+dashboard_title: "Kubernetes apiserver"
+maintainer: "community"
+
+panels:
+  - title: "apiserver request rate"
+    panel_id: 8
+    fidelity: APPROXIMATE
+    notes: "Requests per second by verb. The 5m rate window follows the dashboard time range."
+  - title: "workqueue service time"
+    panel_id: 10
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50 of workqueue queue duration. Prometheus histogram_quantile on the bucket series is PERCENTILE of the duration histogram field."
+  - title: "apiserver request latency"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50 of request duration. CONNECT and WATCH are excluded, matching the source. histogram_quantile is PERCENTILE of the duration histogram field."
+  - title: "workqueue processing time"
+    panel_id: 12
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50 of workqueue processing duration. histogram_quantile is PERCENTILE of the duration histogram field."
+  - title: "etcd request latency"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "p95, p90, and p50 of etcd request duration. histogram_quantile is PERCENTILE of the duration histogram field."
+  - title: "etcd helper cache hit ratio"
+    panel_id: 6
+    fidelity: APPROXIMATE
+    notes: "Cache hits divided by hits plus misses. The ratio stays 0-1, matching the source axis."
