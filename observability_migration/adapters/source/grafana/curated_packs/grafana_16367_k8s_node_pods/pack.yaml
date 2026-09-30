@@ -1,0 +1,140 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 16367
+# https://grafana.com/grafana/dashboards/16367-kubernetes-compute-resources-node-pods/
+#
+# Kubernetes / Compute Resources / Node (Pods) (revision 1). The mixin
+# recording rules are expanded to cAdvisor and kube-state-metrics. An empty
+# cluster or node selection is every value. The pod cgroup (empty container
+# name) is omitted. Quota ratios are 0-100 because the table cannot format
+# cores and percentunit in different columns. Pending/Running is not joined.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    container_cpu_usage_seconds_total: counter
+    container_memory_working_set_bytes: gauge
+    container_memory_rss: gauge
+    container_memory_cache: gauge
+    container_memory_swap: gauge
+    kube_node_status_capacity: gauge
+    kube_pod_container_resource_requests: gauge
+    kube_pod_container_resource_limits: gauge
+
+  live_optional_metrics:
+    - container_cpu_usage_seconds_total
+    - container_memory_working_set_bytes
+    - container_memory_rss
+    - container_memory_cache
+    - container_memory_swap
+    - kube_node_status_capacity
+    - kube_pod_container_resource_requests
+    - kube_pod_container_resource_limits
+
+panel:
+  query_overrides:
+    - title_match: "CPU Usage"
+      panel_id: 1
+      kibana_type_override: line
+      approximation_note: "cAdvisor CPU summed by pod, plus kube_node_status_capacity for resource cpu as max capacity. Capacity is a separate series, so it is aggregated on its own branch; one STATS cannot keep a gauge that does not share the counter series. The mixin recording rule joins kube_pod_info for the node; this query filters the node label on the series. The pod cgroup is omitted. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
+        | FORK
+          (WHERE {{label:container}} != "" AND {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
+           | STATS cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), series = {{label:pod}})
+          (WHERE {{label:resource}} == "cpu" AND {{metric:kube_node_status_capacity:gauge}} IS NOT NULL AND ({{label:container}} IS NULL OR {{label:container}} == "")
+           | STATS cores = SUM(LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+           | EVAL series = "max capacity")
+        | STATS cores = MAX(cores) BY time_bucket, series
+        | KEEP time_bucket, series, cores
+        | SORT time_bucket ASC
+    - title_match: "CPU Quota"
+      panel_id: 2
+      kibana_type_override: datatable
+      approximation_note: "Usage is the cAdvisor CPU rate by pod. Requests and limits are the cpu resource gauges carried on that same series, so a counter rate and a gauge can aggregate together. Ratios are 0-100. The mixin keeps only Pending and Running pods; this table does not join phase. The pod cgroup is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
+        | WHERE {{label:container}} != "" AND {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
+        | STATS `CPU Usage` = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), `CPU Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), `CPU Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY pod = {{label:pod}}
+        | WHERE pod IS NOT NULL AND TO_STRING(pod) != ""
+        | EVAL `CPU Requests %` = CASE(`CPU Requests` > 0, `CPU Usage` / `CPU Requests` * 100, NULL), `CPU Limits %` = CASE(`CPU Limits` > 0, `CPU Usage` / `CPU Limits` * 100, NULL)
+        | KEEP pod, `CPU Usage`, `CPU Requests`, `CPU Requests %`, `CPU Limits`, `CPU Limits %`
+        | SORT `CPU Usage` DESC NULLS LAST
+    - title_match: "Memory Usage (w/o cache)"
+      panel_id: 3
+      kibana_type_override: line
+      approximation_note: "Working set summed by pod, plus kube_node_status_capacity for resource memory as max capacity. Capacity is aggregated on its own branch so the gauge series is kept. The node filter uses the node label. The pod cgroup is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
+        | FORK
+          (WHERE {{label:container}} != "" AND {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+           | STATS bytes = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), series = {{label:pod}})
+          (WHERE {{label:resource}} == "memory" AND {{metric:kube_node_status_capacity:gauge}} IS NOT NULL AND ({{label:container}} IS NULL OR {{label:container}} == "")
+           | STATS bytes = SUM(LAST_OVER_TIME({{metric:kube_node_status_capacity:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+           | EVAL series = "max capacity")
+        | STATS bytes = MAX(bytes) BY time_bucket, series
+        | KEEP time_bucket, series, bytes
+        | SORT time_bucket ASC
+    - title_match: "Memory Quota"
+      panel_id: 4
+      kibana_type_override: datatable
+      approximation_note: "Working set, RSS, cache, and swap are the cAdvisor gauges summed by pod. Requests and limits are the memory resource gauges on that same series. Ratios are 0-100. Byte columns stay in bytes. The pod cgroup is omitted. Phase is not joined."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
+        | WHERE {{label:container}} != "" AND {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+        | STATS `Memory Usage` = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), `Memory Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), `Memory Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})), `Memory RSS` = SUM(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), `Memory Cache` = SUM(LAST_OVER_TIME({{metric:container_memory_cache:gauge}})), `Memory Swap` = SUM(LAST_OVER_TIME({{metric:container_memory_swap:gauge}})) BY pod = {{label:pod}}
+        | WHERE pod IS NOT NULL AND TO_STRING(pod) != ""
+        | EVAL `Memory Requests %` = CASE(`Memory Requests` > 0, `Memory Usage` / `Memory Requests` * 100, NULL), `Memory Limits %` = CASE(`Memory Limits` > 0, `Memory Usage` / `Memory Limits` * 100, NULL)
+        | KEEP pod, `Memory Usage`, `Memory Requests`, `Memory Requests %`, `Memory Limits`, `Memory Limits %`, `Memory RSS`, `Memory Cache`, `Memory Swap`
+        | SORT `Memory Usage` DESC NULLS LAST
+
+  layout_overrides:
+    - title_match: "CPU Usage"
+      panel_id: 5
+      collapsed: false
+    - title_match: "CPU Usage"
+      panel_id: 1
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "CPU Quota"
+      panel_id: 6
+      collapsed: false
+    - title_match: "CPU Quota"
+      panel_id: 2
+      hide_title: false
+      size: {w: 48, h: 16}
+      position: {x: 0, y: 0}
+    - title_match: "Memory Usage"
+      panel_id: 7
+      collapsed: false
+    - title_match: "Memory Usage (w/o cache)"
+      panel_id: 3
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Memory Quota"
+      panel_id: 8
+      collapsed: false
+    - title_match: "Memory Quota"
+      panel_id: 4
+      hide_title: false
+      size: {w: 48, h: 16}
+      position: {x: 0, y: 0}

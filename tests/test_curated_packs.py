@@ -7405,6 +7405,9 @@ def test_views_fidelity_manifests_have_no_unknown():
         "grafana_12006_k8s_apiserver": 6,
         "grafana_15761_k8s_system_apiserver": 12,
         "grafana_17347_traefik": 14,
+        "grafana_15762_k8s_system_coredns": 14,
+        "grafana_16367_k8s_node_pods": 4,
+        "grafana_20577_aws_eks": 31,
     }
     for directory, count in expected.items():
         path = Path(pkg.__file__).parent / directory / "fidelity_manifest.yaml"

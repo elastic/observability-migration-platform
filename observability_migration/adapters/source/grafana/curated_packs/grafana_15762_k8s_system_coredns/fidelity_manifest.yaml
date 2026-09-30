@@ -1,0 +1,70 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15762 Kubernetes / System / CoreDNS (revision 22).
+
+schema_version: 1
+gnet_id: 15762
+gnet_revision: 22
+dashboard_title: "Kubernetes / System / CoreDNS"
+maintainer: "community"
+
+panels:
+  - title: "CoreDNS - Health Status"
+    panel_id: 25
+    fidelity: APPROXIMATE
+    notes: "Latest up per instance. Empty job is every job. Instance All is every instance."
+  - title: "CoreDNS - CPU Usage by instance"
+    panel_id: 19
+    fidelity: APPROXIMATE
+    notes: "Process CPU rate in cores. The source percentunit axis treats that as a fraction of one core."
+  - title: "CoreDNS - Memory Usage by instance"
+    panel_id: 21
+    fidelity: APPROXIMATE
+    notes: "Resident memory bytes by instance."
+  - title: "CoreDNS - Total DNS Requests ($protocol)"
+    panel_id: 9
+    fidelity: APPROXIMATE
+    notes: "Requests per second for the selected protocol. Empty protocol is every protocol. The title drops $protocol."
+  - title: "CoreDNS - Average Packet Size  ($protocol)"
+    panel_id: 7
+    fidelity: APPROXIMATE
+    notes: "Mean request size, sum rate divided by count rate. The title drops $protocol."
+  - title: "CoreDNS - Requests by type"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Requests per second by DNS type."
+  - title: "CoreDNS - Requests by return code"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "Responses per second by rcode."
+  - title: "CoreDNS - Total Forward Requests"
+    panel_id: 23
+    fidelity: APPROXIMATE
+    notes: "Forward-proxy requests per second. No instance filter."
+  - title: "CoreDNS - DNS Errors"
+    panel_id: 13
+    fidelity: APPROXIMATE
+    notes: "Forward-proxy SERVFAIL and REFUSED per second. No instance filter."
+  - title: "CoreDNS - Cache Hits / Misses"
+    panel_id: 17
+    fidelity: APPROXIMATE
+    notes: "Hits and misses per second, both by cache type. The source miss legend collapses types."
+  - title: "CoreDNS - Cache Size"
+    panel_id: 15
+    fidelity: APPROXIMATE
+    notes: "Cache entries by type. No instance filter."
+  - title: "CoreDNS - DNS request duration"
+    panel_id: 27
+    fidelity: APPROXIMATE
+    notes: "Cumulative bucket rate by finite le, in seconds. +Inf is omitted."
+  - title: "CoreDNS - DNS request size"
+    panel_id: 28
+    fidelity: APPROXIMATE
+    notes: "Cumulative bucket rate by finite le, in bytes. le 0 and +Inf are omitted."
+  - title: "CoreDNS - DNS response size"
+    panel_id: 29
+    fidelity: APPROXIMATE
+    notes: "Cumulative bucket rate by finite le, in bytes. le 0 and +Inf are omitted."

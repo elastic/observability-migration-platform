@@ -289,3 +289,30 @@ packs:
     gnet_revision: 9
     dashboard_sha256: "57baaca89a9062312aab8e16caa8271b19229d00eac4092287ecd5549ba166c0"
     description: "Traefik — entrypoint rate, source Apdex, HTTP codes, SLO miss, request and response bytes"
+
+  - gnet_id: 15762
+    name: grafana_15762_k8s_system_coredns
+    title_hint: "Kubernetes / System / CoreDNS"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15762_k8s_system_coredns
+    gnet_revision: 22
+    dashboard_sha256: "e3790fb6641129517430aa6fd50891fafc87ed3bafb441fb94b06ef7ff7cf9e1"
+    description: "System CoreDNS — health, request rate, cache, and histogram heatmaps"
+
+  - gnet_id: 16367
+    name: grafana_16367_k8s_node_pods
+    title_hint: "Kubernetes / Compute Resources / Node (Pods)"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_16367_k8s_node_pods
+    gnet_revision: 1
+    dashboard_sha256: "aff444006794d7d4085a8910f106b815bf0eaf904b5d3ecf3745d51bd5b40ce3"
+    description: "Node pod resources — CPU and memory usage against capacity, plus quota tables"
+
+  - gnet_id: 20577
+    name: grafana_20577_aws_eks
+    title_hint: "AWS - EKS"
+    tags_hint: ["auto", "aws", "eks"]
+    path: grafana_20577_aws_eks
+    gnet_revision: 1
+    dashboard_sha256: "269beb26d84a9b43f20505fea6726b9c5c0ec1c80513103c87a63eb9dc800e95"
+    description: "EKS ContainerInsights — node and pod tiles, utilization, and AWS service charts"
