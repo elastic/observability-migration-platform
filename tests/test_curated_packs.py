@@ -6629,10 +6629,14 @@ def test_12660_space_chart_is_capacity_minus_available():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "capacity - available" in query
     assert "free_bytes = available" in query
-    assert "== ?cluster" in query
-    assert "== ?namespace" in query
-    assert "== ?volume" in query
-    assert "RLIKE" not in query
+    # Controls filter when set and match every volume when unset, so panels
+    # populate on first load and where the cluster label is absent (NULL).
+    assert '?cluster == ""' in query
+    assert '?namespace == ""' in query
+    assert '?volume == ""' in query
+    assert "RLIKE ?cluster" in query
+    assert "RLIKE ?namespace" in query
+    assert "RLIKE ?volume" in query
     assert '== "kubelet"' in query
     assert "metrics_path" not in query
     assert yaml_panel["esql"]["type"] == "line"

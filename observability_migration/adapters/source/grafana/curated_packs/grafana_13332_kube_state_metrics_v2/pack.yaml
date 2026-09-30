@@ -171,7 +171,7 @@ panel:
         | WHERE time_bucket >= ?_tend - 30 minutes
         | STATS per_sec = LAST(per_sec, time_bucket) BY {{label:namespace}}, {{label:pod}}, {{label:container}}
         | EVAL restarts = per_sec * 1800
-        | WHERE restarts > 1
+        | WHERE restarts > 0
         | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}, container = {{label:container}}
         | STATS restarts = MAX(restarts) BY namespace, pod, container
         | KEEP namespace, pod, container, restarts

@@ -240,12 +240,13 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Weekly Volume Use Rate"
       kibana_type_override: line
-      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim. Points are daily so the line stays inside the dashboard time range."
+      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim. The query reads the week before the range start so each daily point has a full weekly lookback; buckets before the range are dropped, so the line stays inside the dashboard time range."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 168 hours AND @timestamp <= ?_tend
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tstart
         | EVAL bytes_per_sec = growth / 604800
         | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), "/", TO_STRING({{label:persistentvolumeclaim}}))
         | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend

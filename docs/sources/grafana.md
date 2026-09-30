@@ -357,8 +357,10 @@ Grafana alert list is a gap.
 The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
 are capacity minus available, and free inodes are total minus used. The
 percent tiles use that same sum, so a volume reported by more than one kubelet
-stays a single number. Cluster, namespace, and volume controls are exact
-matches on the queries, along with the kubelet job. The scrape `metrics_path` selector is
+stays a single number. Cluster, namespace, and volume controls filter the
+queries when set and match every volume when unset, so the panels populate on
+first load and where the cluster label is absent, along with the kubelet job.
+The scrape `metrics_path` selector is
 omitted; that label is not stored as a metric dimension. The two source rows
 are both titled `Dashboard Row`; Kibana names them Bytes and Inodes.
 
