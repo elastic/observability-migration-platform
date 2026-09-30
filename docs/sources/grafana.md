@@ -436,6 +436,22 @@ off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
 
+The system API server dashboard (15761) is the kube-prometheus-stack view.
+Values match the source queries, including two wrong source unit labels:
+mean latency (the duration-sum rate divided by the duration-count rate) is in
+seconds under an `ms` unit, and CPU (`process_cpu_seconds_total`) is in cores
+under a `percent` unit. The 5xx ratio stays on a 0–1 scale. Requests by code,
+by verb, and the stacked instance chart do not filter on job. The job control
+has no All option and opens on `.*`; Grafana opens on the first apiserver job.
+With `.*` or no job selected, the latency and error charts show every job
+(only the API server exports those metrics), and Health Status, Work Queue,
+CPU, and Memory show only jobs whose name contains `apiserver`, because every
+target exports `up` and the process metrics. Pick a job if yours is named
+differently. Deprecated APIs list group, version, resource, and
+removed_release, as the source groups them, plus the gauge value as a `seen`
+column. An empty cluster selection is every cluster. The `resolution` variable
+is a scrape step; chart buckets follow the dashboard time range.
+
 The node view (15759) lists pods on the selected node. The pod count and the
 pod list use the last 5 minutes before the end of the time range, like a
 Prometheus instant query, so deleted pods drop out. The overview is one
