@@ -30,7 +30,6 @@ from observability_migration.adapters.source.grafana.panels import (
     _strip_optional_metric_token_from_curated_esql_result,
     translate_dashboard,
     translate_panel,
-    translate_variables,
 )
 from observability_migration.adapters.source.grafana.promql import (
     _parse_fragment,
@@ -849,6 +848,54 @@ def test_curated_override_does_not_flag_stripped_optional_metrics():
     assert result.status == "migrated", f"got {result.status}: {result.reasons}"
     assert not any("curated override" in reason for reason in result.reasons), result.reasons
     assert "TCPRcvQDrop" not in ((_yaml_panel or {}).get("esql") or {}).get("query", "")
+
+
+def test_curated_override_flags_stripped_metric_not_declared_optional():
+    """An absent metric the pack never marked optional is still stripped so the
+    other series render, but the panel lost a series: it must warn and must not
+    stay a clean ``migrated``."""
+    dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    assert "node_netstat_TcpExt_TCPOFOQueue" not in (resolved.live_optional_metrics or [])
+    resolver = SchemaResolver(resolved)
+    resolver._field_cache = {
+        "metrics.node_netstat_TcpExt_ListenOverflows": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_ListenDrops": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPSynRetrans": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_RetransSegs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_InErrs": {"double": {"type": "double"}},
+        "metrics.node_netstat_Tcp_OutRsts": {"double": {"type": "double"}},
+        "metrics.node_netstat_TcpExt_TCPRcvQDrop": {"double": {"type": "double"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "timeseries",
+        "title": "TCP Errors",
+        "targets": [
+            {"expr": "irate(node_netstat_TcpExt_ListenOverflows[5m])", "refId": "A"},
+            {"expr": "irate(node_netstat_TcpExt_ListenDrops[5m])", "refId": "B"},
+            {"expr": "irate(node_netstat_TcpExt_TCPSynRetrans[5m])", "refId": "C"},
+            {"expr": "irate(node_netstat_Tcp_RetransSegs[5m])", "refId": "D"},
+            {"expr": "irate(node_netstat_Tcp_InErrs[5m])", "refId": "E"},
+            {"expr": "irate(node_netstat_Tcp_OutRsts[5m])", "refId": "F"},
+            {"expr": "irate(node_netstat_TcpExt_TCPRcvQDrop[5m])", "refId": "G"},
+            {"expr": "irate(node_netstat_TcpExt_TCPOFOQueue[5m])", "refId": "H"},
+        ],
+    }
+
+    yaml_panel, result = translate_panel(panel, rule_pack=resolved, resolver=resolver)
+
+    assert "TCPOFOQueue" not in ((yaml_panel or {}).get("esql") or {}).get("query", "")
+    assert result.status == "migrated_with_warnings", f"got {result.status}: {result.reasons}"
+    assert any(
+        "Target telemetry missing from curated override" in reason
+        and "node_netstat_TcpExt_TCPOFOQueue" in reason
+        for reason in result.reasons
+    ), result.reasons
 
 
 def test_1860_interrupts_detail_uses_interrupt_cpu_legend():
@@ -3632,6 +3679,97 @@ def test_where_only_absent_metric_does_not_count_every_instance():
     )
 
     assert stripped == ""
+
+
+def test_where_only_absent_metric_with_sibling_stripped_series_is_exhausted():
+    """The presence filter is gone and the metric-based sibling was stripped;
+    the remaining distinct count reads no metric and would count every target."""
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:a:counter}} IS NOT NULL"
+        " | STATS instances = COUNT_DISTINCT({{label:instance}}),"
+        " v = SUM(RATE({{metric:a:counter}}))"
+        " | KEEP instances, v"
+    )
+
+    result = _strip_optional_metric_token_from_curated_esql_result(query, "a")
+
+    assert result.exhausted
+    assert result.query == ""
+
+
+def test_stripping_ratio_operand_leaving_only_time_axis_is_exhausted():
+    """``pct = used / total`` loses ``total``; ``KEEP time_bucket, pct`` would
+    then keep only the time column, which is not a renderable series."""
+    query = (
+        "TS metrics-*"
+        " | STATS used = SUM({{metric:mem_used:gauge}}),"
+        " total = SUM({{metric:mem_total:gauge}})"
+        " BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)"
+        " | EVAL pct = used / total * 100"
+        " | KEEP time_bucket, pct"
+    )
+
+    result = _strip_optional_metric_token_from_curated_esql_result(query, "mem_total")
+
+    assert result.exhausted
+    assert result.query == ""
+
+
+def test_unpivot_label_of_removed_alias_is_peeled_despite_total_metric_name():
+    """``foo_requests_total`` is a metric token, not an alias that carries the
+    "Total" tile, so the label for the stripped ``total`` series is removed."""
+    query = (
+        "TS metrics-*"
+        " | STATS shown = SUM(RATE({{metric:foo_shown:counter}})),"
+        " total = SUM(RATE({{metric:foo_requests_total:counter}}))"
+        " BY time_bucket = TBUCKET(20, ?_tstart, ?_tend)"
+        ' | EVAL value = MV_APPEND(shown, total), label = MV_APPEND("Shown", "Total")'
+        " | MV_EXPAND value"
+    )
+
+    result = _strip_optional_metric_token_from_curated_esql_result(
+        query, "foo_requests_total"
+    )
+
+    assert "value = shown" in result.query
+    assert 'label = "Shown"' in result.query
+    assert "Total" not in result.query
+
+
+def test_unpivot_drops_removed_head_series_and_keeps_labels_aligned():
+    """15757 CPU Usage with limits absent: ``limits`` is the head of
+    ``MV_APPEND(limits, shown_total)``. Dropping the whole pair lost Total's
+    value while all four labels stayed, so Limits and Total both read null."""
+    query = (
+        "TS metrics-*"
+        " | STATS real = SUM(RATE({{metric:node_cpu_seconds_total:counter}})),"
+        " requests = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})),"
+        " limits = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})),"
+        " cpu_count = COUNT_DISTINCT({{label:cpu}})"
+        " BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)"
+        " | EVAL shown_total = cpu_count"
+        " | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits),"
+        " shown_total = AVG(shown_total)"
+        ' | EVAL __ab = MV_APPEND("Real", "Requests"), __cd = MV_APPEND("Limits", "Total")'
+        " | EVAL __labels = MV_APPEND(__ab, __cd)"
+        ' | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")),'
+        ' __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(shown_total), ""))'
+        " | EVAL __values = MV_APPEND(__vab, __vcd)"
+        ' | EVAL __pairs = MV_ZIP(__labels, __values, "\\t")'
+        " | MV_EXPAND __pairs"
+    )
+
+    stripped = _strip_optional_metric_token_from_curated_esql(
+        query, "kube_pod_container_resource_limits"
+    )
+
+    assert '__cd = "Total"' in stripped
+    assert "__labels = MV_APPEND(__ab, __cd)" in stripped
+    assert '__vcd = COALESCE(TO_STRING(shown_total), "")' in stripped
+    assert "__values = MV_APPEND(__vab, __vcd)" in stripped
+    assert "limits" not in stripped
+    assert "Limits" not in stripped
 
 
 def test_absent_metric_token_is_stripped_even_when_not_declared_optional():
@@ -7635,37 +7773,25 @@ def test_13646_registry_entry_present():
     assert entry["gnet_revision"] == 2
 
 
-def test_15761_absent_apiserver_metric_does_not_list_every_job():
-    """Health, CPU, and memory filter on $job. If apiserver_request_total is
-    absent, the job dropdown must not list every scraped service.name or those
-    panels plot node-exporter and cadvisor as the API server."""
-    resolved, resolver = _resolve_views(15761, "Kubernetes / System / API Server")
-    resolver._discovery_attempted = True
-    resolver._discovery_status = "ok"
-    resolver._field_cache = {
-        "service.name": {"keyword": {"type": "keyword", "aggregatable": True}},
-        "up": {"double": {"type": "double"}},
-        "process_cpu_seconds_total": {"double": {"type": "double"}},
-        "process_resident_memory_bytes": {"double": {"type": "double"}},
-    }
-    controls = translate_variables(
-        [{
-            "type": "query",
-            "name": "job",
-            "multi": True,
-            "current": {},
-            "query": 'label_values(apiserver_request_total{cluster="$cluster"}, job)',
-        }],
-        datasource_index="metrics-*",
-        rule_pack=resolved,
-        resolver=resolver,
+def test_15761_absent_apiserver_metric_keeps_job_choosable_and_default_scoped():
+    """With apiserver_request_total absent the job list cannot be scoped to it.
+    The operator must still be able to pick a differently named job, and the
+    default ``.*`` selection keeps health, CPU, and memory on jobs whose name
+    contains apiserver rather than every exporter."""
+    yaml_dict = _translate_15761_with_job_variable(
+        field_cache={
+            "service.name": {"keyword": {"type": "keyword", "aggregatable": True}},
+            "up": {"double": {"type": "double"}},
+            "process_cpu_seconds_total": {"counter_double": {"type": "counter_double"}},
+        }
     )
-    assert len(controls) == 1
-    query = controls[0]["query"]
-    assert "__no_matching_series__" in query
-    assert "BY " not in query
-    assert "apiserver_request_total" not in query
-    assert controls[0]["default"] == ["__no_matching_series__"]
+    job = next(c for c in yaml_dict["controls"] if c.get("variable_name") == "job")
+    assert job["default"] == [".*"]
+    assert "apiserver_request_total" not in job["query"]
+    assert "BY `service.name`" in job["query"]
+    by_title = {panel["title"]: panel for panel in yaml_dict["panels"]}
+    for title in ("API Server - Health Status", "API Server - CPU Usage by instance"):
+        assert 'RLIKE ".*apiserver.*"' in by_title[title]["esql"]["query"], title
 
 
 def test_15761_registry_entry_present():
@@ -7767,7 +7893,7 @@ def test_15761_instance_requests_are_stacked():
     assert errors == [], errors
 
 
-def _translate_15761_with_job_variable():
+def _translate_15761_with_job_variable(field_cache=None):
     """Revision-21 templating: ``job`` is multi, no All option, no current value."""
     dashboard = {
         "gnetId": 15761,
@@ -7830,6 +7956,10 @@ def _translate_15761_with_job_variable():
         ],
     }
     resolved, resolver = _resolve_views(15761, "Kubernetes / System / API Server")
+    if field_cache is not None:
+        resolver._discovery_attempted = True
+        resolver._discovery_status = "ok"
+        resolver._field_cache = field_cache
     result = translate_dashboard(
         dashboard,
         datasource_index="metrics-*",

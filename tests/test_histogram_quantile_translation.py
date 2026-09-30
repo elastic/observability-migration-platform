@@ -258,6 +258,28 @@ class HistogramQuantileClassicBucketTests(unittest.TestCase):
             result.warnings,
         )
 
+    def test_proven_classic_bucket_counter_under_native_profile(self):
+        """The bucket counter is ``metrics.<name>_bucket`` under the native
+        profile; the check must look up the resolved field, not the PromQL name."""
+        resolver = SchemaResolver(RulePackConfig(), field_profile="prometheus_native")
+        resolver._field_cache = {
+            "metrics.http_request_duration_seconds_bucket": {
+                "long": {
+                    "type": "long",
+                    "searchable": True,
+                    "aggregatable": True,
+                    "indices": [INDEX],
+                },
+            }
+        }
+        resolver._discovery_attempted = True
+        result = _translate(
+            "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+            resolver,
+        )
+        self.assertEqual(result.feasibility, "not_feasible")
+        self.assertFalse(result.esql_query)
+
 
 class HistogramQuantileGroupingTests(unittest.TestCase):
     def test_le_dropped_but_other_labels_preserved(self):

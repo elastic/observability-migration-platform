@@ -122,14 +122,18 @@ telemetry missing from curated override" reason, the same disclosure the
 non-pack path uses for a metric that never made it into an otherwise-migrated
 fused query ("Dropped from migrated query"). Both checks require live
 field-caps discovery (`--es-url`) to resolve the metric's actual field name;
-without it they no-op rather than guess. Metrics listed in the pack's
-`live_optional_metrics`, and any other `{{metric:}}` token, that field-caps
-proved absent are stripped from the hand-written override so the rest of the
-panel can still render; those omissions are not reported as pack gaps. A
-presence filter (`metric IS NOT NULL`) that was the only use of an absent
-metric does not leave a count of every series: the panel becomes a
-missing-telemetry card. When stripping removes every series, the panel is
-that same card instead of an Elasticsearch unknown-column error. `kibana_type_override` forces the
+without it they no-op rather than guess. Any `{{metric:}}` token that
+field-caps proved absent is stripped from the hand-written override so the
+rest of the panel can still render. Metrics listed in the pack's
+`live_optional_metrics` are expected omissions and are not reported as pack
+gaps; any other stripped metric is reported as "Target telemetry missing from
+curated override" and caps the panel at `migrated_with_warnings`. A presence
+filter (`metric IS NOT NULL`) that was the only use of an absent metric does
+not leave a count of every series: when no remaining aggregation reads a
+metric, the panel becomes a missing-telemetry card. When stripping removes
+every series, or leaves only group columns such as the time bucket (for
+example a ratio that lost one operand), the panel is that same card instead of
+an Elasticsearch unknown-column error or an empty chart. `kibana_type_override` forces the
 Lens chart type when the curated query shape does not match the Grafana panel
 (for example a stacked CPU graph emitted as overlay lines). `drop_time_from`
 strips Grafana's panel `timeFrom` so the override follows the dashboard time
@@ -454,11 +458,10 @@ target exports `up` and the process metrics. Pick a job if yours is named
 differently. Deprecated APIs list group, version, resource, and
 removed_release, as the source groups them, plus the gauge value as a `seen`
 column. An empty cluster selection is every cluster. When field caps prove
-`apiserver_request_total` is absent, the job dropdown does not fall back to
-every scraped job: health, CPU, and memory would otherwise plot node-exporter,
-cadvisor, and the other processes that expose `up` and
-`process_cpu_seconds_total`. The `resolution` variable is a scrape step; chart
-buckets follow the dashboard time range.
+`apiserver_request_total` is absent, the job dropdown cannot be scoped to it
+and lists every job; the default `.*` selection still keeps health, CPU, and
+memory on jobs whose name contains `apiserver`. The `resolution` variable is a
+scrape step; chart buckets follow the dashboard time range.
 
 The Traefik official Kubernetes dashboard (17347) keeps the source Apdex
 formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket
