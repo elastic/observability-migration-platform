@@ -15,48 +15,48 @@ panels:
   - title: "API Server - Health Status"
     panel_id: 42
     fidelity: APPROXIMATE
-    notes: "Latest up value per instance. An empty job selection is every job."
+    notes: "Latest up value per instance. With no specific job, only jobs whose name contains apiserver are shown."
   - title: "Deprecated Kubernetes Resources"
     panel_id: 60
     fidelity: APPROXIMATE
-    notes: "group, version, resource, subresource, and removed_release. The gauge value is dropped."
+    notes: "Deprecated API groups that were requested, grouped by group, version, resource, and removed_release like the source. The source hides the gauge value; it stays as the seen column so the table has a numeric metric."
   - title: "API Server - HTTP Requests by code"
     panel_id: 38
     fidelity: APPROXIMATE
-    notes: "Requests per second by code. No job filter. The rate window follows the dashboard time range."
+    notes: "Requests per second by code. No job filter, matching the source. The rate window follows the dashboard time range."
   - title: "API Server - HTTP Requests by verb"
     panel_id: 39
     fidelity: APPROXIMATE
-    notes: "Requests per second by verb. No job filter."
+    notes: "Requests per second by verb. No job filter, matching the source. The rate window follows the dashboard time range."
   - title: "API Server - HTTP Requests Latency by instance"
     panel_id: 53
     fidelity: APPROXIMATE
-    notes: "Mean latency in milliseconds. Duration sum rate divided by count rate, times 1000."
+    notes: "Mean latency, sum of duration rates divided by the count rate. The value is seconds, as in the source, which labels it ms."
   - title: "API Server - HTTP Requests Latency by verb"
     panel_id: 54
     fidelity: APPROXIMATE
-    notes: "Mean latency by verb, in milliseconds."
+    notes: "Mean latency by verb, in seconds. The source labels it ms."
   - title: "API Server - Errors by Instance"
     panel_id: 50
     fidelity: APPROXIMATE
-    notes: "5xx divided by all requests. The fraction stays 0-1."
+    notes: "5xx requests divided by all requests, by instance. The fraction stays 0-1. An instance with no requests is left empty."
   - title: "API Server - Errors by verb"
     panel_id: 51
     fidelity: APPROXIMATE
-    notes: "5xx divided by all requests, by verb."
+    notes: "5xx requests divided by all requests, by verb. The fraction stays 0-1."
   - title: "API Server - Stacked HTTP Requests by instance"
     panel_id: 40
     fidelity: APPROXIMATE
-    notes: "Requests per second by instance, stacked. No job filter."
+    notes: "Requests per second by instance, stacked. No job filter, matching the source."
   - title: "API Server - Work Queue by instance"
     panel_id: 56
     fidelity: APPROXIMATE
-    notes: "workqueue_depth, latest value per bucket, summed by instance."
+    notes: "workqueue_depth summed by instance. The depth gauge is the latest value in each bucket. With no specific job, only jobs whose name contains apiserver are shown."
   - title: "API Server - CPU Usage by instance"
     panel_id: 47
     fidelity: APPROXIMATE
-    notes: "process CPU rate in cores. The source unit says percent."
+    notes: "process_cpu_seconds_total rate, in cores. The source percent unit is the core count, not a 0-100 percentage. With no specific job, only jobs whose name contains apiserver are shown."
   - title: "API Server - Memory Usage by instance"
     panel_id: 48
     fidelity: APPROXIMATE
-    notes: "Resident memory bytes by instance."
+    notes: "process_resident_memory_bytes, latest value per bucket, by instance. With no specific job, only jobs whose name contains apiserver are shown."
