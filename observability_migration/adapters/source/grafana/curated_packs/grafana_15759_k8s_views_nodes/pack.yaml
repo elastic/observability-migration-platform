@@ -11,9 +11,9 @@ query:
   metrics_dataset_filter: "prometheus"
 
   metric_kinds:
-    container_cpu_cfs_throttled_seconds_total: counter
     container_cpu_usage_seconds_total: counter
     node_context_switches_total: counter
+    node_cpu_core_throttles_total: counter
     node_cpu_seconds_total: counter
     node_disk_read_bytes_total: counter
     node_disk_reads_completed_total: counter
@@ -69,7 +69,7 @@ panel:
     - title_match: "CPU  Usage"
       panel_id: 7
       kibana_type_override: metric
-      approximation_note: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree."
+      approximation_note: "Busy CPU for the selected instance: average across every CPU of the non-idle, non-iowait, non-steal rate. With no instance selected it averages all instances' CPUs, so the ratio stays 0-1 and the percentunit format and the source axis max of 1 agree. The tile averages 30-minute buckets over the last hour."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -77,49 +77,51 @@ panel:
         | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal"
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:cpu}}
+        | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:instance}}, {{label:cpu}}
         | STATS busy = AVG(busy) BY time_bucket
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | WHERE time_bucket >= ?_tend - 1 hour
         | STATS busy = AVG(busy)
         | EVAL percent = busy
         | KEEP percent
     - title_match: "RAM Usage"
       panel_id: 13
       kibana_type_override: metric
-      approximation_note: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit."
+      approximation_note: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit. The tile averages 30-minute buckets over the last hour."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL
-        | STATS total = SUM(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS total = SUM(LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}})), available = SUM(LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}})) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 1 hour
         | STATS total = AVG(total), available = AVG(available)
         | EVAL percent = CASE(total > 0, (total - available) / total, NULL)
         | KEEP percent
     - title_match: "Pods on node"
       panel_id: 24
       kibana_type_override: metric
-      approximation_note: "Count of pods on the selected node. The info series is 1 per pod; the tile sums that count."
+      approximation_note: "Count of pods on the selected node, from the last 5 minutes before the end of the time range, like a Prometheus instant query. Pods are counted by namespace and name."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
-        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:pod}}
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}
         | STATS pods = COUNT(*)
         | KEEP pods
     - title_match: "List of pods on node"
       panel_id: 5
       kibana_type_override: datatable
-      approximation_note: "Namespace and pod for the selected node. The stock grouping was the node and cluster, so the table did not list pods."
+      approximation_note: "Namespace and pod for the selected node, from the last 5 minutes before the end of the time range, like a Prometheus instant query. The stock grouping was the node and cluster, so the table did not list pods."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
         | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}
         | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}
@@ -170,12 +172,13 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Memory usage by Pod"
       panel_id: 28
-      approximation_note: "Working set summed by pod on the selected node."
+      approximation_note: "Working set summed by pod on the selected node. The pod cgroup (empty container name) is omitted so it is not added to the containers. Empty-image pause containers are included."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
         | STATS memory_bytes = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
         | EVAL pod = {{label:pod}}
@@ -184,16 +187,15 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Number of CPU Core Throttled"
       panel_id: 66
-      approximation_note: "node_cpu_core_throttles_total is not a node_exporter, cAdvisor, or kube-state-metrics series. This is the cAdvisor CFS throttle rate summed for containers on the selected node. The pod cgroup (empty container name) is omitted. The node-exporter instance would not match kubelet series, so the filter is the node label. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      approximation_note: "node_exporter thermal throttle events per second, summed across cores for the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
-        | WHERE {{label:container}} != ""
-        | WHERE {{metric:container_cpu_cfs_throttled_seconds_total:counter}} IS NOT NULL
-        | STATS throttled = SUM(RATE({{metric:container_cpu_cfs_throttled_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | KEEP time_bucket, throttled
+        | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
+        | WHERE {{metric:node_cpu_core_throttles_total:counter}} IS NOT NULL
+        | STATS throttles = SUM(RATE({{metric:node_cpu_core_throttles_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, throttles
         | SORT time_bucket ASC
     - title_match: "System Load"
       panel_id: 48
@@ -338,15 +340,15 @@ panel:
     - title_match: "Persistent Volumes - Usage in GB"
       panel_id: 34
       kibana_type_override: datatable
-      approximation_note: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value."
+      approximation_note: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value. Values average 30-minute buckets over the last hour."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
-        | STATS used_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS used_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity_bytes = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(30 minutes), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
         | STATS used_bytes = AVG(used_bytes), capacity_bytes = AVG(capacity_bytes) BY namespace, claim
         | KEEP namespace, claim, used_bytes, capacity_bytes
@@ -454,7 +456,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Disk(s) io/s"
       panel_id: 58
-      approximation_note: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      approximation_note: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The resolution variable is a scrape step, not a Kibana control."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -528,6 +530,7 @@ panel:
       panel_id: 18
       title: "Uptime"
       hide_title: false
+      metric_color: none
       size: {w: 6, h: 6}
       position: {x: 18, y: 12}
     - title_match: "Resources"

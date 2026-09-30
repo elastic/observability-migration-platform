@@ -383,12 +383,11 @@ class NativeEligibilityGateTests(unittest.TestCase):
             )
             with self.subTest(matcher=matcher):
                 self.assertFalse(can_use_native_promql(expr, runtime_features={}))
-                # A capable target declines too, and that is the safe answer:
-                # ``_clean_promql_for_native`` flattens the expression to one
-                # line, which would fold the operand after the comment into it.
-                # The shape check runs on that flattened text and reports an
-                # indeterminate operand, so the panel keeps ES|QL either way.
-                self.assertFalse(can_use_native_promql(expr, runtime_features=CAPABLE))
+                # Comments are removed while the newline still ends the comment,
+                # before ``_clean_promql_for_native`` collapses whitespace.
+                # ``on # note\n(device)`` is therefore ``on(device)`` between two
+                # ``sum by (device)`` operands, which a capable target can emit.
+                self.assertTrue(can_use_native_promql(expr, runtime_features=CAPABLE))
 
     def test_a_comment_does_not_hide_an_unconditionally_blocked_construct(self):
         # Same root cause, other gate: the sanitizer feeds every structural

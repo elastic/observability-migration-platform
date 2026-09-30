@@ -5,7 +5,9 @@
 
 Cluster Mem Capacity plots byte gauges (allocatable, capacity, requested,
 limits) but the source axis unit is ``bits``, so Kibana would render memory
-about 8x too small. Bytes match the metric.
+about 8x too small. Bytes match the metric. Revision-12 panels may carry that
+unit on the legacy ``yaxes[].format`` or on ``fieldConfig.defaults.unit``; the
+engine reads both, so both are corrected.
 """
 
 _PACK_NAME = "grafana_13332_kube_state_metrics_v2"
@@ -22,4 +24,7 @@ def register(api):
         for axis in (context.panel.get("yaxes") or []):
             if isinstance(axis, dict) and axis.get("format") == "bits":
                 axis["format"] = "bytes"
+        defaults = (context.panel.get("fieldConfig") or {}).get("defaults") or {}
+        if isinstance(defaults, dict) and defaults.get("unit") == "bits":
+            defaults["unit"] = "bytes"
         return None

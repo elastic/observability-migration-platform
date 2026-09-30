@@ -3218,7 +3218,15 @@ def _classic_bucket_counter_proven(resolver, bucket_metric: str, physical_metric
         return False
     if not physical_metric or resolver.field_exists(physical_metric) is not False:
         return False
-    bucket_type = (resolver.field_type(bucket_metric) or "").strip().lower()
+    # Namespacing profiles store the bucket as ``metrics.<name>_bucket``; the
+    # logical PromQL name alone has no field-caps entry there.
+    candidates = [resolver.resolve_metric_field(bucket_metric, prefer="counter"), bucket_metric]
+    bucket_type = ""
+    for candidate in candidates:
+        if candidate:
+            bucket_type = (resolver.field_type(candidate) or "").strip().lower()
+            if bucket_type:
+                break
     return bool(bucket_type) and bucket_type not in {"histogram", "exponential_histogram"}
 
 

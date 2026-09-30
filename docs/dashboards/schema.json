@@ -16143,7 +16143,7 @@
     },
     "PanelTimeRange": {
       "additionalProperties": false,
-      "description": "Panel-level time override. Same shape the Dashboards API accepts on an ES|QL chart (Grafana timeFrom).",
+      "description": "Panel-level time override (Grafana timeFrom). Local extension: kb-dashboard-core has no slot for it. Mirrors the Dashboards API Kibana_HTTP_APIs_kbn-es-query-server-timeRangeSchema in docs/dashboards/kibana_dashboards_api.openapi.yaml.",
       "properties": {
         "from": {
           "description": "The start of the time range (for example 'now-1h').",
@@ -16151,45 +16151,30 @@
           "type": "string"
         },
         "mode": {
-          "anyOf": [
-            {
-              "enum": [
-                "absolute",
-                "relative"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
           "description": "absolute for fixed timestamps, relative for date math re-evaluated at query time.",
-          "title": "Mode"
+          "enum": [
+            "absolute",
+            "relative"
+          ],
+          "title": "Mode",
+          "type": "string"
         },
         "to": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
           "description": "The end of the time range (for example 'now').",
-          "title": "To"
+          "title": "To",
+          "type": "string"
         }
       },
       "required": [
-        "from"
+        "from",
+        "to"
       ],
       "title": "PanelTimeRange",
       "type": "object"
     },
     "ESQLXYLayer": {
       "additionalProperties": false,
-      "description": "One extra ES|QL series on a cross-index XY panel. Carries its own query so a second data stream is not collapsed onto the first.",
+      "description": "One extra ES|QL series on a cross-index XY panel. Carries its own query so a second data stream is not collapsed onto the first. Local extension: kb-dashboard-core has no slot for it. Maps to one entry of layers on the Dashboards API Kibana_HTTP_APIs_xyChartESQLByValuePanel.",
       "properties": {
         "breakdown": {
           "anyOf": [

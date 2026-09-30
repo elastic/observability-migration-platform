@@ -148,6 +148,10 @@ class PanelLayoutOverrideModel(_StrictModel):
     xy_mode: str | None = None
     # Late override of the XY legend placement (``bottom`` / ``right`` / …).
     legend_position: str | None = None
+    # ``none`` drops a metric tile's threshold color, the same as Grafana's
+    # stat ``colorMode: none``. Kibana paints the whole tile, which a plain
+    # value (e.g. an uptime duration) should not get.
+    metric_color: str | None = None
 
     @field_validator("kibana_type_override")
     @classmethod
@@ -184,6 +188,15 @@ class PanelLayoutOverrideModel(_StrictModel):
                 "xy_mode"
             )
         return self
+
+    @field_validator("metric_color")
+    @classmethod
+    def validate_metric_color(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value != "none":
+            raise ValueError(f"metric_color must be 'none', got {value!r}")
+        return value
 
     @field_validator("legend_position")
     @classmethod

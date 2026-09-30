@@ -301,11 +301,18 @@ def extract_monitors_from_api(
     return monitors
 
 
+def _looks_like_monitor(payload: Any) -> bool:
+    """A monitor is identified by its ``type``, not by having an ``id``."""
+    return isinstance(payload, dict) and bool(str(payload.get("type") or "").strip())
+
+
 def extract_monitors_from_files(input_dir: str) -> list[dict[str, Any]]:
     """Load Datadog monitor JSON files from a directory.
 
-    Accepts single monitor objects (with ``id`` and ``type`` fields),
-    arrays of monitors, or wrapped ``{"monitors": [...]}`` exports.
+    Accepts a bare monitor object (identified by ``type``), an array of them,
+    a ``{"monitors": [...]}`` export, or the canonical Datadog *asset* shape
+    that nests the monitor under ``definition`` with ``title``/``tags``
+    alongside — which is what integration assets and the Datadog UI export.
     """
     monitors: list[dict[str, Any]] = []
     input_path = Path(input_dir)
@@ -335,13 +342,31 @@ def extract_monitors_from_files(input_dir: str) -> list[dict[str, Any]]:
                     if isinstance(item, dict):
                         item["_source_file"] = str(fpath)
                         monitors.append(item)
-            elif "id" in raw and "type" in raw:
+            elif isinstance(raw.get("definition"), dict) and _looks_like_monitor(
+                raw["definition"]
+            ):
+                # Canonical Datadog monitor *asset* shape: the monitor lives
+                # under `definition`, with title/tags/description alongside it.
+                # Every monitor DataDog/integrations-core publishes is this
+                # shape, as is the Datadog UI's monitor export, so rejecting it
+                # meant an operator's own monitors extracted as zero.
+                monitor = dict(raw["definition"])
+                monitor.setdefault("name", raw.get("title") or "")
+                monitor.setdefault("tags", raw.get("tags") or [])
+                if raw.get("description") and not monitor.get("message"):
+                    monitor["message"] = raw["description"]
+                monitor["_source_file"] = str(fpath)
+                monitors.append(monitor)
+            elif _looks_like_monitor(raw):
+                # `id` is not required: 21 of the 60 sampled integration
+                # monitors carry none, and a monitor without a source id is
+                # still a monitor to migrate.
                 raw["_source_file"] = str(fpath)
                 monitors.append(raw)
             else:
                 print(
-                    f"  WARN: skipping {fpath.name}: "
-                    "expected 'monitors' array or a monitor object with 'id' and 'type'"
+                    f"  WARN: skipping {fpath.name}: expected a 'monitors' array, a "
+                    "monitor object with 'type', or an asset with a 'definition'"
                 )
         else:
             print(f"  WARN: skipping {fpath.name}: unexpected structure")

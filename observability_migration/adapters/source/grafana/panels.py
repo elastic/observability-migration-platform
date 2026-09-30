@@ -1553,50 +1553,6 @@ def _strip_promql_string_literals(expr):
     return text
 
 
-def _strip_promql_comments(expr):
-    """Drop ``#`` line comments, leaving their newline, so structural regexes see syntax.
-
-    PromQL allows a comment between a token and its parenthesis —
-    ``on # note\\n(instance)`` parses as ``on(instance)`` — so a check that scans
-    for a construct must not be fooled into missing one (issue #440). Quote state
-    is tracked, backticks included, because a ``#`` inside a label value is data.
-
-    Only valid on text that still has its newlines. A comment ends at its
-    newline, so stripping after a flattening pass such as
-    ``_clean_promql_for_native`` would swallow real expression text — which is
-    why this is separate from :func:`_strip_promql_string_literals` rather than
-    folded into it.
-    """
-    text = str(expr or "")
-    out: list[str] = []
-    quote = ""
-    i = 0
-    while i < len(text):
-        char = text[i]
-        if quote:
-            out.append(char)
-            if char == "\\" and quote != "`" and i + 1 < len(text):
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if char == quote:
-                quote = ""
-            i += 1
-            continue
-        if char in "\"'`":
-            quote = char
-            out.append(char)
-            i += 1
-            continue
-        if char == "#":
-            while i < len(text) and text[i] != "\n":
-                i += 1
-            continue
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
 def _sanitize_promql_structure(expr):
     """Blank literals and comments so a structural regex sees only PromQL syntax.
 
@@ -4601,14 +4557,23 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         # pack omission fights that design and yellows panels
                         # (TCP Errors / TCPRcvQDrop) whose remaining series
                         # still render.
-                        _optional_omitted = set(
-                            _optional_metric_result.omitted_metrics or []
-                        )
                         _optional_declared = {
                             str(name).strip()
                             for name in (rule_pack.live_optional_metrics or [])
                             if str(name).strip()
                         }
+                        # Only pack-declared optional metrics are an expected
+                        # omission. Any other absent metric was stripped so the
+                        # rest of the query runs, but the panel lost a series
+                        # and must say so.
+                        _optional_omitted = {
+                            metric
+                            for metric in (_optional_metric_result.omitted_metrics or [])
+                            if metric in _optional_declared
+                        }
+                        for metric in _optional_metric_result.omitted_metrics or []:
+                            if metric not in _optional_declared:
+                                _append_unique(_dropped_curated_metrics, metric)
                         if _optional_omitted or _optional_declared:
                             _dropped_curated_metrics = [
                                 metric
@@ -6346,7 +6311,7 @@ _extract_esql_columns = _extract_esql_columns_canonical
 _TIME_DIMENSION_FIELDS = {"time_bucket", "timestamp_bucket", "step"}
 _CURATED_QUERY_TOKEN_RE = re.compile(
     r"\{\{\s*(?P<kind>control|label|metric):(?P<name>[A-Za-z0-9_.-]+)"
-    r"(?::(?P<prefer>counter|gauge))?\s*\}\}"
+    r"(?::(?P<prefer>counter|gauge|histogram))?\s*\}\}"
 )
 
 
@@ -6376,6 +6341,17 @@ def _materialize_curated_query_override(query, resolver):
                 resolve = getattr(resolver, "resolve_label", None)
                 resolved = resolve(name) if callable(resolve) else None
                 return resolved or name
+            if kind == "metric" and prefer == "histogram":
+                # PERCENTILE() operand, typed like histogram_quantile_family_rule:
+                # a classic ``histogram`` field needs TO_TDIGEST(); an
+                # exponential_histogram (or unknown type) is used as-is.
+                resolve = getattr(resolver, "resolve_metric_field", None)
+                resolved = (resolve(name, prefer=None) if callable(resolve) else None) or name
+                field_type = getattr(resolver, "field_type", None)
+                kind_name = (field_type(resolved) if callable(field_type) else None) or ""
+                if kind_name.strip().lower() == "histogram":
+                    return f"TO_TDIGEST({resolved})"
+                return resolved
             if kind == "metric":
                 resolve = getattr(resolver, "resolve_metric_field", None)
                 resolved = resolve(name, prefer=prefer) if callable(resolve) else None
@@ -6389,7 +6365,7 @@ def _materialize_curated_query_override(query, resolver):
 
 def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
     return re.compile(
-        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge))?\s*\}}\}}",
+        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge|histogram))?\s*\}}\}}",
         re.IGNORECASE,
     )
 
@@ -6458,8 +6434,12 @@ def _quoted_label_is_removed_alias(text: str, removed_aliases: set[str], query: 
             continue
         if exact:
             return True
-        longer = re.compile(rf"\b[A-Za-z_][A-Za-z0-9_]*_{re.escape(name)}\b")
-        if any(match.group(0) not in removed_aliases for match in longer.finditer(query or "")):
+        # Only query aliases (``name =``) can carry the tile. Metric and label
+        # tokens (``{{metric:foo_requests_total}}``) and field names are not
+        # series columns, and nearly every counter ends in ``_total``.
+        aliases_text = re.sub(r"\{\{[^}]*\}\}", " ", query or "")
+        longer = re.compile(rf"\b([A-Za-z_][A-Za-z0-9_]*_{re.escape(name)})\s*=(?!=)")
+        if any(match.group(1) not in removed_aliases for match in longer.finditer(aliases_text)):
             continue
         return True
     return False
@@ -6475,21 +6455,39 @@ def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str], query: 
     return False
 
 
-def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str], query: str = "") -> str:
-    """Peel ``MV_APPEND(inner, stripped_series)`` layers left by optional omit."""
+def _prune_removed_unpivot_mv_append(expression: str, removed_aliases: set[str], query: str) -> str | None:
+    """Drop stripped pieces anywhere in an ``MV_APPEND`` tree; None if all go.
+
+    Labels and values are parallel trees (``MV_APPEND("Limits", "Total")`` and
+    ``MV_APPEND(limits, shown_total)``), so a removed head must go the same way
+    as a removed tail or the zipped pairs shift onto the wrong tiles.
+    """
     expr = str(expression or "").strip()
-    while True:
-        upper = expr.upper()
-        if not upper.startswith("MV_APPEND(") or not expr.endswith(")"):
-            return expr
-        body = expr[len("MV_APPEND("):-1]
-        parts = [part.strip() for part in _split_top_level_csv(body) if part.strip()]
-        if len(parts) != 2:
-            return expr
-        inner, tail = parts
-        if not _tail_is_removed_unpivot_piece(tail, removed_aliases, query):
-            return expr
-        expr = inner.strip()
+    if expr.upper().startswith("MV_APPEND(") and expr.endswith(")"):
+        parts = [part.strip() for part in _split_top_level_csv(expr[len("MV_APPEND("):-1]) if part.strip()]
+        if len(parts) == 2:
+            head = _prune_removed_unpivot_mv_append(parts[0], removed_aliases, query)
+            tail = _prune_removed_unpivot_mv_append(parts[1], removed_aliases, query)
+            if head is None or tail is None:
+                return tail if head is None else head
+            if head == parts[0] and tail == parts[1]:
+                return expr
+            return f"MV_APPEND({head}, {tail})"
+        return expr
+    if _tail_is_removed_unpivot_piece(expr, removed_aliases, query):
+        return None
+    return expr
+
+
+def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str], query: str = "") -> str:
+    """Remove stripped series from ``MV_APPEND`` unpivot label/value trees."""
+    expr = str(expression or "").strip()
+    if not expr.upper().startswith("MV_APPEND("):
+        return expr
+    pruned = _prune_removed_unpivot_mv_append(expr, removed_aliases, query)
+    # Every piece was stripped: leave it for the caller's removed-alias check,
+    # which drops the whole assignment.
+    return expr if pruned is None else pruned
 
 
 def _strip_optional_metric_token_from_curated_esql_result(
@@ -6506,10 +6504,20 @@ def _strip_optional_metric_token_from_curated_esql_result(
     removed_aliases: list[str] = []
     stripped_stages: list[str] = []
     removed_alias_set: set[str] = set()
+    # Columns that still exist before the current stage. An EVAL that
+    # reassigns one of them from the stripped series (``x = CASE(opt > 0, …,
+    # x)``) is an override-when-present: dropping it keeps the earlier value.
+    defined_aliases: set[str] = set()
     # A WHERE stage whose every predicate existed only to select this metric
     # (``metric IS NOT NULL``) is the series identity. Dropping it while
     # leaving ``COUNT_DISTINCT(instance)`` counts every series in the index.
     dropped_series_where = False
+    # STATS BY columns (time bucket, breakdown labels) are not measures. A KEEP
+    # left with only those after stripping has nothing to plot.
+    group_aliases: set[str] = set()
+    # Whether a surviving STATS assignment still reads some metric token.
+    kept_stats_read_metric = False
+    seen_stats = False
     for stage in _split_esql_pipeline(query):
         stripped = str(stage or "").strip()
         upper = stripped.upper()
@@ -6560,6 +6568,26 @@ def _strip_optional_metric_token_from_curated_esql_result(
             if by_text:
                 rebuilt += f" BY {by_text}"
             stripped_stages.append(rebuilt)
+            if not seen_stats:
+                # Later STATS stages read the first stage's aliases, not tokens.
+                seen_stats = True
+                kept_stats_read_metric = any(
+                    match.group("kind").lower() == "metric"
+                    for assignment in kept_assignments
+                    for match in _CURATED_QUERY_TOKEN_RE.finditer(assignment)
+                )
+            defined_aliases = set()
+            group_aliases = set()
+            for part in _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    group_aliases.add(alias)
+            for part in kept_assignments + _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    defined_aliases.add(alias)
             continue
         if upper.startswith("EVAL "):
             assignments = [
@@ -6571,6 +6599,7 @@ def _strip_optional_metric_token_from_curated_esql_result(
             while changed:
                 changed = False
                 kept_assignments: list[str] = []
+                defined_in_stage = set(defined_aliases)
                 for assignment in assignments:
                     left, right = _split_top_level_assignment(assignment)
                     rhs = right if right is not None else assignment
@@ -6583,19 +6612,22 @@ def _strip_optional_metric_token_from_curated_esql_result(
                         )
                         rhs = rewritten
                         changed = True
+                    alias = _canonical_esql_alias(left) if left else ""
                     if token_re.search(rhs) or _esql_expr_references_aliases(
                         rhs, removed_alias_set
                     ):
-                        alias = _canonical_esql_alias(left) if left else ""
-                        if alias:
+                        if alias and alias not in defined_in_stage:
                             _append_unique(removed_aliases, alias)
                             removed_alias_set.add(alias)
                         changed = True
                         continue
                     kept_assignments.append(assignment)
+                    if alias:
+                        defined_in_stage.add(alias)
                 assignments = kept_assignments
             if assignments:
                 stripped_stages.append("EVAL " + ", ".join(assignments))
+                defined_aliases = defined_in_stage
             continue
         if upper.startswith("KEEP ") and removed_aliases:
             keep_parts = [
@@ -6608,17 +6640,32 @@ def _strip_optional_metric_token_from_curated_esql_result(
                 for part in keep_parts
                 if _canonical_esql_alias(part) not in removed_alias_set
             ]
+            # ``KEEP time_bucket, pct`` with ``pct`` gone is only the time
+            # axis: no series is left to plot.
+            had_measure = any(
+                _canonical_esql_alias(part) not in group_aliases for part in keep_parts
+            )
+            has_measure = any(
+                _canonical_esql_alias(part) not in group_aliases for part in kept_parts
+            )
+            if had_measure and not has_measure:
+                return _CuratedOptionalMetricStripResult(
+                    query="",
+                    removed_aliases=removed_aliases,
+                    exhausted=True,
+                )
             if kept_parts:
                 stripped_stages.append("KEEP " + ", ".join(kept_parts))
             continue
         stripped_stages.append(stripped)
     rebuilt = " | ".join(stripped_stages)
     # The metric survived only as a presence filter, and that filter is gone.
-    # An aggregation that never mentioned the metric (a distinct instance
-    # count) would otherwise tally every series. Treat that as no series left.
+    # An aggregation that reads no metric (a distinct instance count) would
+    # otherwise tally every series, even when a sibling metric-based
+    # assignment was stripped with it. Treat that as no series left.
     if (
         dropped_series_where
-        and not removed_aliases
+        and not kept_stats_read_metric
         and not token_re.search(rebuilt)
     ):
         return _CuratedOptionalMetricStripResult(
@@ -11789,6 +11836,36 @@ def _apply_layout_presentation_override(
         esql["legend"] = legend
 
 
+def _apply_layout_metric_color(
+    panel: dict, override: dict, warnings: list | None
+) -> None:
+    """Drop a metric tile's ``primary.color`` for ``metric_color: none``.
+
+    Any other panel type has no metric color to drop; the request is reported
+    as a warning rather than silently ignored.
+    """
+    if str(override.get("metric_color") or "").strip() != "none":
+        return
+    if isinstance(panel.get("section"), dict):
+        return
+    esql = panel.get("esql")
+    if isinstance(esql, dict) and esql.get("type") == "metric":
+        primary = esql.get("primary")
+        if isinstance(primary, dict):
+            primary.pop("color", None)
+        return
+    if warnings is not None:
+        title = str(override.get("title_match") or panel.get("title") or "").strip()
+        warnings.append(
+            (
+                panel,
+                f"curated layout override for panel '{title}' requested "
+                "metric_color 'none', but the migrated panel is not a Kibana metric "
+                "tile, so the color change was skipped",
+            )
+        )
+
+
 def _apply_one_panel_layout_override(
     panel: dict, override: dict, warnings: list | None = None
 ) -> None:
@@ -11823,6 +11900,7 @@ def _apply_one_panel_layout_override(
     if isinstance(new_title, str) and new_title.strip():
         panel["title"] = new_title.strip()
     _apply_layout_presentation_override(panel, override, warnings)
+    _apply_layout_metric_color(panel, override, warnings)
 
 
 def _apply_panel_layout_overrides_recursively(
