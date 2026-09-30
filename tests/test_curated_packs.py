@@ -3058,6 +3058,50 @@ def test_layout_override_presentation_keys_skip_non_xy_panel():
     assert not dashboard_schema_errors(panels)
 
 
+def test_layout_override_metric_color_none_drops_the_tile_color():
+    panel = _metric_probe_panel()
+    panel["esql"]["primary"]["color"] = {
+        "apply_to": "value",
+        "thresholds": [{"up_to": 10, "color": "#54B399"}],
+    }
+    panels = [panel]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": "PostgreSQL Uptime", "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert "color" not in panels[0]["esql"]["primary"]
+    assert not warnings
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_metric_color_on_xy_panel_is_reported():
+    panels = [_xy_probe_panel("line")]
+    before = json.loads(json.dumps(panels[0]["esql"]))
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": panels[0]["title"], "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert panels[0]["esql"] == before
+    assert warnings and "metric_color" in warnings[0][1]
+
+
+def test_layout_override_rejects_unknown_metric_color():
+    with pytest.raises(ValueError) as excinfo:
+        validate_rule_pack_payload(
+            {"panel": {"layout_overrides": [{"title_match": "Uptime", "metric_color": "red"}]}},
+            source="probe pack",
+        )
+    assert "metric_color" in str(excinfo.value)
+
+
 def test_layout_override_cannot_change_panel_shape():
     """A late ``type`` flip keeps the XY ``metrics``/``dimension`` columns and
     has no ``primary``, so ``metric`` output would fail the schema both ways."""
@@ -6931,3 +6975,539 @@ def test_7187_fidelity_manifest_has_no_unknown():
     fidelities = {panel["fidelity"] for panel in manifest["panels"]}
     assert "UNKNOWN" not in fidelities
     assert len(manifest["panels"]) == 4
+
+
+def _resolve_views(gnet_id, title):
+    dashboard = {"gnetId": gnet_id, "title": title, "tags": ["kubernetes"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    return resolved, SchemaResolver(resolved)
+
+
+def _translate_views(gnet_id, title, panel):
+    resolved, resolver = _resolve_views(gnet_id, title)
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    return result, query, yaml_panel
+
+
+def test_15760_registry_entry_present():
+    entry = find_curated_pack(gnet_id=15760, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_15760_k8s_views_pods"
+    assert entry["gnet_revision"] == 41
+
+
+def test_15759_registry_entry_present():
+    entry = find_curated_pack(gnet_id=15759, title="", tags=[])
+    assert entry is not None
+    assert entry["name"] == "grafana_15759_k8s_views_nodes"
+    assert entry["gnet_revision"] == 40
+
+
+def test_15760_cpu_ratio_drops_the_running_pod_join():
+    panel = {
+        "id": 39,
+        "type": "gauge",
+        "title": "Total pod CPU Requests usage",
+        "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+        "targets": [
+            {
+                "expr": 'sum(rate(container_cpu_usage_seconds_total{pod=~"$pod"}[5m])) / sum(kube_pod_container_resource_requests{resource="cpu"} and on(namespace, pod) kube_pod_status_phase)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 3, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "usage / budget" in query
+    assert "* 100" not in query
+    assert " and " not in query
+    assert "?pod" in query
+    assert 'k8s.container.name != ""' in query
+    assert "STATS percent = AVG(percent)" in query
+    assert yaml_panel["esql"]["type"] == "metric"
+    assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
+
+
+def test_15760_ratio_tiles_are_one_value_without_the_pod_cgroup():
+    tiles = (
+        (48, "Total pod CPU Limits usage"),
+        (40, "Total pod RAM Requests usage"),
+        (49, "Total pod RAM Limits usage"),
+    )
+    for panel_id, title in tiles:
+        panel = {
+            "id": panel_id,
+            "type": "gauge",
+            "title": title,
+            "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+            "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m]))", "refId": "A"}],
+            "gridPos": {"x": 0, "y": 0, "w": 3, "h": 8},
+        }
+        _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+        assert 'k8s.container.name != ""' in query
+        assert "STATS percent = AVG(percent)" in query
+        # A fixed bucket keeps one full bucket inside the window on any time range.
+        assert "TBUCKET(30 minutes)" in query
+        assert "?_tend - 1 hour" in query
+        assert yaml_panel["esql"]["type"] == "metric"
+
+
+def test_15760_resources_by_container_drops_the_pod_cgroup():
+    panel = {
+        "id": 38,
+        "type": "table",
+        "title": "Resources by container",
+        "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) by (container)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert 'k8s.container.name != ""' in query
+    assert "memory_bytes = SUM(LAST_OVER_TIME(" in query
+    assert "TBUCKET(30 minutes)" in query
+
+
+def test_15760_memory_by_container_sums_across_pods():
+    panel = {
+        "id": 51,
+        "type": "timeseries",
+        "title": "Memory Usage by container",
+        "targets": [
+            {"expr": "sum(max_over_time(container_memory_working_set_bytes[5m])) by (container, id)", "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert "SUM(MAX_OVER_TIME(" in query
+    assert 'k8s.container.name != ""' in query
+
+
+def test_15760_throttled_seconds_drop_the_pod_cgroup():
+    panel = {
+        "id": 59,
+        "type": "timeseries",
+        "title": "CPU Throttled seconds by container",
+        "targets": [
+            {"expr": "sum(rate(container_cpu_cfs_throttled_seconds_total[5m])) by (container)", "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert 'k8s.container.name != ""' in query
+
+
+def test_15760_last_terminated_reason_drops_inactive_series():
+    panel = {
+        "id": 56,
+        "type": "table",
+        "title": "Last Terminated Reason",
+        "targets": [{"expr": "kube_pod_container_status_last_terminated_reason", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert "info > 0" in query
+    assert "reason" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_15760_created_by_is_a_label_table():
+    panel = {
+        "id": 2,
+        "type": "stat",
+        "title": "Created by",
+        "targets": [{"expr": 'kube_pod_info{pod="$pod"}', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 2},
+    }
+    result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "created_by_kind" in query
+    assert "created_by_name" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_15760_container_issues_stay_cluster_wide():
+    panel = {
+        "id": 63,
+        "type": "table",
+        "title": "Pods with Container Issues",
+        "targets": [
+            {
+                "expr": 'kube_pod_container_status_waiting_reason{reason=~"ErrImagePull|ImagePullBackOff|CrashLoopBackOff"} == 1',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "CrashLoopBackOff" in query
+    assert "?namespace" not in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_15760_oom_events_increase_by_container():
+    panel = {
+        "id": 60,
+        "type": "timeseries",
+        "title": "OOM Events by container",
+        "fieldConfig": {"defaults": {"unit": "none", "min": 0, "max": 1}},
+        "targets": [{"expr": "sum(increase(container_oom_events_total[5m])) by (container)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "INCREASE" in query
+    assert 'k8s.container.name != ""' in query
+    assert yaml_panel["esql"]["type"] in ("line", "area")
+
+
+def test_15760_restarts_treat_an_empty_job_selection_as_all():
+    panel = {
+        "id": 61,
+        "type": "timeseries",
+        "title": "Container Restarts by container",
+        "fieldConfig": {"defaults": {"unit": "none", "min": 0, "max": 1}},
+        "targets": [
+            {
+                "expr": 'sum(increase(kube_pod_container_status_restarts_total{job="$job",pod=~"$pod"}[5m])) by (container)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "MV_COUNT(?job) == 0" in query
+    # The job variable has no All option, and ?job is a list, so no scalar compare.
+    assert '?job == ""' not in query
+    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' not in query
+    assert "INCREASE" in query
+    assert yaml_panel["esql"]["type"] in ("line", "area")
+
+
+def test_15760_layout_uses_the_48_column_grid():
+    dashboard = {
+        "gnetId": 15760,
+        "title": "Kubernetes / Views / Pods",
+        "tags": ["kubernetes"],
+        "panels": [
+            {"id": 43, "type": "row", "title": "Information", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+            {
+                "id": 2,
+                "type": "stat",
+                "title": "Created by",
+                "targets": [{"expr": "kube_pod_info", "refId": "A"}],
+                "gridPos": {"x": 0, "y": 1, "w": 12, "h": 2},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_views(15760, "Kubernetes / Views / Pods")
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    created = panels[0]["section"]["panels"][0]
+    assert created["title"] == "Created by"
+    assert created["size"] == {"w": 24, "h": 6}
+    assert created["esql"]["type"] == "datatable"
+    assert dashboard_schema_errors(panels) == []
+
+
+def test_15759_cpu_by_pod_uses_cadvisor_not_node_cpu():
+    panel = {
+        "id": 26,
+        "type": "timeseries",
+        "title": "CPU usage by Pod",
+        "targets": [
+            {
+                "expr": 'sum(rate(container_cpu_usage_seconds_total{node="$node", image!=""}[5m])) by (pod)',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert "container_cpu_usage_seconds_total" in query
+    assert "node_cpu_seconds_total" not in query
+    assert 'k8s.container.name != ""' in query
+    assert "?node" in query
+    assert "pod" in query
+
+
+def test_15759_throttled_cores_keep_node_exporter_metric():
+    panel = {
+        "id": 66,
+        "type": "timeseries",
+        "title": "Number of CPU Core Throttled",
+        "targets": [
+            {
+                "expr": 'sum(rate(node_cpu_core_throttles_total{instance="$instance"}[5m]))',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert "node_cpu_core_throttles_total" in query
+    assert "container_cpu_cfs_throttled_seconds_total" not in query
+    assert "?instance" in query
+    assert "?node" not in query
+
+
+def test_15759_memory_by_pod_drops_the_pod_cgroup():
+    panel = {
+        "id": 28,
+        "type": "timeseries",
+        "title": "Memory usage by Pod",
+        "targets": [
+            {"expr": 'sum(container_memory_working_set_bytes{node="$node", image!=""}) by (pod)', "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert 'k8s.container.name != ""' in query
+    assert "?node" in query
+
+
+def test_15759_pods_on_node_counts_current_pods_by_namespace():
+    panel = {
+        "id": 24,
+        "type": "stat",
+        "title": "Pods on node",
+        "targets": [{"expr": 'sum(kube_pod_info{node="$node"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    # Prometheus instant-query lookback, so deleted pods are not counted.
+    assert "@timestamp >= ?_tend - 5 minutes" in query
+    assert "BY k8s.namespace.name, k8s.pod.name" in query
+
+
+def test_15759_pod_list_groups_by_pod():
+    panel = {
+        "id": 5,
+        "type": "table",
+        "title": "List of pods on node ($node)",
+        "targets": [{"expr": 'kube_pod_info{node="$node"}', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 11},
+    }
+    result, query, yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "k8s.pod.name" in query
+    assert "?node" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def test_15759_memory_is_one_series_per_measure():
+    panel = {
+        "id": 3,
+        "type": "timeseries",
+        "title": "Memory Usage",
+        "fieldConfig": {"defaults": {"unit": "bytes"}},
+        "targets": [
+            {"expr": 'node_memory_MemTotal_bytes{instance="$instance"}', "refId": "A"},
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "RAM_Used" in query
+    assert "series_group" not in query
+    assert "?instance" in query
+    assert yaml_panel["esql"]["type"] in ("line", "area")
+
+
+def test_15759_cpu_mode_stays_on_a_percent_scale():
+    panel = {
+        "id": 2,
+        "type": "timeseries",
+        "title": "CPU Usage",
+        "fieldConfig": {"defaults": {"unit": "percent"}},
+        "targets": [{"expr": 'avg(rate(node_cpu_seconds_total{instance="$instance"}[5m]) * 100) by (mode)', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert "rate * 100" in query
+    assert yaml_panel["esql"]["metrics"][0]["format"]["suffix"] == "%"
+
+
+def test_15759_disk_io_stays_a_gauge_last_value():
+    panel = {
+        "id": 58,
+        "type": "timeseries",
+        "title": "Disk(s) io/s",
+        "targets": [{"expr": 'rate(node_disk_io_now{instance="$instance"}[$resolution])', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "LAST_OVER_TIME" in query
+    assert "RATE" not in query
+    assert yaml_panel["esql"]["type"] in ("line", "area")
+
+
+def test_15759_cpu_gauge_title_keeps_its_double_space():
+    panel = {
+        "id": 7,
+        "type": "gauge",
+        "title": "CPU  Usage",
+        "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+        "targets": [
+            {
+                "expr": 'avg(sum by (cpu) (rate(node_cpu_seconds_total{mode!~"idle|iowait|steal",instance="$instance"}[5m])))',
+                "refId": "A",
+            }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 8},
+    }
+    result, query, yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "percent = busy" in query
+    assert "* 100" not in query
+    assert "TBUCKET(30 minutes)" in query
+    assert "?_tend - 1 hour" in query
+    # Summing per cpu index across instances would exceed 1 with no instance selected.
+    assert "service.instance.id, cpu" in query
+    assert yaml_panel["esql"]["type"] == "metric"
+    assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
+
+
+def test_15759_overview_stat_row_sits_flush_under_the_tiles():
+    dashboard = {
+        "gnetId": 15759,
+        "title": "Kubernetes / Views / Nodes",
+        "tags": ["kubernetes"],
+        "panels": [
+            {"id": 40, "type": "row", "title": "Overview", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+            {
+                "id": 7,
+                "type": "gauge",
+                "title": "CPU  Usage",
+                "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+                "targets": [{"expr": "avg(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 4, "x": 0, "y": 1},
+            },
+            {
+                "id": 13,
+                "type": "gauge",
+                "title": "RAM Usage",
+                "targets": [{"expr": "node_memory_MemAvailable_bytes", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 4, "x": 4, "y": 1},
+            },
+            {
+                "id": 24,
+                "type": "stat",
+                "title": "Pods on node",
+                "targets": [{"expr": "kube_pod_info", "refId": "A"}],
+                "gridPos": {"h": 8, "w": 4, "x": 8, "y": 1},
+            },
+            {
+                "id": 5,
+                "type": "table",
+                "title": "List of pods on node ($node)",
+                "targets": [{"expr": "kube_pod_info", "refId": "A"}],
+                "gridPos": {"h": 11, "w": 12, "x": 12, "y": 1},
+            },
+            {
+                "id": 9,
+                "type": "stat",
+                "title": "CPU Used",
+                "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+                "gridPos": {"h": 3, "w": 2, "x": 0, "y": 9},
+            },
+            {
+                "id": 18,
+                "type": "stat",
+                "title": "uptime",
+                "options": {"colorMode": "value"},
+                "fieldConfig": {
+                    "defaults": {
+                        "unit": "s",
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {"color": "green", "value": None},
+                                {"color": "#EAB839", "value": 25228800},
+                                {"color": "red", "value": 31536000},
+                            ],
+                        },
+                    }
+                },
+                "targets": [{"expr": "node_time_seconds - node_boot_time_seconds", "refId": "A"}],
+                "gridPos": {"h": 3, "w": 4, "x": 8, "y": 9},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_views(15759, "Kubernetes / Views / Nodes")
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    panels = result.dashboard_ir.to_yaml_dict()["panels"]
+    assert panels[0]["title"] == "Overview"
+    by_title = {panel["title"]: panel for panel in panels[0]["section"]["panels"]}
+    cpu = by_title["CPU  Usage"]
+    ram = by_title["RAM Usage"]
+    pods = by_title["Pods on node"]
+    listing = by_title["List of pods on node"]
+    used = by_title["CPU Used"]
+    uptime = by_title["Uptime"]
+    assert "color" not in (uptime.get("esql") or {}).get("primary", {})
+    assert cpu["size"] == ram["size"] == pods["size"] == {"w": 8, "h": 12}
+    assert cpu["position"]["y"] == ram["position"]["y"] == pods["position"]["y"] == 0
+    assert used["position"] == {"x": 0, "y": 12}
+    assert used["position"]["y"] == cpu["position"]["y"] + cpu["size"]["h"]
+    assert listing["size"]["h"] == used["position"]["y"] + used["size"]["h"]
+    errors = dashboard_schema_errors(panels)
+    assert errors == [], errors
+
+
+def test_views_fidelity_manifests_have_no_unknown():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    expected = {
+        "grafana_15760_k8s_views_pods": 25,
+        "grafana_15759_k8s_views_nodes": 35,
+    }
+    for directory, count in expected.items():
+        path = Path(pkg.__file__).parent / directory / "fidelity_manifest.yaml"
+        manifest = yaml.safe_load(path.read_text())
+        fidelities = {panel["fidelity"] for panel in manifest["panels"]}
+        assert "UNKNOWN" not in fidelities
+        assert len(manifest["panels"]) == count
+
+
+@pytest.mark.parametrize(
+    "pack_dir", ["grafana_15759_k8s_views_nodes", "grafana_15760_k8s_views_pods"]
+)
+def test_k8s_views_manifest_notes_match_pack_notes(pack_dir):
+    import yaml
+
+    base = (
+        Path(__file__).resolve().parents[1]
+        / "observability_migration/adapters/source/grafana/curated_packs"
+        / pack_dir
+    )
+    pack = yaml.safe_load((base / "pack.yaml").read_text())
+    manifest = yaml.safe_load((base / "fidelity_manifest.yaml").read_text())
+    notes = {str(entry["panel_id"]): entry.get("notes") for entry in manifest["panels"]}
+    for override in pack["panel"]["query_overrides"]:
+        assert notes.get(str(override["panel_id"])) == override["approximation_note"], override[
+            "title_match"
+        ]

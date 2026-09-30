@@ -342,6 +342,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["xy_mode"] = override.xy_mode
             if override.legend_position:
                 entry["legend_position"] = override.legend_position
+            if override.metric_color:
+                entry["metric_color"] = override.metric_color
             pack.panel_layout_overrides.append(entry)
 
         for field_name in (
