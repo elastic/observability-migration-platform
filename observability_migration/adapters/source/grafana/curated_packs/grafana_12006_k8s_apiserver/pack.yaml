@@ -6,12 +6,13 @@
 # https://grafana.com/grafana/dashboards/12006-kubernetes-apiserver/
 #
 # Kubernetes apiserver (revision 1). Latency charts name p95, p90, and p50.
-# histogram_quantile on *_bucket series is PERCENTILE of the duration
-# histogram field; a classic histogram field goes through TO_TDIGEST(). Classic
-# *_bucket counters alone cannot feed PERCENTILE, so those charts show missing
-# telemetry until the durations are stored as a histogram. Request rate stays
-# one series per verb. CONNECT and WATCH stay off the request-latency chart.
-# The two bottom charts share one row.
+# kube-apiserver exposes classic histograms (*_bucket counters with an le
+# label), not a duration gauge. Each point is the upper bound of the bucket
+# whose cumulative rate crosses the quantile; le is parsed as a number, so
+# client_golang spellings (1e-08) and Prometheus 3 ones (1.0) both work. When
+# only +Inf crosses, the highest finite bound is used, as in Prometheus.
+# CONNECT and WATCH stay off the
+# request-latency chart. The two bottom charts share one row.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -20,15 +21,19 @@ query:
     apiserver_request_total: counter
     etcd_helper_cache_hit_total: counter
     etcd_helper_cache_miss_total: counter
+    apiserver_request_duration_seconds_bucket: counter
+    etcd_request_duration_seconds_bucket: counter
+    workqueue_queue_duration_seconds_bucket: counter
+    workqueue_work_duration_seconds_bucket: counter
 
   live_optional_metrics:
     - apiserver_request_total
-    - apiserver_request_duration_seconds
-    - workqueue_queue_duration_seconds
-    - workqueue_work_duration_seconds
+    - apiserver_request_duration_seconds_bucket
+    - workqueue_queue_duration_seconds_bucket
+    - workqueue_work_duration_seconds_bucket
     - etcd_helper_cache_hit_total
     - etcd_helper_cache_miss_total
-    - etcd_request_duration_seconds
+    - etcd_request_duration_seconds_bucket
 
 panel:
   query_overrides:
@@ -48,48 +53,76 @@ panel:
     - title_match: "workqueue service time"
       panel_id: 10
       kibana_type_override: line
-      approximation_note: "p95, p90, and p50 of workqueue queue duration. Prometheus histogram_quantile on the bucket series is PERCENTILE of the duration histogram field."
+      approximation_note: "p95, p90, and p50 of workqueue queue duration from workqueue_queue_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE {{metric:workqueue_queue_duration_seconds}} IS NOT NULL
-        | STATS p95 = PERCENTILE({{metric:workqueue_queue_duration_seconds:histogram}}, 95), p90 = PERCENTILE({{metric:workqueue_queue_duration_seconds:histogram}}, 90), p50 = PERCENTILE({{metric:workqueue_queue_duration_seconds:histogram}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE {{metric:workqueue_queue_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:workqueue_queue_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
         | KEEP time_bucket, p95, p90, p50
         | SORT time_bucket ASC
+
     - title_match: "apiserver request latency"
       panel_id: 2
       kibana_type_override: line
-      approximation_note: "p95, p90, and p50 of request duration. CONNECT and WATCH are excluded, matching the source. histogram_quantile is PERCENTILE of the duration histogram field."
+      approximation_note: "p95, p90, and p50 of request duration from apiserver_request_duration_seconds_bucket. CONNECT and WATCH are excluded. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{label:verb}} != "CONNECT" AND {{label:verb}} != "WATCH"
-        | WHERE {{metric:apiserver_request_duration_seconds}} IS NOT NULL
-        | STATS p95 = PERCENTILE({{metric:apiserver_request_duration_seconds:histogram}}, 95), p90 = PERCENTILE({{metric:apiserver_request_duration_seconds:histogram}}, 90), p50 = PERCENTILE({{metric:apiserver_request_duration_seconds:histogram}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE {{metric:apiserver_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:apiserver_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
         | KEEP time_bucket, p95, p90, p50
         | SORT time_bucket ASC
+
     - title_match: "workqueue processing time"
       panel_id: 12
       kibana_type_override: line
-      approximation_note: "p95, p90, and p50 of workqueue processing duration. histogram_quantile is PERCENTILE of the duration histogram field."
+      approximation_note: "p95, p90, and p50 of workqueue processing duration from workqueue_work_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE {{metric:workqueue_work_duration_seconds}} IS NOT NULL
-        | STATS p95 = PERCENTILE({{metric:workqueue_work_duration_seconds:histogram}}, 95), p90 = PERCENTILE({{metric:workqueue_work_duration_seconds:histogram}}, 90), p50 = PERCENTILE({{metric:workqueue_work_duration_seconds:histogram}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE {{metric:workqueue_work_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:workqueue_work_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
         | KEEP time_bucket, p95, p90, p50
         | SORT time_bucket ASC
+
     - title_match: "etcd request latency"
       panel_id: 4
       kibana_type_override: line
-      approximation_note: "p95, p90, and p50 of etcd request duration. histogram_quantile is PERCENTILE of the duration histogram field."
+      approximation_note: "p95, p90, and p50 of etcd request duration from etcd_request_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE {{metric:etcd_request_duration_seconds}} IS NOT NULL
-        | STATS p95 = PERCENTILE({{metric:etcd_request_duration_seconds:histogram}}, 95), p90 = PERCENTILE({{metric:etcd_request_duration_seconds:histogram}}, 90), p50 = PERCENTILE({{metric:etcd_request_duration_seconds:histogram}}, 50) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE {{metric:etcd_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:etcd_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
         | KEEP time_bucket, p95, p90, p50
         | SORT time_bucket ASC
+
     - title_match: "etcd helper cache hit ratio"
       panel_id: 6
       kibana_type_override: line

@@ -4,6 +4,7 @@
 """Tests for the curated dashboard pack registry and resolution engine."""
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from observability_migration.adapters.source.grafana.panels import (
     _resolve_control_scope_metric,
     _retarget_esql_param_controls_to_panel_bindings,
     _strip_optional_metric_token_from_curated_esql,
+    _strip_optional_metric_token_from_curated_esql_result,
     translate_dashboard,
     translate_panel,
 )
@@ -3575,6 +3577,29 @@ def test_curated_override_with_only_absent_optional_metric_becomes_missing_telem
     assert "markdown" in (yaml_panel or {})
     assert "optional_metric" in yaml_panel["markdown"]["content"]
     assert result.status == "migrated_with_warnings"
+
+
+def test_strip_optional_metric_keeps_the_fallback_of_a_reassigned_alias():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:required_metric:gauge}} IS NOT NULL"
+        " OR {{metric:optional_metric:gauge}} IS NOT NULL"
+        " | STATS req = SUM({{metric:required_metric:gauge}}), cores = SUM({{metric:optional_metric:gauge}})"
+        " | EVAL shown = req, ratio = CASE(req > 0, 1, NULL)"
+        " | EVAL shown = CASE(cores > 0, cores, shown), ratio = CASE(cores > 0, req / cores, ratio), extra = cores * 2"
+        " | EVAL __values = MV_APPEND(TO_STRING(shown), TO_STRING(ratio))"
+        " | KEEP shown, ratio, extra, __values"
+    )
+
+    result = _strip_optional_metric_token_from_curated_esql_result(query, "optional_metric")
+
+    assert "cores" not in result.query
+    assert "EVAL shown = req, ratio = CASE(req > 0, 1, NULL)" in result.query
+    assert "__values = MV_APPEND(TO_STRING(shown), TO_STRING(ratio))" in result.query
+    assert "KEEP shown, ratio, __values" in result.query
+    assert "shown" not in result.removed_aliases
+    assert "ratio" not in result.removed_aliases
+    assert result.removed_aliases == ["cores", "extra"]
 
 
 def test_strip_optional_metric_handles_singleton_assignment():
@@ -7654,6 +7679,66 @@ def test_15757_overview_counts_use_the_last_five_minutes():
         assert "@timestamp >= ?_tend - 5 minutes" in by_id[panel_id], panel_id
 
 
+@pytest.mark.parametrize(
+    ("panel_id", "title", "labels", "fallback_values"),
+    [
+        (77, "Global CPU  Usage", ["Real", "Requests", "Limits"], ["requests", "limits"]),
+        (78, "Global RAM Usage", ["Real", "Requests", "Limits"], ["requests", "limits"]),
+        (37, "CPU Usage", ["Real", "Requests", "Limits", "Total"], ["shown_total"]),
+        (39, "RAM Usage", ["Real", "Requests", "Limits", "Total"], ["shown_total"]),
+    ],
+)
+def test_15757_capacity_panels_survive_missing_machine_recording_rules(
+    panel_id, title, labels, fallback_values
+):
+    """machine_cpu_cores and machine_memory_bytes are kube-prometheus recording
+    rules. Without them, every label must still get its value, from the node
+    CPU count or MemTotal."""
+    dashboard = {"gnetId": 15757, "title": "Kubernetes / Views / Global", "tags": ["kubernetes"]}
+    resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
+    resolver = SchemaResolver(resolved, field_profile="prometheus_native")
+    resolver._field_cache = {
+        "metrics.node_cpu_seconds_total": {"double": {"type": "double"}},
+        "metrics.node_memory_MemTotal_bytes": {"double": {"type": "double"}},
+        "metrics.node_memory_MemAvailable_bytes": {"double": {"type": "double"}},
+        "metrics.kube_pod_container_resource_requests": {"double": {"type": "double"}},
+        "metrics.kube_pod_container_resource_limits": {"double": {"type": "double"}},
+        "labels.mode": {"keyword": {"type": "keyword"}},
+        "labels.job": {"keyword": {"type": "keyword"}},
+        "labels.instance": {"keyword": {"type": "keyword"}},
+        "labels.cpu": {"keyword": {"type": "keyword"}},
+        "labels.resource": {"keyword": {"type": "keyword"}},
+        "labels.cluster": {"keyword": {"type": "keyword"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    panel = {
+        "id": panel_id,
+        "type": "stat",
+        "title": title,
+        "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 8},
+    }
+    yaml_panel, result = translate_panel(
+        panel,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    query = (yaml_panel.get("esql") or {}).get("query") or ""
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "machine_" not in query
+    assert "cores" not in query
+    for label in labels:
+        assert f'"{label}"' in query, label
+    for alias in fallback_values:
+        assert f"COALESCE(TO_STRING({alias}), \"\")" in query, alias
+    # MV_ZIP pairs labels with values; one missing value blanks a tile.
+    unpivot_values = re.findall(r'COALESCE\(TO_STRING\((\w+)\), ""\)', query)
+    assert len(unpivot_values) == len(labels), unpivot_values
+
+
 def test_15757_overview_tiles_share_one_row():
     dashboard = {
         "gnetId": 15757,
@@ -7725,9 +7810,9 @@ def test_15757_overview_tiles_share_one_row():
 
 def test_13646_fill_horizons_use_one_day_of_growth():
     for panel_id, title, horizon in (
-        (22, "PVCs Full in 2 days - Based on Daily Usage", "< 2"),
-        (28, "PVCs Full in 5 days - Based on Daily Usage", "< 5"),
-        (27, "PVCs Full in 1 Week - Based on Daily Usage", "< 7"),
+        (22, "PVCs Full in 2 days - Based on Daily Usage", "available + drop * 2 < 0"),
+        (28, "PVCs Full in 5 days - Based on Daily Usage", "available + drop * 5 < 0"),
+        (27, "PVCs Full in 1 Week - Based on Daily Usage", "available + drop * 7 < 0"),
     ):
         panel = {
             "id": panel_id,
@@ -7738,6 +7823,10 @@ def test_13646_fill_horizons_use_one_day_of_growth():
         }
         _result, query, yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
         assert "DELTA(" in query
+        assert "kubelet_volume_stats_available_bytes" in query
+        assert "drop < 0" in query
+        assert "ROUND(" not in query
+        assert "kubelet_volume_stats_used_bytes" not in query
         assert "24 hours" in query
         assert horizon in query
         assert yaml_panel["esql"]["type"] == "metric"
@@ -7818,47 +7907,46 @@ def test_12006_latency_series_are_named_percentiles():
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, yaml_panel = _translate_views(12006, "Kubernetes apiserver", panel)
-    assert "p95 = PERCENTILE(" in query
-    assert "p90 = PERCENTILE(" in query
-    assert "p50 = PERCENTILE(" in query
+    assert "apiserver_request_duration_seconds_bucket" in query
+    assert '"+Inf"' in query
+    assert "p95 =" in query
+    assert "p90 =" in query
+    assert "p50 =" in query
+    assert "PERCENTILE(" not in query
     assert '!= "CONNECT"' in query
     assert '!= "WATCH"' in query
     assert "_A" not in query
-    assert "duration_seconds_bucket" not in query
     assert yaml_panel["esql"]["type"] == "line"
 
 
-def test_12006_latency_wraps_classic_histogram_fields_in_tdigest():
+@pytest.mark.parametrize(
+    ("panel_id", "title", "metric"),
+    [
+        (10, "workqueue service time", "workqueue_queue_duration_seconds_bucket"),
+        (2, "apiserver request latency", "apiserver_request_duration_seconds_bucket"),
+        (12, "workqueue processing time", "workqueue_work_duration_seconds_bucket"),
+        (4, "etcd request latency", "etcd_request_duration_seconds_bucket"),
+    ],
+)
+def test_12006_latency_reads_bucket_bounds_from_the_le_label(panel_id, title, metric):
+    """client_golang writes le as 1e-08 or 9.999999999999999e-06 and
+    Prometheus 3 writes 1.0, so bounds are parsed, never matched as strings.
+    Only +Inf is compared literally."""
     panel = {
-        "id": 2,
+        "id": panel_id,
         "type": "graph",
-        "title": "apiserver request latency",
-        "targets": [
-            {
-                "expr": "histogram_quantile(0.95, sum(rate(apiserver_request_duration_seconds_bucket[5m])) by (le))",
-                "refId": "A",
-            }
-        ],
+        "title": title,
+        "targets": [{"expr": f"histogram_quantile(0.95, sum(rate({metric}[5m])) by (le))", "refId": "A"}],
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
-    resolved, resolver = _resolve_views(12006, "Kubernetes apiserver")
-    field = resolver.resolve_metric_field("apiserver_request_duration_seconds")
-    from unittest.mock import patch
-
-    with patch.object(
-        resolver,
-        "field_type",
-        side_effect=lambda name: "histogram" if name == field else None,
-    ):
-        yaml_panel, _result = translate_panel(
-            panel,
-            datasource_index="metrics-*",
-            esql_index="metrics-*",
-            rule_pack=resolved,
-            resolver=resolver,
-        )
-    query = yaml_panel["esql"]["query"]
-    assert f"PERCENTILE(TO_TDIGEST({field}), 95)" in query
+    _result, query, _yaml_panel = _translate_views(12006, "Kubernetes apiserver", panel)
+    assert metric in query
+    assert "TO_DOUBLE(" in query
+    assert "ROUND(" not in query
+    assert set(re.findall(r'== "([^"]*)"', query)) <= {"+Inf", "CONNECT", "WATCH"}
+    # Only +Inf reaching the quantile falls back to the highest finite bound.
+    for quantile in ("p95", "p90", "p50"):
+        assert f"{quantile} = CASE(total > 0, COALESCE({quantile}, top), NULL)" in query
 
 
 def test_12006_bottom_row_is_aligned():

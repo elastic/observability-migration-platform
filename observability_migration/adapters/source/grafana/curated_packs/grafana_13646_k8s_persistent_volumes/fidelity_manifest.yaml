@@ -15,15 +15,15 @@ panels:
   - title: "PVCs Full in 2 days - Based on Daily Usage"
     panel_id: 22
     fidelity: APPROXIMATE
-    notes: "predict_linear(available[1d], 2d) < 0 approximated as available / one-day used-byte growth under 2 days. The query reads the day before the range start, so growth is a full day whatever the dashboard time range. An empty result is 0 when no volume series are present only if other claims exist; a cluster with no volume metrics stays empty."
+    notes: "predict_linear(available[1d], 2d) < 0 approximated as available divided by one day of available-byte decline under 2 days. Used-byte growth is not the source series. The query reads the day before the range start, so the decline is a full day whatever the dashboard time range. An empty result is 0 when no volume series are present only if other claims exist; a cluster with no volume metrics stays empty."
   - title: "PVCs Full in 5 days - Based on Daily Usage"
     panel_id: 28
     fidelity: APPROXIMATE
-    notes: "Same one-day growth approximation as the 2-day tile, for a 5-day horizon."
+    notes: "Same one-day available-byte decline as the 2-day tile, for a 5-day horizon."
   - title: "PVCs Full in 1 Week - Based on Daily Usage"
     panel_id: 27
     fidelity: APPROXIMATE
-    notes: "Same one-day growth approximation as the 2-day tile, for a 7-day horizon."
+    notes: "Same one-day available-byte decline as the 2-day tile, for a 7-day horizon."
   - title: "PVCs Above Warning Threshold"
     panel_id: 21
     fidelity: APPROXIMATE

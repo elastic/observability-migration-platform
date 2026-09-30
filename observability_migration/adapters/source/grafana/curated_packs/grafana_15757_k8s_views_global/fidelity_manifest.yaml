@@ -15,11 +15,11 @@ panels:
   - title: "Global CPU  Usage"
     panel_id: 77
     fidelity: APPROXIMATE
-    notes: "Real, Requests, and Limits as the source bargauge shows them after it averages the Linux and Windows bars into Real. Windows is omitted, so Real is the Linux busy fraction: sum of non-idle rates divided by CPU count. Requests and limits are divided by machine cores. The ratio stays 0-1 so the percentunit tile can scale to percent points. An empty job selection is every job."
+    notes: "Real, Requests, and Limits as the source bargauge shows them after it averages the Linux and Windows bars into Real. Windows is omitted, so Real is the Linux busy fraction: sum of non-idle rates divided by CPU count. Requests and limits use machine_cpu_cores when that kube-prometheus recording rule is present, and the node CPU count otherwise. The ratio stays 0-1 so the percentunit tile can scale to percent points. An empty job selection is every job."
   - title: "Global RAM Usage"
     panel_id: 78
     fidelity: APPROXIMATE
-    notes: "Real, Requests, and Limits. Windows is omitted, so Real is MemTotal minus MemAvailable, divided by MemTotal. Requests and limits are divided by machine memory. The ratio stays 0-1. An empty job selection is every job."
+    notes: "Real, Requests, and Limits. Windows is omitted, so Real is MemTotal minus MemAvailable, divided by MemTotal. Requests and limits are divided by machine_memory_bytes when that kube-prometheus recording rule is present, and by MemTotal otherwise. The ratio stays 0-1. An empty job selection is every job."
   - title: "Nodes"
     panel_id: 63
     fidelity: APPROXIMATE
@@ -35,11 +35,11 @@ panels:
   - title: "CPU Usage"
     panel_id: 37
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Total in cores. The source sums Linux and Windows into Real; Windows is omitted, so Real is the Linux non-idle rate. An empty job selection is every job."
+    notes: "Real, Requests, Limits, and Total in cores. The source sums Linux and Windows into Real; Windows is omitted, so Real is the Linux non-idle rate. Total is machine_cpu_cores when that recording rule is present, and the node CPU count otherwise. An empty job selection is every job."
   - title: "RAM Usage"
     panel_id: 39
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Total in bytes. Windows is omitted, so Real is MemTotal minus MemAvailable. An empty job selection is every job."
+    notes: "Real, Requests, Limits, and Total in bytes. Windows is omitted, so Real is MemTotal minus MemAvailable. Total is machine_memory_bytes when that recording rule is present, and MemTotal otherwise. An empty job selection is every job."
   - title: "Kubernetes Resource Count"
     panel_id: 52
     fidelity: APPROXIMATE
