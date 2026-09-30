@@ -1,0 +1,139 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 13332 kube-state-metrics-v2 (revision 12).
+
+schema_version: 1
+gnet_id: 13332
+gnet_revision: 12
+dashboard_title: "kube-state-metrics-v2"
+maintainer: "community"
+
+panels:
+  - title: "Cluster Pod Requested"
+    fidelity: APPROXIMATE
+    notes: "Requested/allocatable pods as a percent. Binds cluster and node."
+  - title: "Cluster CPU Requested"
+    fidelity: APPROXIMATE
+    notes: "CPU requests/allocatable as a percent."
+  - title: "Cluster Memory  Requested"
+    fidelity: APPROXIMATE
+    notes: "Memory requests/allocatable as a percent. Source title has two spaces."
+  - title: "Cluster Pod Capacity"
+    fidelity: PERFECT
+    notes: "Allocatable and requested pods over time."
+  - title: "Cluster CPU Capacity"
+    fidelity: APPROXIMATE
+    notes: "Capacity, allocatable, requested, and limit. Grafana swaps the allocatable and capacity legend strings."
+  - title: "Cluster Mem Capacity"
+    fidelity: PERFECT
+    notes: "Allocatable, capacity, requested, and limit memory."
+  - title: "Number Of Nodes"
+    fidelity: PERFECT
+    notes: "sum(kube_node_info)."
+  - title: "Nodes Unavailable"
+    fidelity: PERFECT
+    notes: "sum(kube_node_spec_unschedulable)."
+  - title: "Node NotReady"
+    fidelity: PERFECT
+    notes: "Ready=false per node."
+  - title: "Node Pressure"
+    fidelity: APPROXIMATE
+    notes: "Disk, memory, and PID pressure per node. Disk pressure also follows the node control."
+  - title: "node number"
+    fidelity: PERFECT
+    notes: "Node count over time. Kibana title is Node count."
+  - title: "Deployment Replicas - Up To Date"
+    fidelity: APPROXIMATE
+    notes: "One row per deployment and namespace."
+  - title: "Deployment Replicas"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas)."
+  - title: "Deployment Replicas - Updated"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas_updated)."
+  - title: "Deployment Replicas - Unavailable"
+    fidelity: PERFECT
+    notes: "sum(kube_deployment_status_replicas_unavailable)."
+  - title: "Statefulset Replicas - Up To Date"
+    fidelity: APPROXIMATE
+    notes: "Ready replicas per StatefulSet."
+  - title: "Statefulset replicas"
+    fidelity: APPROXIMATE
+    notes: "Ready/spec ratio by StatefulSet. Same-bucket percent."
+  - title: "Pods restart in 30m"
+    fidelity: APPROXIMATE
+    notes: "changes() over 30m approximated as RATE * 1800 on the latest 30-minute bucket per pod and container."
+  - title: "Evicted"
+    fidelity: APPROXIMATE
+    notes: "Current evicted pods as a table."
+  - title: "Pods Running"
+    fidelity: PERFECT
+    notes: "sum of phase=Running."
+  - title: "Pods Succeeded"
+    fidelity: PERFECT
+    notes: "sum of phase=Succeeded."
+  - title: "Pods Failed"
+    fidelity: PERFECT
+    notes: "sum of phase=Failed."
+  - title: "Pods Pending"
+    fidelity: PERFECT
+    notes: "sum of phase=Pending."
+  - title: "Pods Unknown"
+    fidelity: PERFECT
+    notes: "sum of phase=Unknown."
+  - title: "Containers Running"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_running)."
+  - title: "Containers Waiting"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_waiting)."
+  - title: "Containers Terminated"
+    fidelity: PERFECT
+    notes: "sum(kube_pod_container_status_terminated)."
+  - title: "Containers Restarts (Last 30 Minutes)"
+    fidelity: APPROXIMATE
+    notes: "sum(changes()) approximated as RATE times 1800s on the latest 30-minute bucket per series."
+  - title: "CPU Cores Requested by Containers"
+    fidelity: APPROXIMATE
+    notes: "Old _cpu_cores metric reshaped to resource=cpu."
+  - title: "Memory Requested By Containers"
+    fidelity: APPROXIMATE
+    notes: "Old _memory_bytes metric reshaped to resource=memory and shown as bytes."
+  - title: "hpa"
+    fidelity: PERFECT
+    notes: "Current, max, and min replicas. Same-named HPAs stay separate as namespace/hpa. Kibana title is HPA replicas."
+  - title: "total-hpa-current"
+    fidelity: PERFECT
+    notes: "Sum of current replicas. Kibana title is HPA current replicas."
+  - title: "current==max"
+    fidelity: APPROXIMATE
+    notes: "Table of HPAs at their max. Source has no cluster or namespace matcher, so the table stays global."
+  - title: "current==min"
+    fidelity: APPROXIMATE
+    notes: "Table of HPAs at their min. Source has no cluster or namespace matcher, so the table stays global."
+  - title: "Jobs Succeeded"
+    fidelity: PERFECT
+    notes: "sum(kube_job_status_succeeded)."
+  - title: "Job last success time from now"
+    fidelity: APPROXIMATE
+    notes: "Days since completion, one row per job older than one day."
+  - title: "Job failed"
+    fidelity: APPROXIMATE
+    notes: "Jobs whose failed count is greater than 1."
+  - title: "Jobs Active"
+    fidelity: PERFECT
+    notes: "sum(kube_job_status_active)."
+  - title: "Jobs Failed"
+    fidelity: PERFECT
+    notes: "sum(kube_job_status_failed)."
+  - title: "pvc is bound"
+    fidelity: PERFECT
+    notes: "Sum of phase=Bound. Kibana title is PVCs bound."
+  - title: "pvc is not bound"
+    fidelity: PERFECT
+    notes: "Sum of phase!=Bound. Kibana title is PVCs not bound."
+  - title: "pvc"
+    fidelity: APPROXIMATE
+    notes: "Requested GiB per claim."
