@@ -4,6 +4,7 @@
 """Tests for the curated dashboard pack registry and resolution engine."""
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from observability_migration.adapters.source.grafana.panels import (
     _resolve_control_scope_metric,
     _retarget_esql_param_controls_to_panel_bindings,
     _strip_optional_metric_token_from_curated_esql,
+    _strip_optional_metric_token_from_curated_esql_result,
     translate_dashboard,
     translate_panel,
     translate_variables,
@@ -3059,6 +3061,50 @@ def test_layout_override_presentation_keys_skip_non_xy_panel():
     assert not dashboard_schema_errors(panels)
 
 
+def test_layout_override_metric_color_none_drops_the_tile_color():
+    panel = _metric_probe_panel()
+    panel["esql"]["primary"]["color"] = {
+        "apply_to": "value",
+        "thresholds": [{"up_to": 10, "color": "#54B399"}],
+    }
+    panels = [panel]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": "PostgreSQL Uptime", "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert "color" not in panels[0]["esql"]["primary"]
+    assert not warnings
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_metric_color_on_xy_panel_is_reported():
+    panels = [_xy_probe_panel("line")]
+    before = json.loads(json.dumps(panels[0]["esql"]))
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": panels[0]["title"], "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert panels[0]["esql"] == before
+    assert warnings and "metric_color" in warnings[0][1]
+
+
+def test_layout_override_rejects_unknown_metric_color():
+    with pytest.raises(ValueError) as excinfo:
+        validate_rule_pack_payload(
+            {"panel": {"layout_overrides": [{"title_match": "Uptime", "metric_color": "red"}]}},
+            source="probe pack",
+        )
+    assert "metric_color" in str(excinfo.value)
+
+
 def test_layout_override_cannot_change_panel_shape():
     """A late ``type`` flip keeps the XY ``metrics``/``dimension`` columns and
     has no ``primary``, so ``metric`` output would fail the schema both ways."""
@@ -3335,6 +3381,29 @@ def test_curated_query_override_materializes_control_and_metric_placeholders():
     assert "metrics.redis_memory_used_bytes IS NOT NULL" in rendered
 
 
+@pytest.mark.parametrize(
+    ("field_type", "expected"),
+    [
+        ("histogram", "PERCENTILE(TO_TDIGEST(metrics.req_seconds), 95)"),
+        ("exponential_histogram", "PERCENTILE(metrics.req_seconds, 95)"),
+        (None, "PERCENTILE(metrics.req_seconds, 95)"),
+    ],
+)
+def test_curated_histogram_placeholder_follows_target_field_type(field_type, expected):
+    class _FakeResolver:
+        def resolve_metric_field(self, name, prefer=None, source_labels=None):
+            assert prefer is None
+            return f"metrics.{name}"
+
+        def field_type(self, field_name):
+            return field_type
+
+    rendered = _materialize_curated_query_override(
+        "| STATS p95 = PERCENTILE({{metric:req_seconds:histogram}}, 95)", _FakeResolver()
+    )
+    assert expected in rendered
+
+
 def test_omit_absent_optional_metric_from_curated_tcp_errors_override():
     """TCPRcvQDrop is live_optional; absent field-caps must not hard-fail TCP Errors."""
     dashboard = {"gnetId": 1860, "title": "Node Exporter Full", "tags": ["prometheus"]}
@@ -3509,6 +3578,29 @@ def test_curated_override_with_only_absent_optional_metric_becomes_missing_telem
     assert "markdown" in (yaml_panel or {})
     assert "optional_metric" in yaml_panel["markdown"]["content"]
     assert result.status == "migrated_with_warnings"
+
+
+def test_strip_optional_metric_keeps_the_fallback_of_a_reassigned_alias():
+    query = (
+        "TS metrics-*"
+        " | WHERE {{metric:required_metric:gauge}} IS NOT NULL"
+        " OR {{metric:optional_metric:gauge}} IS NOT NULL"
+        " | STATS req = SUM({{metric:required_metric:gauge}}), cores = SUM({{metric:optional_metric:gauge}})"
+        " | EVAL shown = req, ratio = CASE(req > 0, 1, NULL)"
+        " | EVAL shown = CASE(cores > 0, cores, shown), ratio = CASE(cores > 0, req / cores, ratio), extra = cores * 2"
+        " | EVAL __values = MV_APPEND(TO_STRING(shown), TO_STRING(ratio))"
+        " | KEEP shown, ratio, extra, __values"
+    )
+
+    result = _strip_optional_metric_token_from_curated_esql_result(query, "optional_metric")
+
+    assert "cores" not in result.query
+    assert "EVAL shown = req, ratio = CASE(req > 0, 1, NULL)" in result.query
+    assert "__values = MV_APPEND(TO_STRING(shown), TO_STRING(ratio))" in result.query
+    assert "KEEP shown, ratio, __values" in result.query
+    assert "shown" not in result.removed_aliases
+    assert "ratio" not in result.removed_aliases
+    assert result.removed_aliases == ["cores", "extra"]
 
 
 def test_strip_optional_metric_handles_singleton_assignment():
@@ -7057,6 +7149,9 @@ def test_15760_ratio_tiles_are_one_value_without_the_pod_cgroup():
         _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
         assert 'k8s.container.name != ""' in query
         assert "STATS percent = AVG(percent)" in query
+        # A fixed bucket keeps one full bucket inside the window on any time range.
+        assert "TBUCKET(30 minutes)" in query
+        assert "?_tend - 1 hour" in query
         assert yaml_panel["esql"]["type"] == "metric"
 
 
@@ -7066,6 +7161,37 @@ def test_15760_resources_by_container_drops_the_pod_cgroup():
         "type": "table",
         "title": "Resources by container",
         "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) by (container)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert 'k8s.container.name != ""' in query
+    assert "memory_bytes = SUM(LAST_OVER_TIME(" in query
+    assert "TBUCKET(30 minutes)" in query
+
+
+def test_15760_memory_by_container_sums_across_pods():
+    panel = {
+        "id": 51,
+        "type": "timeseries",
+        "title": "Memory Usage by container",
+        "targets": [
+            {"expr": "sum(max_over_time(container_memory_working_set_bytes[5m])) by (container, id)", "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert "SUM(MAX_OVER_TIME(" in query
+    assert 'k8s.container.name != ""' in query
+
+
+def test_15760_throttled_seconds_drop_the_pod_cgroup():
+    panel = {
+        "id": 59,
+        "type": "timeseries",
+        "title": "CPU Throttled seconds by container",
+        "targets": [
+            {"expr": "sum(rate(container_cpu_cfs_throttled_seconds_total[5m])) by (container)", "refId": "A"}
+        ],
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
@@ -7133,7 +7259,7 @@ def test_15760_oom_events_increase_by_container():
     result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
     assert result.status == "migrated_with_warnings", result.reasons
     assert "INCREASE" in query
-    assert "container" in query
+    assert 'k8s.container.name != ""' in query
     assert yaml_panel["esql"]["type"] in ("line", "area")
 
 
@@ -7153,8 +7279,10 @@ def test_15760_restarts_treat_an_empty_job_selection_as_all():
     }
     result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
     assert result.status == "migrated_with_warnings", result.reasons
-    assert "?job IS NULL" in query
-    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' in query
+    assert "MV_COUNT(?job) == 0" in query
+    # The job variable has no All option, and ?job is a list, so no scalar compare.
+    assert '?job == ""' not in query
+    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' not in query
     assert "INCREASE" in query
     assert yaml_panel["esql"]["type"] in ("line", "area")
 
@@ -7212,7 +7340,7 @@ def test_15759_cpu_by_pod_uses_cadvisor_not_node_cpu():
     assert "pod" in query
 
 
-def test_15759_throttled_cores_use_cadvisor_cfs():
+def test_15759_throttled_cores_keep_node_exporter_metric():
     panel = {
         "id": 66,
         "type": "timeseries",
@@ -7226,10 +7354,39 @@ def test_15759_throttled_cores_use_cadvisor_cfs():
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
-    assert "container_cpu_cfs_throttled_seconds_total" in query
-    assert "node_cpu_core_throttles_total" not in query
+    assert "node_cpu_core_throttles_total" in query
+    assert "container_cpu_cfs_throttled_seconds_total" not in query
+    assert "?instance" in query
+    assert "?node" not in query
+
+
+def test_15759_memory_by_pod_drops_the_pod_cgroup():
+    panel = {
+        "id": 28,
+        "type": "timeseries",
+        "title": "Memory usage by Pod",
+        "targets": [
+            {"expr": 'sum(container_memory_working_set_bytes{node="$node", image!=""}) by (pod)', "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
     assert 'k8s.container.name != ""' in query
     assert "?node" in query
+
+
+def test_15759_pods_on_node_counts_current_pods_by_namespace():
+    panel = {
+        "id": 24,
+        "type": "stat",
+        "title": "Pods on node",
+        "targets": [{"expr": 'sum(kube_pod_info{node="$node"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    # Prometheus instant-query lookback, so deleted pods are not counted.
+    assert "@timestamp >= ?_tend - 5 minutes" in query
+    assert "BY k8s.namespace.name, k8s.pod.name" in query
 
 
 def test_15759_pod_list_groups_by_pod():
@@ -7313,6 +7470,10 @@ def test_15759_cpu_gauge_title_keeps_its_double_space():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "percent = busy" in query
     assert "* 100" not in query
+    assert "TBUCKET(30 minutes)" in query
+    assert "?_tend - 1 hour" in query
+    # Summing per cpu index across instances would exceed 1 with no instance selected.
+    assert "service.instance.id, cpu" in query
     assert yaml_panel["esql"]["type"] == "metric"
     assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
 
@@ -7364,6 +7525,20 @@ def test_15759_overview_stat_row_sits_flush_under_the_tiles():
                 "id": 18,
                 "type": "stat",
                 "title": "uptime",
+                "options": {"colorMode": "value"},
+                "fieldConfig": {
+                    "defaults": {
+                        "unit": "s",
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {"color": "green", "value": None},
+                                {"color": "#EAB839", "value": 25228800},
+                                {"color": "red", "value": 31536000},
+                            ],
+                        },
+                    }
+                },
                 "targets": [{"expr": "node_time_seconds - node_boot_time_seconds", "refId": "A"}],
                 "gridPos": {"h": 3, "w": 4, "x": 8, "y": 9},
             },
@@ -7416,6 +7591,34 @@ def test_views_fidelity_manifests_have_no_unknown():
         fidelities = {panel["fidelity"] for panel in manifest["panels"]}
         assert "UNKNOWN" not in fidelities
         assert len(manifest["panels"]) == count
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    [
+        "grafana_15759_k8s_views_nodes",
+        "grafana_15760_k8s_views_pods",
+        "grafana_15757_k8s_views_global",
+        "grafana_13646_k8s_persistent_volumes",
+        "grafana_12006_k8s_apiserver",
+        "grafana_15761_k8s_system_apiserver",
+    ],
+)
+def test_k8s_views_manifest_notes_match_pack_notes(pack_dir):
+    import yaml
+
+    base = (
+        Path(__file__).resolve().parents[1]
+        / "observability_migration/adapters/source/grafana/curated_packs"
+        / pack_dir
+    )
+    pack = yaml.safe_load((base / "pack.yaml").read_text())
+    manifest = yaml.safe_load((base / "fidelity_manifest.yaml").read_text())
+    notes = {str(entry["panel_id"]): entry.get("notes") for entry in manifest["panels"]}
+    for override in pack["panel"]["query_overrides"]:
+        assert notes.get(str(override["panel_id"])) == override["approximation_note"], override[
+            "title_match"
+        ]
 
 
 def test_15757_registry_entry_present():
@@ -7472,7 +7675,7 @@ def test_15761_registry_entry_present():
     assert entry["gnet_revision"] == 21
 
 
-def test_15761_mean_latency_is_sum_over_count_in_milliseconds():
+def test_15761_mean_latency_is_sum_over_count_in_source_seconds():
     panel = {
         "id": 53,
         "type": "timeseries",
@@ -7489,8 +7692,10 @@ def test_15761_mean_latency_is_sum_over_count_in_milliseconds():
     _result, query, yaml_panel = _translate_views(15761, "Kubernetes / System / API Server", panel)
     assert "apiserver_request_duration_seconds_sum" in query
     assert "apiserver_request_duration_seconds_count" in query
-    assert "total / n * 1000" in query
-    assert "?job" in query
+    # Seconds, like the source query; its ``ms`` unit is a source mislabel.
+    assert "CASE(n > 0, total / n, NULL)" in query
+    assert "* 1000" not in query
+    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' in query
     assert yaml_panel["esql"]["type"] == "area"
 
 
@@ -7504,8 +7709,7 @@ def test_15761_requests_by_code_skip_the_job_filter():
     }
     _result, query, _yaml_panel = _translate_views(15761, "Kubernetes / System / API Server", panel)
     assert "?job" not in query
-    assert "{{label:code}}" not in query
-    assert "code" in query
+    assert "STATS requests = AVG(requests) BY time_bucket, code" in query
 
 
 def test_15761_error_ratio_matches_5xx_codes():
@@ -7563,6 +7767,125 @@ def test_15761_instance_requests_are_stacked():
     assert errors == [], errors
 
 
+def _translate_15761_with_job_variable():
+    """Revision-21 templating: ``job`` is multi, no All option, no current value."""
+    dashboard = {
+        "gnetId": 15761,
+        "title": "Kubernetes / System / API Server",
+        "tags": ["kubernetes"],
+        "templating": {
+            "list": [
+                {
+                    "name": "cluster",
+                    "type": "query",
+                    "query": {"query": "label_values(kube_node_info,cluster)"},
+                    "current": {"text": "None", "value": ""},
+                },
+                {
+                    "name": "job",
+                    "type": "query",
+                    "multi": True,
+                    "includeAll": False,
+                    "query": {"query": 'label_values(apiserver_request_total{cluster="$cluster"}, job)'},
+                    "current": {},
+                },
+            ]
+        },
+        "panels": [
+            {
+                "id": 42,
+                "type": "stat",
+                "title": "API Server - Health Status",
+                "targets": [{"expr": 'up{cluster=~"$cluster", job=~"$job"}', "refId": "A"}],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+            },
+            {
+                "id": 60,
+                "type": "table",
+                "title": "Deprecated Kubernetes Resources",
+                "targets": [{"expr": 'apiserver_requested_deprecated_apis{cluster=~"$cluster"}', "refId": "A"}],
+                "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+            },
+            {
+                "id": 53,
+                "type": "timeseries",
+                "title": "API Server - HTTP Requests Latency by instance",
+                "fieldConfig": {"defaults": {"unit": "ms"}},
+                "targets": [
+                    {
+                        "expr": 'sum(rate(apiserver_request_duration_seconds_sum{job=~"$job"}[5m])) by (instance) / sum(rate(apiserver_request_duration_seconds_count{job=~"$job"}[5m])) by (instance)',
+                        "refId": "A",
+                    }
+                ],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+            },
+            {
+                "id": 47,
+                "type": "timeseries",
+                "title": "API Server - CPU Usage by instance",
+                "fieldConfig": {"defaults": {"unit": "percent"}},
+                "targets": [{"expr": 'rate(process_cpu_seconds_total{job=~"$job"}[5m])', "refId": "A"}],
+                "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+            },
+        ],
+    }
+    resolved, resolver = _resolve_views(15761, "Kubernetes / System / API Server")
+    result = translate_dashboard(
+        dashboard,
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    return result.dashboard_ir.to_yaml_dict()
+
+
+def test_15761_job_filter_matches_the_default_job_control():
+    yaml_dict = _translate_15761_with_job_variable()
+    job = next(c for c in yaml_dict["controls"] if c["variable_name"] == "job")
+    assert job["variable_type"] == "multi_values"
+    # Grafana opens on the first job; the Kibana control opens on ".*". Every
+    # job filter must accept that default or the panels start empty.
+    assert job["default"] == [".*"]
+    by_title = {panel["title"]: panel for panel in yaml_dict["panels"]}
+    for title in (
+        "API Server - Health Status",
+        "API Server - HTTP Requests Latency by instance",
+        "API Server - CPU Usage by instance",
+    ):
+        query = by_title[title]["esql"]["query"]
+        assert 'MV_CONTAINS(TO_STRING(?job), ".*")' in query, title
+        assert "MV_COUNT(?job) == 0" in query, title
+        # Scalar checks on a multi-value parameter warn and return null.
+        assert '?job == ""' not in query, title
+        assert "?job IS NULL" not in query, title
+    errors = dashboard_schema_errors(yaml_dict["panels"])
+    assert errors == [], errors
+
+
+def test_15761_unselected_job_keeps_shared_metrics_on_apiserver_jobs():
+    yaml_dict = _translate_15761_with_job_variable()
+    by_title = {panel["title"]: panel for panel in yaml_dict["panels"]}
+    # ``up`` and the process metrics exist for every target, so ".*" alone
+    # would show node-exporter, kubelet, and every other job.
+    for title in ("API Server - Health Status", "API Server - CPU Usage by instance"):
+        assert 'RLIKE ".*apiserver.*"' in by_title[title]["esql"]["query"], title
+    # Only the API server exports apiserver_* metrics; no name heuristic there.
+    latency = by_title["API Server - HTTP Requests Latency by instance"]["esql"]["query"]
+    assert "apiserver.*" not in latency
+
+
+def test_15761_deprecated_table_has_numeric_metric_and_source_columns():
+    yaml_dict = _translate_15761_with_job_variable()
+    by_title = {panel["title"]: panel for panel in yaml_dict["panels"]}
+    table = by_title["Deprecated Kubernetes Resources"]["esql"]
+    assert table["type"] == "datatable"
+    assert table["metrics"] == [{"field": "seen"}]
+    rows = [breakdown["field"] for breakdown in table["breakdowns"]]
+    assert rows == ["group", "version", "resource", "removed_release"]
+    assert "subresource" not in table["query"]
+
+
 def test_17347_registry_entry_present():
     entry = find_curated_pack(gnet_id=17347, title="", tags=[])
     assert entry is not None
@@ -7600,10 +7923,109 @@ def test_17347_service_filter_is_a_prefix_and_drops_provider():
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, _yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
-    assert 'RLIKE CONCAT(TO_STRING(?service), ".*")' in query
-    assert 'SPLIT(service.name, "@")' in query
+    # ES|QL RLIKE rejects a computed pattern, so the prefix is STARTS_WITH.
+    assert "STARTS_WITH(TO_STRING(service), TO_STRING(?service))" in query
+    assert "RLIKE CONCAT" not in query
+    # Traefik's router label, not the OTel service.name resource attribute.
+    assert 'SPLIT(service, "@")' in query
+    assert "service.name" not in query
     assert "topk" not in query
     assert 'protocol == "http"' in query
+    # Series that share a name once @provider is dropped are summed rates.
+    assert "STATS requests = SUM(requests) BY time_bucket, series" in query
+
+
+def test_17347_no_query_uses_a_computed_rlike_pattern():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    pack = yaml.safe_load((Path(pkg.__file__).parent / "grafana_17347_traefik" / "pack.yaml").read_text())
+    for override in pack["panel"]["query_overrides"]:
+        query = override["esql_query"]
+        # RLIKE takes a string literal or a bare parameter only.
+        assert not re.search(r'RLIKE\s+(?!"|\?\w+\b)', query), override["title_match"]
+
+
+def test_17347_ratios_sum_parts_before_dividing():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    pack = yaml.safe_load((Path(pkg.__file__).parent / "grafana_17347_traefik" / "pack.yaml").read_text())
+    by_id = {override["panel_id"]: override["esql_query"] for override in pack["panel"]["query_overrides"]}
+    for panel_id in (3, 4):
+        assert "STATS inside = SUM(inside), total = SUM(total) BY time_bucket, service" in by_id[panel_id]
+        assert "AVG(failing)" not in by_id[panel_id]
+    assert "STATS total = SUM(total), n = SUM(n) BY time_bucket, series" in by_id[23]
+    assert "AVG(latency)" not in by_id[23]
+    for panel_id in (5, 17, 18, 19, 20, 24):
+        assert "= AVG(" not in by_id[panel_id], panel_id
+
+
+def test_17347_instances_count_the_end_of_the_range():
+    panel = {
+        "id": 13,
+        "type": "stat",
+        "title": "Traefik Instances",
+        "targets": [{"expr": "count(traefik_config_reloads_total)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+    }
+    _result, query, yaml_panel = _translate_views(17347, "Traefik Official Kubernetes Dashboard", panel)
+    assert "@timestamp >= ?_tend - 5 minutes" in query
+    assert "STATS instances = COUNT_DISTINCT(" in query
+    assert yaml_panel["esql"]["type"] == "metric"
+
+
+def test_17347_service_control_drops_the_provider_suffix():
+    dashboard = {
+        "gnetId": 17347,
+        "title": "Traefik Official Kubernetes Dashboard",
+        "tags": [],
+        "templating": {
+            "list": [
+                {
+                    "name": "service",
+                    "type": "query",
+                    "query": {"query": "label_values(traefik_service_requests_total, service)"},
+                    "definition": "label_values(traefik_service_requests_total, service)",
+                    "regex": "/([^@]+)@.*/",
+                    "includeAll": True,
+                    "multi": False,
+                    "current": {},
+                }
+            ]
+        },
+        "panels": [
+            {
+                "id": 5,
+                "type": "timeseries",
+                "title": "Most requested services",
+                "targets": [
+                    {"expr": 'sum(rate(traefik_service_requests_total{service=~"$service.*"}[5m])) by (service)', "refId": "A"}
+                ],
+                "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+            }
+        ],
+    }
+    for profile in (None, "prometheus_native"):
+        resolved, _resolver = _resolve_views(17347, "Traefik Official Kubernetes Dashboard")
+        resolver = SchemaResolver(resolved, field_profile=profile) if profile else SchemaResolver(resolved)
+        result = translate_dashboard(
+            dashboard,
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=resolved,
+            resolver=resolver,
+        )
+        controls = result.dashboard_ir.to_yaml_dict().get("controls") or []
+        service = next(control for control in controls if control.get("variable_name") == "service")
+        field = "`labels.service`" if profile else "service"
+        query = service["query"]
+        strip = f'EVAL {field} = MV_FIRST(SPLIT(TO_STRING({field}), "@"))'
+        assert strip in query, query
+        assert query.index(strip) < query.index(f"STATS count = COUNT(*) BY {field}")
+        assert "service.name" not in query
 
 
 def test_17347_slow_services_are_cumulative_latency():
@@ -7689,7 +8111,12 @@ def test_17347_http_code_titles_drop_the_interval_variable():
     codes = next(panel for panel in panels if panel["title"] == "HTTP codes")
     other = next(panel for panel in panels if panel["title"] == "Other codes")
     assert codes["esql"]["type"] == "pie"
-    assert 'RLIKE "2.."' not in (codes["esql"].get("query") or "")
+    assert "BY slice" in codes["esql"]["query"]
+    # code!~"2..|5.." also matches series with no code label.
+    assert (
+        'WHERE code IS NULL OR NOT (code RLIKE "2.." OR code RLIKE "5..")'
+        in other["esql"]["query"]
+    )
     assert 'NOT (code RLIKE "2.." OR code RLIKE "5..")' in (other["esql"].get("query") or "")
     errors = dashboard_schema_errors(panels)
     assert errors == [], errors
@@ -7742,50 +8169,75 @@ def test_15757_network_mirrors_transmit():
     assert "received = rx" in query
 
 
-def test_15757_namespace_cpu_drops_the_cadvisor_parent():
-    panel = {
-        "id": 46,
-        "type": "timeseries",
-        "title": "CPU Utilization by namespace",
-        "targets": [
-            {
-                "expr": 'sum(rate(container_cpu_usage_seconds_total{image!=""}[5m])) by (namespace)',
-                "refId": "A",
-            }
-        ],
-        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
-    }
-    _result, query, _yaml_panel = _translate_views(15757, "Kubernetes / Views / Global", panel)
-    assert '!= ""' in query
-    assert '!= "POD"' not in query
+def test_15757_job_filter_uses_the_multi_select_shape():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_15757_k8s_views_global" / "pack.yaml"
+    pack = yaml.safe_load(path.read_text())
+    job_queries = [
+        override["esql_query"]
+        for override in pack["panel"]["query_overrides"]
+        if "?job" in override["esql_query"]
+    ]
+    assert job_queries
+    for query in job_queries:
+        assert '?job == ""' not in query
+        assert "?job IS NULL" not in query
+        assert "MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job)" in query
 
 
-def test_15757_namespace_network_keeps_the_sandbox_series():
-    panel = {
-        "id": 79,
-        "type": "timeseries",
-        "title": "Network Received by namespace",
-        "targets": [
-            {
-                "expr": "sum(rate(container_network_receive_bytes_total[5m])) by (namespace)",
-                "refId": "A",
-            }
-        ],
-        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
-    }
-    _result, query, _yaml_panel = _translate_views(15757, "Kubernetes / Views / Global", panel)
-    assert '!= "POD"' not in query
-    assert "container_network_receive_bytes_total" in query
+def test_15757_container_filters_match_the_source():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_15757_k8s_views_global" / "pack.yaml"
+    pack = yaml.safe_load(path.read_text())
+    by_id = {override["panel_id"]: override["esql_query"] for override in pack["panel"]["query_overrides"]}
+    # image!="" panels drop the pod-level cgroup, which has no container label.
+    for panel_id in (46, 50, 82):
+        assert 'container}} != ""' in by_id[panel_id], panel_id
+        assert '!= "POD"' not in by_id[panel_id], panel_id
+    # Network series live on the pod sandbox; the source has no container filter.
+    assert "container}}" not in by_id[79]
 
 
-def test_15757_cpu_tiles_survive_a_missing_recording_rule():
-    """machine_cpu_cores is a kube-prometheus recording rule. A node-exporter
-    cluster without it must still render Real, Requests, Limits, and Total."""
+def test_15757_overview_counts_use_the_last_five_minutes():
+    import yaml
+
+    from observability_migration.adapters.source.grafana import curated_packs as pkg
+
+    path = Path(pkg.__file__).parent / "grafana_15757_k8s_views_global" / "pack.yaml"
+    pack = yaml.safe_load(path.read_text())
+    by_id = {override["panel_id"]: override["esql_query"] for override in pack["panel"]["query_overrides"]}
+    for panel_id in (59, 62, 63):
+        assert "@timestamp >= ?_tend - 5 minutes" in by_id[panel_id], panel_id
+
+
+@pytest.mark.parametrize(
+    ("panel_id", "title", "labels", "fallback_values"),
+    [
+        (77, "Global CPU  Usage", ["Real", "Requests", "Limits"], ["requests", "limits"]),
+        (78, "Global RAM Usage", ["Real", "Requests", "Limits"], ["requests", "limits"]),
+        (37, "CPU Usage", ["Real", "Requests", "Limits", "Total"], ["shown_total"]),
+        (39, "RAM Usage", ["Real", "Requests", "Limits", "Total"], ["shown_total"]),
+    ],
+)
+def test_15757_capacity_panels_survive_missing_machine_recording_rules(
+    panel_id, title, labels, fallback_values
+):
+    """machine_cpu_cores and machine_memory_bytes are kube-prometheus recording
+    rules. Without them, every label must still get its value, from the node
+    CPU count or MemTotal."""
     dashboard = {"gnetId": 15757, "title": "Kubernetes / Views / Global", "tags": ["kubernetes"]}
     resolved = resolve_pack_for_dashboard(dashboard, RulePackConfig())
     resolver = SchemaResolver(resolved, field_profile="prometheus_native")
     resolver._field_cache = {
         "metrics.node_cpu_seconds_total": {"double": {"type": "double"}},
+        "metrics.node_memory_MemTotal_bytes": {"double": {"type": "double"}},
+        "metrics.node_memory_MemAvailable_bytes": {"double": {"type": "double"}},
         "metrics.kube_pod_container_resource_requests": {"double": {"type": "double"}},
         "metrics.kube_pod_container_resource_limits": {"double": {"type": "double"}},
         "labels.mode": {"keyword": {"type": "keyword"}},
@@ -7798,9 +8250,9 @@ def test_15757_cpu_tiles_survive_a_missing_recording_rule():
     resolver._discovery_attempted = True
     resolver._discovery_status = "ok"
     panel = {
-        "id": 37,
+        "id": panel_id,
         "type": "stat",
-        "title": "CPU Usage",
+        "title": title,
         "targets": [{"expr": "sum(rate(node_cpu_seconds_total[5m]))", "refId": "A"}],
         "gridPos": {"x": 0, "y": 0, "w": 6, "h": 8},
     }
@@ -7813,10 +8265,15 @@ def test_15757_cpu_tiles_survive_a_missing_recording_rule():
     )
     query = (yaml_panel.get("esql") or {}).get("query") or ""
     assert result.status == "migrated_with_warnings", result.reasons
-    assert "machine_cpu_cores" not in query
-    assert "cpu_count" in query
-    assert '"Total"' in query
-    assert "metrics.node_cpu_seconds_total" in query
+    assert "machine_" not in query
+    assert "cores" not in query
+    for label in labels:
+        assert f'"{label}"' in query, label
+    for alias in fallback_values:
+        assert f"COALESCE(TO_STRING({alias}), \"\")" in query, alias
+    # MV_ZIP pairs labels with values; one missing value blanks a tile.
+    unpivot_values = re.findall(r'COALESCE\(TO_STRING\((\w+)\), ""\)', query)
+    assert len(unpivot_values) == len(labels), unpivot_values
 
 
 def test_15757_overview_tiles_share_one_row():
@@ -7890,9 +8347,9 @@ def test_15757_overview_tiles_share_one_row():
 
 def test_13646_fill_horizons_use_one_day_of_growth():
     for panel_id, title, horizon in (
-        (22, "PVCs Full in 2 days - Based on Daily Usage", "< 2"),
-        (28, "PVCs Full in 5 days - Based on Daily Usage", "< 5"),
-        (27, "PVCs Full in 1 Week - Based on Daily Usage", "< 7"),
+        (22, "PVCs Full in 2 days - Based on Daily Usage", "available + drop * 2 < 0"),
+        (28, "PVCs Full in 5 days - Based on Daily Usage", "available + drop * 5 < 0"),
+        (27, "PVCs Full in 1 Week - Based on Daily Usage", "available + drop * 7 < 0"),
     ):
         panel = {
             "id": panel_id,
@@ -7905,7 +8362,8 @@ def test_13646_fill_horizons_use_one_day_of_growth():
         assert "DELTA(" in query
         assert "kubelet_volume_stats_available_bytes" in query
         assert "drop < 0" in query
-        assert "ROUND(" in query
+        assert "ROUND(" not in query
+        assert "kubelet_volume_stats_used_bytes" not in query
         assert "24 hours" in query
         assert horizon in query
         assert yaml_panel["esql"]["type"] == "metric"
@@ -7937,22 +8395,38 @@ def test_13646_weekly_rate_uses_a_week_long_delta():
     assert "168 hours" in query
     assert "/ 604800" in query
     assert "?k8s_namespace" in query
+    # rate(x[1w]) looks back a full week whatever the dashboard range.
+    assert "@timestamp >= ?_tstart - 168 hours" in query
+    assert "WHERE time_bucket >= ?_tstart" in query
 
 
-def test_13646_storage_class_uses_kube_state_metrics_v2_labels():
+def test_13646_daily_windows_read_a_day_before_the_range():
+    for panel_id, title in (
+        (12, "Daily Volume Usage Rate"),
+        (22, "PVCs Full in 2 days - Based on Daily Usage"),
+    ):
+        panel = {
+            "id": panel_id,
+            "type": "graph",
+            "title": title,
+            "targets": [{"expr": "rate(kubelet_volume_stats_used_bytes[1d])", "refId": "A"}],
+            "gridPos": {"x": 0, "y": 0, "w": 24, "h": 7},
+        }
+        _result, query, _yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
+        assert "@timestamp >= ?_tstart - 24 hours" in query, title
+
+
+def test_13646_storage_class_uses_kube_state_metrics_labels():
     panel = {
         "id": 7,
         "type": "table",
         "title": "Storage Class",
         "targets": [{"expr": "kube_storageclass_info", "refId": "A"}],
-        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 7},
     }
-    _result, query, yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
-    assert "reclaim_policy" in query
-    assert "volume_binding_mode" in query
-    assert "reclaimPolicy" not in query
-    assert "volumeBindingMode" not in query
-    assert yaml_panel["esql"]["type"] == "datatable"
+    _result, query, _yaml_panel = _translate_views(13646, "kubernetes-persistent-volumes", panel)
+    assert "reclaim_policy" in query and "volume_binding_mode" in query
+    assert "reclaimPolicy" not in query and "volumeBindingMode" not in query
 
 
 def test_12006_latency_series_are_named_percentiles():
@@ -7972,7 +8446,6 @@ def test_12006_latency_series_are_named_percentiles():
     _result, query, yaml_panel = _translate_views(12006, "Kubernetes apiserver", panel)
     assert "apiserver_request_duration_seconds_bucket" in query
     assert '"+Inf"' in query
-    assert "ROUND(" in query
     assert "p95 =" in query
     assert "p90 =" in query
     assert "p50 =" in query
@@ -7981,6 +8454,36 @@ def test_12006_latency_series_are_named_percentiles():
     assert '!= "WATCH"' in query
     assert "_A" not in query
     assert yaml_panel["esql"]["type"] == "line"
+
+
+@pytest.mark.parametrize(
+    ("panel_id", "title", "metric"),
+    [
+        (10, "workqueue service time", "workqueue_queue_duration_seconds_bucket"),
+        (2, "apiserver request latency", "apiserver_request_duration_seconds_bucket"),
+        (12, "workqueue processing time", "workqueue_work_duration_seconds_bucket"),
+        (4, "etcd request latency", "etcd_request_duration_seconds_bucket"),
+    ],
+)
+def test_12006_latency_reads_bucket_bounds_from_the_le_label(panel_id, title, metric):
+    """client_golang writes le as 1e-08 or 9.999999999999999e-06 and
+    Prometheus 3 writes 1.0, so bounds are parsed, never matched as strings.
+    Only +Inf is compared literally."""
+    panel = {
+        "id": panel_id,
+        "type": "graph",
+        "title": title,
+        "targets": [{"expr": f"histogram_quantile(0.95, sum(rate({metric}[5m])) by (le))", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(12006, "Kubernetes apiserver", panel)
+    assert metric in query
+    assert "TO_DOUBLE(" in query
+    assert "ROUND(" not in query
+    assert set(re.findall(r'== "([^"]*)"', query)) <= {"+Inf", "CONNECT", "WATCH"}
+    # Only +Inf reaching the quantile falls back to the highest finite bound.
+    for quantile in ("p95", "p90", "p50"):
+        assert f"{quantile} = CASE(total > 0, COALESCE({quantile}, top), NULL)" in query
 
 
 def test_12006_bottom_row_is_aligned():
@@ -8007,7 +8510,7 @@ def test_12006_bottom_row_is_aligned():
                 "title": "etcd helper cache hit ratio",
                 "targets": [
                     {
-                        "expr": "sum(rate(etcd_helper_cache_hit_total[5m]))/sum(rate(etcd_helper_cache_miss_total[5m]))",
+                        "expr": "sum(rate(etcd_helper_cache_hit_total[5m])) / (sum(rate(etcd_helper_cache_hit_total[5m])) + sum(rate(etcd_helper_cache_miss_total[5m])))",
                         "refId": "A",
                     }
                 ],

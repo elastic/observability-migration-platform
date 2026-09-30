@@ -5,7 +5,7 @@
 # Curated pack — Grafana dashboard 15760
 # https://grafana.com/grafana/dashboards/15760-kubernetes-views-pods/
 #
-# Kubernetes / Views / Pods (revision 41). Info stats become tables of the legend labels. Request and limit ratios drop the PromQL and-on running-pod join and keep the namespace, pod, and cluster controls. Charts are lines on the 48-column grid.
+# Kubernetes / Views / Pods (revision 41). Info stats become tables of the legend labels. Request and limit ratios drop the PromQL and-on running-pod join and keep the namespace, pod, and cluster controls. Panels use the 48-column grid.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -155,7 +155,7 @@ panel:
     - title_match: "Total pod CPU Requests usage"
       panel_id: 39
       kibana_type_override: metric
-      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -164,15 +164,15 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
-        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL percent = CASE(budget > 0, usage / budget, NULL)
         | STATS percent = AVG(percent)
         | KEEP percent
     - title_match: "Total pod CPU Limits usage"
       panel_id: 48
       kibana_type_override: metric
-      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -181,15 +181,15 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS usage = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), budget = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL percent = CASE(budget > 0, usage / budget, NULL)
         | STATS percent = AVG(percent)
         | KEEP percent
     - title_match: "Total pod RAM Requests usage"
       panel_id: 40
       kibana_type_override: metric
-      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -198,15 +198,15 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
-        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL percent = CASE(budget > 0, usage / budget, NULL)
         | STATS percent = AVG(percent)
         | KEEP percent
     - title_match: "Total pod RAM Limits usage"
       panel_id: 49
       kibana_type_override: metric
-      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -215,15 +215,15 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS usage = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), budget = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(30 minutes)
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL percent = CASE(budget > 0, usage / budget, NULL)
         | STATS percent = AVG(percent)
         | KEEP percent
     - title_match: "Resources by container"
       panel_id: 38
       kibana_type_override: datatable
-      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes."
+      approximation_note: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes, each summed across the selected pods. Values average 30-minute buckets over the last hour."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -232,8 +232,8 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS cpu_requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), memory_requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), memory_limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), cpu_cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), memory_bytes = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
-        | WHERE time_bucket >= ?_tend - 2 hours
+        | STATS cpu_requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), memory_requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), memory_limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), cpu_cores = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), memory_bytes = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(30 minutes), {{label:container}}
+        | WHERE time_bucket >= ?_tend - 1 hour
         | EVAL container = {{label:container}}
         | STATS cpu_requests = AVG(cpu_requests), cpu_limits = AVG(cpu_limits), memory_requests = AVG(memory_requests), memory_limits = AVG(memory_limits), cpu_cores = AVG(cpu_cores), memory_bytes = AVG(memory_bytes) BY container
         | KEEP container, cpu_requests, cpu_limits, cpu_cores, memory_requests, memory_limits, memory_bytes
@@ -290,7 +290,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Memory Usage by container"
       panel_id: 51
-      approximation_note: "Working set by container. max_over_time is the max in each bucket. The cAdvisor id is not a second series."
+      approximation_note: "Working set by container, summed across the selected pods. max_over_time is the max in each bucket. The cAdvisor id is not a second series. Empty container names are omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -299,20 +299,21 @@ panel:
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
         | WHERE {{label:container}} != ""
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
-        | STATS memory_bytes = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
+        | STATS memory_bytes = SUM(MAX_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
         | EVAL container = {{label:container}}
         | STATS memory_bytes = AVG(memory_bytes) BY time_bucket, container
         | KEEP time_bucket, container, memory_bytes
         | SORT time_bucket ASC
     - title_match: "CPU Throttled seconds by container"
       panel_id: 59
-      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container."
+      approximation_note: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container. Empty container names are omitted so the pod cgroup is not a separate series."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_cpu_cfs_throttled_seconds_total:counter}} IS NOT NULL
         | STATS throttled_seconds = SUM(RATE({{metric:container_cpu_cfs_throttled_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
         | EVAL container = {{label:container}}
@@ -321,13 +322,14 @@ panel:
         | SORT time_bucket ASC
     - title_match: "OOM Events by container"
       panel_id: 60
-      approximation_note: "Increase over the dashboard time range, by container. The source axis max of 1 is kept."
+      approximation_note: "Increase over the dashboard time range, by container. Empty container names are omitted. The source axis max of 1 is kept."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
+        | WHERE {{label:container}} != ""
         | WHERE {{metric:container_oom_events_total:counter}} IS NOT NULL
         | STATS oom_events = SUM(INCREASE({{metric:container_oom_events_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
         | EVAL container = {{label:container}}
@@ -336,14 +338,14 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Container Restarts by container"
       panel_id: 61
-      approximation_note: "Increase over the dashboard time range, by container. A blank job selection or Grafana's All value .* shows every job; a chosen job keeps only that series. The source axis max of 1 is kept."
+      approximation_note: "Increase over the dashboard time range, by container. The job control has no All option and defaults to kube-state-metrics, as in the source; clearing it shows every job. The source axis max of 1 is kept."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
         | STATS restarts = SUM(INCREASE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
         | EVAL container = {{label:container}}

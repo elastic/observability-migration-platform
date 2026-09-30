@@ -11,10 +11,20 @@
 # interval variable is a Grafana step; rates follow the dashboard time range.
 # topk(15) is not applied: a per-step top 15 cannot stay one stable Lens
 # series, so every positive series remains. Apdex uses the dashboard formula,
-# (le 0.3s + le 1.2s) / 2 / code-200 count, for HTTP 200 by method.
+# (le 0.3s + le 1.2s) / 2 / code-200 count, for HTTP 200 by method. Series
+# that share a name once @provider is dropped are summed; ratios sum their
+# numerator and denominator first. plugin.py drops @provider from the service
+# control values, as the source variable regex /([^@]+)@.*/ does.
 
 query:
   metrics_dataset_filter: "prometheus"
+
+  # Traefik's router `service` label is not the OTel service.name resource
+  # attribute. Keep it canonical so each field profile namespaces the bare
+  # label instead of resolving it to service.name.
+  label_candidates:
+    service:
+      - service
 
   metric_kinds:
     traefik_config_reloads_total: counter
@@ -47,10 +57,11 @@ panel:
     - title_match: "Traefik Instances"
       panel_id: 13
       kibana_type_override: metric
-      approximation_note: "Count of instances publishing traefik_config_reloads_total."
+      approximation_note: "Count of instances publishing traefik_config_reloads_total in the last 5 minutes before the end of the time range, like the source lastNotNull reduce."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:traefik_config_reloads_total:counter}} IS NOT NULL
         | STATS instances = COUNT_DISTINCT({{label:instance}})
         | KEEP instances
@@ -91,7 +102,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
         | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:method}}, {{label:code}}
@@ -101,19 +112,18 @@ panel:
     - title_match: "Top slow services"
       panel_id: 23
       kibana_type_override: line
-      primary_format: s
       approximation_note: "Lifetime average latency, cumulative duration sum divided by count, in seconds. The @provider suffix is removed from the service name. topk(15) is omitted so the time series stays stable."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{metric:traefik_service_request_duration_seconds_sum:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
         | STATS total = SUM(LAST_OVER_TIME({{metric:traefik_service_request_duration_seconds_sum:counter}})), n = SUM(LAST_OVER_TIME({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
-        | EVAL latency = CASE(n > 0, total / n, NULL)
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
-        | STATS latency = AVG(latency) BY time_bucket, series
+        | STATS total = SUM(total), n = SUM(n) BY time_bucket, series
+        | EVAL latency = CASE(n > 0, total / n, NULL)
         | KEEP time_bucket, series, latency
         | SORT time_bucket ASC
     - title_match: "Most requested services"
@@ -123,14 +133,14 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
         | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:code}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), code = {{label:code}}
         | EVAL series = CONCAT("[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
         | WHERE requests > 0
-        | STATS requests = AVG(requests) BY time_bucket, series
+        | STATS requests = SUM(requests) BY time_bucket, series
         | KEEP time_bucket, series, requests
         | SORT time_bucket ASC
     - title_match: "Services failing SLO of 1200ms"
@@ -140,13 +150,13 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{metric:traefik_service_request_duration_seconds_bucket:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
         | STATS inside = SUM(CASE({{label:le}} == "1.2", RATE({{metric:traefik_service_request_duration_seconds_bucket:counter}}), NULL)), total = SUM(RATE({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@"))
+        | STATS inside = SUM(inside), total = SUM(total) BY time_bucket, service
         | EVAL failing = CASE(total > 0, 1 - inside / total, NULL)
         | WHERE failing > 0
-        | STATS failing = AVG(failing) BY time_bucket, service
         | KEEP time_bucket, service, failing
         | SORT time_bucket ASC
     - title_match: "Services failing SLO of 300ms"
@@ -156,13 +166,13 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{metric:traefik_service_request_duration_seconds_bucket:counter}} IS NOT NULL OR {{metric:traefik_service_request_duration_seconds_count:counter}} IS NOT NULL
         | STATS inside = SUM(CASE({{label:le}} == "0.3", RATE({{metric:traefik_service_request_duration_seconds_bucket:counter}}), NULL)), total = SUM(RATE({{metric:traefik_service_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@"))
+        | STATS inside = SUM(inside), total = SUM(total) BY time_bucket, service
         | EVAL failing = CASE(total > 0, 1 - inside / total, NULL)
         | WHERE failing > 0
-        | STATS failing = AVG(failing) BY time_bucket, service
         | KEEP time_bucket, service, failing
         | SORT time_bucket ASC
     - title_match: "2xx over"
@@ -172,7 +182,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{label:code}} RLIKE "2.."
         | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
@@ -180,7 +190,7 @@ panel:
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
         | WHERE requests > 0
-        | STATS requests = AVG(requests) BY time_bucket, series
+        | STATS requests = SUM(requests) BY time_bucket, series
         | KEEP time_bucket, series, requests
         | SORT time_bucket ASC
     - title_match: "5xx over"
@@ -190,7 +200,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{label:code}} RLIKE "5.."
         | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
@@ -198,7 +208,7 @@ panel:
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
         | WHERE requests > 0
-        | STATS requests = AVG(requests) BY time_bucket, series
+        | STATS requests = SUM(requests) BY time_bucket, series
         | KEEP time_bucket, series, requests
         | SORT time_bucket ASC
     - title_match: "Other codes over"
@@ -208,15 +218,15 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
-        | WHERE NOT ({{label:code}} RLIKE "2.." OR {{label:code}} RLIKE "5..")
+        | WHERE {{label:code}} IS NULL OR NOT ({{label:code}} RLIKE "2.." OR {{label:code}} RLIKE "5..")
         | WHERE {{metric:traefik_service_requests_total:counter}} IS NOT NULL
         | STATS requests = SUM(RATE({{metric:traefik_service_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}, {{label:code}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}, code = {{label:code}}
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), "[", COALESCE(TO_STRING(code), ""), "] on ", COALESCE(TO_STRING(service), ""))
         | WHERE requests > 0
-        | STATS requests = AVG(requests) BY time_bucket, series
+        | STATS requests = SUM(requests) BY time_bucket, series
         | KEEP time_bucket, series, requests
         | SORT time_bucket ASC
     - title_match: "Requests Size"
@@ -226,14 +236,14 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{metric:traefik_service_requests_bytes_total:counter}} IS NOT NULL
         | STATS bytes = SUM(RATE({{metric:traefik_service_requests_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), " on ", COALESCE(TO_STRING(service), ""))
         | WHERE bytes > 0
-        | STATS bytes = AVG(bytes) BY time_bucket, series
+        | STATS bytes = SUM(bytes) BY time_bucket, series
         | KEEP time_bucket, series, bytes
         | SORT time_bucket ASC
     - title_match: "Responses Size"
@@ -243,14 +253,14 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR {{label:service}} RLIKE CONCAT(TO_STRING(?service), ".*"))
+        | WHERE (?service IS NULL OR ?service == "" OR ?service == ".*" OR MV_COUNT(?service) == 0 OR MV_CONTAINS(TO_STRING(?service), ".*") OR STARTS_WITH(TO_STRING({{label:service}}), TO_STRING(?service)))
         | WHERE {{label:protocol}} == "http"
         | WHERE {{metric:traefik_service_responses_bytes_total:counter}} IS NOT NULL
         | STATS bytes = SUM(RATE({{metric:traefik_service_responses_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:service}}, {{label:method}}
         | EVAL service = MV_FIRST(SPLIT({{label:service}}, "@")), method = {{label:method}}
         | EVAL series = CONCAT(COALESCE(TO_STRING(method), ""), " on ", COALESCE(TO_STRING(service), ""))
         | WHERE bytes > 0
-        | STATS bytes = AVG(bytes) BY time_bucket, series
+        | STATS bytes = SUM(bytes) BY time_bucket, series
         | KEEP time_bucket, series, bytes
         | SORT time_bucket ASC
     - title_match: "Connections per Entrypoint"
