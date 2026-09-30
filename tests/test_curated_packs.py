@@ -7010,6 +7010,9 @@ def test_15760_ratio_tiles_are_one_value_without_the_pod_cgroup():
         _result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
         assert 'k8s.container.name != ""' in query
         assert "STATS percent = AVG(percent)" in query
+        # A fixed bucket keeps one full bucket inside the window on any time range.
+        assert "TBUCKET(30 minutes)" in query
+        assert "?_tend - 1 hour" in query
         assert yaml_panel["esql"]["type"] == "metric"
 
 
@@ -7019,6 +7022,37 @@ def test_15760_resources_by_container_drops_the_pod_cgroup():
         "type": "table",
         "title": "Resources by container",
         "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total[5m])) by (container)", "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert 'k8s.container.name != ""' in query
+    assert "memory_bytes = SUM(LAST_OVER_TIME(" in query
+    assert "TBUCKET(30 minutes)" in query
+
+
+def test_15760_memory_by_container_sums_across_pods():
+    panel = {
+        "id": 51,
+        "type": "timeseries",
+        "title": "Memory Usage by container",
+        "targets": [
+            {"expr": "sum(max_over_time(container_memory_working_set_bytes[5m])) by (container, id)", "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
+    assert "SUM(MAX_OVER_TIME(" in query
+    assert 'k8s.container.name != ""' in query
+
+
+def test_15760_throttled_seconds_drop_the_pod_cgroup():
+    panel = {
+        "id": 59,
+        "type": "timeseries",
+        "title": "CPU Throttled seconds by container",
+        "targets": [
+            {"expr": "sum(rate(container_cpu_cfs_throttled_seconds_total[5m])) by (container)", "refId": "A"}
+        ],
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, _yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
@@ -7086,7 +7120,7 @@ def test_15760_oom_events_increase_by_container():
     result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
     assert result.status == "migrated_with_warnings", result.reasons
     assert "INCREASE" in query
-    assert "container" in query
+    assert 'k8s.container.name != ""' in query
     assert yaml_panel["esql"]["type"] in ("line", "area")
 
 
@@ -7165,7 +7199,7 @@ def test_15759_cpu_by_pod_uses_cadvisor_not_node_cpu():
     assert "pod" in query
 
 
-def test_15759_throttled_cores_use_cadvisor_cfs():
+def test_15759_throttled_cores_keep_node_exporter_metric():
     panel = {
         "id": 66,
         "type": "timeseries",
@@ -7179,8 +7213,23 @@ def test_15759_throttled_cores_use_cadvisor_cfs():
         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
     }
     _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
-    assert "container_cpu_cfs_throttled_seconds_total" in query
-    assert "node_cpu_core_throttles_total" not in query
+    assert "node_cpu_core_throttles_total" in query
+    assert "container_cpu_cfs_throttled_seconds_total" not in query
+    assert "?instance" in query
+    assert "?node" not in query
+
+
+def test_15759_memory_by_pod_drops_the_pod_cgroup():
+    panel = {
+        "id": 28,
+        "type": "timeseries",
+        "title": "Memory usage by Pod",
+        "targets": [
+            {"expr": 'sum(container_memory_working_set_bytes{node="$node", image!=""}) by (pod)', "refId": "A"}
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
     assert 'k8s.container.name != ""' in query
     assert "?node" in query
 
@@ -7266,6 +7315,8 @@ def test_15759_cpu_gauge_title_keeps_its_double_space():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "percent = busy" in query
     assert "* 100" not in query
+    assert "TBUCKET(30 minutes)" in query
+    assert "?_tend - 1 hour" in query
     assert yaml_panel["esql"]["type"] == "metric"
     assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
 

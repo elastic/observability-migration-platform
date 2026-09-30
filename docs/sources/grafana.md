@@ -376,11 +376,11 @@ The pod view (15760) turns the info stats into tables of the legend labels
 (owner, node, IP, priority, QoS, last termination) for every selected pod.
 Request and limit ratios cannot express the PromQL `and on` running-pod join,
 so they use the namespace, pod, and cluster controls and stay on the 0–1
-scale of the source `percentunit` axis. Each tile averages that window to one
-value. Empty container names are omitted on those tiles, on Resources by
-container, and on the per-container request charts, so the pod cgroup is not
-summed with each container. Per-container CPU drops the cAdvisor
-`id` breakdown. Received traffic is positive and transmitted is negative.
+scale of the source `percentunit` axis. Each tile averages 30-minute buckets
+over the last hour, so it has a value on any dashboard time range. Empty
+container names are omitted on every per-container panel, so the pod cgroup is
+not summed with each container or drawn as its own series. Per-container CPU
+and memory drop the cAdvisor `id` breakdown and sum across the selected pods. Received traffic is positive and transmitted is negative.
 OOM and restart charts are an increase over the dashboard time range, and
 they keep the source axis max of 1. The issue and unscheduled tables stay
 cluster-wide, as in the source queries. The job control filters restarts;
@@ -398,9 +398,10 @@ does not apply the source `nodename` regex, so choose the instance that
 matches the node. The `resolution` variable is a scrape step; chart buckets
 follow the dashboard time range. CPU usage by pod sums cAdvisor
 `container_cpu_usage_seconds_total` by pod on the selected node;
-`node_cpu_seconds_total` has no pod label. Number of CPU Core Throttled is
-the cAdvisor CFS throttle rate, because `node_cpu_core_throttles_total` is
-not a node_exporter, cAdvisor, or kube-state-metrics series.
+`node_cpu_seconds_total` has no pod label; memory usage by pod omits the pod
+cgroup the same way. Number of CPU Core Throttled keeps the node_exporter
+`node_cpu_core_throttles_total` thermal throttle rate for the selected instance.
+The CPU and RAM tiles average 30-minute buckets over the last hour.
 `node_disk_io_now` is a gauge of in-progress I/O; ES|QL cannot `rate()` a
 gauge, so that chart shows the last count by device.
 

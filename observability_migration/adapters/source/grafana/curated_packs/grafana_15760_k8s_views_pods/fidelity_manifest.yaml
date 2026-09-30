@@ -43,23 +43,23 @@ panels:
   - title: "Total pod CPU Requests usage"
     panel_id: 39
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
   - title: "Total pod CPU Limits usage"
     panel_id: 48
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
   - title: "Total pod RAM Requests usage"
     panel_id: 40
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
   - title: "Total pod RAM Limits usage"
     panel_id: 49
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. The tile averages 30-minute buckets over the last hour, so it has a value on any dashboard time range."
   - title: "Resources by container"
     panel_id: 38
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics. One row per container, with CPU in cores and memory in bytes, each summed across the selected pods. Values average 30-minute buckets over the last hour."
   - title: "CPU Usage / Requests & Limits by container"
     panel_id: 50
     fidelity: APPROXIMATE
@@ -75,15 +75,15 @@ panels:
   - title: "Memory Usage by container"
     panel_id: 51
     fidelity: APPROXIMATE
-    notes: "Working set by container. max_over_time is the max in each bucket. The cAdvisor id is not a second series."
+    notes: "Working set by container, summed across the selected pods. max_over_time is the max in each bucket. The cAdvisor id is not a second series. Empty container names are omitted."
   - title: "CPU Throttled seconds by container"
     panel_id: 59
     fidelity: APPROXIMATE
-    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container."
+    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control. Grouped by container. Empty container names are omitted so the pod cgroup is not a separate series."
   - title: "OOM Events by container"
     panel_id: 60
     fidelity: APPROXIMATE
-    notes: "Increase over the dashboard time range, by container. The source axis max of 1 is kept."
+    notes: "Increase over the dashboard time range, by container. Empty container names are omitted. The source axis max of 1 is kept."
   - title: "Container Restarts by container"
     panel_id: 61
     fidelity: APPROXIMATE

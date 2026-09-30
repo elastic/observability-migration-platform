@@ -15,11 +15,11 @@ panels:
   - title: "CPU  Usage"
     panel_id: 7
     fidelity: APPROXIMATE
-    notes: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree."
+    notes: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree. The tile averages 30-minute buckets over the last hour."
   - title: "RAM Usage"
     panel_id: 13
     fidelity: APPROXIMATE
-    notes: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit."
+    notes: "Memory in use is MemTotal minus MemAvailable, divided by MemTotal, for the selected instance. The ratio stays 0-1, matching percentunit. The tile averages 30-minute buckets over the last hour."
   - title: "Pods on node"
     panel_id: 24
     fidelity: APPROXIMATE
@@ -63,11 +63,11 @@ panels:
   - title: "Memory usage by Pod"
     panel_id: 28
     fidelity: APPROXIMATE
-    notes: "Working set summed by pod on the selected node."
+    notes: "Working set summed by pod on the selected node. The pod cgroup (empty container name) is omitted so it is not added to the containers. Empty-image pause containers are included."
   - title: "Number of CPU Core Throttled"
     panel_id: 66
     fidelity: APPROXIMATE
-    notes: "The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+    notes: "node_exporter thermal throttle events per second, summed across cores for the selected instance. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
   - title: "System Load"
     panel_id: 48
     fidelity: APPROXIMATE
@@ -115,7 +115,7 @@ panels:
   - title: "Persistent Volumes - Usage in GB"
     panel_id: 34
     fidelity: APPROXIMATE
-    notes: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value."
+    notes: "Latest used and capacity bytes per claim on the selected node. The source unit is bytes, not a converted gigabyte value. Values average 30-minute buckets over the last hour."
   - title: "Persistent Volumes - Inodes"
     panel_id: 32
     fidelity: APPROXIMATE
