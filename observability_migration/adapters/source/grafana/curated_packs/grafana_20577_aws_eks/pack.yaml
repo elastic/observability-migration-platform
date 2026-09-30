@@ -13,7 +13,8 @@
 # Gauges are 0-100. Log panels list cloudwatch_log_event documents.
 
 query:
-  metrics_dataset_filter: "prometheus"
+  # CloudWatch data is not in the prometheus dataset.
+  metrics_dataset_filter: ""
 
   metric_kinds:
     cluster_node_count: gauge
@@ -319,28 +320,26 @@ panel:
     - title_match: "[EKS Cluster Logs]"
       panel_id: 14
       kibana_type_override: datatable
-      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists cloudwatch_log_event documents whose log_stream is eks-cluster. The source pins one account and one EKS log group."
+      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists the latest 100 cloudwatch_log_event documents whose log_stream is eks-cluster, one row per event. The source pins one account and one EKS log group."
       esql_query: |
         FROM metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:cloudwatch_log_event:gauge}} IS NOT NULL
         | WHERE {{label:log_stream}} == "eks-cluster"
-        | STATS logged_at = MAX(@timestamp) BY {{label:message}}
-        | EVAL message = {{label:message}}
+        | EVAL logged_at = @timestamp, message = {{label:message}}
         | KEEP logged_at, message
         | SORT logged_at DESC
         | LIMIT 100
     - title_match: "[Fluentbit Cloudwatch Logs]"
       panel_id: 1
       kibana_type_override: datatable
-      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists cloudwatch_log_event documents whose log_stream is fluentbit."
+      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists the latest 100 cloudwatch_log_event documents whose log_stream is fluentbit, one row per event."
       esql_query: |
         FROM metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:cloudwatch_log_event:gauge}} IS NOT NULL
         | WHERE {{label:log_stream}} == "fluentbit"
-        | STATS logged_at = MAX(@timestamp) BY {{label:message}}
-        | EVAL message = {{label:message}}
+        | EVAL logged_at = @timestamp, message = {{label:message}}
         | KEEP logged_at, message
         | SORT logged_at DESC
         | LIMIT 100

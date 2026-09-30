@@ -364,6 +364,14 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
             dashboard_value = getattr(dashboard_cfg, field_name)
             if query_value not in (None, "", []):
                 setattr(pack, field_name, query_value)
+            elif (
+                query_value == ""
+                and field_name in raw_query_cfg
+                and field_name in ("metrics_dataset_filter", "logs_dataset_filter")
+            ):
+                # An explicit empty dataset filter means "no filter" (e.g. a
+                # CloudWatch pack whose data is not in the prometheus dataset).
+                setattr(pack, field_name, "")
             elif dashboard_value not in (None, "", []):
                 setattr(pack, field_name, dashboard_value)
             if field_name in raw_query_cfg or field_name in raw_dashboard_cfg:

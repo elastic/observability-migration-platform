@@ -90,7 +90,49 @@ def test_15762_absent_build_info_does_not_list_every_job():
     assert len(controls) == 1
     assert "__no_matching_series__" in controls[0]["query"]
     assert "coredns_build_info" not in controls[0]["query"]
+    assert controls[0]["query"].startswith("ROW ")
+    assert "FROM " not in controls[0]["query"]
     assert controls[0]["default"] == ["__no_matching_series__"]
+
+
+def test_15762_absent_build_info_scopes_job_to_request_counter():
+    from observability_migration.adapters.source.grafana.runtime_features import (
+        ESQL_NAMED_PARAM_BINDING,
+        set_runtime_feature,
+    )
+
+    resolved, resolver = _resolve(15762, "Kubernetes / System / CoreDNS", ["kubernetes"])
+    set_runtime_feature(
+        resolved,
+        ESQL_NAMED_PARAM_BINDING,
+        supported=True,
+        source="probe",
+        confidence="verified",
+        reason="live cluster binds named params",
+    )
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+    resolver._field_cache = {
+        "service.name": {"keyword": {"type": "keyword", "aggregatable": True}},
+        "up": {"double": {"type": "double"}},
+        "coredns_dns_requests_total": {"double": {"type": "double"}},
+    }
+    controls = translate_variables(
+        [{
+            "type": "query",
+            "name": "job",
+            "multi": True,
+            "current": {},
+            "query": 'label_values(coredns_build_info{cluster="$cluster"}, job)',
+        }],
+        datasource_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    assert len(controls) == 1
+    assert "coredns_dns_requests_total" in controls[0]["query"]
+    assert "__no_matching_series__" not in controls[0]["query"]
+    assert controls[0].get("default") != ["__no_matching_series__"]
 
 
 def test_15762_packet_size_is_sum_over_count_and_heatmaps_keep_finite_buckets():
@@ -128,6 +170,10 @@ def test_15762_packet_size_is_sum_over_count_and_heatmaps_keep_finite_buckets():
     )
     assert '!= "0"' in heatmap
     assert "TO_DOUBLE" in heatmap
+    # +Inf is filtered before the conversion so TO_DOUBLE never fails (and
+    # never attaches an evaluation warning to the panel).
+    assert heatmap.index('!= "+Inf"') < heatmap.index("TO_DOUBLE")
+    assert "cumulative" in " ".join(str(item) for item in (_result.reasons or []) + (_result.notes or []))
     assert yaml_panel["esql"]["type"] == "heatmap"
     assert yaml_panel["esql"]["y_axis"]["field"] == "bucket"
     assert yaml_panel["esql"]["metric"]["field"] == "observations"
@@ -219,6 +265,27 @@ def test_16367_quota_table_uses_raw_cadvisor_and_requests():
     assert "* 100" in query
     assert yaml_panel["esql"]["type"] == "datatable"
     assert "?node" in query
+    # cAdvisor and kube-state-metrics are separate series: requests/limits are
+    # their own FORK branches, scoped to the cpu resource.
+    assert "FORK" in query
+    assert query.count('== "cpu"') == 2
+    assert "container_cpu_usage_seconds_total}} IS NOT NULL" not in query.split("FORK")[0]
+
+    _result, memory, _yaml = _translate(
+        16367,
+        "Kubernetes / Compute Resources / Node (Pods)",
+        ["kubernetes-mixin"],
+        {
+            "id": 4,
+            "type": "table-old",
+            "title": "Memory Quota",
+            "targets": [{"expr": "sum(container_memory_working_set_bytes) by (pod)", "refId": "A"}],
+            "gridPos": {"x": 0, "y": 25, "w": 24, "h": 7},
+        },
+    )
+    assert "FORK" in memory
+    assert memory.count('== "memory"') == 2
+    assert '== "cpu"' not in memory
 
 
 def test_16367_dashboard_matches_the_schema():
@@ -410,6 +477,58 @@ def test_20577_dashboard_matches_the_schema():
     assert renamed["esql"]["mode"] == "unstacked"
     secrets = next(panel for panel in leaves if panel["title"] == "Secrets Manager")
     assert "secretsmanager_resource_count" in secrets["esql"]["query"]
-    assert any(panel["title"] == "EKS cluster logs" for panel in leaves)
-    assert any(panel["title"] == "Fluent Bit logs" for panel in leaves)
+    logs = [panel for panel in leaves if panel["title"] in {"EKS cluster logs", "Fluent Bit logs"}]
+    assert len(logs) == 2
+    for panel in logs:
+        # One row per log event, not one row per distinct message.
+        assert "STATS" not in panel["esql"]["query"]
+    # CloudWatch data is not in the prometheus dataset.
+    assert resolved.metrics_dataset_filter == ""
+    assert not any(
+        (item or {}).get("field") == "data_stream.dataset"
+        for item in (result.dashboard_ir.to_yaml_dict().get("filters") or [])
+    )
     assert _errors(yaml_panels) == []
+
+
+
+
+def test_primary_format_only_restamps_a_single_series_xy():
+    # Existing packs set primary_format on panels that can emit several XY
+    # series; those columns keep their own formats. Only the metric primary or
+    # the one metric of a single-series XY chart takes the pack format.
+    resolved, resolver = _resolve(15762, "Kubernetes / System / CoreDNS", ["kubernetes"])
+    base = "TS metrics-* | WHERE {{metric:coredns_cache_hits_total:counter}} IS NOT NULL"
+    resolved.panel_query_overrides.extend([
+        {
+            "title_match": "Probe two series",
+            "kibana_type_override": "line",
+            "primary_format": "bytes",
+            "esql_query": base + " | STATS a = SUM(RATE({{metric:coredns_cache_hits_total:counter}})), b = SUM(RATE({{metric:coredns_cache_hits_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend) | KEEP time_bucket, a, b",
+        },
+        {
+            "title_match": "Probe one series",
+            "kibana_type_override": "line",
+            "primary_format": "bytes",
+            "esql_query": base + " | STATS a = SUM(RATE({{metric:coredns_cache_hits_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend) | KEEP time_bucket, a",
+        },
+    ])
+    formats = {}
+    for panel_id, title in ((901, "Probe two series"), (902, "Probe one series")):
+        yaml_panel, _result = translate_panel(
+            {
+                "id": panel_id,
+                "type": "timeseries",
+                "title": title,
+                "targets": [{"expr": "up", "refId": "A"}],
+                "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+            },
+            datasource_index="metrics-*",
+            esql_index="metrics-*",
+            rule_pack=resolved,
+            resolver=resolver,
+        )
+        formats[title] = [(metric.get("format") or {}).get("type") for metric in yaml_panel["esql"]["metrics"]]
+    assert formats["Probe one series"] == ["bytes"]
+    assert len(formats["Probe two series"]) == 2
+    assert "bytes" not in formats["Probe two series"]

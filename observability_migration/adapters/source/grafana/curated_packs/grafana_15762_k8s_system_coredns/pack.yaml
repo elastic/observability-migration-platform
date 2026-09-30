@@ -10,7 +10,8 @@
 # instance selection (including Grafana's All value .*) is every value.
 # An empty protocol selection is every proto. CPU is process CPU in cores;
 # the source percentunit axis shows that core count as a fraction of one
-# core. Heatmaps are the per-second rate of each finite histogram bucket.
+# core. Heatmaps are the per-second rate of each finite cumulative histogram
+# bucket; Grafana converts the buckets to per-bucket counts, ES|QL cannot.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -228,25 +229,25 @@ panel:
     - title_match: "CoreDNS - DNS request duration"
       panel_id: 27
       kibana_type_override: heatmap
-      approximation_note: "Per-second rate of coredns_dns_request_duration_seconds_bucket by the bucket upper bound, in seconds. The +Inf bucket is omitted so the axis stays on the finite buckets. Grafana draws the cumulative histogram (calculate is off); this is that same cumulative rate."
+      approximation_note: "Per-second rate of coredns_dns_request_duration_seconds_bucket by the bucket upper bound, in seconds. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The +Inf bucket is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{label:le}} != "+Inf"
         | WHERE {{metric:coredns_dns_request_duration_seconds_bucket:counter}} IS NOT NULL
         | STATS observations = SUM(RATE({{metric:coredns_dns_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
         | EVAL le = {{label:le}}
         | EVAL bucket = TO_DOUBLE(le)
-        | WHERE bucket IS NOT NULL
         | STATS observations = AVG(observations) BY time_bucket, bucket
         | KEEP time_bucket, bucket, observations
         | SORT time_bucket ASC
     - title_match: "CoreDNS - DNS request size"
       panel_id: 28
       kibana_type_override: heatmap
-      approximation_note: "Per-second rate of coredns_dns_request_size_bytes_bucket by the bucket upper bound, in bytes. The source drops le 0. The +Inf bucket is omitted so the axis stays on the finite buckets."
+      approximation_note: "Per-second rate of coredns_dns_request_size_bytes_bucket by the bucket upper bound, in bytes. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The source drops le 0. The +Inf bucket is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -254,18 +255,18 @@ panel:
         | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
         | WHERE {{label:le}} != "0"
+        | WHERE {{label:le}} != "+Inf"
         | WHERE {{metric:coredns_dns_request_size_bytes_bucket:counter}} IS NOT NULL
         | STATS observations = SUM(RATE({{metric:coredns_dns_request_size_bytes_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
         | EVAL le = {{label:le}}
         | EVAL bucket = TO_DOUBLE(le)
-        | WHERE bucket IS NOT NULL
         | STATS observations = AVG(observations) BY time_bucket, bucket
         | KEEP time_bucket, bucket, observations
         | SORT time_bucket ASC
     - title_match: "CoreDNS - DNS response size"
       panel_id: 29
       kibana_type_override: heatmap
-      approximation_note: "Per-second rate of coredns_dns_response_size_bytes_bucket by the bucket upper bound, in bytes. The source drops le 0. The +Inf bucket is omitted so the axis stays on the finite buckets."
+      approximation_note: "Per-second rate of coredns_dns_response_size_bytes_bucket by the bucket upper bound, in bytes. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The source drops le 0. The +Inf bucket is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -273,11 +274,11 @@ panel:
         | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
         | WHERE {{label:le}} != "0"
+        | WHERE {{label:le}} != "+Inf"
         | WHERE {{metric:coredns_dns_response_size_bytes_bucket:counter}} IS NOT NULL
         | STATS observations = SUM(RATE({{metric:coredns_dns_response_size_bytes_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
         | EVAL le = {{label:le}}
         | EVAL bucket = TO_DOUBLE(le)
-        | WHERE bucket IS NOT NULL
         | STATS observations = AVG(observations) BY time_bucket, bucket
         | KEEP time_bucket, bucket, observations
         | SORT time_bucket ASC

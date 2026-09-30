@@ -8,47 +8,39 @@ When live field caps prove that metric absent, the general control translator
 drops the scope so the dropdown is not empty. On a cluster that still has
 ``up`` and ``process_*`` for other exporters, Kibana then selects every scraped
 job and the health, CPU, and memory panels plot those processes as CoreDNS.
-This plugin keeps the control from listing those jobs.
+
+This plugin scopes the control to a CoreDNS metric that is present instead
+(info metrics are often dropped by relabeling while the request counters are
+kept). Only when no CoreDNS metric is present does the control offer a single
+value that matches no series.
 """
 
 _PACK_NAME = "grafana_15762_k8s_system_coredns"
 _SCOPE_METRIC = "coredns_build_info"
+# CoreDNS metrics that carry the same job label, in preference order.
+_SIBLING_METRICS = (
+    "coredns_dns_requests_total",
+    "coredns_dns_responses_total",
+    "coredns_cache_entries",
+)
 # Not a Prometheus job name. Panel filters use MV_CONTAINS, so this selection
 # matches no series and does not fall through the empty-selection "every job"
 # branch.
 _NO_JOB = "__no_matching_series__"
 
 
-def _identifier(name):
-    if name.replace("_", "").isalnum() and not name[:1].isdigit():
-        return name
-    return "`" + name.replace("`", "``") + "`"
-
-
-def _scope_metric_proven_absent(resolver):
-    if resolver is None:
-        return False
-    field_exists = getattr(resolver, "field_exists", None)
-    if field_exists is None:
-        return False
+def _proven_absent(metric_name, resolver):
     from observability_migration.adapters.source.grafana.panels import (
         _resolve_control_scope_metric,
     )
 
-    if _resolve_control_scope_metric(_SCOPE_METRIC, resolver, None):
-        return False
-    resolved_name = _SCOPE_METRIC
-    resolve = getattr(resolver, "resolve_metric_field", None)
-    if resolve is not None:
-        resolved = resolve(_SCOPE_METRIC)
-        if resolved:
-            resolved_name = resolved
-    return field_exists(resolved_name) is False
+    # "" means live field caps positively report the resolved field missing.
+    return resolver is not None and not _resolve_control_scope_metric(metric_name, resolver, None)
 
 
 def register(api):
     @api["variable_translators"].register("grafana_15762_coredns_job_scope", priority=5)
-    def keep_job_from_listing_unrelated_exporters(context):
+    def keep_job_scoped_to_coredns(context):
         pack = getattr(context, "rule_pack", None)
         if getattr(pack, "_curated_pack_name", "") != _PACK_NAME:
             return None
@@ -58,37 +50,42 @@ def register(api):
         query_text = context.query_text or str(variable.get("query") or "")
         if _SCOPE_METRIC not in query_text.replace(" ", "").lower():
             return None
-        if not _scope_metric_proven_absent(context.resolver):
+        resolver = context.resolver
+        if not _proven_absent(_SCOPE_METRIC, resolver):
             return None
 
-        resolver = context.resolver
+        for sibling in _SIBLING_METRICS:
+            if _proven_absent(sibling, resolver):
+                continue
+            rewritten = query_text.replace(_SCOPE_METRIC, sibling)
+            context.query_text = rewritten
+            context.variable = dict(variable)
+            context.variable["query"] = rewritten
+            context.control_warnings.append(
+                f"variable 'job' is scoped to coredns_build_info, which is not "
+                f"present on the target; the control lists jobs from {sibling} instead"
+            )
+            return None
+
+        from observability_migration.targets.kibana.emit.esql_utils import esql_identifier
+
         field_name = "job"
         resolve_label = getattr(resolver, "resolve_control_field", None)
         if resolve_label is not None:
-            resolved = resolve_label("job")
-            if resolved:
-                field_name = resolved
-        column = _identifier(field_name)
-        index = context.data_view or "metrics-*"
+            field_name = resolve_label("job") or field_name
         context.control = {
             "type": "esql",
             "label": variable.get("label") or "job",
             "variable_name": "job",
             "variable_type": "multi_values",
-            "query": (
-                f"FROM {index}"
-                f" | STATS count = COUNT(*)"
-                f' | EVAL {column} = "{_NO_JOB}"'
-                f" | KEEP {column}"
-                f" | LIMIT 1"
-            ),
+            "query": f'ROW {esql_identifier(field_name)} = "{_NO_JOB}"',
             "multiple": True,
             "default": [_NO_JOB],
         }
         context.control_warnings.append(
-            "variable 'job' is scoped to coredns_build_info, which is not "
+            "variable 'job' is scoped to CoreDNS metrics, none of which are "
             "present on the target; the control does not list other scraped jobs, "
-            "so health, CPU, and memory stay empty instead of plotting them"
+            "so every job-filtered panel stays empty instead of plotting them"
         )
         context.handled = True
         return "job control has no coredns series"

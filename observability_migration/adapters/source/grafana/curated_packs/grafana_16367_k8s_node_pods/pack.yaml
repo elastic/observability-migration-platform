@@ -57,14 +57,20 @@ panel:
     - title_match: "CPU Quota"
       panel_id: 2
       kibana_type_override: datatable
-      approximation_note: "Usage is the cAdvisor CPU rate by pod. Requests and limits are the cpu resource gauges carried on that same series, so a counter rate and a gauge can aggregate together. Ratios are 0-100. The mixin keeps only Pending and Running pods; this table does not join phase. The pod cgroup is omitted."
+      approximation_note: "Usage is the cAdvisor CPU rate by pod. Requests and limits are kube-state-metrics gauges for resource cpu, a different series from cAdvisor, so each is aggregated on its own branch and joined by pod. Ratios are 0-100. The mixin keeps only Pending and Running pods; this table does not join phase. The pod cgroup is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
-        | WHERE {{label:container}} != "" AND {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
-        | STATS `CPU Usage` = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})), `CPU Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), `CPU Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY pod = {{label:pod}}
+        | FORK
+          (WHERE {{label:container}} != "" AND {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL
+           | STATS `CPU Usage` = SUM(RATE({{metric:container_cpu_usage_seconds_total:counter}})) BY pod = {{label:pod}})
+          (WHERE {{label:resource}} == "cpu" AND {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+           | STATS `CPU Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY pod = {{label:pod}})
+          (WHERE {{label:resource}} == "cpu" AND {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+           | STATS `CPU Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY pod = {{label:pod}})
+        | STATS `CPU Usage` = MAX(`CPU Usage`), `CPU Requests` = MAX(`CPU Requests`), `CPU Limits` = MAX(`CPU Limits`) BY pod
         | WHERE pod IS NOT NULL AND TO_STRING(pod) != ""
         | EVAL `CPU Requests %` = CASE(`CPU Requests` > 0, `CPU Usage` / `CPU Requests` * 100, NULL), `CPU Limits %` = CASE(`CPU Limits` > 0, `CPU Usage` / `CPU Limits` * 100, NULL)
         | KEEP pod, `CPU Usage`, `CPU Requests`, `CPU Requests %`, `CPU Limits`, `CPU Limits %`
@@ -90,14 +96,20 @@ panel:
     - title_match: "Memory Quota"
       panel_id: 4
       kibana_type_override: datatable
-      approximation_note: "Working set, RSS, cache, and swap are the cAdvisor gauges summed by pod. Requests and limits are the memory resource gauges on that same series. Ratios are 0-100. Byte columns stay in bytes. The pod cgroup is omitted. Phase is not joined."
+      approximation_note: "Working set, RSS, cache, and swap are the cAdvisor gauges summed by pod. Requests and limits are kube-state-metrics gauges for resource memory, a different series from cAdvisor, so each is aggregated on its own branch and joined by pod. Ratios are 0-100. Byte columns stay in bytes. The pod cgroup is omitted. Phase is not joined."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node IS NULL OR ?node == "" OR MV_COUNT(?node) == 0 OR MV_CONTAINS(TO_STRING(?node), ".*") OR MV_CONTAINS(TO_STRING(?node), {{label:node}}))
-        | WHERE {{label:container}} != "" AND {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
-        | STATS `Memory Usage` = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), `Memory Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})), `Memory Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})), `Memory RSS` = SUM(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), `Memory Cache` = SUM(LAST_OVER_TIME({{metric:container_memory_cache:gauge}})), `Memory Swap` = SUM(LAST_OVER_TIME({{metric:container_memory_swap:gauge}})) BY pod = {{label:pod}}
+        | FORK
+          (WHERE {{label:container}} != "" AND {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL
+           | STATS `Memory Usage` = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), `Memory RSS` = SUM(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), `Memory Cache` = SUM(LAST_OVER_TIME({{metric:container_memory_cache:gauge}})), `Memory Swap` = SUM(LAST_OVER_TIME({{metric:container_memory_swap:gauge}})) BY pod = {{label:pod}})
+          (WHERE {{label:resource}} == "memory" AND {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL
+           | STATS `Memory Requests` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}})) BY pod = {{label:pod}})
+          (WHERE {{label:resource}} == "memory" AND {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
+           | STATS `Memory Limits` = SUM(LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}})) BY pod = {{label:pod}})
+        | STATS `Memory Usage` = MAX(`Memory Usage`), `Memory Requests` = MAX(`Memory Requests`), `Memory Limits` = MAX(`Memory Limits`), `Memory RSS` = MAX(`Memory RSS`), `Memory Cache` = MAX(`Memory Cache`), `Memory Swap` = MAX(`Memory Swap`) BY pod
         | WHERE pod IS NOT NULL AND TO_STRING(pod) != ""
         | EVAL `Memory Requests %` = CASE(`Memory Requests` > 0, `Memory Usage` / `Memory Requests` * 100, NULL), `Memory Limits %` = CASE(`Memory Limits` > 0, `Memory Usage` / `Memory Limits` * 100, NULL)
         | KEEP pod, `Memory Usage`, `Memory Requests`, `Memory Requests %`, `Memory Limits`, `Memory Limits %`, `Memory RSS`, `Memory Cache`, `Memory Swap`

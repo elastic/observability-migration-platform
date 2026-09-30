@@ -99,11 +99,12 @@ class PanelQueryOverrideModel(_StrictModel):
     # Used when a pinned window (e.g. 24h hourly bars) renders empty in Lens
     # on mixed ``metrics-*`` despite the same query returning rows via ``_query``.
     drop_time_from: bool = False
-    # Grafana unit string applied to the emitted metric/gauge value and to XY
-    # ``metrics`` (mapped via ``grafana_unit_to_yaml_format``). Lets a display
-    # override that synthesizes a value column (e.g. elapsed-seconds Start
-    # Time) or that corrects a wrong source unit (a cache-entry count labeled
-    # bytes) request the format the source panel's unit does not carry.
+    # Grafana unit string applied to the emitted metric/gauge ``primary`` value,
+    # or to the only metric of a single-series XY chart (mapped via
+    # ``grafana_unit_to_yaml_format``). Lets a display override that
+    # synthesizes a value column (e.g. elapsed-seconds Start Time) or that
+    # corrects a wrong source unit (a cache-entry count labeled bytes) request
+    # the format the source panel's unit does not carry.
     primary_format: str | None = None
     # Honest-approximation disclosure. When set, the note is surfaced as a
     # warning and the panel status is capped at ``migrated_with_warnings`` so a

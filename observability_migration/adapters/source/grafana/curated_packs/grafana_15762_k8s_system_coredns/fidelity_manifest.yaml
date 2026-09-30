@@ -59,12 +59,12 @@ panels:
   - title: "CoreDNS - DNS request duration"
     panel_id: 27
     fidelity: APPROXIMATE
-    notes: "Cumulative bucket rate by finite le, in seconds. +Inf is omitted."
+    notes: "Cumulative bucket rate by finite le, in seconds; Grafana shows per-bucket increase. +Inf is omitted."
   - title: "CoreDNS - DNS request size"
     panel_id: 28
     fidelity: APPROXIMATE
-    notes: "Cumulative bucket rate by finite le, in bytes. le 0 and +Inf are omitted."
+    notes: "Cumulative bucket rate by finite le, in bytes; Grafana shows per-bucket increase. le 0 and +Inf are omitted."
   - title: "CoreDNS - DNS response size"
     panel_id: 29
     fidelity: APPROXIMATE
-    notes: "Cumulative bucket rate by finite le, in bytes. le 0 and +Inf are omitted."
+    notes: "Cumulative bucket rate by finite le, in bytes; Grafana shows per-bucket increase. le 0 and +Inf are omitted."
