@@ -15,71 +15,71 @@ panels:
   - title: "Global CPU  Usage"
     panel_id: 77
     fidelity: APPROXIMATE
-    notes: "Real, Requests, and Limits tiles. Windows is omitted, so Real is the Linux busy fraction. The ratio stays 0-1."
+    notes: "Real, Requests, and Limits as the source bargauge shows them after it averages the Linux and Windows bars into Real. Windows is omitted, so Real is the Linux busy fraction: sum of non-idle rates divided by CPU count. Requests and limits are divided by machine cores. The ratio stays 0-1 so the percentunit tile can scale to percent points. An empty job selection is every job."
   - title: "Global RAM Usage"
     panel_id: 78
     fidelity: APPROXIMATE
-    notes: "Real, Requests, and Limits tiles. Windows is omitted. The ratio stays 0-1."
+    notes: "Real, Requests, and Limits. Windows is omitted, so Real is MemTotal minus MemAvailable, divided by MemTotal. Requests and limits are divided by machine memory. The ratio stays 0-1. An empty job selection is every job."
   - title: "Nodes"
     panel_id: 63
     fidelity: APPROXIMATE
-    notes: "Count of kube_node_info rows, one per node."
+    notes: "Count of nodes from the last 5 minutes before the end of the time range, like a Prometheus instant query. The source count(count by (node)) is one row per node, then a count of those rows."
   - title: "Namespaces"
     panel_id: 59
     fidelity: PERFECT
-    notes: "Count of kube_namespace_created."
+    notes: "Count of namespaces from kube_namespace_created, from the last 5 minutes before the end of the time range, like a Prometheus instant query."
   - title: "Running Pods"
     panel_id: 62
     fidelity: PERFECT
-    notes: "Sum of the Running phase series."
+    notes: "Sum of the Running phase series from the last 5 minutes before the end of the time range, like a Prometheus instant query. The phase gauge is 1 for the pod's current phase."
   - title: "CPU Usage"
     panel_id: 37
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Total in cores. Windows is omitted."
+    notes: "Real, Requests, Limits, and Total in cores. The source sums Linux and Windows into Real; Windows is omitted, so Real is the Linux non-idle rate. An empty job selection is every job."
   - title: "RAM Usage"
     panel_id: 39
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Total in bytes. Windows is omitted."
+    notes: "Real, Requests, Limits, and Total in bytes. Windows is omitted, so Real is MemTotal minus MemAvailable. An empty job selection is every job."
   - title: "Kubernetes Resource Count"
     panel_id: 52
     fidelity: APPROXIMATE
-    notes: "Named series per object. Namespaces use kube_namespace_created. Absent object types are omitted."
+    notes: "One series per object the source legend names. Namespaces use kube_namespace_created, which is one series per namespace, the same count as kube_namespace_labels. Object types the target did not ingest are omitted. Nodes are a count of kube_node_info."
   - title: "Cluster CPU Utilization"
     panel_id: 72
     fidelity: APPROXIMATE
-    notes: "Linux busy fraction. Windows is omitted. The ratio stays 0-1."
+    notes: "Linux busy fraction over time. Windows is omitted. The ratio stays 0-1, matching percentunit. An empty job selection is every job. The rate window follows the dashboard time range."
   - title: "Cluster Memory Utilization"
     panel_id: 55
     fidelity: APPROXIMATE
-    notes: "Linux memory in use. Windows is omitted. The ratio stays 0-1."
+    notes: "Linux memory in use over time. Windows is omitted. The ratio stays 0-1, matching percentunit. An empty job selection is every job."
   - title: "CPU Utilization by namespace"
     panel_id: 46
     fidelity: APPROXIMATE
-    notes: "Cores by namespace. The Windows join is omitted. POD containers are excluded."
+    notes: "Cores by namespace. The Windows join is omitted. Series with an empty container label are excluded; that drops the pod-level cgroup, which is what the source image!=\"\" filter does when the image label is not stored."
   - title: "Memory Utilization by namespace"
     panel_id: 50
     fidelity: APPROXIMATE
-    notes: "Working set by namespace. The Windows join is omitted."
+    notes: "Working set by namespace. The Windows join is omitted. Series with an empty container label (the pod-level cgroup) are excluded, standing in for the source image!=\"\" filter."
   - title: "CPU Utilization by instance"
     panel_id: 54
     fidelity: APPROXIMATE
-    notes: "Busy fraction by instance. The source legend says node. Windows is omitted."
+    notes: "Busy fraction by instance. The source legend says node, and the grouping is instance. Windows is omitted. The ratio stays 0-1. An empty job selection is every job."
   - title: "Memory Utilization by instance"
     panel_id: 73
     fidelity: APPROXIMATE
-    notes: "Used bytes by instance. Windows is omitted."
+    notes: "MemTotal minus MemAvailable by instance. Windows is omitted. An empty job selection is every job."
   - title: "CPU Throttled seconds by namespace"
     panel_id: 82
     fidelity: APPROXIMATE
-    notes: "Namespaces above zero only. POD containers are excluded."
+    notes: "Throttled seconds by namespace, only namespaces above zero, matching the source comparison. Series with an empty container label (the pod-level cgroup) are excluded, standing in for the source image!=\"\" filter. The rate window follows the dashboard time range."
   - title: "CPU Core Throttled by instance"
     panel_id: 83
     fidelity: APPROXIMATE
-    notes: "Throttled cores by instance. An empty job selection is every job."
+    notes: "Throttled cores by instance. An empty job selection is every job. The rate window follows the dashboard time range."
   - title: "Kubernetes Pods QoS classes"
     panel_id: 84
     fidelity: APPROXIMATE
-    notes: "Pods by QoS class. The extra total-pods line is not drawn again."
+    notes: "Pods by QoS class. The source total-pods line is the sum of these classes in Lens, so it is not drawn again."
   - title: "Kubernetes Pods Status Reason"
     panel_id: 85
     fidelity: APPROXIMATE
@@ -87,32 +87,32 @@ panels:
   - title: "OOM Events by namespace"
     panel_id: 87
     fidelity: APPROXIMATE
-    notes: "Increase over the dashboard time range, namespaces above zero."
+    notes: "Increase over the dashboard time range, by namespace, only namespaces above zero."
   - title: "Container Restarts by namespace"
     panel_id: 88
     fidelity: APPROXIMATE
-    notes: "Increase over the dashboard time range, namespaces above zero."
+    notes: "Increase over the dashboard time range, by namespace, only namespaces above zero."
   - title: "Global Network Utilization by device"
     panel_id: 44
     fidelity: APPROXIMATE
-    notes: "Received positive, transmitted negative, virtual devices excluded. Windows is omitted."
+    notes: "Received is positive and transmitted is negative, by device. Virtual devices matching veth, azv, or lxc are excluded. Windows NICs are omitted. An empty job selection is every job."
   - title: "Network Saturation - Packets dropped"
     panel_id: 53
     fidelity: APPROXIMATE
-    notes: "Received drops positive, transmitted drops negative. Windows is omitted."
+    notes: "Received drops are positive and transmitted drops are negative. Windows is omitted. An empty job selection is every job."
   - title: "Network Received by namespace"
     panel_id: 79
     fidelity: APPROXIMATE
-    notes: "Received positive, transmitted negative, by namespace. The Windows join is omitted."
+    notes: "Received is positive and transmitted is negative, by namespace. The Windows join is omitted. Network series come from the pod sandbox, so no container filter is applied, matching the source."
   - title: "Total Network Received (with all virtual devices) by instance"
     panel_id: 80
     fidelity: APPROXIMATE
-    notes: "Both directions by instance, including virtual devices. Windows is omitted."
+    notes: "Received is positive and transmitted is negative, by instance, including virtual devices. Windows is omitted. An empty job selection is every job."
   - title: "Network Received (without loopback)  by instance"
     panel_id: 56
     fidelity: APPROXIMATE
-    notes: "Loopback and virtual devices excluded. Windows is omitted."
+    notes: "Received is positive and transmitted is negative, by instance. Loopback and virtual devices are excluded. Windows is omitted. An empty job selection is every job."
   - title: "Network Received (loopback only) by instance"
     panel_id: 81
     fidelity: APPROXIMATE
-    notes: "Loopback only. Received positive, transmitted negative."
+    notes: "Loopback only. Received is positive and transmitted is negative, by instance. An empty job selection is every job."

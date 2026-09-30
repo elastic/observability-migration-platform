@@ -6292,7 +6292,7 @@ _extract_esql_columns = _extract_esql_columns_canonical
 _TIME_DIMENSION_FIELDS = {"time_bucket", "timestamp_bucket", "step"}
 _CURATED_QUERY_TOKEN_RE = re.compile(
     r"\{\{\s*(?P<kind>control|label|metric):(?P<name>[A-Za-z0-9_.-]+)"
-    r"(?::(?P<prefer>counter|gauge))?\s*\}\}"
+    r"(?::(?P<prefer>counter|gauge|histogram))?\s*\}\}"
 )
 
 
@@ -6322,6 +6322,17 @@ def _materialize_curated_query_override(query, resolver):
                 resolve = getattr(resolver, "resolve_label", None)
                 resolved = resolve(name) if callable(resolve) else None
                 return resolved or name
+            if kind == "metric" and prefer == "histogram":
+                # PERCENTILE() operand, typed like histogram_quantile_family_rule:
+                # a classic ``histogram`` field needs TO_TDIGEST(); an
+                # exponential_histogram (or unknown type) is used as-is.
+                resolve = getattr(resolver, "resolve_metric_field", None)
+                resolved = (resolve(name, prefer=None) if callable(resolve) else None) or name
+                field_type = getattr(resolver, "field_type", None)
+                kind_name = (field_type(resolved) if callable(field_type) else None) or ""
+                if kind_name.strip().lower() == "histogram":
+                    return f"TO_TDIGEST({resolved})"
+                return resolved
             if kind == "metric":
                 resolve = getattr(resolver, "resolve_metric_field", None)
                 resolved = resolve(name, prefer=prefer) if callable(resolve) else None
@@ -6335,7 +6346,7 @@ def _materialize_curated_query_override(query, resolver):
 
 def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
     return re.compile(
-        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge))?\s*\}}\}}",
+        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge|histogram))?\s*\}}\}}",
         re.IGNORECASE,
     )
 

@@ -19,20 +19,20 @@ panels:
   - title: "workqueue service time"
     panel_id: 10
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+    notes: "p95, p90, and p50 of workqueue queue duration. Prometheus histogram_quantile on the bucket series is PERCENTILE of the duration histogram field."
   - title: "apiserver request latency"
     panel_id: 2
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. CONNECT and WATCH stay excluded."
+    notes: "p95, p90, and p50 of request duration. CONNECT and WATCH are excluded, matching the source. histogram_quantile is PERCENTILE of the duration histogram field."
   - title: "workqueue processing time"
     panel_id: 12
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge."
+    notes: "p95, p90, and p50 of workqueue processing duration. histogram_quantile is PERCENTILE of the duration histogram field."
   - title: "etcd request latency"
     panel_id: 4
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50. histogram_quantile is PERCENTILE of the duration gauge. Shares a row with the cache hit ratio."
+    notes: "p95, p90, and p50 of etcd request duration. histogram_quantile is PERCENTILE of the duration histogram field."
   - title: "etcd helper cache hit ratio"
     panel_id: 6
     fidelity: APPROXIMATE
-    notes: "Hits divided by hits plus misses. The ratio stays 0-1."
+    notes: "Cache hits divided by hits plus misses. The ratio stays 0-1, matching the source axis."

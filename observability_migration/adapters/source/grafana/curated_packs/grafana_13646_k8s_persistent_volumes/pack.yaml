@@ -8,8 +8,9 @@
 # kubernetes-persistent-volumes (revision 2). predict_linear() has no ES|QL
 # equivalent. Full-in-N-days is available bytes divided by one day of used-byte
 # growth. The warning textbox default is 80. The claim table shows GiB and a
-# phase name. Hourly, daily, and weekly rates keep those windows via DELTA.
-# Storage class is the info series' labels. An empty namespace selection is
+# phase name. Hourly, daily, and weekly rates keep those windows via DELTA;
+# the day and week queries read one window before the range start so the
+# first points are not cut short. Storage class is the info series' labels. An empty namespace selection is
 # every namespace.
 
 query:
@@ -19,23 +20,21 @@ query:
     kubelet_volume_stats_available_bytes: gauge
     kubelet_volume_stats_capacity_bytes: gauge
     kubelet_volume_stats_used_bytes: gauge
-    kube_persistentvolumeclaim_info: gauge
     kube_persistentvolumeclaim_status_phase: gauge
     kube_storageclass_info: gauge
 
   live_optional_metrics:
     - kube_storageclass_info
-    - kube_persistentvolumeclaim_info
 
 panel:
   query_overrides:
     - title_match: "PVCs Full in 2 days - Based on Daily Usage"
       panel_id: 22
       kibana_type_override: metric
-      approximation_note: "predict_linear(available[1d], 2d) < 0 approximated as available / one-day used-byte growth under 2 days. An empty result is 0 when no volume series are present only if other claims exist; a cluster with no volume metrics stays empty."
+      approximation_note: "predict_linear(available[1d], 2d) < 0 approximated as available / one-day used-byte growth under 2 days. The query reads the day before the range start, so growth is a full day whatever the dashboard time range. An empty result is 0 when no volume series are present only if other claims exist; a cluster with no volume metrics stays empty."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
@@ -50,7 +49,7 @@ panel:
       approximation_note: "Same one-day growth approximation as the 2-day tile, for a 5-day horizon."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
@@ -65,7 +64,7 @@ panel:
       approximation_note: "Same one-day growth approximation as the 2-day tile, for a 7-day horizon."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
@@ -137,8 +136,8 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kube_storageclass_info:gauge}} IS NOT NULL
-        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_storageclass_info:gauge}})) BY {{label:storageclass}}, {{label:provisioner}}, {{label:reclaimPolicy}}, {{label:volumeBindingMode}}
-        | EVAL storage_class = {{label:storageclass}}, provisioner = {{label:provisioner}}, reclaim_policy = {{label:reclaimPolicy}}, volume_binding_mode = {{label:volumeBindingMode}}
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_storageclass_info:gauge}})) BY {{label:storageclass}}, {{label:provisioner}}, {{label:reclaim_policy}}, {{label:volume_binding_mode}}
+        | EVAL storage_class = {{label:storageclass}}, provisioner = {{label:provisioner}}, reclaim_policy = {{label:reclaim_policy}}, volume_binding_mode = {{label:volume_binding_mode}}
         | STATS info = MAX(info) BY storage_class, provisioner, reclaim_policy, volume_binding_mode
         | KEEP storage_class, provisioner, reclaim_policy, volume_binding_mode
         | SORT storage_class ASC
@@ -174,13 +173,14 @@ panel:
     - title_match: "Daily Volume Usage Rate"
       panel_id: 12
       kibana_type_override: line
-      approximation_note: "rate(used_bytes[1d]) as DELTA over 24 hours divided by 86400, one series per claim."
+      approximation_note: "rate(used_bytes[1d]) as DELTA over 24 hours divided by 86400, one series per claim. Points are hourly. The query reads the day before the range start so each point has a full daily lookback; buckets before the range are dropped."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
-        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tstart
         | EVAL bytes_per_sec = growth / 86400
         | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " / ", TO_STRING({{label:persistentvolumeclaim}}))
         | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend
@@ -189,13 +189,14 @@ panel:
     - title_match: "Weekly Volume Usage Rate"
       panel_id: 13
       kibana_type_override: line
-      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim. Points are daily so the line stays inside the dashboard time range."
+      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim. The query reads the week before the range start so each daily point has a full weekly lookback; buckets before the range are dropped, so the line stays inside the dashboard time range."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp >= ?_tstart - 168 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tstart
         | EVAL bytes_per_sec = growth / 604800
         | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " / ", TO_STRING({{label:persistentvolumeclaim}}))
         | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend

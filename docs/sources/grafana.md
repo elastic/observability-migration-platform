@@ -399,22 +399,32 @@ count chart names each object; namespaces use `kube_namespace_created`, and
 object types the target did not ingest are left off the chart. Namespace
 charts drop the Windows `+ on(namespace)` join. Received traffic is positive
 and transmitted is negative. Virtual devices matching `veth`, `azv`, or `lxc`
-stay off the device chart. An empty job selection is every job. The
+stay off the device chart. Where the source filters `image!=""`, series with
+an empty container label (the pod-level cgroup) are excluded; the network
+chart has no container filter because those series come from the pod
+sandbox. The Nodes, Namespaces, and Running Pods tiles count the last 5
+minutes before the end of the time range, like a Prometheus instant query.
+An empty job selection is every job. The
 `resolution` variable is a scrape step; chart buckets follow the dashboard
 time range.
 
 The persistent-volume dashboard (13646) approximates `predict_linear` full-in
 2 days, 5 days, and 1 week as available bytes divided by one day of used-byte
-growth. The warning tile counts claims at or above 80% used, the revision-2
+growth; the tiles read the day before the range start, so growth is a full
+day whatever the dashboard time range. The warning tile counts claims at or above 80% used, the revision-2
 textbox default. The claim table shows capacity, used, and available in GiB,
 used percent, and the phase name. Storage class and volume name are omitted
 because the info series does not share the kubelet label set. Hourly, daily,
 and weekly rates keep those windows (`DELTA` over 1 hour, 24 hours, and 168
-hours). An empty namespace selection is every namespace.
+hours); the daily and weekly queries read one window before the range start so
+the first points are not cut short. An empty namespace selection is every namespace.
 
 The apiserver dashboard (12006) names latency series p95, p90, and p50.
 `histogram_quantile` on the bucket series is `PERCENTILE` of the duration
-gauge. Request rate stays one series per verb. CONNECT and WATCH stay off
+histogram field, wrapped in `TO_TDIGEST()` when the target stores a classic
+`histogram` field. Classic `_bucket` counters alone cannot feed `PERCENTILE`,
+so the latency charts show missing telemetry until the durations are stored
+as a histogram field. Request rate stays one series per verb. CONNECT and WATCH stay off
 the request-latency chart. The cache hit ratio is hits divided by hits plus
 misses and stays on a 0–1 scale. The etcd latency chart shares a row with
 the cache hit ratio.
@@ -628,7 +638,10 @@ a concrete non-canonical field (escape hatch).
 
 Bundled curated packs follow the same contract. Hand-written `esql_query`
 strings use `` `{{label:pod}}` `` / `{{metric:name:gauge}}` placeholders so
-grouping columns and metrics resolve per profile. `metric_map` targets are
+grouping columns and metrics resolve per profile. `{{metric:name:histogram}}`
+is a `PERCENTILE()` operand: it resolves to `TO_TDIGEST(field)` when the target
+field is a classic `histogram` and to the bare field otherwise, the same rule
+the generic `histogram_quantile` translation uses. `metric_map` targets are
 bare logical metric names (see `docs/command-contract.md`). Grafana migrate
 exits non-zero if a target already has the active Prometheus profile prefix
 (`metrics.*` under `prometheus_native`, and the equivalent for
