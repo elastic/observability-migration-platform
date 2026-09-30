@@ -6443,6 +6443,10 @@ def _strip_optional_metric_token_from_curated_esql_result(
     removed_aliases: list[str] = []
     stripped_stages: list[str] = []
     removed_alias_set: set[str] = set()
+    # Columns that still exist before the current stage. An EVAL that
+    # reassigns one of them from the stripped series (``x = CASE(opt > 0, …,
+    # x)``) is an override-when-present: dropping it keeps the earlier value.
+    defined_aliases: set[str] = set()
     for stage in _split_esql_pipeline(query):
         stripped = str(stage or "").strip()
         upper = stripped.upper()
@@ -6486,6 +6490,12 @@ def _strip_optional_metric_token_from_curated_esql_result(
             if by_text:
                 rebuilt += f" BY {by_text}"
             stripped_stages.append(rebuilt)
+            defined_aliases = set()
+            for part in kept_assignments + _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    defined_aliases.add(alias)
             continue
         if upper.startswith("EVAL "):
             assignments = [
@@ -6497,6 +6507,7 @@ def _strip_optional_metric_token_from_curated_esql_result(
             while changed:
                 changed = False
                 kept_assignments: list[str] = []
+                defined_in_stage = set(defined_aliases)
                 for assignment in assignments:
                     left, right = _split_top_level_assignment(assignment)
                     rhs = right if right is not None else assignment
@@ -6509,19 +6520,22 @@ def _strip_optional_metric_token_from_curated_esql_result(
                         )
                         rhs = rewritten
                         changed = True
+                    alias = _canonical_esql_alias(left) if left else ""
                     if token_re.search(rhs) or _esql_expr_references_aliases(
                         rhs, removed_alias_set
                     ):
-                        alias = _canonical_esql_alias(left) if left else ""
-                        if alias:
+                        if alias and alias not in defined_in_stage:
                             _append_unique(removed_aliases, alias)
                             removed_alias_set.add(alias)
                         changed = True
                         continue
                     kept_assignments.append(assignment)
+                    if alias:
+                        defined_in_stage.add(alias)
                 assignments = kept_assignments
             if assignments:
                 stripped_stages.append("EVAL " + ", ".join(assignments))
+                defined_aliases = defined_in_stage
             continue
         if upper.startswith("KEEP ") and removed_aliases:
             keep_parts = [

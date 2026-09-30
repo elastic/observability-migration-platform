@@ -425,8 +425,13 @@ are not cut short. An empty namespace selection is every namespace.
 
 The apiserver dashboard (12006) names latency series p95, p90, and p50.
 kube-apiserver publishes classic `*_bucket` counters, not a duration gauge,
-so each point is the upper bound of the bucket whose cumulative rate crosses
-the quantile. Request rate stays one series per verb. CONNECT and WATCH stay
+so each point is the upper bound of the first bucket whose cumulative rate
+reaches the quantile, without `histogram_quantile` interpolation. Bucket
+bounds are read from the `le` label as numbers, so `1e-08`, `1`, and `1.0`
+all work and any bucket layout is accepted. When only `+Inf` reaches the
+quantile, the point is the highest finite bound, as in Prometheus. Targets
+that store these durations only as a `histogram` field, with no `*_bucket`
+series, show the missing-telemetry card. Request rate stays one series per verb. CONNECT and WATCH stay
 off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.

@@ -76,9 +76,6 @@ query:
     - machine_cpu_cores
     - machine_memory_bytes
     - container_oom_events_total
-    - machine_cpu_cores
-    - machine_memory_bytes
-    - container_oom_events_total
 
 panel:
   query_overrides:
@@ -110,7 +107,7 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
+        | WHERE {{metric:node_memory_MemTotal_bytes:gauge}} IS NOT NULL OR {{metric:node_memory_MemAvailable_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
         | STATS total = SUM(CASE(MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemTotal_bytes:gauge}}), NULL)), available = SUM(CASE(MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}), LAST_OVER_TIME({{metric:node_memory_MemAvailable_bytes:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), machine = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL real = CASE(total > 0, (total - available) / total, NULL), requests = CASE(total > 0, req / total, NULL), limits = CASE(total > 0, lim / total, NULL)
         | EVAL requests = CASE(machine > 0, req / machine, requests), limits = CASE(machine > 0, lim / machine, limits)

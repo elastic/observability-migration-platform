@@ -38,11 +38,11 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
-        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), drop = MIN(DELTA({{metric:kubelet_volume_stats_available_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE bucket >= ?_tend - 2 hours
         | STATS available = MIN(available), drop = MIN(drop) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | EVAL at_risk = CASE(drop < 0 AND ROUND(available / (drop * -1), 6) < 2, 1, 0)
+        | EVAL at_risk = CASE(drop < 0 AND available + drop * 2 < 0, 1, 0)
         | STATS pvcs = SUM(at_risk)
         | KEEP pvcs
     - title_match: "PVCs Full in 5 days - Based on Daily Usage"
@@ -53,11 +53,11 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
-        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), drop = MIN(DELTA({{metric:kubelet_volume_stats_available_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE bucket >= ?_tend - 2 hours
         | STATS available = MIN(available), drop = MIN(drop) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | EVAL at_risk = CASE(drop < 0 AND ROUND(available / (drop * -1), 6) < 5, 1, 0)
+        | EVAL at_risk = CASE(drop < 0 AND available + drop * 5 < 0, 1, 0)
         | STATS pvcs = SUM(at_risk)
         | KEEP pvcs
     - title_match: "PVCs Full in 1 Week - Based on Daily Usage"
@@ -68,11 +68,11 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
         | WHERE (MV_COUNT(?k8s_namespace) == 0 OR MV_CONTAINS(TO_STRING(?k8s_namespace), ".*") OR MV_CONTAINS(TO_STRING(?k8s_namespace), {{label:namespace}}))
-        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
+        | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), drop = MIN(DELTA({{metric:kubelet_volume_stats_available_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE bucket >= ?_tend - 2 hours
         | STATS available = MIN(available), drop = MIN(drop) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | EVAL at_risk = CASE(drop < 0 AND ROUND(available / (drop * -1), 6) < 7, 1, 0)
+        | EVAL at_risk = CASE(drop < 0 AND available + drop * 7 < 0, 1, 0)
         | STATS pvcs = SUM(at_risk)
         | KEEP pvcs
     - title_match: "PVCs Above Warning Threshold"
