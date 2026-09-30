@@ -15,7 +15,7 @@ panels:
   - title: "Traefik Instances"
     panel_id: 13
     fidelity: APPROXIMATE
-    notes: "Distinct instances publishing traefik_config_reloads_total."
+    notes: "Distinct instances publishing traefik_config_reloads_total in the last 5 minutes before the end of the time range."
   - title: "Requests per Entrypoint"
     panel_id: 7
     fidelity: APPROXIMATE
@@ -35,7 +35,7 @@ panels:
   - title: "Most requested services"
     panel_id: 5
     fidelity: APPROXIMATE
-    notes: "HTTP requests per second by service and code, above zero. The @provider suffix is removed. topk(15) is omitted."
+    notes: "HTTP requests per second by service and code, above zero. The @provider suffix is removed and series that share a name are summed. topk(15) is omitted."
   - title: "Services failing SLO of 1200ms"
     panel_id: 3
     fidelity: APPROXIMATE
@@ -55,7 +55,7 @@ panels:
   - title: "Other codes over $interval"
     panel_id: 19
     fidelity: APPROXIMATE
-    notes: "Codes that are neither 2xx nor 5xx. topk(15) is omitted."
+    notes: "Codes that are neither 2xx nor 5xx, plus requests without a code label. topk(15) is omitted."
   - title: "Requests Size"
     panel_id: 20
     fidelity: APPROXIMATE

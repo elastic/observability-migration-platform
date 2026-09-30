@@ -457,8 +457,14 @@ formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket
 rate, divided by two, divided by the count rate. The 1.2s bucket is already
 cumulative, so this is not classic Apdex. SLO panels stay on a 0–1 scale and
 drop services that are inside the threshold. Service names drop the
-`@provider` suffix. An empty entrypoint or service selection is every value;
-a chosen service matches that prefix (`service=~"$service.*"`). The
+`@provider` suffix, in the service control as in the source variable regex and
+in chart series. Series that share a name once the suffix is dropped are
+summed; latency and SLO ratios sum their parts before dividing. The `service`
+filter reads Traefik's own `service` label, never `service.name`. An empty
+entrypoint or service selection is every value; a chosen service matches that
+prefix (`service=~"$service.*"`). Traefik Instances counts instances seen in
+the last 5 minutes before the end of the time range, like the source
+`lastNotNull` reduce. Other codes keeps requests without a `code` label. The
 `interval` variable is a Grafana step, so rates follow the dashboard time
 range and the 2xx, 5xx, and other-code titles no longer mention `$interval`.
 `topk(15)` is omitted so each chart stays one stable time series.
