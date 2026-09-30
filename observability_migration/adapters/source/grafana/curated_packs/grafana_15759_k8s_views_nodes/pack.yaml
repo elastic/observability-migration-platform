@@ -69,7 +69,7 @@ panel:
     - title_match: "CPU  Usage"
       panel_id: 7
       kibana_type_override: metric
-      approximation_note: "Busy CPU for the selected instance: average across CPUs of the non-idle, non-iowait, non-steal rate. The ratio stays 0-1 so the percentunit format and the source axis max of 1 agree. The tile averages 30-minute buckets over the last hour."
+      approximation_note: "Busy CPU for the selected instance: average across every CPU of the non-idle, non-iowait, non-steal rate. With no instance selected it averages all instances' CPUs, so the ratio stays 0-1 and the percentunit format and the source axis max of 1 agree. The tile averages 30-minute buckets over the last hour."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -77,7 +77,7 @@ panel:
         | WHERE (?instance == "" OR ({{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance)))
         | WHERE {{label:mode}} != "idle" AND {{label:mode}} != "iowait" AND {{label:mode}} != "steal"
         | WHERE {{metric:node_cpu_seconds_total:counter}} IS NOT NULL
-        | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:cpu}}
+        | STATS busy = SUM(RATE({{metric:node_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(30 minutes), {{label:instance}}, {{label:cpu}}
         | STATS busy = AVG(busy) BY time_bucket
         | WHERE time_bucket >= ?_tend - 1 hour
         | STATS busy = AVG(busy)
@@ -101,25 +101,27 @@ panel:
     - title_match: "Pods on node"
       panel_id: 24
       kibana_type_override: metric
-      approximation_note: "Count of pods on the selected node. The info series is 1 per pod; the tile sums that count."
+      approximation_note: "Count of pods on the selected node, from the last 5 minutes before the end of the time range, like a Prometheus instant query. Pods are counted by namespace and name."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
-        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:pod}}
+        | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}
         | STATS pods = COUNT(*)
         | KEEP pods
     - title_match: "List of pods on node"
       panel_id: 5
       kibana_type_override: datatable
-      approximation_note: "Namespace and pod for the selected node. The stock grouping was the node and cluster, so the table did not list pods."
+      approximation_note: "Namespace and pod for the selected node, from the last 5 minutes before the end of the time range, like a Prometheus instant query. The stock grouping was the node and cluster, so the table did not list pods."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?node == "" OR ({{label:node}} RLIKE ?node OR ({{label:node}} IS NULL AND "" RLIKE ?node)))
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL
         | STATS info = MAX(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})) BY {{label:namespace}}, {{label:pod}}
         | EVAL namespace = {{label:namespace}}, pod = {{label:pod}}
@@ -454,7 +456,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Disk(s) io/s"
       panel_id: 58
-      approximation_note: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The rate window follows the dashboard time range. The resolution variable is a scrape step, not a Kibana control."
+      approximation_note: "The source applies rate() to node_disk_io_now, a gauge of in-progress I/O. ES|QL cannot rate a gauge, so the chart shows the last in-progress count by device. The resolution variable is a scrape step, not a Kibana control."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -528,6 +530,7 @@ panel:
       panel_id: 18
       title: "Uptime"
       hide_title: false
+      metric_color: none
       size: {w: 6, h: 6}
       position: {x: 18, y: 12}
     - title_match: "Resources"

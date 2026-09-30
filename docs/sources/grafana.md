@@ -145,7 +145,10 @@ also `title`-renames the chrome, the inner Lens label is cleared against the
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
 XY legend (`right` for a long categorical breakdown that does not fit under
-the plot). Those last three are **presentation-only** and stay inside the XY
+the plot). `metric_color: none` drops a metric tile's threshold color, the same
+as Grafana's stat `colorMode: none`, for a plain value such as an uptime
+duration; on any other panel type the request is skipped with a panel warning.
+The `kibana_type_override`, `xy_mode`, and `legend_position` keys are **presentation-only** and stay inside the XY
 family: `layout_overrides.kibana_type_override` accepts `line` / `bar` / `area`
 only (a rule pack asking for `metric`, `gauge`, `datatable`, … is rejected at
 load time), because this late pass rewrites `esql.type` / `mode` / `legend`
@@ -383,10 +386,13 @@ not summed with each container or drawn as its own series. Per-container CPU
 and memory drop the cAdvisor `id` breakdown and sum across the selected pods. Received traffic is positive and transmitted is negative.
 OOM and restart charts are an increase over the dashboard time range, and
 they keep the source axis max of 1. The issue and unscheduled tables stay
-cluster-wide, as in the source queries. The job control filters restarts;
-a blank selection or Grafana's All value `.*` shows every job.
+cluster-wide, as in the source queries. The job control filters restarts. It
+has no All option and defaults to `kube-state-metrics`, as in the source;
+clearing it shows every job.
 
-The node view (15759) lists pods on the selected node. The overview is one
+The node view (15759) lists pods on the selected node. The pod count and the
+pod list use the last 5 minutes before the end of the time range, like a
+Prometheus instant query, so deleted pods drop out. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
 underneath and the pod list beside both rows. Uptime stays a plain duration:
 Kibana metric color fills the whole tile, so the source green/yellow/red
@@ -401,7 +407,9 @@ follow the dashboard time range. CPU usage by pod sums cAdvisor
 `node_cpu_seconds_total` has no pod label; memory usage by pod omits the pod
 cgroup the same way. Number of CPU Core Throttled keeps the node_exporter
 `node_cpu_core_throttles_total` thermal throttle rate for the selected instance.
-The CPU and RAM tiles average 30-minute buckets over the last hour.
+The CPU and RAM tiles average 30-minute buckets over the last hour. With no
+instance selected, the CPU tile averages every CPU of every instance, so it
+stays 0–1.
 `node_disk_io_now` is a gauge of in-progress I/O; ES|QL cannot `rate()` a
 gauge, so that chart shows the last count by device.
 

@@ -3058,6 +3058,50 @@ def test_layout_override_presentation_keys_skip_non_xy_panel():
     assert not dashboard_schema_errors(panels)
 
 
+def test_layout_override_metric_color_none_drops_the_tile_color():
+    panel = _metric_probe_panel()
+    panel["esql"]["primary"]["color"] = {
+        "apply_to": "value",
+        "thresholds": [{"up_to": 10, "color": "#54B399"}],
+    }
+    panels = [panel]
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": "PostgreSQL Uptime", "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert "color" not in panels[0]["esql"]["primary"]
+    assert not warnings
+    assert not dashboard_schema_errors(panels)
+
+
+def test_layout_override_metric_color_on_xy_panel_is_reported():
+    panels = [_xy_probe_panel("line")]
+    before = json.loads(json.dumps(panels[0]["esql"]))
+    warnings: list = []
+
+    _apply_panel_layout_overrides_recursively(
+        panels,
+        [{"title_match": panels[0]["title"], "metric_color": "none"}],
+        warnings=warnings,
+    )
+
+    assert panels[0]["esql"] == before
+    assert warnings and "metric_color" in warnings[0][1]
+
+
+def test_layout_override_rejects_unknown_metric_color():
+    with pytest.raises(ValueError) as excinfo:
+        validate_rule_pack_payload(
+            {"panel": {"layout_overrides": [{"title_match": "Uptime", "metric_color": "red"}]}},
+            source="probe pack",
+        )
+    assert "metric_color" in str(excinfo.value)
+
+
 def test_layout_override_cannot_change_panel_shape():
     """A late ``type`` flip keeps the XY ``metrics``/``dimension`` columns and
     has no ``primary``, so ``metric`` output would fail the schema both ways."""
@@ -7140,8 +7184,10 @@ def test_15760_restarts_treat_an_empty_job_selection_as_all():
     }
     result, query, yaml_panel = _translate_views(15760, "Kubernetes / Views / Pods", panel)
     assert result.status == "migrated_with_warnings", result.reasons
-    assert "?job IS NULL" in query
-    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' in query
+    assert "MV_COUNT(?job) == 0" in query
+    # The job variable has no All option, and ?job is a list, so no scalar compare.
+    assert '?job == ""' not in query
+    assert 'MV_CONTAINS(TO_STRING(?job), ".*")' not in query
     assert "INCREASE" in query
     assert yaml_panel["esql"]["type"] in ("line", "area")
 
@@ -7234,6 +7280,20 @@ def test_15759_memory_by_pod_drops_the_pod_cgroup():
     assert "?node" in query
 
 
+def test_15759_pods_on_node_counts_current_pods_by_namespace():
+    panel = {
+        "id": 24,
+        "type": "stat",
+        "title": "Pods on node",
+        "targets": [{"expr": 'sum(kube_pod_info{node="$node"})', "refId": "A"}],
+        "gridPos": {"x": 0, "y": 0, "w": 4, "h": 8},
+    }
+    _result, query, _yaml_panel = _translate_views(15759, "Kubernetes / Views / Nodes", panel)
+    # Prometheus instant-query lookback, so deleted pods are not counted.
+    assert "@timestamp >= ?_tend - 5 minutes" in query
+    assert "BY k8s.namespace.name, k8s.pod.name" in query
+
+
 def test_15759_pod_list_groups_by_pod():
     panel = {
         "id": 5,
@@ -7317,6 +7377,8 @@ def test_15759_cpu_gauge_title_keeps_its_double_space():
     assert "* 100" not in query
     assert "TBUCKET(30 minutes)" in query
     assert "?_tend - 1 hour" in query
+    # Summing per cpu index across instances would exceed 1 with no instance selected.
+    assert "service.instance.id, cpu" in query
     assert yaml_panel["esql"]["type"] == "metric"
     assert yaml_panel["esql"]["primary"]["format"]["type"] == "percent"
 
@@ -7368,6 +7430,20 @@ def test_15759_overview_stat_row_sits_flush_under_the_tiles():
                 "id": 18,
                 "type": "stat",
                 "title": "uptime",
+                "options": {"colorMode": "value"},
+                "fieldConfig": {
+                    "defaults": {
+                        "unit": "s",
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {"color": "green", "value": None},
+                                {"color": "#EAB839", "value": 25228800},
+                                {"color": "red", "value": 31536000},
+                            ],
+                        },
+                    }
+                },
                 "targets": [{"expr": "node_time_seconds - node_boot_time_seconds", "refId": "A"}],
                 "gridPos": {"h": 3, "w": 4, "x": 8, "y": 9},
             },
@@ -7415,3 +7491,23 @@ def test_views_fidelity_manifests_have_no_unknown():
         fidelities = {panel["fidelity"] for panel in manifest["panels"]}
         assert "UNKNOWN" not in fidelities
         assert len(manifest["panels"]) == count
+
+
+@pytest.mark.parametrize(
+    "pack_dir", ["grafana_15759_k8s_views_nodes", "grafana_15760_k8s_views_pods"]
+)
+def test_k8s_views_manifest_notes_match_pack_notes(pack_dir):
+    import yaml
+
+    base = (
+        Path(__file__).resolve().parents[1]
+        / "observability_migration/adapters/source/grafana/curated_packs"
+        / pack_dir
+    )
+    pack = yaml.safe_load((base / "pack.yaml").read_text())
+    manifest = yaml.safe_load((base / "fidelity_manifest.yaml").read_text())
+    notes = {str(entry["panel_id"]): entry.get("notes") for entry in manifest["panels"]}
+    for override in pack["panel"]["query_overrides"]:
+        assert notes.get(str(override["panel_id"])) == override["approximation_note"], override[
+            "title_match"
+        ]

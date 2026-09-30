@@ -63,11 +63,11 @@ panels:
   - title: "CPU Usage / Requests & Limits by container"
     panel_id: 50
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
   - title: "Memory Usage / Requests & Limits by container"
     panel_id: 30
     fidelity: APPROXIMATE
-    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
+    notes: "The PromQL and-on running-pod join has no ES|QL equivalent, so this uses the selected namespace, pod, and cluster. Empty container names are omitted so the pod cgroup is not summed with each container. Pause containers with an empty image are included. The job control stays on the restart panel, where the source applied it to kube-state metrics."
   - title: "CPU Usage by container"
     panel_id: 29
     fidelity: APPROXIMATE
@@ -87,7 +87,7 @@ panels:
   - title: "Container Restarts by container"
     panel_id: 61
     fidelity: APPROXIMATE
-    notes: "Increase over the dashboard time range, by container. An empty job selection shows every job; a chosen job keeps only that series. The source axis max of 1 is kept."
+    notes: "Increase over the dashboard time range, by container. The job control has no All option and defaults to kube-state-metrics, as in the source; clearing it shows every job. The source axis max of 1 is kept."
   - title: "Pods with Container Issues"
     panel_id: 63
     fidelity: APPROXIMATE

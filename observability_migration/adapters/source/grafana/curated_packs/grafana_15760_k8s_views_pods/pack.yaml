@@ -5,7 +5,7 @@
 # Curated pack — Grafana dashboard 15760
 # https://grafana.com/grafana/dashboards/15760-kubernetes-views-pods/
 #
-# Kubernetes / Views / Pods (revision 41). Info stats become tables of the legend labels. Request and limit ratios drop the PromQL and-on running-pod join and keep the namespace, pod, and cluster controls. Charts are lines on the 48-column grid.
+# Kubernetes / Views / Pods (revision 41). Info stats become tables of the legend labels. Request and limit ratios drop the PromQL and-on running-pod join and keep the namespace, pod, and cluster controls. Panels use the 48-column grid.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -338,14 +338,14 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Container Restarts by container"
       panel_id: 61
-      approximation_note: "Increase over the dashboard time range, by container. A blank job selection or Grafana's All value .* shows every job; a chosen job keeps only that series. The source axis max of 1 is kept."
+      approximation_note: "Increase over the dashboard time range, by container. The job control has no All option and defaults to kube-state-metrics, as in the source; clearing it shows every job. The source axis max of 1 is kept."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE (?namespace == "" OR ({{label:namespace}} RLIKE ?namespace OR ({{label:namespace}} IS NULL AND "" RLIKE ?namespace)))
         | WHERE (MV_COUNT(?pod) == 0 OR MV_CONTAINS(TO_STRING(?pod), ".*") OR MV_CONTAINS(TO_STRING(?pod), {{label:pod}}))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
         | STATS restarts = SUM(INCREASE({{metric:kube_pod_container_status_restarts_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
         | EVAL container = {{label:container}}
