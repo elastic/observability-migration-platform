@@ -145,7 +145,10 @@ also `title`-renames the chrome, the inner Lens label is cleared against the
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
 XY legend (`right` for a long categorical breakdown that does not fit under
-the plot). Those last three are **presentation-only** and stay inside the XY
+the plot). `metric_color: none` drops a metric tile's threshold color, the same
+as Grafana's stat `colorMode: none`, for a plain value such as an uptime
+duration; on any other panel type the request is skipped with a panel warning.
+The `kibana_type_override`, `xy_mode`, and `legend_position` keys are **presentation-only** and stay inside the XY
 family: `layout_overrides.kibana_type_override` accepts `line` / `bar` / `area`
 only (a rule pack asking for `metric`, `gauge`, `datatable`, … is rejected at
 load time), because this late pass rewrites `esql.type` / `mode` / `legend`
@@ -376,15 +379,16 @@ The pod view (15760) turns the info stats into tables of the legend labels
 (owner, node, IP, priority, QoS, last termination) for every selected pod.
 Request and limit ratios cannot express the PromQL `and on` running-pod join,
 so they use the namespace, pod, and cluster controls and stay on the 0–1
-scale of the source `percentunit` axis. Each tile averages that window to one
-value. Empty container names are omitted on those tiles, on Resources by
-container, and on the per-container request charts, so the pod cgroup is not
-summed with each container. Per-container CPU drops the cAdvisor
-`id` breakdown. Received traffic is positive and transmitted is negative.
+scale of the source `percentunit` axis. Each tile averages 30-minute buckets
+over the last hour, so it has a value on any dashboard time range. Empty
+container names are omitted on every per-container panel, so the pod cgroup is
+not summed with each container or drawn as its own series. Per-container CPU
+and memory drop the cAdvisor `id` breakdown and sum across the selected pods. Received traffic is positive and transmitted is negative.
 OOM and restart charts are an increase over the dashboard time range, and
 they keep the source axis max of 1. The issue and unscheduled tables stay
-cluster-wide, as in the source queries. The job control filters restarts;
-a blank selection or Grafana's All value `.*` shows every job.
+cluster-wide, as in the source queries. The job control filters restarts. It
+has no All option and defaults to `kube-state-metrics`, as in the source;
+clearing it shows every job.
 
 The global view (15757) turns the CPU and memory bargauges into Real,
 Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
@@ -397,28 +401,37 @@ charts drop the Windows `+ on(namespace)` join and drop the cAdvisor series
 with an empty container name, matching `image!=""`. Pod network is unfiltered,
 because kubelet reports it on the sandbox series. Received traffic is positive
 and transmitted is negative. Virtual devices matching `veth`, `azv`, or `lxc`
-stay off the device chart. An empty job selection is every job. Requests and
-limits on the CPU and memory gauges use `machine_cpu_cores` and
-`machine_memory_bytes` when those kube-prometheus recording rules are present,
-and node CPU count or MemTotal otherwise. The `resolution` variable is a scrape
-step; chart buckets follow the dashboard time range.
+stay off the device chart. The Nodes, Namespaces, and Running Pods tiles
+count the last 5 minutes before the end of the time range, like a Prometheus
+instant query. An empty job selection is every job. Requests and limits on the
+CPU and memory gauges use `machine_cpu_cores` and `machine_memory_bytes` when
+those kube-prometheus recording rules are present, and node CPU count or
+MemTotal otherwise. The `resolution` variable is a scrape step; chart buckets
+follow the dashboard time range.
 
 The persistent-volume dashboard (13646) approximates `predict_linear` full-in
 2 days, 5 days, and 1 week as available bytes divided by one day of decline
-in available bytes, which is the series `predict_linear` reads. The warning
-tile counts claims at or above 80% used, the revision-2 textbox default. The
-claim table shows capacity, used, and available in GiB, used percent, and the
-phase name. Storage class and volume name stay off that table because the
-info series does not share the kubelet label set. The storage-class table
-uses the kube-state-metrics v2 labels `reclaim_policy` and
-`volume_binding_mode`. Hourly, daily, and weekly rates keep those windows
-(`DELTA` over 1 hour, 24 hours, and 168 hours). An empty namespace selection
-is every namespace.
+in available bytes, which is the series `predict_linear` reads. The tiles read
+the day before the range start, so the decline is a full day whatever the
+dashboard time range. The warning tile counts claims at or above 80% used, the
+revision-2 textbox default. The claim table shows capacity, used, and
+available in GiB, used percent, and the phase name. Storage class and volume
+name stay off that table because the info series does not share the kubelet
+label set. The storage-class table uses the kube-state-metrics v2 labels
+`reclaim_policy` and `volume_binding_mode`. Hourly, daily, and weekly rates
+keep those windows (`DELTA` over 1 hour, 24 hours, and 168 hours); the daily
+and weekly queries read one window before the range start so the first points
+are not cut short. An empty namespace selection is every namespace.
 
 The apiserver dashboard (12006) names latency series p95, p90, and p50.
 kube-apiserver publishes classic `*_bucket` counters, not a duration gauge,
-so each point is the upper bound of the bucket whose cumulative rate crosses
-the quantile. Request rate stays one series per verb. CONNECT and WATCH stay
+so each point is the upper bound of the first bucket whose cumulative rate
+reaches the quantile, without `histogram_quantile` interpolation. Bucket
+bounds are read from the `le` label as numbers, so `1e-08`, `1`, and `1.0`
+all work and any bucket layout is accepted. When only `+Inf` reaches the
+quantile, the point is the highest finite bound, as in Prometheus. Targets
+that store these durations only as a `histogram` field, with no `*_bucket`
+series, show the missing-telemetry card. Request rate stays one series per verb. CONNECT and WATCH stay
 off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
@@ -434,7 +447,9 @@ removed_release. An empty cluster or job selection is every value. The
 `resolution` variable is a scrape step; chart buckets follow the dashboard
 time range.
 
-The node view (15759) lists pods on the selected node. The overview is one
+The node view (15759) lists pods on the selected node. The pod count and the
+pod list use the last 5 minutes before the end of the time range, like a
+Prometheus instant query, so deleted pods drop out. The overview is one
 row of CPU, memory, and pod count, with used, total, and uptime flush
 underneath and the pod list beside both rows. Uptime stays a plain duration:
 Kibana metric color fills the whole tile, so the source green/yellow/red
@@ -446,9 +461,12 @@ does not apply the source `nodename` regex, so choose the instance that
 matches the node. The `resolution` variable is a scrape step; chart buckets
 follow the dashboard time range. CPU usage by pod sums cAdvisor
 `container_cpu_usage_seconds_total` by pod on the selected node;
-`node_cpu_seconds_total` has no pod label. Number of CPU Core Throttled is
-the cAdvisor CFS throttle rate, because `node_cpu_core_throttles_total` is
-not a node_exporter, cAdvisor, or kube-state-metrics series.
+`node_cpu_seconds_total` has no pod label; memory usage by pod omits the pod
+cgroup the same way. Number of CPU Core Throttled keeps the node_exporter
+`node_cpu_core_throttles_total` thermal throttle rate for the selected instance.
+The CPU and RAM tiles average 30-minute buckets over the last hour. With no
+instance selected, the CPU tile averages every CPU of every instance, so it
+stays 0–1.
 `node_disk_io_now` is a gauge of in-progress I/O; ES|QL cannot `rate()` a
 gauge, so that chart shows the last count by device.
 
@@ -638,7 +656,10 @@ a concrete non-canonical field (escape hatch).
 
 Bundled curated packs follow the same contract. Hand-written `esql_query`
 strings use `` `{{label:pod}}` `` / `{{metric:name:gauge}}` placeholders so
-grouping columns and metrics resolve per profile. `metric_map` targets are
+grouping columns and metrics resolve per profile. `{{metric:name:histogram}}`
+is a `PERCENTILE()` operand: it resolves to `TO_TDIGEST(field)` when the target
+field is a classic `histogram` and to the bare field otherwise, the same rule
+the generic `histogram_quantile` translation uses. `metric_map` targets are
 bare logical metric names (see `docs/command-contract.md`). Grafana migrate
 exits non-zero if a target already has the active Prometheus profile prefix
 (`metrics.*` under `prometheus_native`, and the equivalent for

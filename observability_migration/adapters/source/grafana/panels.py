@@ -6292,7 +6292,7 @@ _extract_esql_columns = _extract_esql_columns_canonical
 _TIME_DIMENSION_FIELDS = {"time_bucket", "timestamp_bucket", "step"}
 _CURATED_QUERY_TOKEN_RE = re.compile(
     r"\{\{\s*(?P<kind>control|label|metric):(?P<name>[A-Za-z0-9_.-]+)"
-    r"(?::(?P<prefer>counter|gauge))?\s*\}\}"
+    r"(?::(?P<prefer>counter|gauge|histogram))?\s*\}\}"
 )
 
 
@@ -6322,6 +6322,17 @@ def _materialize_curated_query_override(query, resolver):
                 resolve = getattr(resolver, "resolve_label", None)
                 resolved = resolve(name) if callable(resolve) else None
                 return resolved or name
+            if kind == "metric" and prefer == "histogram":
+                # PERCENTILE() operand, typed like histogram_quantile_family_rule:
+                # a classic ``histogram`` field needs TO_TDIGEST(); an
+                # exponential_histogram (or unknown type) is used as-is.
+                resolve = getattr(resolver, "resolve_metric_field", None)
+                resolved = (resolve(name, prefer=None) if callable(resolve) else None) or name
+                field_type = getattr(resolver, "field_type", None)
+                kind_name = (field_type(resolved) if callable(field_type) else None) or ""
+                if kind_name.strip().lower() == "histogram":
+                    return f"TO_TDIGEST({resolved})"
+                return resolved
             if kind == "metric":
                 resolve = getattr(resolver, "resolve_metric_field", None)
                 resolved = resolve(name, prefer=prefer) if callable(resolve) else None
@@ -6335,7 +6346,7 @@ def _materialize_curated_query_override(query, resolver):
 
 def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
     return re.compile(
-        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge))?\s*\}}\}}",
+        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge|histogram))?\s*\}}\}}",
         re.IGNORECASE,
     )
 
@@ -6432,6 +6443,10 @@ def _strip_optional_metric_token_from_curated_esql_result(
     removed_aliases: list[str] = []
     stripped_stages: list[str] = []
     removed_alias_set: set[str] = set()
+    # Columns that still exist before the current stage. An EVAL that
+    # reassigns one of them from the stripped series (``x = CASE(opt > 0, …,
+    # x)``) is an override-when-present: dropping it keeps the earlier value.
+    defined_aliases: set[str] = set()
     for stage in _split_esql_pipeline(query):
         stripped = str(stage or "").strip()
         upper = stripped.upper()
@@ -6475,6 +6490,12 @@ def _strip_optional_metric_token_from_curated_esql_result(
             if by_text:
                 rebuilt += f" BY {by_text}"
             stripped_stages.append(rebuilt)
+            defined_aliases = set()
+            for part in kept_assignments + _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    defined_aliases.add(alias)
             continue
         if upper.startswith("EVAL "):
             assignments = [
@@ -6486,6 +6507,7 @@ def _strip_optional_metric_token_from_curated_esql_result(
             while changed:
                 changed = False
                 kept_assignments: list[str] = []
+                defined_in_stage = set(defined_aliases)
                 for assignment in assignments:
                     left, right = _split_top_level_assignment(assignment)
                     rhs = right if right is not None else assignment
@@ -6498,19 +6520,22 @@ def _strip_optional_metric_token_from_curated_esql_result(
                         )
                         rhs = rewritten
                         changed = True
+                    alias = _canonical_esql_alias(left) if left else ""
                     if token_re.search(rhs) or _esql_expr_references_aliases(
                         rhs, removed_alias_set
                     ):
-                        alias = _canonical_esql_alias(left) if left else ""
-                        if alias:
+                        if alias and alias not in defined_in_stage:
                             _append_unique(removed_aliases, alias)
                             removed_alias_set.add(alias)
                         changed = True
                         continue
                     kept_assignments.append(assignment)
+                    if alias:
+                        defined_in_stage.add(alias)
                 assignments = kept_assignments
             if assignments:
                 stripped_stages.append("EVAL " + ", ".join(assignments))
+                defined_aliases = defined_in_stage
             continue
         if upper.startswith("KEEP ") and removed_aliases:
             keep_parts = [
@@ -11669,6 +11694,36 @@ def _apply_layout_presentation_override(
         esql["legend"] = legend
 
 
+def _apply_layout_metric_color(
+    panel: dict, override: dict, warnings: list | None
+) -> None:
+    """Drop a metric tile's ``primary.color`` for ``metric_color: none``.
+
+    Any other panel type has no metric color to drop; the request is reported
+    as a warning rather than silently ignored.
+    """
+    if str(override.get("metric_color") or "").strip() != "none":
+        return
+    if isinstance(panel.get("section"), dict):
+        return
+    esql = panel.get("esql")
+    if isinstance(esql, dict) and esql.get("type") == "metric":
+        primary = esql.get("primary")
+        if isinstance(primary, dict):
+            primary.pop("color", None)
+        return
+    if warnings is not None:
+        title = str(override.get("title_match") or panel.get("title") or "").strip()
+        warnings.append(
+            (
+                panel,
+                f"curated layout override for panel '{title}' requested "
+                "metric_color 'none', but the migrated panel is not a Kibana metric "
+                "tile, so the color change was skipped",
+            )
+        )
+
+
 def _apply_one_panel_layout_override(
     panel: dict, override: dict, warnings: list | None = None
 ) -> None:
@@ -11703,6 +11758,7 @@ def _apply_one_panel_layout_override(
     if isinstance(new_title, str) and new_title.strip():
         panel["title"] = new_title.strip()
     _apply_layout_presentation_override(panel, override, warnings)
+    _apply_layout_metric_color(panel, override, warnings)
 
 
 def _apply_panel_layout_overrides_recursively(

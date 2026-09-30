@@ -19,20 +19,20 @@ panels:
   - title: "workqueue service time"
     panel_id: 10
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50 from workqueue_queue_duration_seconds_bucket. The point is the bucket upper bound."
+    notes: "p95, p90, and p50 of workqueue queue duration from workqueue_queue_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
   - title: "apiserver request latency"
     panel_id: 2
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50 from apiserver_request_duration_seconds_bucket. CONNECT and WATCH stay excluded. The point is the bucket upper bound."
+    notes: "p95, p90, and p50 of request duration from apiserver_request_duration_seconds_bucket. CONNECT and WATCH are excluded. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
   - title: "workqueue processing time"
     panel_id: 12
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50 from workqueue_work_duration_seconds_bucket. The point is the bucket upper bound."
+    notes: "p95, p90, and p50 of workqueue processing duration from workqueue_work_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
   - title: "etcd request latency"
     panel_id: 4
     fidelity: APPROXIMATE
-    notes: "p95, p90, and p50 from etcd_request_duration_seconds_bucket. The point is the bucket upper bound. Shares a row with the cache hit ratio."
+    notes: "p95, p90, and p50 of etcd request duration from etcd_request_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
   - title: "etcd helper cache hit ratio"
     panel_id: 6
     fidelity: APPROXIMATE
-    notes: "Hits divided by hits plus misses. The ratio stays 0-1."
+    notes: "Cache hits divided by hits plus misses. The ratio stays 0-1, matching the source axis."
