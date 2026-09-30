@@ -5,12 +5,22 @@
 # Curated pack — Grafana dashboard 15761
 # https://grafana.com/grafana/dashboards/15761-kubernetes-system-api-server/
 #
-# Kubernetes / System / API Server (revision 21). Mean latency is
-# sum(rate(duration_sum)) / sum(rate(duration_count)), in seconds. The 5xx
-# ratio stays 0-1. CPU is process_cpu_seconds_total in cores. The resolution
-# variable is a scrape step; chart buckets follow the dashboard time range.
-# An empty cluster or job selection is every value. Requests by code, by
-# verb, and the stacked instance chart do not filter job, matching the source.
+# Kubernetes / System / API Server (revision 21). Values match the source
+# queries, including two source unit labels that are wrong: mean latency is
+# sum(rate(duration_sum)) / sum(rate(duration_count)) in seconds under an `ms`
+# unit, and CPU is process_cpu_seconds_total in cores under a `percent` unit.
+# The 5xx ratio stays 0-1. The resolution variable is a scrape step; chart
+# buckets follow the dashboard time range. An empty cluster selection is every
+# cluster.
+#
+# The `job` variable has no All option and Grafana opens on the first
+# apiserver job; the Kibana control opens on `.*`. Every job filter keeps the
+# engine's `.*` clause so the default selection matches. With no specific
+# job, the apiserver_* panels need no job filter (only apiserver exports
+# them); Health Status, Work Queue, CPU, and Memory read metrics every target
+# exports, so they keep jobs whose name contains "apiserver". Requests by
+# code, by verb, and the stacked instance chart do not filter job, matching
+# the source.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -40,12 +50,12 @@ panel:
     - title_match: "API Server - Health Status"
       panel_id: 42
       kibana_type_override: metric
-      approximation_note: "Latest up value per instance. An empty job selection is every job."
+      approximation_note: "Latest up value per instance. With no specific job, only jobs whose name contains apiserver are shown."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (((MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*")) AND {{label:job}} RLIKE ".*apiserver.*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:up:gauge}} IS NOT NULL
         | STATS up = MAX(LAST_OVER_TIME({{metric:up:gauge}})) BY {{label:instance}}
         | EVAL instance = {{label:instance}}
@@ -54,16 +64,16 @@ panel:
     - title_match: "Deprecated Kubernetes Resources"
       panel_id: 60
       kibana_type_override: datatable
-      approximation_note: "Deprecated API groups that were requested. Columns are the kube-apiserver labels group, version, resource, subresource, and removed_release. The gauge value is dropped."
+      approximation_note: "Deprecated API groups that were requested, grouped by group, version, resource, and removed_release like the source. The source hides the gauge value; it stays as the seen column so the table has a numeric metric."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:apiserver_requested_deprecated_apis:gauge}} IS NOT NULL
-        | STATS seen = MAX(LAST_OVER_TIME({{metric:apiserver_requested_deprecated_apis:gauge}})) BY {{label:group}}, {{label:version}}, {{label:resource}}, {{label:subresource}}, {{label:removed_release}}
-        | EVAL `group` = {{label:group}}, version = {{label:version}}, resource = {{label:resource}}, subresource = {{label:subresource}}, removed_release = {{label:removed_release}}
-        | STATS seen = MAX(seen) BY `group`, version, resource, subresource, removed_release
-        | KEEP `group`, version, resource, subresource, removed_release
+        | STATS seen = MAX(LAST_OVER_TIME({{metric:apiserver_requested_deprecated_apis:gauge}})) BY {{label:group}}, {{label:version}}, {{label:resource}}, {{label:removed_release}}
+        | EVAL `group` = {{label:group}}, version = {{label:version}}, resource = {{label:resource}}, removed_release = {{label:removed_release}}
+        | STATS seen = MAX(seen) BY `group`, version, resource, removed_release
+        | KEEP `group`, version, resource, removed_release, seen
         | SORT removed_release ASC
     - title_match: "API Server - HTTP Requests by code"
       panel_id: 38
@@ -96,32 +106,32 @@ panel:
     - title_match: "API Server - HTTP Requests Latency by instance"
       panel_id: 53
       kibana_type_override: area
-      approximation_note: "Mean latency, sum of duration rates divided by the count rate, multiplied by 1000 so the source millisecond unit is true."
+      approximation_note: "Mean latency, sum of duration rates divided by the count rate. The value is seconds, as in the source, which labels it ms."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:apiserver_request_duration_seconds_sum:counter}} IS NOT NULL OR {{metric:apiserver_request_duration_seconds_count:counter}} IS NOT NULL
         | STATS total = SUM(RATE({{metric:apiserver_request_duration_seconds_sum:counter}})), n = SUM(RATE({{metric:apiserver_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
         | EVAL instance = {{label:instance}}
-        | EVAL latency = CASE(n > 0, total / n * 1000, NULL)
+        | EVAL latency = CASE(n > 0, total / n, NULL)
         | STATS latency = AVG(latency) BY time_bucket, instance
         | KEEP time_bucket, instance, latency
         | SORT time_bucket ASC
     - title_match: "API Server - HTTP Requests Latency by verb"
       panel_id: 54
       kibana_type_override: area
-      approximation_note: "Mean latency by verb, in milliseconds."
+      approximation_note: "Mean latency by verb, in seconds. The source labels it ms."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:apiserver_request_duration_seconds_sum:counter}} IS NOT NULL OR {{metric:apiserver_request_duration_seconds_count:counter}} IS NOT NULL
         | STATS total = SUM(RATE({{metric:apiserver_request_duration_seconds_sum:counter}})), n = SUM(RATE({{metric:apiserver_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:verb}}
         | EVAL verb = {{label:verb}}
-        | EVAL latency = CASE(n > 0, total / n * 1000, NULL)
+        | EVAL latency = CASE(n > 0, total / n, NULL)
         | STATS latency = AVG(latency) BY time_bucket, verb
         | KEEP time_bucket, verb, latency
         | SORT time_bucket ASC
@@ -133,7 +143,7 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:apiserver_request_total:counter}} IS NOT NULL
         | STATS errors = SUM(CASE({{label:code}} RLIKE "5..", RATE({{metric:apiserver_request_total:counter}}), NULL)), total = SUM(RATE({{metric:apiserver_request_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
         | EVAL instance = {{label:instance}}
@@ -149,7 +159,7 @@ panel:
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:apiserver_request_total:counter}} IS NOT NULL
         | STATS errors = SUM(CASE({{label:code}} RLIKE "5..", RATE({{metric:apiserver_request_total:counter}}), NULL)), total = SUM(RATE({{metric:apiserver_request_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:verb}}
         | EVAL verb = {{label:verb}}
@@ -174,12 +184,12 @@ panel:
     - title_match: "API Server - Work Queue by instance"
       panel_id: 56
       kibana_type_override: area
-      approximation_note: "workqueue_depth summed by instance. The depth gauge is the latest value in each bucket."
+      approximation_note: "workqueue_depth summed by instance. The depth gauge is the latest value in each bucket. With no specific job, only jobs whose name contains apiserver are shown."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (((MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*")) AND {{label:job}} RLIKE ".*apiserver.*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:workqueue_depth:gauge}} IS NOT NULL
         | STATS depth = SUM(LAST_OVER_TIME({{metric:workqueue_depth:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
         | EVAL instance = {{label:instance}}
@@ -189,12 +199,12 @@ panel:
     - title_match: "API Server - CPU Usage by instance"
       panel_id: 47
       kibana_type_override: area
-      approximation_note: "process_cpu_seconds_total rate, in cores. The source percent unit is the core count, not a 0-100 percentage."
+      approximation_note: "process_cpu_seconds_total rate, in cores. The source percent unit is the core count, not a 0-100 percentage. With no specific job, only jobs whose name contains apiserver are shown."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (((MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*")) AND {{label:job}} RLIKE ".*apiserver.*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:process_cpu_seconds_total:counter}} IS NOT NULL
         | STATS cores = SUM(RATE({{metric:process_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
         | EVAL instance = {{label:instance}}
@@ -204,12 +214,12 @@ panel:
     - title_match: "API Server - Memory Usage by instance"
       panel_id: 48
       kibana_type_override: area
-      approximation_note: "process_resident_memory_bytes, latest value per bucket, by instance."
+      approximation_note: "process_resident_memory_bytes, latest value per bucket, by instance. With no specific job, only jobs whose name contains apiserver are shown."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
-        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (((MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), ".*")) AND {{label:job}} RLIKE ".*apiserver.*") OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
         | WHERE {{metric:process_resident_memory_bytes:gauge}} IS NOT NULL
         | STATS bytes = SUM(LAST_OVER_TIME({{metric:process_resident_memory_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
         | EVAL instance = {{label:instance}}
