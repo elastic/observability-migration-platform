@@ -444,7 +444,9 @@ Health is the latest `up` per instance. CPU is `process_cpu_seconds_total`
 in cores; the source `percentunit` axis shows that core count as a fraction
 of one core. Average packet size is the size-sum rate divided by the
 size-count rate. Forward requests and DNS errors do not filter on instance.
-Cache hits and misses are both split by cache type. The three heatmaps are
+Cache hits and misses are both split by cache type. Cache size is
+`coredns_cache_entries` by type; the source unit is bytes, which draws an
+entry count as a size, so the Kibana axis is a count. The three heatmaps are
 the per-second rate of each finite `le` bucket; `+Inf` is left off so the
 axis stays on the finite buckets, and the request and response size charts
 also drop `le="0"`. An empty cluster, job, or instance selection, including

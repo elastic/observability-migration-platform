@@ -4517,12 +4517,22 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         # its ``setdefault`` preserves it (e.g. elapsed-seconds
                         # Start Time → duration display) (PR #369).
                         _primary_format_unit = _override.get("primary_format")
-                        if _primary_format_unit and isinstance(
-                            _native_panel.get("primary"), dict
-                        ):
+                        if _primary_format_unit and isinstance(_native_panel, dict):
                             _pf = grafana_unit_to_yaml_format(_primary_format_unit)
                             if _pf:
-                                _native_panel["primary"]["format"] = _pf
+                                # Stamp before enrich so Grafana's panel unit
+                                # does not replace a pack that deliberately
+                                # disagrees with it (CoreDNS cache entries are
+                                # a count; the source unit is bytes).
+                                _primary = _native_panel.get("primary")
+                                if isinstance(_primary, dict):
+                                    _primary["format"] = dict(_pf)
+                                _gauge_metric = _native_panel.get("metric")
+                                if isinstance(_gauge_metric, dict):
+                                    _gauge_metric["format"] = dict(_pf)
+                                for _metric in _native_panel.get("metrics") or []:
+                                    if isinstance(_metric, dict):
+                                        _metric["format"] = dict(_pf)
                         # Curated overrides skip PANEL_TRANSLATORS; honour
                         # pack-level timeFrom drops before enrich applies
                         # Grafana panel time_range.

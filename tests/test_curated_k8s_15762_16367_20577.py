@@ -133,6 +133,27 @@ def test_15762_packet_size_is_sum_over_count_and_heatmaps_keep_finite_buckets():
     assert yaml_panel["esql"]["metric"]["field"] == "observations"
 
 
+def test_15762_cache_size_is_a_count_not_bytes():
+    _result, query, yaml_panel = _translate(
+        15762,
+        "Kubernetes / System / CoreDNS",
+        ["kubernetes"],
+        {
+            "id": 15,
+            "type": "timeseries",
+            "title": "CoreDNS - Cache Size",
+            "fieldConfig": {"defaults": {"unit": "bytes"}},
+            "targets": [{"expr": "sum(coredns_cache_entries) by (type)", "refId": "A"}],
+            "gridPos": {"x": 12, "y": 35, "w": 12, "h": 8},
+        },
+    )
+    assert "coredns_cache_entries" in query
+    metrics = yaml_panel["esql"]["metrics"]
+    assert metrics[0]["format"]["type"] == "number"
+    assert metrics[0]["format"].get("compact") is True
+    assert "bytes" not in metrics[0]["format"].get("type", "")
+
+
 def test_15762_dashboard_matches_the_schema():
     panels = []
     specs = [

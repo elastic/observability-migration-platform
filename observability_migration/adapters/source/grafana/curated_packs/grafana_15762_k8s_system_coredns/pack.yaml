@@ -211,7 +211,9 @@ panel:
     - title_match: "CoreDNS - Cache Size"
       panel_id: 15
       kibana_type_override: area
-      approximation_note: "coredns_cache_entries summed by cache type. The source query does not filter instance. The gauge is the latest value in each bucket."
+      # The source unit is bytes, but coredns_cache_entries is a count.
+      primary_format: short
+      approximation_note: "coredns_cache_entries summed by cache type. The source unit is bytes, which draws an entry count as a size, so the axis is a count. The source query does not filter instance. The gauge is the latest value in each bucket."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

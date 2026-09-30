@@ -55,7 +55,7 @@ panels:
   - title: "CoreDNS - Cache Size"
     panel_id: 15
     fidelity: APPROXIMATE
-    notes: "Cache entries by type. No instance filter."
+    notes: "Cache entries by type, drawn as a count. The source unit is bytes. No instance filter."
   - title: "CoreDNS - DNS request duration"
     panel_id: 27
     fidelity: APPROXIMATE
