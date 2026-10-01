@@ -115,6 +115,11 @@ panel:
         | KEEP pod, `Memory Usage`, `Memory Requests`, `Memory Requests %`, `Memory Limits`, `Memory Limits %`, `Memory RSS`, `Memory Cache`, `Memory Swap`
         | SORT `Memory Usage` DESC NULLS LAST
 
+  # A row whose only panel repeats the row title is flattened to the top
+  # level, so CPU Usage, CPU Quota, and Memory Quota take dashboard-absolute
+  # positions here, not section-relative ones. Only Memory Usage stays a
+  # section, and a section advances the dashboard y cursor by its content
+  # height (14 from y 30), so Memory Quota follows at y 44.
   layout_overrides:
     - title_match: "CPU Usage"
       panel_id: 5
@@ -132,7 +137,7 @@ panel:
       panel_id: 2
       hide_title: false
       size: {w: 48, h: 16}
-      position: {x: 0, y: 0}
+      position: {x: 0, y: 14}
     - title_match: "Memory Usage"
       panel_id: 7
       collapsed: false
@@ -149,4 +154,4 @@ panel:
       panel_id: 4
       hide_title: false
       size: {w: 48, h: 16}
-      position: {x: 0, y: 0}
+      position: {x: 0, y: 44}
