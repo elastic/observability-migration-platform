@@ -334,6 +334,45 @@ def render() -> str:
         L.append(f"node_filesystem_size_bytes{{{labels}}} {(100 * 1024**3)}")
         L.append(f"node_filesystem_free_bytes{{{labels}}} {((60 - 5) * 1024**3)}")
 
+    # ---- kubelet volume stats + PVC phase (Grafana 11455) --------------
+    # Real exporter names. `data` in default grows fast enough that a short
+    # scrape window still projects full within a week. `logs` sits above the
+    # 80% warning line. `pending` has a phase and no kubelet stats.
+    L.append("# HELP kube_namespace_created Unix time the namespace was created")
+    L.append("# TYPE kube_namespace_created gauge")
+    L.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
+    L.append("# TYPE kubelet_volume_stats_capacity_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_used_bytes Volume bytes used")
+    L.append("# TYPE kubelet_volume_stats_used_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_available_bytes Volume bytes available")
+    L.append("# TYPE kubelet_volume_stats_available_bytes gauge")
+    L.append("# HELP kube_persistentvolumeclaim_status_phase PVC phase flag")
+    L.append("# TYPE kube_persistentvolumeclaim_status_phase gauge")
+    # cluster keeps the default-namespace sample off the scraper's unlabeled
+    # document, which already carries namespace=default as a base label.
+    for ns in ("default", "staging", "kube-system"):
+        L.append(
+            f'kube_namespace_created{{namespace="{ns}",cluster="{CLUSTER}"}} {now - 86400:.0f}'
+        )
+    claims = (
+        ("default", "data", 10 * 1024**3, 8 * 1024**3, 2_000_000, "Bound"),
+        ("default", "logs", 10 * 1024**3, int(9.2 * 1024**3), 1_000, "Bound"),
+        ("staging", "data", 10 * 1024**3, 4 * 1024**3, 0, "Bound"),
+    )
+    for ns, claim, capacity, used_base, per_sec, phase in claims:
+        used = min(used_base + int(elapsed * per_sec), capacity - 100 * 1024**2)
+        available = capacity - used
+        labels = f'namespace="{ns}",persistentvolumeclaim="{claim}",node="node-1"'
+        L.append(f"kubelet_volume_stats_capacity_bytes{{{labels}}} {capacity}")
+        L.append(f"kubelet_volume_stats_used_bytes{{{labels}}} {used}")
+        L.append(f"kubelet_volume_stats_available_bytes{{{labels}}} {available}")
+        L.append(
+            f'kube_persistentvolumeclaim_status_phase{{namespace="{ns}",persistentvolumeclaim="{claim}",phase="{phase}"}} 1'
+        )
+    L.append(
+        'kube_persistentvolumeclaim_status_phase{namespace="default",persistentvolumeclaim="pending",phase="Pending"} 1'
+    )
+
     return "\n".join(L) + "\n"
 
 

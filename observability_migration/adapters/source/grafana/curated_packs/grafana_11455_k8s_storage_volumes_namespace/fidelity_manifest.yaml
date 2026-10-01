@@ -1,0 +1,159 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 11455 K8s / Storage / Volumes / Namespace (revision 6).
+
+schema_version: 1
+gnet_id: 11455
+gnet_revision: 6
+dashboard_title: "K8s / Storage / Volumes / Namespace"
+maintainer: "community"
+
+panels:
+  - id: 59
+    title: "Volumes Full in Week Based on Daily Use Rate"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "predict_linear over 1d extrapolated 7d, approximated as available/one-day growth under 7 days, for the selected namespace."
+    notes: "predict_linear over 1d extrapolated 7d, approximated as available/one-day growth under 7 days, for the selected namespace."
+  - id: 10
+    title: "Running PVCs Above % Used Warning Threshold"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Count of PVCs in the selected namespace at or above 80% used. Textbox default from revision 6."
+    notes: "Count of PVCs in the selected namespace at or above 80% used. Textbox default from revision 6."
+  - id: 6
+    title: "Unbound PVCs"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "pv_collector_unbound_pvc_count replaced with phase!=Bound in the selected namespace."
+    notes: "pv_collector_unbound_pvc_count replaced with phase!=Bound in the selected namespace."
+  - id: 63
+    title: "Volumes Full in Week Based on Daily Use Rate - Current"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: APPROXIMATE
+    delta: "predict_linear over 1w extrapolated 7d. Week of used-byte growth scaled to a daily rate. Stays on infrastructure namespaces; the source query does not use the namespace control."
+    notes: "predict_linear over 1w extrapolated 7d. Week of used-byte growth scaled to a daily rate. Stays on infrastructure namespaces; the source query does not use the namespace control."
+  - id: 61
+    title: "Volumes Full in Week Based on Daily Use Rate - Alert History"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Count of at-risk volumes in the selected namespace over time, instead of a 0/1 spike per claim."
+    notes: "Count of at-risk volumes in the selected namespace over time, instead of a 0/1 spike per claim."
+  - id: 78
+    title: "Volumes Full in Week Based on Daily Use Rate -  Predicted Available Space History"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Projected bytes after 7 days of growth, where that projection is negative, for the selected namespace."
+    notes: "Projected bytes after 7 days of growth, where that projection is negative, for the selected namespace."
+  - id: 12
+    title: "Running PVCs Above % Used Warning Threshold Stats - Current"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: APPROXIMATE
+    delta: "Claims at or above 80% with used, capacity, free, and the 0-1 ratio. The info-metric existence target is dropped."
+    notes: "Claims at or above 80% with used, capacity, free, and the 0-1 ratio. The info-metric existence target is dropped."
+  - id: 65
+    title: "Running PVCs Above % Used Warning Threshold"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Count of claims at or above 80% over time, instead of a 0/1 series per claim."
+    notes: "Count of claims at or above 80% over time, instead of a 0/1 series per claim."
+  - id: 4
+    title: "Bound PVCs"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "pv_collector_bound_pvc_count replaced with phase=Bound in the selected namespace."
+    notes: "pv_collector_bound_pvc_count replaced with phase=Bound in the selected namespace."
+  - id: 8
+    title: "PVC Stats"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: APPROXIMATE
+    delta: "Per-claim used, capacity, free, and the 0-1 ratio. Existence-only info targets dropped."
+    notes: "Per-claim used, capacity, free, and the 0-1 ratio. Existence-only info targets dropped."
+  - id: 16
+    title: "Running PVCs % Used"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Same-bucket used/capacity percent by claim. The source multiplies by 100."
+    notes: "Same-bucket used/capacity percent by claim. The source multiplies by 100."
+  - id: 19
+    title: "All Running PVCs Used Bytes"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Used bytes by claim in the selected namespace."
+  - id: 20
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Grafana repeats one chart per claim. The claim list is not known at migration time, so used and capacity for every claim in the namespace share this chart."
+    notes: "Grafana repeats one chart per claim. The claim list is not known at migration time, so used and capacity for every claim in the namespace share this chart."
+  - id: 73
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+    notes: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+  - id: 74
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+    notes: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+  - id: 75
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+    notes: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+  - id: 76
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+    notes: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+  - id: 77
+    title: "$persistentvolumeclaim"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+    notes: "Saved copy of the repeated claim chart. Same used and capacity series as the repeat template."
+  - id: 43
+    title: "Hourly Volume Use Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "DELTA over 1 hour / 3600, per claim in the selected namespace."
+    notes: "DELTA over 1 hour / 3600, per claim in the selected namespace."
+  - id: 49
+    title: "Daily Volume Use Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "DELTA over 24 hours / 86400, per claim in the selected namespace."
+    notes: "DELTA over 24 hours / 86400, per claim in the selected namespace."
+  - id: 50
+    title: "Weekly Volume Use Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "DELTA over 168 hours / 604800, per claim, plotted daily inside the dashboard time range."
+    notes: "DELTA over 168 hours / 604800, per claim, plotted daily inside the dashboard time range."

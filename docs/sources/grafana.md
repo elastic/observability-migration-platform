@@ -365,6 +365,19 @@ one per day so the line stays inside the dashboard time range. OpenShift
 `pv_collector_*` counts are `kube_persistentvolumeclaim_status_phase`. The
 Grafana alert list is a gap.
 
+The namespace volume dashboard (11455) is that cluster dashboard scoped to one
+namespace. The namespace control is an exact match, and an empty control matches
+every namespace so the panels populate before a namespace is chosen. The
+"current" table is the exception: the source query lists infrastructure
+namespaces (`openshift-*`, `kube-*`, `default`, `logging`) and a week of
+growth, and it does not follow the namespace control. Fill-in-a-week, the
+revision-6 textbox default of 80%, and the hourly, daily, and weekly rates use
+the same approximations as the cluster dashboard. OpenShift `pv_collector_*`
+counts are `kube_persistentvolumeclaim_status_phase` in the selected namespace.
+Grafana repeats one used-and-capacity chart per claim. The claim list is not
+known when the dashboard is migrated, so each saved copy of that chart plots
+used and capacity for every claim in the namespace.
+
 The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
 are capacity minus available, and free inodes are total minus used. The
 percent tiles use that same sum, so a volume reported by more than one kubelet
