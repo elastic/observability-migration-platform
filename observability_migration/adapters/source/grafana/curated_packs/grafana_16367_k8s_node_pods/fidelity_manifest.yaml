@@ -1,0 +1,31 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 16367 Kubernetes / Compute Resources / Node (Pods)
+# (revision 1).
+
+schema_version: 1
+gnet_id: 16367
+gnet_revision: 1
+dashboard_title: "Kubernetes / Compute Resources / Node (Pods)"
+maintainer: "community"
+
+panels:
+  - title: "CPU Usage"
+    panel_id: 1
+    fidelity: APPROXIMATE
+    notes: "cAdvisor CPU by pod plus node CPU capacity. The node label is filtered directly. Empty container names are omitted."
+  - title: "CPU Quota"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Usage, requests, limits, and 0-100 ratios by pod. Phase is not joined."
+  - title: "Memory Usage (w/o cache)"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "Working set by pod plus node memory capacity."
+  - title: "Memory Quota"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "Working set, requests, limits, RSS, cache, and swap. Ratios are 0-100. Byte columns stay in bytes."

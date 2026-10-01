@@ -1,0 +1,138 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 20577 AWS - EKS (grafana.com revision 1).
+
+schema_version: 1
+gnet_id: 20577
+gnet_revision: 1
+dashboard_title: "AWS - EKS"
+maintainer: "community"
+
+panels:
+  - title: "Current Nodes"
+    panel_id: 24
+    fidelity: APPROXIMATE
+    notes: "cluster_node_count summed across clusters. The source pins one ClusterName."
+  - title: "Current Pods"
+    panel_id: 18
+    fidelity: APPROXIMATE
+    notes: "node_number_of_running_pods summed across nodes."
+  - title: "Current Containers"
+    panel_id: 17
+    fidelity: APPROXIMATE
+    notes: "node_number_of_running_containers summed across nodes."
+  - title: "Nodes - Max Bytes"
+    panel_id: 31
+    fidelity: APPROXIMATE
+    notes: "Maximum node_network_total_bytes in the time range."
+  - title: "Nodes - Max Filesystem Utilization"
+    panel_id: 37
+    fidelity: APPROXIMATE
+    notes: "Maximum node_filesystem_utilization. The value is 0-100."
+  - title: "Pods - Max Bytes Sent"
+    panel_id: 35
+    fidelity: APPROXIMATE
+    notes: "Maximum pod_network_tx_bytes."
+  - title: "Pods - Max Bytes Received"
+    panel_id: 33
+    fidelity: APPROXIMATE
+    notes: "Maximum pod_network_rx_bytes."
+  - title: "Container Restarts"
+    panel_id: 32
+    fidelity: APPROXIMATE
+    notes: "Latest restart count summed across pods."
+  - title: "Nodes - Total Bytes"
+    panel_id: 30
+    fidelity: APPROXIMATE
+    notes: "Latest node_network_total_bytes averaged across nodes."
+  - title: "Pods - Total Bytes Sent"
+    panel_id: 36
+    fidelity: APPROXIMATE
+    notes: "Latest pod_network_tx_bytes summed across pods."
+  - title: "Pods - Total Bytes Received"
+    panel_id: 34
+    fidelity: APPROXIMATE
+    notes: "Latest pod_network_rx_bytes summed across pods."
+  - title: "Current Node CPU %"
+    panel_id: 25
+    fidelity: APPROXIMATE
+    notes: "Average node_cpu_utilization, 0-100, with the source thresholds."
+  - title: "Current Node Mem %"
+    panel_id: 26
+    fidelity: APPROXIMATE
+    notes: "Average node_memory_utilization, 0-100."
+  - title: "Current Pod CPU %"
+    panel_id: 27
+    fidelity: APPROXIMATE
+    notes: "Average pod_cpu_utilization, 0-100."
+  - title: "Current Pod Mem %"
+    panel_id: 28
+    fidelity: APPROXIMATE
+    notes: "Average pod_memory_utilization, 0-100."
+  - title: "Node Utilization %'s"
+    panel_id: 16
+    fidelity: APPROXIMATE
+    notes: "CPU and memory utilization over time."
+  - title: "Node Utilization %'s (by IP)"
+    panel_id: 19
+    fidelity: APPROXIMATE
+    notes: "CPU utilization by node. The title says by node."
+  - title: "Node Network Total Bytes"
+    panel_id: 23
+    fidelity: APPROXIMATE
+    notes: "Network bytes by node."
+  - title: "Pods - Historical"
+    panel_id: 22
+    fidelity: APPROXIMATE
+    notes: "Running pods and restarts. The series use different scales."
+  - title: "Containers - Historical"
+    panel_id: 20
+    fidelity: APPROXIMATE
+    notes: "Running containers. The source SampleCount counted CloudWatch samples."
+  - title: "Container Restarts"
+    panel_id: 39
+    fidelity: APPROXIMATE
+    notes: "Restart count over time."
+  - title: "Average Filesystem Utilization - By Node"
+    panel_id: 38
+    fidelity: APPROXIMATE
+    notes: "Filesystem utilization by node, 0-100."
+  - title: "[EKS Cluster Logs] - ${datasource}"
+    panel_id: 14
+    fidelity: APPROXIMATE
+    notes: "cloudwatch_log_event rows for log_stream eks-cluster. The source is CloudWatch Logs Insights."
+  - title: "[Fluentbit Cloudwatch Logs] -  ${datasource}"
+    panel_id: 1
+    fidelity: APPROXIMATE
+    notes: "cloudwatch_log_event rows for log_stream fluentbit."
+  - title: "S3 - Error Counts"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "s3_4xx_errors and s3_5xx_errors. CloudWatch names are 4xxErrors and 5xxErrors."
+  - title: "S3 - Latency"
+    panel_id: 11
+    fidelity: APPROXIMATE
+    notes: "Request, replication, and first-byte latency in milliseconds."
+  - title: "CloudFront Requests"
+    panel_id: 13
+    fidelity: APPROXIMATE
+    notes: "cloudfront_requests."
+  - title: "CloudFront Error Rates (by Range)"
+    panel_id: 5
+    fidelity: APPROXIMATE
+    notes: "4xx and 5xx error rates."
+  - title: "CloudFront Error Rates (by Code)"
+    panel_id: 12
+    fidelity: APPROXIMATE
+    notes: "401, 403, 404, 502, 503, and 504 error rates."
+  - title: "SQS Messages"
+    panel_id: 6
+    fidelity: APPROXIMATE
+    notes: "Sent, received, and deleted message counts."
+  - title: "Panel Title"
+    panel_id: 10
+    fidelity: APPROXIMATE
+    notes: "The source metric name is empty. The tile reads secretsmanager_resource_count and is retitled Secrets Manager."
