@@ -354,7 +354,8 @@ _K8S_PACK_CORPUS = [
     ("8171", "kubernetes-nodes"),
     ("6417", "kubernetes-cluster-prometheus"),
     ("315", "kubernetes-cluster-monitoring-via-prometheus-315"),
-    ("315-1621", "kubernetes-cluster-monitoring-via-prometheus-1621"),
+    ("1621", "kubernetes-cluster-monitoring-via-prometheus-1621"),
+    ("747", "pod-metrics"),
     ("1471", "kubernetes-apps"),
     ("3831", "kubernetes-cluster-autoscaler-via-prometheus"),
 ]
@@ -752,6 +753,8 @@ def test_k8s_pack_canonical_labels_namespace_under_native():
         1471: ["pod", "container", "namespace", "instance"],
         3831: [],
         315: ["pod", "container", "namespace"],
+        1621: ["pod", "container", "instance"],
+        747: ["pod", "container", "instance"],
         6417: ["instance", "namespace"],
         741: ["pod", "container", "instance"],
         8171: ["instance"],
