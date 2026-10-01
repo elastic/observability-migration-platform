@@ -8,7 +8,7 @@
 # packs can be validated on real (rig-ingested) data:
 #   - Grafana 315 / 1621 (cAdvisor): container_* + machine_* + container_fs_* with the
 #     modern `pod`/`container` labels and a root-cgroup `id="/"`. 1621 filesystem
-#     KPIs need several `/dev/*` partitions (sda + nvme + sdb); 315's tighter
+#     KPIs need several `/dev/*` partitions (sda + nvme); 315's tighter
 #     `[sv]d[a-z][1-9]` regex only matches the scsi/virtio disks.
 #   - Grafana 6417 (kube-state-metrics + node_exporter): kube_* in the modern
 #     resource-split shape (kube_node_status_allocatable{resource=...}, etc.),

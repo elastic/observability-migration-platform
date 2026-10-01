@@ -114,9 +114,12 @@ only when the dashboard still has tags. Query fixes land through
 `panel.query_overrides`; scope-only or misleading variable controls can be
 suppressed or rewritten through curated-pack plugins; layout fixes land through
 `panel.layout_overrides` after the standard Kibana layout transform and before
-final overlap cleanup. `query_overrides.status_override` is a ceiling, not an
-unconditional assignment: if the panel's own targets reference a source metric
-the hand-written override never emits, the panel downgrades to
+final overlap cleanup. A `query_overrides` entry with a non-empty `esql_query`
+also replaces a Grafana `text` panel with that query, so markdown that only
+interpolated template variables becomes a live tile; text panels without such
+an override still migrate as markdown. `query_overrides.status_override` is a
+ceiling, not an unconditional assignment: if the panel's own targets reference
+a source metric the hand-written override never emits, the panel downgrades to
 `migrated_with_warnings` (confidence capped at `0.6`) with an explicit "Target
 telemetry missing from curated override" reason, the same disclosure the
 non-pack path uses for a metric that never made it into an otherwise-migrated

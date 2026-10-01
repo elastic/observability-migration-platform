@@ -311,21 +311,25 @@ panel:
       title: "Memory used"
       position: {x: 0, y: 12}
       size: {w: 8, h: 8}
+      hide_title: false
     - title_match: "Total"
       panel_id: 37
       title: "Memory total"
       position: {x: 8, y: 12}
       size: {w: 8, h: 8}
+      hide_title: false
     - title_match: "Used"
       panel_id: 38
       title: "CPU used"
       position: {x: 16, y: 12}
       size: {w: 8, h: 8}
+      hide_title: false
     - title_match: "Total"
       panel_id: 39
       title: "Node CPU"
       position: {x: 24, y: 12}
       size: {w: 8, h: 8}
+      hide_title: false
     - title_match: "Pod memory working bytes"
       position: {x: 32, y: 12}
       size: {w: 16, h: 8}

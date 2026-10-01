@@ -8843,6 +8843,46 @@ def test_1621_layout_renames_duplicate_used_total():
     assert by_id["7"]["position"] == {"x": 32, "y": 0}
 
 
+def _used_total_metric_tile(panel_id: str, source_title: str) -> dict:
+    """A metric tile as the engine emits one: chrome title hidden, inner label set."""
+    return {
+        "title": source_title,
+        "_source_panel_id": panel_id,
+        "hide_title": True,
+        "esql": {
+            "type": "metric",
+            "query": "FROM metrics-*",
+            "primary": {"label": source_title},
+        },
+        "position": {"x": 0, "y": 0},
+        "size": {"w": 8, "h": 8},
+    }
+
+
+def test_1621_layout_renames_are_visible_on_emitted_kpi_tiles():
+    """The renamed chrome title must show, and the duplicate inner label must go."""
+    resolved, _ = _resolve_1621()
+    expected = [
+        ("9", "Used", "Memory used"),
+        ("10", "Total", "Memory total"),
+        ("11", "Used", "CPU used"),
+        ("12", "Total", "CPU total"),
+        ("13", "Used", "Filesystem used"),
+        ("14", "Total", "Filesystem total"),
+    ]
+    panels = [
+        _used_total_metric_tile(panel_id, source_title)
+        for panel_id, source_title, _ in expected
+    ]
+    _apply_panel_layout_overrides_recursively(panels, resolved.panel_layout_overrides)
+    for panel, (panel_id, _, title) in zip(panels, expected):
+        assert panel["title"] == title, panel_id
+        assert "hide_title" not in panel, panel_id
+        assert panel["esql"]["primary"]["label"] == " ", panel_id
+    assert [p["position"]["x"] for p in panels] == [0, 8, 16, 24, 32, 40]
+    assert [p["position"]["y"] for p in panels] == [12] * 6
+
+
 def test_1621_plugin_rewrites_node_to_multi_select_instance():
     dashboard = {
         "gnetId": 1621,
@@ -9198,4 +9238,28 @@ def test_747_layout_renames_cpu_total_to_node_cpu():
     assert by_id["39"]["title"] == "Node CPU"
     assert by_id["4"]["position"] == {"x": 0, "y": 0}
     assert by_id["6"]["position"] == {"x": 24, "y": 0}
+
+
+def test_747_layout_renames_are_visible_on_emitted_kpi_tiles():
+    """Node CPU et al. must reach the rendered caption, not stay as Used/Total."""
+    resolved, _ = _resolve_747()
+    expected = [
+        ("36", "Used", "Memory used"),
+        ("37", "Total", "Memory total"),
+        ("38", "Used", "CPU used"),
+        ("39", "Total", "Node CPU"),
+    ]
+    panels = [
+        _used_total_metric_tile(panel_id, source_title)
+        for panel_id, source_title, _ in expected
+    ]
+    _apply_panel_layout_overrides_recursively(
+        panels, resolved.panel_layout_overrides, section_title="Total usage"
+    )
+    for panel, (panel_id, _, title) in zip(panels, expected):
+        assert panel["title"] == title, panel_id
+        assert "hide_title" not in panel, panel_id
+        assert panel["esql"]["primary"]["label"] == " ", panel_id
+    assert [p["position"]["x"] for p in panels] == [0, 8, 16, 24]
+    assert [p["position"]["y"] for p in panels] == [12] * 4
 
