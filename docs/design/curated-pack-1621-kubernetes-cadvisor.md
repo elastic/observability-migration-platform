@@ -25,7 +25,7 @@ dashboard exists vs 315) and a working `$Node` control via `instance`.
 |---|---|---|
 | Cluster filesystem device matcher | `^/dev/[sv]d[a-z][1-9]$` | `^/dev/.*$` |
 | `$Node` | dropped (ignored hostname) | rewritten to `instance`; multi-select populate from `machine_cpu_cores` |
-| Title | identical | identical — 1621 is **gnetId-only** in the registry |
+| Title | identical | identical — a copy that drops gnetId is 1621 only when a panel expr still contains `^/dev/.*$` |
 
 ## Engine vs pack split
 
