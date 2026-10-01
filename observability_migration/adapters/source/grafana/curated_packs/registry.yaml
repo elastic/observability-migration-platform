@@ -182,6 +182,15 @@ packs:
     dashboard_sha256: "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52"
     description: "Kubernetes App Metrics — Heapster label remap, $namespace/$container populate, HTTP native/nginx/haproxy series, cAdvisor ratios"
 
+  - gnet_id: 15661
+    name: grafana_15661_k8s_dashboard
+    title_hint: "K8S Dashboard"
+    tags_hint: ["Prometheus", "Kubernetes"]
+    path: grafana_15661_k8s_dashboard
+    gnet_revision: 2
+    dashboard_sha256: "21cbac15de7957e55ae8b064fda68570bae9e564766af7168e4492d8806a3161"
+    description: "K8S Dashboard — node ratios, namespace and pod tables, irate CPU, working-set thresholds, pod network without the container join"
+
   - gnet_id: 9852
     name: grafana_9852_node_exporter_disk_graphs
     title_hint: "node-exporter disk graphs"

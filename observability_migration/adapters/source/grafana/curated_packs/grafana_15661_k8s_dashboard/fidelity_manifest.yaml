@@ -1,0 +1,219 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 15661 K8S Dashboard (revision 2).
+
+schema_version: 1
+gnet_id: 15661
+gnet_revision: 2
+dashboard_title: "K8S Dashboard"
+maintainer: "community"
+
+panels:
+  - id: 44
+    title: "Node Memory Ratio"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 45
+    title: "Node CPU Ratio"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 74
+    title: "Nodes with Pod"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 51
+    title: "Namespace Resource Statistics"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 32
+    title: "Network Overview（Associable nodes and namespaces）"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 71
+    title: "Node Memory Information"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 72
+    title: "Node CPU Number of cores"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 73
+    title: "Node Storage Information"
+    grafana_type: bargauge
+    kibana_type: bar
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 88
+    title: "Workload"
+    grafana_type: stat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Total nodes, total pods, workload objects, and normal nodes (node count minus taint series whose key does not match node.kubernetes.io.*). The source also draws one stat per taint key. The pack titles the untitled strip Cluster counts."
+    notes: "Total nodes, total pods, workload objects, and normal nodes (node count minus taint series whose key does not match node.kubernetes.io.*). The source also draws one stat per taint key. The pack titles the untitled strip Cluster counts."
+  - id: 79
+    title: "Memory Usage"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 80
+    title: "CPU Used Cores"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 81
+    title: "Pod Number and nodes"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 75
+    title: "Nodes CPU Breakdown"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 76
+    title: "Node Memory Breakdown"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 78
+    title: "Node Network Overview"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 52
+    title: "Node Information Detail"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 92
+    title: "PVC Storage Usage"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 86
+    title: "Namespaces CPU Usage kernel(>0.5)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 85
+    title: "Namespaces WSS Memory Usage (>1G)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 47
+    title: "Pod Resource Detail(Associable Nodes)"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: APPROXIMATE
+    delta: "Per-container CPU, memory, disk, restarts, and pod network bytes per second. Pod age and the copy of node onto restarts used a pod join, so age is omitted and restarts keep the node label on their own series. Network is the series' own rate, not a container-info join."
+    notes: "Per-container CPU, memory, disk, restarts, and pod network bytes per second. Pod age and the copy of node onto restarts used a pod join, so age is omitted and restarts keep the node label on their own series. Network is the series' own rate, not a container-info join."
+  - id: 58
+    title: "Pod Containers CPU Utilization (Maximum100%Associable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 27
+    title: "Pod Container Memory Usage (Associatable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Working set and RSS as a percent of the container memory limit. The Cassandra heap series is omitted."
+    notes: "Working set and RSS as a percent of the container memory limit. The Cassandra heap series is omitted."
+  - id: 77
+    title: "Pod Network bandwidth per second (Associable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Pod receive and transmit rates, max and sum, in bits per second. The source copies the pod rate onto each container with a join; this uses the network series' own pod."
+    notes: "Pod receive and transmit rates, max and sum, in bits per second. The source copies the pod rate onto each container with a join; this uses the network series' own pod."
+  - id: 82
+    title: "Pod Containers CPU Core Usage"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Container CPU cores and the CPU limit. The limit is kept on each pod series. The source draws one limit line per container name."
+    notes: "Container CPU cores and the CPU limit. The limit is kept on each pod series. The source draws one limit line per container name."
+  - id: 84
+    title: "Pod Containers WSS Memory Usage (Associable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Container working set and the memory limit. The limit is kept on each pod series. The source draws one limit line per container name."
+    notes: "Container working set and the memory limit. The limit is kept on each pod series. The source draws one limit line per container name."
+  - id: 83
+    title: "Pod Containers RSS Memory Usage (Associable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 87
+    title: "Microservices (Container Name) Resource Statistics"
+    grafana_type: table
+    kibana_type: datatable
+    fidelity: APPROXIMATE
+    delta: "Container CPU, memory, disk, and pod count. Rows stay split by namespace and container. The source sums most columns by container name only."
+    notes: "Container CPU, memory, disk, and pod count. Rows stay split by namespace and container. The source sums most columns by container name only."
+  - id: 24
+    title: "Microservices (Container Name) Average CPU Usage (Maximum100%)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 89
+    title: "Microservice (Container Name) Average Memory Utilization"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 16
+    title: "Microservice (Container Name) Network bandwidth per second (Associable Nodes)"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "Receive and transmit by container, in bits per second, plus the pod byte rate and its negative. The source sums pod network onto the container with a join."
+    notes: "Receive and transmit by container, in bits per second, plus the pod byte rate and its negative. The source sums pod network onto the container with a join."
+  - id: 91
+    title: "Microservices (Container Name) Overall CPU Cores Used"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 90
+    title: "Microservices (Container Name) Overall Memory Usage"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."
+  - id: 59
+    title: "Microservice (Container Name) Pod Number"
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. An empty control or .* is every value. The origin_prometheus selector is omitted; that label is not a target field."

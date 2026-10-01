@@ -444,6 +444,23 @@ off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
 
+The K8S dashboard (15661) keeps node, namespace, container, and pod as exact
+matches. An empty control or `.*` is every value. The `origin_prometheus`
+selector is omitted, the same way a scrape `metrics_path` selector is omitted:
+that label is not a target field, so panels include every series and no
+control is emitted for it.
+CPU rates are `irate`. Memory, requests, and limits are last gauges. Usage
+ratios divide by allocatable, and container CPU percent divides usage by
+`container_spec_cpu_quota / 100000`. Namespace charts keep the source
+thresholds, more than 0.5 cores and more than 1GiB of working set. The
+Cassandra heap series is omitted. Pod and container network rates are the
+network series' own byte rate; the source copies that rate onto containers
+with a `group_right` join. The untitled cluster stat is titled from its first
+legend, Workload, and the pack renames it Cluster counts. Per-key taint stats
+are folded into the normal-node count. The microservice row is expanded.
+Titles that contain `$Node` or `$NameSpace` are matched after Grafana's
+variable text is removed.
+
 The system API server dashboard (15761) is the kube-prometheus-stack view.
 Values match the source queries, including two wrong source unit labels:
 mean latency (the duration-sum rate divided by the duration-count rate) is in
