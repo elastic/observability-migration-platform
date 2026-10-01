@@ -7718,6 +7718,7 @@ def test_views_fidelity_manifests_have_no_unknown():
         "grafana_15760_k8s_views_pods": 25,
         "grafana_15759_k8s_views_nodes": 35,
         "grafana_15757_k8s_views_global": 26,
+        "grafana_15758_k8s_views_namespaces": 25,
         "grafana_13646_k8s_persistent_volumes": 12,
         "grafana_12006_k8s_apiserver": 6,
         "grafana_15761_k8s_system_apiserver": 12,

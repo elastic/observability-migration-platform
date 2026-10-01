@@ -48,6 +48,87 @@ def _node_for(idx: int) -> str:
     return NODES[idx % len(NODES)]
 
 
+def _stamp_cluster(body: str) -> str:
+    """Attach the kube-prometheus ``cluster`` external label to every series.
+
+    The Views dashboards filter ``cluster`` on the series themselves. Node info
+    already carries it; stamping the rest matches a Prometheus external label.
+    """
+    stamped: list[str] = []
+    for line in body.splitlines():
+        if not line or line.startswith("#") or 'cluster="' in line:
+            stamped.append(line)
+            continue
+        if "{" in line:
+            line = line.replace("{", f'{{cluster="{CLUSTER}",', 1)
+        else:
+            name, _, rest = line.partition(" ")
+            line = f'{name}{{cluster="{CLUSTER}"}} {rest}'
+        stamped.append(line)
+    return "\n".join(stamped) + "\n"
+
+
+def _append_namespace_objects(lines: list[str]) -> None:
+    """kube-state-metrics info gauges and kubelet volume stats for dashboard 15758.
+
+    One series per object, with the labels those collectors actually publish.
+    """
+    objects = {
+        "default": {
+            "kube_service_info": ("service", ("web", "cache")),
+            "kube_ingress_info": ("ingress", ("web",)),
+            "kube_statefulset_labels": ("statefulset", ("cache",)),
+            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data",)),
+            "kube_hpa_labels": ("horizontalpodautoscaler", ("web",)),
+            "kube_configmap_info": ("configmap", ("web",)),
+            "kube_secret_info": ("secret", ("web",)),
+            "kube_networkpolicy_labels": ("networkpolicy", ("default-deny",)),
+        },
+        "staging": {
+            "kube_service_info": ("service", ("api",)),
+            "kube_configmap_info": ("configmap", ("api",)),
+            "kube_secret_info": ("secret", ("api",)),
+            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data",)),
+        },
+        "kube-system": {
+            "kube_service_info": ("service", ("coredns",)),
+            "kube_daemonset_labels": ("daemonset", ("kube-proxy",)),
+            "kube_configmap_info": ("configmap", ("coredns",)),
+            "kube_secret_info": ("secret", ("coredns",)),
+        },
+    }
+    typed: set[str] = set()
+    for ns, metrics in objects.items():
+        for metric, (label, names) in metrics.items():
+            if metric not in typed:
+                lines.append(f"# HELP {metric} Information about a {label}")
+                lines.append(f"# TYPE {metric} gauge")
+                typed.add(metric)
+            for name in names:
+                lines.append(f'{metric}{{namespace="{ns}",{label}="{name}"}} 1')
+        if "kube_deployment_labels" not in typed:
+            lines.append("# HELP kube_deployment_labels Kubernetes labels converted to Prometheus labels")
+            lines.append("# TYPE kube_deployment_labels gauge")
+            typed.add("kube_deployment_labels")
+    for ns, deps in DEPLOYMENTS.items():
+        for name in deps:
+            lines.append(f'kube_deployment_labels{{namespace="{ns}",deployment="{name}"}} 1')
+    lines.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
+    lines.append("# TYPE kubelet_volume_stats_capacity_bytes gauge")
+    lines.append("# HELP kubelet_volume_stats_used_bytes Volume bytes used")
+    lines.append("# TYPE kubelet_volume_stats_used_bytes gauge")
+    lines.append("# HELP kubelet_volume_stats_inodes Volume inode count")
+    lines.append("# TYPE kubelet_volume_stats_inodes gauge")
+    lines.append("# HELP kubelet_volume_stats_inodes_used Volume inodes used")
+    lines.append("# TYPE kubelet_volume_stats_inodes_used gauge")
+    for ns in ("default", "staging"):
+        claim = f'namespace="{ns}",persistentvolumeclaim="data"'
+        lines.append(f"kubelet_volume_stats_capacity_bytes{{{claim}}} {10 * 1024**3}")
+        lines.append(f"kubelet_volume_stats_used_bytes{{{claim}}} {4 * 1024**3}")
+        lines.append(f"kubelet_volume_stats_inodes{{{claim}}} 1000000")
+        lines.append(f"kubelet_volume_stats_inodes_used{{{claim}}} 250000")
+
+
 def render() -> str:
     now = time.time()
     elapsed = max(1.0, now - _START)
@@ -71,6 +152,22 @@ def render() -> str:
     L.append("# TYPE container_network_receive_bytes_total counter")
     L.append("# HELP container_network_transmit_bytes_total Cumulative bytes transmitted")
     L.append("# TYPE container_network_transmit_bytes_total counter")
+    L.append("# HELP container_network_receive_packets_total Cumulative packets received")
+    L.append("# TYPE container_network_receive_packets_total counter")
+    L.append("# HELP container_network_transmit_packets_total Cumulative packets transmitted")
+    L.append("# TYPE container_network_transmit_packets_total counter")
+    L.append("# HELP container_network_receive_packets_dropped_total Cumulative packets dropped while receiving")
+    L.append("# TYPE container_network_receive_packets_dropped_total counter")
+    L.append("# HELP container_network_transmit_packets_dropped_total Cumulative packets dropped while transmitting")
+    L.append("# TYPE container_network_transmit_packets_dropped_total counter")
+    L.append("# HELP container_network_receive_errors_total Cumulative receive errors")
+    L.append("# TYPE container_network_receive_errors_total counter")
+    L.append("# HELP container_network_transmit_errors_total Cumulative transmit errors")
+    L.append("# TYPE container_network_transmit_errors_total counter")
+    L.append("# HELP container_cpu_cfs_throttled_seconds_total Total time the container was throttled")
+    L.append("# TYPE container_cpu_cfs_throttled_seconds_total counter")
+    L.append("# HELP container_oom_events_total Count of out of memory events")
+    L.append("# TYPE container_oom_events_total counter")
     L.append("# HELP container_fs_usage_bytes Filesystem bytes consumed")
     L.append("# TYPE container_fs_usage_bytes gauge")
     L.append("# HELP container_fs_limit_bytes Filesystem capacity in bytes")
@@ -116,6 +213,21 @@ def render() -> str:
             tx = elapsed * (1500 + 200 * (idx % 7))
             L.append(f"container_network_receive_bytes_total{{{base}}} {rx:.0f}")
             L.append(f"container_network_transmit_bytes_total{{{base}}} {tx:.0f}")
+            # Packet, drop, and error counters share the byte series' labels.
+            # Grafana 15758 rates them by pod.
+            packets_rx = elapsed * (40 + idx)
+            packets_tx = elapsed * (30 + idx)
+            L.append(f"container_network_receive_packets_total{{{base}}} {packets_rx:.0f}")
+            L.append(f"container_network_transmit_packets_total{{{base}}} {packets_tx:.0f}")
+            L.append(f"container_network_receive_packets_dropped_total{{{base}}} {idx % 3}")
+            L.append(f"container_network_transmit_packets_dropped_total{{{base}}} {idx % 2}")
+            L.append(f"container_network_receive_errors_total{{{base}}} {idx % 2}")
+            L.append(f"container_network_transmit_errors_total{{{base}}} {0 if idx % 4 else 1}")
+            # CFS throttle and OOM are per-container counters, same as cAdvisor.
+            L.append(
+                f"container_cpu_cfs_throttled_seconds_total{{{base}}} {elapsed * 0.01 * (idx % 4):.4f}"
+            )
+            L.append(f"container_oom_events_total{{{base}}} {int(elapsed / 120) if idx % 5 == 0 else 0}")
 
     # ---- kube-state-metrics: nodes --------------------------------------
     L.append("# HELP kube_node_info Information about a cluster node")
@@ -140,6 +252,14 @@ def render() -> str:
     # ---- kube-state-metrics: pods ---------------------------------------
     L.append("# HELP kube_pod_info Information about pod")
     L.append("# TYPE kube_pod_info gauge")
+    L.append("# HELP kube_pod_status_qos_class The pod's QoS class")
+    L.append("# TYPE kube_pod_status_qos_class gauge")
+    L.append("# HELP kube_pod_container_status_ready Whether the container is ready")
+    L.append("# TYPE kube_pod_container_status_ready gauge")
+    L.append("# HELP kube_pod_container_info Information about a container in a pod")
+    L.append("# TYPE kube_pod_container_info gauge")
+    L.append("# HELP kube_pod_container_resource_limits Limit on container resources")
+    L.append("# TYPE kube_pod_container_resource_limits gauge")
     L.append("# HELP kube_pod_status_phase The pods current phase")
     L.append("# TYPE kube_pod_status_phase gauge")
     L.append("# HELP kube_pod_container_status_running Whether the container is running")
@@ -157,7 +277,23 @@ def render() -> str:
         for pod, container in pods:
             n = _node_for(idx)
             idx += 1
-            L.append(f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}"}} 1')
+            owner = pod.rsplit("-", 1)[0]
+            owner_kind = "DaemonSet" if owner == "kube-proxy" else "ReplicaSet"
+            qos = "Guaranteed" if idx % 2 == 0 else "Burstable"
+            L.append(
+                f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}",'
+                f'created_by_kind="{owner_kind}",created_by_name="{owner}"}} 1'
+            )
+            L.append(
+                f'kube_pod_status_qos_class{{namespace="{ns}",pod="{pod}",qos_class="{qos}"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_status_ready{{namespace="{ns}",pod="{pod}",container="{container}"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_info{{namespace="{ns}",pod="{pod}",container="{container}",'
+                f'image="registry/{container}:latest"}} 1'
+            )
             # kube-state-metrics emits every phase as a 0/1 series; 0-valued
             # non-Running phases keep the Pending/Failed/Succeeded/Unknown
             # tiles at 0 instead of Lens N/A.
@@ -189,6 +325,12 @@ def render() -> str:
             )
             L.append(
                 f'kube_pod_container_resource_requests{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="memory",unit="byte"}} {int(0.5 * 1024**3)}'
+            )
+            L.append(
+                f'kube_pod_container_resource_limits{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="cpu",unit="core"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_resource_limits{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="memory",unit="byte"}} {1024**3}'
             )
 
     # ---- kube-state-metrics: deployments --------------------------------
@@ -334,7 +476,10 @@ def render() -> str:
         L.append(f"node_filesystem_size_bytes{{{labels}}} {(100 * 1024**3)}")
         L.append(f"node_filesystem_free_bytes{{{labels}}} {((60 - 5) * 1024**3)}")
 
-    return "\n".join(L) + "\n"
+    # Grafana 15758 resource-count and volume panels. Names, labels, and types
+    # match kube-state-metrics and the kubelet volume stats collector.
+    _append_namespace_objects(L)
+    return _stamp_cluster("\n".join(L))
 
 
 class Handler(BaseHTTPRequestHandler):

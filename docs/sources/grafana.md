@@ -398,6 +398,29 @@ cluster-wide, as in the source queries. The job control filters restarts. It
 has no All option and defaults to `kube-state-metrics`, as in the source;
 clearing it shows every job.
 
+The namespace view (15758) measures the selected namespaces against the
+cluster. CPU and memory gauges divide namespace usage by
+`machine_cpu_cores` and `machine_memory_bytes` and stay on a 0–1 scale.
+The CPU and memory stats list Real, Requests, Limits, and Cluster Total.
+Requests and limits cannot express the PromQL `and on` running-pod join, so
+they use the namespace and cluster controls. Cluster Total does not follow
+the namespace selection. Series with an empty container name are omitted
+where the source filters `image!=""`. The owner control matches the start
+of the pod name, which is how the source uses `created_by_name` on cAdvisor
+series that have no owner label. Ready and Running follow that owner;
+Waiting, the current restart count, and Terminated stay on the namespace.
+Unavailable replicas ignore the owner prefix because that gauge has no pod
+label. Unexpected phases are one series per pod; the source legend says
+deployment and the query groups by pod. Status reason stays cluster-wide.
+The QoS chart does not draw the total-pods line again, because that line is
+the sum of the classes. Received traffic is positive and transmitted is
+negative. Persistent-volume percent and free inodes stay on a 0–1 scale.
+An empty namespace or owner selection, including Grafana's All value `.*`,
+is every value. Object types the target did not ingest are left off the
+resource count. When `kube_pod_status_reason` was not ingested, the panel names that
+missing metric instead of inventing a reason. The `resolution` variable is a scrape step; chart buckets follow the
+dashboard time range.
+
 The global view (15757) turns the CPU and memory bargauges into Real,
 Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
 reading a kube-prometheus-stack cluster shows after the source averages or
