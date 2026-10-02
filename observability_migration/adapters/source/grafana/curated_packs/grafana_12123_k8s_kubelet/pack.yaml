@@ -5,12 +5,17 @@
 # Curated pack — Grafana dashboard 12123
 # https://grafana.com/grafana/dashboards/12123-kubernetes-kubelet/
 #
-# Kubelet mixin (revision 1). Counters stay rates. Classic histogram 99th
-# percentiles are the upper bound of the first bucket whose cumulative rate
-# reaches 0.99, the same reduction as the apiserver pack. The scrape
-# metrics_path selector is omitted; that label is not stored as a metric
-# dimension. job stays kubelet. Cluster is an exact match and instance is an
-# exact match, with an empty value or ".*" meaning every instance.
+# Kubelet mixin (revision 1). Counters stay rates; the 5m rate window follows
+# the dashboard time range. Classic histogram 99th percentiles are the upper
+# bound of the first bucket whose cumulative rate reaches 0.99, the same
+# reduction as the apiserver pack. The scrape metrics_path selector is omitted:
+# it is only a stored dimension when the scrape config relabels it (as
+# kube-prometheus does), and a WHERE on an unmapped label is an unknown
+# column. Up is reduced to one value per instance instead, so a kubelet scraped
+# on several endpoints still counts once. The singlestats show the minimum over
+# the time range, like the source valueName "min". job stays kubelet. Cluster
+# is an exact match and instance is an exact match, with an empty value or ".*"
+# meaning every instance.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -73,43 +78,52 @@ panel:
     - title_match: "Up"
       panel_id: 2
       kibana_type_override: metric
+      approximation_note: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. Each instance counts once even when several scrape endpoints report up; the source selects metrics_path=\"/metrics\" instead."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?cluster IS NULL OR ?cluster == "" OR {{label:cluster}} == ?cluster
         | WHERE {{label:job}} == "kubelet"
         | WHERE {{metric:up:gauge}} IS NOT NULL
-        | STATS up = SUM(LAST_OVER_TIME({{metric:up:gauge}}))
+        | STATS up = MAX(LAST_OVER_TIME({{metric:up:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | STATS up = SUM(up) BY time_bucket
+        | WHERE time_bucket >= ?_tstart AND time_bucket <= ?_tend - 1 minute
+        | STATS up = MIN(up)
         | KEEP up
     - title_match: "Running Pods"
       panel_id: 3
       kibana_type_override: metric
+      approximation_note: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?cluster IS NULL OR ?cluster == "" OR {{label:cluster}} == ?cluster
         | WHERE ?instance IS NULL OR ?instance == "" OR ?instance == ".*" OR {{label:instance}} == ?instance
         | WHERE {{label:job}} == "kubelet"
-        
         | WHERE {{metric:kubelet_running_pod_count:gauge}} IS NOT NULL
-        | STATS value = SUM(LAST_OVER_TIME({{metric:kubelet_running_pod_count:gauge}}))
+        | STATS value = SUM(LAST_OVER_TIME({{metric:kubelet_running_pod_count:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tstart AND time_bucket <= ?_tend - 1 minute
+        | STATS value = MIN(value)
         | KEEP value
     - title_match: "Running Container"
       panel_id: 4
       kibana_type_override: metric
+      approximation_note: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?cluster IS NULL OR ?cluster == "" OR {{label:cluster}} == ?cluster
         | WHERE ?instance IS NULL OR ?instance == "" OR ?instance == ".*" OR {{label:instance}} == ?instance
         | WHERE {{label:job}} == "kubelet"
-        
         | WHERE {{metric:kubelet_running_container_count:gauge}} IS NOT NULL
-        | STATS value = SUM(LAST_OVER_TIME({{metric:kubelet_running_container_count:gauge}}))
+        | STATS value = SUM(LAST_OVER_TIME({{metric:kubelet_running_container_count:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tstart AND time_bucket <= ?_tend - 1 minute
+        | STATS value = MIN(value)
         | KEEP value
     - title_match: "Actual Volume Count"
       panel_id: 5
       kibana_type_override: metric
+      approximation_note: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -118,11 +132,14 @@ panel:
         | WHERE {{label:job}} == "kubelet"
         | WHERE {{label:state}} == "actual_state_of_world"
         | WHERE {{metric:volume_manager_total_volumes:gauge}} IS NOT NULL
-        | STATS value = SUM(LAST_OVER_TIME({{metric:volume_manager_total_volumes:gauge}}))
+        | STATS value = SUM(LAST_OVER_TIME({{metric:volume_manager_total_volumes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tstart AND time_bucket <= ?_tend - 1 minute
+        | STATS value = MIN(value)
         | KEEP value
     - title_match: "Desired Volume Count"
       panel_id: 6
       kibana_type_override: metric
+      approximation_note: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -131,26 +148,28 @@ panel:
         | WHERE {{label:job}} == "kubelet"
         | WHERE {{label:state}} == "desired_state_of_world"
         | WHERE {{metric:volume_manager_total_volumes:gauge}} IS NOT NULL
-        | STATS value = SUM(LAST_OVER_TIME({{metric:volume_manager_total_volumes:gauge}}))
+        | STATS value = SUM(LAST_OVER_TIME({{metric:volume_manager_total_volumes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | WHERE time_bucket >= ?_tstart AND time_bucket <= ?_tend - 1 minute
+        | STATS value = MIN(value)
         | KEEP value
     - title_match: "Config Error Count"
       panel_id: 7
       kibana_type_override: metric
-      approximation_note: "rate() of the config-error gauge, as the change over 5 minutes divided by 300."
+      approximation_note: "rate() of the config-error gauge, as each kubelet's change over the last 5 minutes of the time range divided by 300. The source valueName \"min\" is the minimum over the range; this tile is the value at the end of the range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?cluster IS NULL OR ?cluster == "" OR {{label:cluster}} == ?cluster
         | WHERE ?instance IS NULL OR ?instance == "" OR ?instance == ".*" OR {{label:instance}} == ?instance
         | WHERE {{label:job}} == "kubelet"
+        | WHERE @timestamp >= ?_tend - 5 minutes
         | WHERE {{metric:kubelet_node_config_error:gauge}} IS NOT NULL
-        | STATS change = SUM(DELTA({{metric:kubelet_node_config_error:gauge}}, 5 minutes)) BY bucket = TBUCKET(5 minutes)
-        | WHERE bucket >= ?_tend - 10 minutes
-        | STATS errors = SUM(change) / 300
+        | STATS errors = SUM(DELTA({{metric:kubelet_node_config_error:gauge}})) / 300
         | KEEP errors
     - title_match: "Operation Rate"
       panel_id: 8
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -166,6 +185,7 @@ panel:
     - title_match: "Operation Error Rate"
       panel_id: 9
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -181,7 +201,7 @@ panel:
     - title_match: "Operation duration 99th quantile"
       panel_id: 10
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -203,6 +223,7 @@ panel:
     - title_match: "Pod Start Rate"
       panel_id: 11
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -222,7 +243,7 @@ panel:
     - title_match: "Pod Start Duration"
       panel_id: 12
       kibana_type_override: line
-      approximation_note: "99th percentile of pod and worker start duration. The source pod series calls histogram_quantile on the _count series; the pod line uses the bucket metric. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99."
+      approximation_note: "99th percentile of pod and worker start duration. The source pod series calls histogram_quantile on the _count series; the pod line uses the bucket metric. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -233,10 +254,11 @@ panel:
         | STATS pod = SUM(RATE({{metric:kubelet_pod_start_duration_seconds_bucket:counter}})), worker = SUM(RATE({{metric:kubelet_pod_worker_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}, {{label:le}}
         | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
         | EVAL __labels = MV_APPEND("pod", "worker")
-        | EVAL __values = MV_APPEND(COALESCE(TO_STRING(pod), "0"), COALESCE(TO_STRING(worker), "0"))
+        | EVAL __values = MV_APPEND(COALESCE(TO_STRING(pod), ""), COALESCE(TO_STRING(worker), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
         | MV_EXPAND __pairs
         | EVAL kind = MV_FIRST(SPLIT(__pairs, "~")), cumulative = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "~")))
+        | WHERE cumulative IS NOT NULL
         | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket, {{label:instance}}, kind
         | MV_EXPAND pairs
         | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
@@ -249,6 +271,7 @@ panel:
     - title_match: "Storage Operation Rate"
       panel_id: 13
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -264,6 +287,7 @@ panel:
     - title_match: "Storage Operation Error Rate"
       panel_id: 14
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -279,7 +303,7 @@ panel:
     - title_match: "Storage Operation Duration 99th quantile"
       panel_id: 15
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -301,6 +325,7 @@ panel:
     - title_match: "Cgroup manager operation rate"
       panel_id: 16
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The legend is the instance and operation type so each kubelet stays its own series; the source legend is the operation type alone. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -316,7 +341,7 @@ panel:
     - title_match: "Cgroup manager 99th quantile"
       panel_id: 17
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -338,6 +363,7 @@ panel:
     - title_match: "PLEG relist rate"
       panel_id: 18
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -353,7 +379,7 @@ panel:
     - title_match: "PLEG relist interval"
       panel_id: 19
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -375,7 +401,7 @@ panel:
     - title_match: "PLEG relist duration"
       panel_id: 20
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -397,6 +423,7 @@ panel:
     - title_match: "RPC Rate"
       panel_id: 21
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -413,7 +440,7 @@ panel:
     - title_match: "Request duration 99th quantile"
       panel_id: 22
       kibana_type_override: line
-      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The scrape metrics_path selector is omitted."
+      approximation_note: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -450,6 +477,7 @@ panel:
     - title_match: "CPU usage"
       panel_id: 24
       kibana_type_override: line
+      approximation_note: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
