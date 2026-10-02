@@ -370,17 +370,26 @@ one per day so the line stays inside the dashboard time range. OpenShift
 Grafana alert list is a gap.
 
 The namespace volume dashboard (11455) is that cluster dashboard scoped to one
-namespace. The namespace control is an exact match, and an empty control matches
-every namespace so the panels populate before a namespace is chosen. The
-"current" table is the exception: the source query lists infrastructure
-namespaces (`openshift-*`, `kube-*`, `default`, `logging`) and a week of
-growth, and it does not follow the namespace control. Fill-in-a-week, the
-revision-6 textbox default of 80%, and the hourly, daily, and weekly rates use
-the same approximations as the cluster dashboard. OpenShift `pv_collector_*`
-counts are `kube_persistentvolumeclaim_status_phase` in the selected namespace.
-Grafana repeats one used-and-capacity chart per claim. The claim list is not
-known when the dashboard is migrated, so each saved copy of that chart plots
-used and capacity for every claim in the namespace.
+namespace. The namespace control is an exact match. When the upload can reach
+Elasticsearch, the control opens on the first namespace, as Grafana does for a
+variable with no saved value. Otherwise it starts empty. An empty control and
+the `.*` option both match every namespace. Per-claim series and rows
+keep the namespace (`namespace (claim)`), so claims with the same name in
+different namespaces stay separate. The "current" table is the exception: the
+source query lists infrastructure namespaces (`openshift-*`, `kube-*`,
+`default`, `logging`) and a week of growth, and it does not follow the
+namespace control. Fill-in-a-week and the revision-6 textbox default of 80% use
+the same approximations as the cluster dashboard. The hourly, daily, and weekly
+rates keep their 1-hour, 24-hour, and 168-hour windows, but all three are
+plotted hourly as sliding windows. A daily or weekly bucket starts at midnight,
+before the start of the default 6-hour range, and Kibana would hide its only
+point. OpenShift `pv_collector_*` counts are
+`kube_persistentvolumeclaim_status_phase` in the selected namespace. PVC Stats
+also lists claims that have `kube_persistentvolumeclaim_info` but no kubelet
+stats (pending or unmounted), with empty values. Grafana repeats one
+used-and-capacity chart per claim from a hidden claim variable. Kibana has no
+panel repeat, so the migration emits one chart that plots used and capacity for
+every claim in the namespace, and no claim control.
 
 The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
 are capacity minus available, and free inodes are total minus used. The
@@ -1234,6 +1243,12 @@ Use that doc for:
   `--assets dashboards`, runtime normalization upgrades the run to `--assets all`.
 - Dashboard artifacts are written under `<output-dir>/dashboards`; alert
   artifacts are written under `<output-dir>/alerts`.
+- Panels that Grafana saved as repeat clones (`repeatPanelId` pointing at a
+  panel with `repeat`) are not migrated. Grafana discards and rebuilds those
+  clones on load, so the migration works from the repeat template: it fans the
+  template out per value when the variable's values are known, and otherwise
+  keeps the single template panel with a warning. Clones inside repeated rows
+  are kept.
 - Native PromQL is the preferred, highest-fidelity target. When
   `--es-url` reaches a target *confirmed* to lack ES|QL `PROMQL` support, the
   run downgrades to ES|QL translation; an inconclusive probe keeps native PromQL

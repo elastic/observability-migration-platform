@@ -469,8 +469,11 @@ def render() -> str:
 
     # ---- kubelet volume stats + PVC phase (Grafana 11455, 15758) -------
     # Real exporter names. `data` in default grows fast enough that a short
-    # scrape window still projects full within a week. `logs` sits above the
-    # 80% warning line. `pending` has a phase and no kubelet stats.
+    # scrape window still projects full within a week, and its capacity is
+    # expanded as it fills (free space stays at 1.5 GiB) so the projection and
+    # the rate panels hold however long the exporter runs. `data` and `logs` in
+    # default sit above the 80% warning line; `data` in staging is flat and
+    # below it. `pending` has an info series and a phase but no kubelet stats.
     L.append("# HELP kube_namespace_created Unix time the namespace was created")
     L.append("# TYPE kube_namespace_created gauge")
     L.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
@@ -487,13 +490,19 @@ def render() -> str:
     L.append("# TYPE kube_persistentvolumeclaim_status_phase gauge")
     for ns in ("default", "staging", "kube-system"):
         L.append(f'kube_namespace_created{{namespace="{ns}"}} {now - 86400:.0f}')
+    # (namespace, claim, capacity, used at start, bytes/s, phase); capacity
+    # None means the volume is expanded to keep 1.5 GiB free.
     claims = (
-        ("default", "data", 10 * 1024**3, 8 * 1024**3, 2_000_000, "Bound"),
+        ("default", "data", None, 8 * 1024**3, 500_000, "Bound"),
         ("default", "logs", 10 * 1024**3, int(9.2 * 1024**3), 1_000, "Bound"),
         ("staging", "data", 10 * 1024**3, 4 * 1024**3, 0, "Bound"),
     )
     for ns, claim, capacity, used_base, per_sec, phase in claims:
-        used = min(used_base + int(elapsed * per_sec), capacity - 100 * 1024**2)
+        used = used_base + int(elapsed * per_sec)
+        if capacity is None:
+            capacity = used + int(1.5 * 1024**3)
+        else:
+            used = min(used, capacity - 100 * 1024**2)
         available = capacity - used
         labels = f'namespace="{ns}",persistentvolumeclaim="{claim}",node="node-1"'
         L.append(f"kubelet_volume_stats_capacity_bytes{{{labels}}} {capacity}")

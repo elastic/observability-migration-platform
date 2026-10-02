@@ -1,6 +1,6 @@
-# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-# or more contributor license agreements.
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
+
 """Curated pack for Grafana 11455, K8s / Storage / Volumes / Namespace."""
 
 from pathlib import Path
@@ -9,9 +9,12 @@ import yaml
 
 from observability_migration.adapters.source.grafana import curated_packs as pkg
 from observability_migration.adapters.source.grafana.curated_packs import find_curated_pack
-from observability_migration.adapters.source.grafana.panels import translate_panel
+from observability_migration.adapters.source.grafana.panels import translate_dashboard, translate_panel
 from observability_migration.adapters.source.grafana.rules import RulePackConfig, resolve_pack_for_dashboard
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
+from tests.test_curated_packs import dashboard_schema_errors
+
+_NAMESPACE_ALL = '?namespace == ".*"'
 
 
 def _resolve():
@@ -49,7 +52,8 @@ def test_11455_fidelity_rows_name_every_panel():
     path = Path(pkg.__file__).parent / "grafana_11455_k8s_storage_volumes_namespace" / "fidelity_manifest.yaml"
     manifest = yaml.safe_load(path.read_text())
     assert manifest["gnet_revision"] == 6
-    assert len(manifest["panels"]) == 21
+    assert len(manifest["panels"]) == 16
+    assert not {73, 74, 75, 76, 77} & {panel["id"] for panel in manifest["panels"]}
     allowed = {"PERFECT", "APPROXIMATE", "BEST_EFFORT"}
     for panel in manifest["panels"]:
         assert panel["fidelity"] in allowed
@@ -127,7 +131,7 @@ def test_11455_percent_chart_multiplies_by_100():
     assert yaml_panel["esql"]["type"] == "line"
 
 
-def test_11455_used_bytes_is_a_clean_namespace_gauge():
+def test_11455_used_bytes_keeps_namespace_per_claim():
     panel = {
         "id": 19,
         "type": "graph",
@@ -136,9 +140,14 @@ def test_11455_used_bytes_is_a_clean_namespace_gauge():
         "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
     }
     result, query, yaml_panel = _translate(panel)
-    assert result.status == "migrated", result.reasons
+    assert result.status == "migrated_with_warnings", result.reasons
     assert "kubelet_volume_stats_used_bytes" in query
-    assert "?namespace" in query
+    assert _NAMESPACE_ALL in query
+    # Same-named claims in different namespaces must not merge when the
+    # namespace control matches all.
+    by_clause = query.split("BY time_bucket = TBUCKET", 1)[1].split("\n", 1)[0]
+    assert "namespace" in by_clause
+    assert '" ("' in query
     assert yaml_panel["esql"]["type"] == "line"
 
 
@@ -158,6 +167,11 @@ def test_11455_use_rate_windows_stay_distinct():
     assert "1 hour" in hourly and "3600" in hourly and "?namespace" in hourly
     assert "24 hours" in daily and "86400" in daily
     assert "168 hours" in weekly and "604800" in weekly
+    # A 24-hour bucket starts at local midnight, before the default 6-hour
+    # range, so Lens clips its only point. The daily and weekly windows slide
+    # over hourly buckets instead.
+    assert "TBUCKET(24 hours)" not in daily and "TBUCKET(24 hours)" not in weekly
+    assert "TBUCKET(1 hour)" in daily and "TBUCKET(1 hour)" in weekly
     assert weekly_panel["esql"]["type"] == "line"
 
 
@@ -176,5 +190,124 @@ def test_11455_claim_chart_plots_used_and_capacity():
     assert result.status == "migrated_with_warnings", result.reasons
     assert "MV_ZIP" in query
     assert '"Used"' in query and '"Capacity"' in query
-    assert "?namespace" in query
+    assert _NAMESPACE_ALL in query
+    # The claim variable is hidden in Grafana; binding it would surface an
+    # unscoped claim control.
+    assert "?persistentvolumeclaim" not in query
     assert yaml_panel["esql"]["type"] == "line"
+
+
+def test_11455_pvc_stats_lists_claims_without_kubelet_stats():
+    panel = {
+        "id": 8,
+        "type": "table",
+        "title": "PVC Stats",
+        "targets": [{"expr": 'kube_persistentvolumeclaim_info{namespace="$namespace"}', "refId": "E", "instant": True}],
+        "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+    }
+    result, query, yaml_panel = _translate(panel)
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "kube_persistentvolumeclaim_info" in query
+    assert "NULLS LAST" in query
+    # ES|QL prunes an unread aggregate, and the TS STATS then drops series
+    # whose remaining aggregates are all null, so the info aggregate must be
+    # read by a later stage for pending claims to survive.
+    assert "WHERE info IS NOT NULL" in query
+    assert yaml_panel["esql"]["type"] == "datatable"
+
+
+def _rev6_dashboard():
+    """Revision-6 templating verbatim, plus the panels the controls touch."""
+
+    def _panel(panel_id, title, panel_type, expr, x=0, y=0, **extra):
+        return {
+            "id": panel_id,
+            "type": panel_type,
+            "title": title,
+            "datasource": "$DS_OPENSHIFT_PROMETHEUS",
+            "targets": [{"expr": expr, "refId": "A"}],
+            "gridPos": {"x": x, "y": y, "w": 6, "h": 7},
+            **extra,
+        }
+
+    used = 'kubelet_volume_stats_used_bytes {namespace="$namespace"}'
+    claim_used = (
+        'max by (persistentvolumeclaim,namespace) (kubelet_volume_stats_used_bytes '
+        '{namespace="$namespace", persistentvolumeclaim="$persistentvolumeclaim"})'
+    )
+    clones = [
+        _panel(pid, "$persistentvolumeclaim", "graph", claim_used, x=6 * (i + 1), y=20, repeatPanelId=20,
+               scopedVars={"persistentvolumeclaim": {"text": f"logging-es-{i}", "value": f"logging-es-{i}"}})
+        for i, pid in enumerate((73, 74, 75, 76, 77))
+    ]
+    return {
+        "gnetId": 11455,
+        "title": "K8s / Storage / Volumes / Namespace",
+        "tags": ["openshift", "k8s", "storage"],
+        "templating": {
+            "list": [
+                {"name": "DS_OPENSHIFT_PROMETHEUS", "type": "datasource", "query": "prometheus",
+                 "current": {"text": "openshift-prometheus", "value": "openshift-prometheus"}, "hide": 0},
+                {"name": "namespace", "type": "query", "query": "label_values(kube_namespace_created,namespace)",
+                 "current": {}, "includeAll": False, "allValue": "", "multi": False, "options": [], "hide": 0},
+                {"name": "pvc_percent_used_warning_threshold", "type": "textbox", "query": "80",
+                 "current": {"text": "80", "value": "80"},
+                 "options": [{"selected": True, "text": "80", "value": "80"}], "hide": 0},
+                {"name": "persistentvolumeclaim", "type": "query",
+                 "query": 'label_values(kubelet_volume_stats_used_bytes {namespace="$namespace"}, persistentvolumeclaim)',
+                 "current": {}, "includeAll": True, "allValue": "", "multi": False, "options": [], "hide": 2},
+            ]
+        },
+        "panels": [
+            _panel(10, "Running PVCs Above % Used Warning Threshold", "singlestat", used),
+            _panel(65, "Running PVCs Above % Used Warning Threshold", "graph", used, y=7),
+            _panel(8, "PVC Stats", "table", 'kube_persistentvolumeclaim_info{namespace="$namespace"}', y=14),
+            _panel(20, "$persistentvolumeclaim", "graph", claim_used, y=20, repeat="persistentvolumeclaim",
+                   repeatDirection="h",
+                   scopedVars={"persistentvolumeclaim": {"text": "logging-es-1", "value": "logging-es-1"}}),
+            *clones,
+        ],
+    }
+
+
+def _leaves(panels):
+    for panel in panels:
+        if "section" in panel:
+            yield from _leaves(panel["section"]["panels"])
+        else:
+            yield panel
+
+
+def test_11455_rev6_controls_and_repeat_clones():
+    resolved, resolver = _resolve()
+    result = translate_dashboard(
+        _rev6_dashboard(),
+        datasource_index="metrics-*",
+        esql_index="metrics-*",
+        rule_pack=resolved,
+        resolver=resolver,
+    )
+    yaml_dict = result.dashboard_ir.to_yaml_dict()
+    controls = {control.get("variable_name"): control for control in yaml_dict["controls"]}
+    # The hidden repeat variable gets no control; namespace opens on "all".
+    assert "persistentvolumeclaim" not in controls
+    assert controls["namespace"]["default"] == ".*"
+
+    leaves = list(_leaves(yaml_dict["panels"]))
+    titles = [panel.get("title") for panel in leaves]
+    # The five saved repeat clones are not migrated.
+    assert titles.count("Used and capacity") == 1, titles
+    # The two same-titled threshold panels keep their own overrides.
+    assert "PVCs above 80% used" in titles
+    assert "PVCs above 80% over time" in titles
+    by_title = {panel["title"]: panel for panel in leaves}
+    assert by_title["PVCs above 80% used"]["esql"]["type"] == "metric"
+    assert by_title["PVCs above 80% over time"]["esql"]["type"] == "line"
+
+    for panel in leaves:
+        query = (panel.get("esql") or {}).get("query") or ""
+        if "?namespace" in query:
+            assert _NAMESPACE_ALL in query, panel["title"]
+        assert "?persistentvolumeclaim" not in query, panel["title"]
+    errors = dashboard_schema_errors(yaml_dict["panels"])
+    assert errors == [], errors

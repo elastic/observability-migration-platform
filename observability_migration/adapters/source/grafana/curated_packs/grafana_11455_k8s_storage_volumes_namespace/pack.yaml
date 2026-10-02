@@ -9,10 +9,14 @@
 # volume pack (11454): predict_linear fill-in-a-week is available bytes over
 # one day of used-byte growth, the 80 textbox default is the warning threshold,
 # and OpenShift pv_collector counts are kube_persistentvolumeclaim_status_phase.
-# The namespace control is an exact match. Empty matches every namespace so the
-# panels populate before a namespace is chosen. The "current" table is the
-# exception: the source query lists infrastructure namespaces and a week of
-# growth, and it does not use $namespace.
+# The namespace control is an exact match. Empty or the ".*" all option matches
+# every namespace (an upload with Elasticsearch access opens on the first
+# namespace instead, as Grafana does with no saved value); per-claim
+# series then keep the namespace so same-named claims stay apart. The "current"
+# table is the exception: the source query lists infrastructure namespaces and
+# a week of growth, and it does not use $namespace. The hidden
+# $persistentvolumeclaim variable only drives the Grafana repeat, so no query
+# binds it and no claim control is emitted.
 
 query:
   metrics_dataset_filter: "prometheus"
@@ -24,13 +28,12 @@ query:
     kube_persistentvolumeclaim_info: gauge
     kube_persistentvolumeclaim_status_phase: gauge
     kube_namespace_created: gauge
-    pv_collector_bound_pvc_count: gauge
-    pv_collector_unbound_pvc_count: gauge
 
   live_optional_metrics:
     - kubelet_volume_stats_available_bytes
     - kubelet_volume_stats_used_bytes
     - kubelet_volume_stats_capacity_bytes
+    - kube_persistentvolumeclaim_info
     - kube_persistentvolumeclaim_status_phase
     - kube_namespace_created
 
@@ -43,7 +46,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE bucket >= ?_tend - 2 hours
@@ -58,7 +61,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
         | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL hot = CASE(capacity > 0 AND used / capacity >= 0.8, 1, 0)
@@ -71,7 +74,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{label:phase}} != "Bound"
         | WHERE {{metric:kube_persistentvolumeclaim_status_phase:gauge}} IS NOT NULL
         | STATS volumes = SUM(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_status_phase:gauge}}))
@@ -101,7 +104,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL at_risk = CASE(growth > 0 AND available / growth < 7, 1, 0)
@@ -111,16 +114,16 @@ panel:
     - title_match: "Volumes Full in Week Based on Daily Use Rate -  Predicted Available Space History"
       panel_id: 78
       kibana_type_override: line
-      approximation_note: "Projected bytes left after 7 days of the current one-day growth, for volumes in the selected namespace already predicted to go negative."
+      approximation_note: "Projected bytes left after 7 days of the current one-day growth, for volumes in the selected namespace already predicted to go negative. Series are labelled namespace (claim)."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS available = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), growth = MAX(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL projected_bytes = available - growth * 7
         | WHERE projected_bytes < 0
-        | EVAL legend = TO_STRING({{label:persistentvolumeclaim}})
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
         | STATS projected_bytes = AVG(projected_bytes) BY time_bucket, legend
         | KEEP time_bucket, legend, projected_bytes
         | SORT time_bucket ASC
@@ -131,7 +134,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
         | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), free = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL percent_used = CASE(capacity > 0, used / capacity, NULL)
@@ -147,7 +150,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
         | STATS used = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL hot = CASE(capacity > 0 AND used / capacity >= 0.8, 1, 0)
@@ -161,7 +164,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{label:phase}} == "Bound"
         | WHERE {{metric:kube_persistentvolumeclaim_status_phase:gauge}} IS NOT NULL
         | STATS volumes = SUM(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_status_phase:gauge}}))
@@ -169,29 +172,29 @@ panel:
     - title_match: "PVC Stats"
       panel_id: 8
       kibana_type_override: datatable
-      approximation_note: "Used, capacity, free, and the 0-1 ratio per claim in the selected namespace. The source info and unless existence targets are dropped."
+      approximation_note: "Used, capacity, free, and the 0-1 ratio per claim in the selected namespace. Claims with kube_persistentvolumeclaim_info but no kubelet stats (pending or unmounted) are listed with empty values, like the source info rows."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
-        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL
-        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), free = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
+        | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kube_persistentvolumeclaim_info:gauge}} IS NOT NULL
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})), free = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), info = MAX(LAST_OVER_TIME({{metric:kube_persistentvolumeclaim_info:gauge}})) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE info IS NOT NULL OR used IS NOT NULL OR capacity IS NOT NULL OR free IS NOT NULL
         | EVAL percent_used = CASE(capacity > 0, used / capacity, NULL)
         | EVAL namespace = {{label:namespace}}, claim = {{label:persistentvolumeclaim}}
-        | STATS percent_used = MAX(percent_used), used = MAX(used), capacity = MAX(capacity), free = MAX(free) BY namespace, claim
         | KEEP namespace, claim, percent_used, used, capacity, free
-        | SORT percent_used DESC
+        | SORT percent_used DESC NULLS LAST
     - title_match: "Running PVCs % Used"
       panel_id: 16
       kibana_type_override: line
-      approximation_note: "Same-bucket used/capacity percent by claim in the selected namespace. The source multiplies by 100."
+      approximation_note: "Same-bucket used/capacity percent by claim in the selected namespace, labelled namespace (claim). The source multiplies by 100."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
         | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | EVAL legend = TO_STRING({{label:persistentvolumeclaim}})
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
         | EVAL percent = CASE(capacity > 0, used / capacity * 100, NULL)
         | STATS percent = AVG(percent) BY time_bucket, legend
         | KEEP time_bucket, legend, percent
@@ -199,27 +202,27 @@ panel:
     - title_match: "All Running PVCs Used Bytes"
       panel_id: 19
       kibana_type_override: line
+      approximation_note: "max by (persistentvolumeclaim, namespace) per step becomes the last used-bytes value per time bucket, one series per namespace (claim)."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
-        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:persistentvolumeclaim}}
-        | EVAL legend = TO_STRING({{label:persistentvolumeclaim}})
+        | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
         | STATS used_bytes = AVG(used) BY time_bucket, legend
         | KEEP time_bucket, legend, used_bytes
         | SORT time_bucket ASC
     - title_match: "$persistentvolumeclaim"
       kibana_type_override: line
-      approximation_note: "Grafana repeats one used-and-capacity chart per claim. The claim list is not known at migration time, so each saved copy plots used and capacity for every claim in the selected namespace."
+      approximation_note: "Grafana repeats one used-and-capacity chart per claim from the hidden $persistentvolumeclaim variable. Kibana has no panel repeat, so one chart plots used and capacity for every claim in the selected namespace, labelled namespace (claim)."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
-        | WHERE ?persistentvolumeclaim IS NULL OR ?persistentvolumeclaim == "" OR {{label:persistentvolumeclaim}} == ?persistentvolumeclaim
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_capacity_bytes:gauge}} IS NOT NULL
-        | STATS used = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:persistentvolumeclaim}}
-        | EVAL claim = TO_STRING({{label:persistentvolumeclaim}})
+        | STATS used = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), capacity = AVG(LAST_OVER_TIME({{metric:kubelet_volume_stats_capacity_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL claim = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
         | EVAL __labels = MV_APPEND("Used", "Capacity")
         | EVAL __values = MV_APPEND(COALESCE(TO_STRING(used), ""), COALESCE(TO_STRING(capacity), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "~")
@@ -236,7 +239,7 @@ panel:
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
         | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 1 hour)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL bytes_per_sec = growth / 3600
@@ -247,13 +250,14 @@ panel:
     - title_match: "Daily Volume Use Rate"
       panel_id: 49
       kibana_type_override: line
-      approximation_note: "rate(used_bytes[1d]) as DELTA over 24 hours divided by 86400, one series per claim in the selected namespace."
+      approximation_note: "rate(used_bytes[1d]) as a sliding DELTA over 24 hours divided by 86400, plotted hourly, one series per claim in the selected namespace. The query reads the day before the range start for the first points' lookback."
       esql_query: |
         TS metrics-*
-        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE @timestamp >= ?_tstart - 24 hours AND @timestamp <= ?_tend
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
-        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 24 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | WHERE time_bucket >= ?_tstart
         | EVAL bytes_per_sec = growth / 86400
         | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
         | STATS bytes_per_sec = AVG(bytes_per_sec) BY time_bucket, legend
@@ -262,13 +266,13 @@ panel:
     - title_match: "Weekly Volume Use Rate"
       panel_id: 50
       kibana_type_override: line
-      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim in the selected namespace. The query reads the week before the range start so each daily point has a full weekly lookback; buckets before the range are dropped."
+      approximation_note: "rate(used_bytes[1w]) as DELTA over 168 hours divided by 604800, one series per claim in the selected namespace. Plotted hourly as a sliding weekly window. The query reads the week before the range start so each point has a full weekly lookback; buckets before the range are dropped."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart - 168 hours AND @timestamp <= ?_tend
-        | WHERE ?namespace IS NULL OR ?namespace == "" OR {{label:namespace}} == ?namespace
+        | WHERE ?namespace IS NULL OR ?namespace == "" OR ?namespace == ".*" OR {{label:namespace}} == ?namespace
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL
-        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY time_bucket = TBUCKET(24 hours), {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | STATS growth = AVG(DELTA({{metric:kubelet_volume_stats_used_bytes:gauge}}, 168 hours)) BY time_bucket = TBUCKET(1 hour), {{label:namespace}}, {{label:persistentvolumeclaim}}
         | WHERE time_bucket >= ?_tstart
         | EVAL bytes_per_sec = growth / 604800
         | EVAL legend = CONCAT(TO_STRING({{label:namespace}}), " (", TO_STRING({{label:persistentvolumeclaim}}), ")")
@@ -363,43 +367,8 @@ panel:
       title: "Used and capacity"
       hide_title: false
       legend_position: right
-      size: {w: 16, h: 12}
+      size: {w: 48, h: 14}
       position: {x: 0, y: 0}
-    - title_match: "$persistentvolumeclaim"
-      panel_id: 73
-      title: "Used and capacity"
-      hide_title: false
-      legend_position: right
-      size: {w: 16, h: 12}
-      position: {x: 16, y: 0}
-    - title_match: "$persistentvolumeclaim"
-      panel_id: 74
-      title: "Used and capacity"
-      hide_title: false
-      legend_position: right
-      size: {w: 16, h: 12}
-      position: {x: 32, y: 0}
-    - title_match: "$persistentvolumeclaim"
-      panel_id: 75
-      title: "Used and capacity"
-      hide_title: false
-      legend_position: right
-      size: {w: 16, h: 12}
-      position: {x: 0, y: 12}
-    - title_match: "$persistentvolumeclaim"
-      panel_id: 76
-      title: "Used and capacity"
-      hide_title: false
-      legend_position: right
-      size: {w: 16, h: 12}
-      position: {x: 16, y: 12}
-    - title_match: "$persistentvolumeclaim"
-      panel_id: 77
-      title: "Used and capacity"
-      hide_title: false
-      legend_position: right
-      size: {w: 16, h: 12}
-      position: {x: 32, y: 12}
     - title_match: "Hourly Volume Use Rate"
       panel_id: 43
       hide_title: false

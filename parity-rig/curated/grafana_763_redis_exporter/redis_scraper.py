@@ -501,16 +501,23 @@ def build_bulk_body(
     base_labels = {"instance": instance, "job": job, "namespace": NAMESPACE}
     if extra_base_labels:
         base_labels.update(extra_base_labels)
+    # Base labels can make two exporter label sets identical (a cluster-only
+    # series and one with namespace="default" both end up namespace=default).
+    # Two documents with the same dimensions and timestamp collide in TSDB and
+    # one is rejected with a 409, so merge them into one document first.
+    merged: dict[tuple, dict[str, float]] = defaultdict(dict)
     for label_key, metrics in groups.items():
         if not metrics:
             continue
-        extra = dict(label_key)
+        final_labels = {**base_labels, **dict(label_key)}
+        merged[tuple(sorted(final_labels.items()))].update(metrics)
+    for final_key, metrics in merged.items():
         doc = {
             "@timestamp": timestamp,
             "data_stream.type": "metrics",
             "data_stream.dataset": dataset,
             "data_stream.namespace": NAMESPACE,
-            "labels": {**base_labels, **extra},
+            "labels": dict(final_key),
             "metrics": metrics,
         }
         lines.append(json.dumps({"create": {"_index": index}}))
