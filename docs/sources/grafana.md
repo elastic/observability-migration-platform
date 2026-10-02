@@ -493,6 +493,17 @@ off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
 
+The kubelet dashboard (12123) keeps the mixin counters as rates and the
+gauges as last values. Cluster is an exact match. Instance is an exact match,
+and an empty value or `.*` is every instance. The scrape `metrics_path`
+selector is omitted. Runtime, storage, cgroup, PLEG, and request-latency 99th
+percentiles are the upper bound of the first classic histogram bucket whose
+cumulative rate reaches 0.99, the same reduction as the apiserver dashboard.
+The pod start-duration series in the source calls `histogram_quantile` on the
+`_count` metric; that line uses the bucket metric. Config errors are the
+change in the gauge over 5 minutes, divided by 300. RPC rate is one series per
+status class (`2xx`, `3xx`, `4xx`, `5xx`).
+
 The system API server dashboard (15761) is the kube-prometheus-stack view.
 Values match the source queries, including two wrong source unit labels:
 mean latency (the duration-sum rate divided by the duration-count rate) is in

@@ -463,6 +463,92 @@ def render() -> str:
         L.append(f"node_filesystem_size_bytes{{{labels}}} {(100 * 1024**3)}")
         L.append(f"node_filesystem_free_bytes{{{labels}}} {((60 - 5) * 1024**3)}")
 
+    # ---- kubelet (Grafana 12123) ----------------------------------------
+    # Real kubelet metric names. Two instances so the instance control changes
+    # the running-pod count. Histograms are cumulative classic buckets.
+    L.append("# HELP kubelet_running_pod_count Running pods")
+    L.append("# TYPE kubelet_running_pod_count gauge")
+    L.append("# HELP kubelet_running_container_count Running containers")
+    L.append("# TYPE kubelet_running_container_count gauge")
+    L.append("# HELP volume_manager_total_volumes Volumes the kubelet knows")
+    L.append("# TYPE volume_manager_total_volumes gauge")
+    L.append("# HELP kubelet_node_config_error Node config error")
+    L.append("# TYPE kubelet_node_config_error gauge")
+    counters = [
+        "kubelet_runtime_operations_total",
+        "kubelet_runtime_operations_errors_total",
+        "kubelet_runtime_operations_duration_seconds_bucket",
+        "kubelet_pod_start_duration_seconds_count",
+        "kubelet_pod_worker_duration_seconds_count",
+        "kubelet_pod_start_duration_seconds_bucket",
+        "kubelet_pod_worker_duration_seconds_bucket",
+        "storage_operation_duration_seconds_count",
+        "storage_operation_errors_total",
+        "storage_operation_duration_seconds_bucket",
+        "kubelet_cgroup_manager_duration_seconds_count",
+        "kubelet_cgroup_manager_duration_seconds_bucket",
+        "kubelet_pleg_relist_duration_seconds_count",
+        "kubelet_pleg_relist_interval_seconds_bucket",
+        "kubelet_pleg_relist_duration_seconds_bucket",
+        "rest_client_requests_total",
+        "rest_client_request_latency_seconds_bucket",
+        "process_cpu_seconds_total",
+    ]
+    for name in counters:
+        L.append(f"# TYPE {name} counter")
+    L.append("# TYPE process_resident_memory_bytes gauge")
+    L.append("# TYPE go_goroutines gauge")
+    L.append("# TYPE up gauge")
+    les = (("0.1", 0.5), ("0.5", 0.9), ("1", 0.99), ("+Inf", 1.0))
+    for idx, inst in enumerate(("node-1:10250", "node-2:10250")):
+        base = f'cluster="{CLUSTER}",job="kubelet",instance="{inst}"'
+        scale = 2 + idx
+        L.append(f"up{{{base}}} 1")
+        L.append(f"kubelet_running_pod_count{{{base}}} {4 if idx == 0 else 2}")
+        L.append(f"kubelet_running_container_count{{{base}}} {6 if idx == 0 else 3}")
+        L.append(f'volume_manager_total_volumes{{{base},state="actual_state_of_world"}} {3 + idx}')
+        L.append(f'volume_manager_total_volumes{{{base},state="desired_state_of_world"}} {3 + idx}')
+        L.append(f"kubelet_node_config_error{{{base}}} {int(elapsed / 30)}")
+        ops = elapsed * scale
+        for op in ("create_container", "start_container"):
+            L.append(f'kubelet_runtime_operations_total{{{base},operation_type="{op}"}} {ops:.0f}')
+            L.append(f'kubelet_runtime_operations_errors_total{{{base},operation_type="{op}"}} {ops * 0.02:.0f}')
+            for le, frac in les:
+                L.append(
+                    f'kubelet_runtime_operations_duration_seconds_bucket{{{base},operation_type="{op}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f"kubelet_pod_start_duration_seconds_count{{{base}}} {ops:.0f}")
+        L.append(f"kubelet_pod_worker_duration_seconds_count{{{base}}} {ops * 1.2:.0f}")
+        for le, frac in les:
+            L.append(f'kubelet_pod_start_duration_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+            L.append(f'kubelet_pod_worker_duration_seconds_bucket{{{base},le="{le}"}} {ops * 1.2 * frac:.0f}')
+        for op, plugin in (("volume_mount", "kubernetes.io/empty-dir"),):
+            L.append(f'storage_operation_duration_seconds_count{{{base},operation_name="{op}",volume_plugin="{plugin}"}} {ops:.0f}')
+            L.append(f'storage_operation_errors_total{{{base},operation_name="{op}",volume_plugin="{plugin}"}} {ops * 0.01:.0f}')
+            for le, frac in les:
+                L.append(
+                    f'storage_operation_duration_seconds_bucket{{{base},operation_name="{op}",volume_plugin="{plugin}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f'kubelet_cgroup_manager_duration_seconds_count{{{base},operation_type="create"}} {ops:.0f}')
+        for le, frac in les:
+            L.append(
+                f'kubelet_cgroup_manager_duration_seconds_bucket{{{base},operation_type="create",le="{le}"}} {ops * frac:.0f}'
+            )
+        L.append(f"kubelet_pleg_relist_duration_seconds_count{{{base}}} {ops:.0f}")
+        for le, frac in les:
+            L.append(f'kubelet_pleg_relist_duration_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+            L.append(f'kubelet_pleg_relist_interval_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+        for code, frac in (("200", 0.9), ("404", 0.05), ("500", 0.02)):
+            L.append(f'rest_client_requests_total{{{base},code="{code}"}} {ops * frac:.0f}')
+        for verb, url in (("GET", "/pods"),):
+            for le, frac in les:
+                L.append(
+                    f'rest_client_request_latency_seconds_bucket{{{base},verb="{verb}",url="{url}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f"process_resident_memory_bytes{{{base}}} {200 * 1024 * 1024}")
+        L.append(f"process_cpu_seconds_total{{{base}}} {elapsed * 0.05 * scale:.4f}")
+        L.append(f"go_goroutines{{{base}}} {40 + idx}")
+
     # Grafana 15758 resource-count panels. Names, labels, and types match
     # kube-state-metrics.
     _append_namespace_objects(L)

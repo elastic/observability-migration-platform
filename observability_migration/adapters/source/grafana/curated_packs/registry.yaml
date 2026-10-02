@@ -290,6 +290,15 @@ packs:
     dashboard_sha256: "238b95b69f704e19ad7c65e2c3834f29e26c2e2ede62cd8b8829f5350182d69a"
     description: "Apiserver — request rate by verb, named p95/p90/p50 latency, cache hit ratio"
 
+  - gnet_id: 12123
+    name: grafana_12123_k8s_kubelet
+    title_hint: "Kubernetes / Kubelet"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_12123_k8s_kubelet
+    gnet_revision: 1
+    dashboard_sha256: "ccd78bc80ca8a44b20de53911242fca7930b918d45ee48ad358e4d5494434502"
+    description: "Kubelet — runtime and storage rates, bucket 99th percentiles, PLEG, RPC classes, process CPU and memory"
+
   - gnet_id: 15761
     name: grafana_15761_k8s_system_apiserver
     title_hint: "Kubernetes / System / API Server"
