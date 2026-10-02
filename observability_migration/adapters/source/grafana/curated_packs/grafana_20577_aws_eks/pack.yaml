@@ -1,0 +1,612 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 20577
+# https://grafana.com/grafana/dashboards/20577-aws-eks/
+#
+# AWS - EKS (grafana.com revision 1, dashboard version 48). The source is
+# CloudWatch ContainerInsights plus a few AWS service widgets, pinned to one
+# cluster name. These queries read the same metric names when they are valid
+# ES|QL identifiers, and a documented alias when the CloudWatch name would
+# not be (4xxErrors, 401ErrorRate, ...). Every ClusterName is included.
+# Gauges are 0-100. Log panels list cloudwatch_log_event documents.
+
+query:
+  # CloudWatch data is not in the prometheus dataset.
+  metrics_dataset_filter: ""
+
+  metric_kinds:
+    cluster_node_count: gauge
+    node_number_of_running_pods: gauge
+    node_number_of_running_containers: gauge
+    node_network_total_bytes: gauge
+    node_filesystem_utilization: gauge
+    pod_network_tx_bytes: gauge
+    pod_network_rx_bytes: gauge
+    pod_number_of_container_restarts: gauge
+    node_cpu_utilization: gauge
+    node_memory_utilization: gauge
+    pod_cpu_utilization: gauge
+    pod_memory_utilization: gauge
+    s3_4xx_errors: gauge
+    s3_5xx_errors: gauge
+    s3_total_request_latency: gauge
+    s3_replication_latency: gauge
+    s3_first_byte_latency: gauge
+    cloudfront_requests: gauge
+    cloudfront_4xx_error_rate: gauge
+    cloudfront_5xx_error_rate: gauge
+    cloudfront_401_error_rate: gauge
+    cloudfront_403_error_rate: gauge
+    cloudfront_404_error_rate: gauge
+    cloudfront_502_error_rate: gauge
+    cloudfront_503_error_rate: gauge
+    cloudfront_504_error_rate: gauge
+    sqs_messages_sent: gauge
+    sqs_messages_received: gauge
+    sqs_messages_deleted: gauge
+    cloudwatch_log_event: gauge
+    secretsmanager_resource_count: gauge
+
+  live_optional_metrics:
+    - cluster_node_count
+    - node_number_of_running_pods
+    - node_number_of_running_containers
+    - node_network_total_bytes
+    - node_filesystem_utilization
+    - pod_network_tx_bytes
+    - pod_network_rx_bytes
+    - pod_number_of_container_restarts
+    - node_cpu_utilization
+    - node_memory_utilization
+    - pod_cpu_utilization
+    - pod_memory_utilization
+    - s3_4xx_errors
+    - s3_5xx_errors
+    - s3_total_request_latency
+    - s3_replication_latency
+    - s3_first_byte_latency
+    - cloudfront_requests
+    - cloudfront_4xx_error_rate
+    - cloudfront_5xx_error_rate
+    - cloudfront_401_error_rate
+    - cloudfront_403_error_rate
+    - cloudfront_404_error_rate
+    - cloudfront_502_error_rate
+    - cloudfront_503_error_rate
+    - cloudfront_504_error_rate
+    - sqs_messages_sent
+    - sqs_messages_received
+    - sqs_messages_deleted
+    - cloudwatch_log_event
+    - secretsmanager_resource_count
+
+panel:
+  query_overrides:
+    - title_match: "Current Nodes"
+      panel_id: 24
+      kibana_type_override: metric
+      approximation_note: "cluster_node_count, latest value summed across clusters. The source pins ClusterName to one account-specific cluster."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cluster_node_count:gauge}} IS NOT NULL
+        | STATS nodes = SUM(LAST_OVER_TIME({{metric:cluster_node_count:gauge}}))
+        | KEEP nodes
+    - title_match: "Current Pods"
+      panel_id: 18
+      kibana_type_override: metric
+      approximation_note: "node_number_of_running_pods, latest value summed across nodes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_number_of_running_pods:gauge}} IS NOT NULL
+        | STATS pods = SUM(LAST_OVER_TIME({{metric:node_number_of_running_pods:gauge}}))
+        | KEEP pods
+    - title_match: "Current Containers"
+      panel_id: 17
+      kibana_type_override: metric
+      approximation_note: "node_number_of_running_containers, latest value summed across nodes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_number_of_running_containers:gauge}} IS NOT NULL
+        | STATS containers = SUM(LAST_OVER_TIME({{metric:node_number_of_running_containers:gauge}}))
+        | KEEP containers
+    - title_match: "Nodes - Max Bytes"
+      panel_id: 31
+      kibana_type_override: metric
+      approximation_note: "Maximum node_network_total_bytes in the dashboard time range. CloudWatch statistic Maximum."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_network_total_bytes:gauge}} IS NOT NULL
+        | STATS bytes = MAX({{metric:node_network_total_bytes:gauge}})
+        | KEEP bytes
+    - title_match: "Nodes - Max Filesystem Utilization"
+      panel_id: 37
+      kibana_type_override: metric
+      approximation_note: "Maximum node_filesystem_utilization in the dashboard time range. The value is already 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_filesystem_utilization:gauge}} IS NOT NULL
+        | STATS percent = MAX({{metric:node_filesystem_utilization:gauge}})
+        | KEEP percent
+    - title_match: "Pods - Max Bytes Sent"
+      panel_id: 35
+      kibana_type_override: metric
+      approximation_note: "Maximum pod_network_tx_bytes in the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_network_tx_bytes:gauge}} IS NOT NULL
+        | STATS bytes = MAX({{metric:pod_network_tx_bytes:gauge}})
+        | KEEP bytes
+    - title_match: "Pods - Max Bytes Received"
+      panel_id: 33
+      kibana_type_override: metric
+      approximation_note: "Maximum pod_network_rx_bytes in the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_network_rx_bytes:gauge}} IS NOT NULL
+        | STATS bytes = MAX({{metric:pod_network_rx_bytes:gauge}})
+        | KEEP bytes
+    - title_match: "Container Restarts"
+      panel_id: 32
+      kibana_type_override: metric
+      approximation_note: "Latest pod_number_of_container_restarts summed across pods. CloudWatch statistic Sum."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_number_of_container_restarts:gauge}} IS NOT NULL
+        | STATS restarts = SUM(LAST_OVER_TIME({{metric:pod_number_of_container_restarts:gauge}}))
+        | KEEP restarts
+    - title_match: "Nodes - Total Bytes"
+      panel_id: 30
+      kibana_type_override: metric
+      approximation_note: "Latest node_network_total_bytes averaged across nodes. CloudWatch statistic Average."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_network_total_bytes:gauge}} IS NOT NULL
+        | STATS bytes = AVG(LAST_OVER_TIME({{metric:node_network_total_bytes:gauge}}))
+        | KEEP bytes
+    - title_match: "Pods - Total Bytes Sent"
+      panel_id: 36
+      kibana_type_override: metric
+      approximation_note: "Latest pod_network_tx_bytes summed across pods."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_network_tx_bytes:gauge}} IS NOT NULL
+        | STATS bytes = SUM(LAST_OVER_TIME({{metric:pod_network_tx_bytes:gauge}}))
+        | KEEP bytes
+    - title_match: "Pods - Total Bytes Received"
+      panel_id: 34
+      kibana_type_override: metric
+      approximation_note: "Latest pod_network_rx_bytes summed across pods."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_network_rx_bytes:gauge}} IS NOT NULL
+        | STATS bytes = SUM(LAST_OVER_TIME({{metric:pod_network_rx_bytes:gauge}}))
+        | KEEP bytes
+    - title_match: "Current Node CPU %"
+      panel_id: 25
+      kibana_type_override: gauge
+      approximation_note: "Average node_cpu_utilization, already 0-100. Thresholds stay 60, 80, and 90."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_cpu_utilization:gauge}} IS NOT NULL
+        | STATS percent = AVG(LAST_OVER_TIME({{metric:node_cpu_utilization:gauge}}))
+        | KEEP percent
+    - title_match: "Current Node Mem %"
+      panel_id: 26
+      kibana_type_override: gauge
+      approximation_note: "Average node_memory_utilization, already 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_memory_utilization:gauge}} IS NOT NULL
+        | STATS percent = AVG(LAST_OVER_TIME({{metric:node_memory_utilization:gauge}}))
+        | KEEP percent
+    - title_match: "Current Pod CPU %"
+      panel_id: 27
+      kibana_type_override: gauge
+      approximation_note: "Average pod_cpu_utilization, already 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_cpu_utilization:gauge}} IS NOT NULL
+        | STATS percent = AVG(LAST_OVER_TIME({{metric:pod_cpu_utilization:gauge}}))
+        | KEEP percent
+    - title_match: "Current Pod Mem %"
+      panel_id: 28
+      kibana_type_override: gauge
+      approximation_note: "Average pod_memory_utilization, already 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_memory_utilization:gauge}} IS NOT NULL
+        | STATS percent = AVG(LAST_OVER_TIME({{metric:pod_memory_utilization:gauge}}))
+        | KEEP percent
+    - title_match: "Node Utilization %'s"
+      panel_id: 16
+      kibana_type_override: area
+      approximation_note: "Cluster-average node CPU and memory utilization over time. Both series are 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_cpu_utilization:gauge}} IS NOT NULL OR {{metric:node_memory_utilization:gauge}} IS NOT NULL
+        | STATS cpu = AVG(LAST_OVER_TIME({{metric:node_cpu_utilization:gauge}})), memory = AVG(LAST_OVER_TIME({{metric:node_memory_utilization:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, cpu, memory
+        | SORT time_bucket ASC
+    - title_match: "Node Utilization %'s (by IP)"
+      panel_id: 19
+      kibana_type_override: bar
+      approximation_note: "node_cpu_utilization by node. The source legend is the NodeName dimension, not an IP address."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_cpu_utilization:gauge}} IS NOT NULL
+        | STATS cpu = AVG(LAST_OVER_TIME({{metric:node_cpu_utilization:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | EVAL node = {{label:node}}
+        | STATS cpu = AVG(cpu) BY time_bucket, node
+        | KEEP time_bucket, node, cpu
+        | SORT time_bucket ASC
+    - title_match: "Node Network Total Bytes"
+      panel_id: 23
+      kibana_type_override: area
+      approximation_note: "node_network_total_bytes by node. The source breaks the series out by NodeName."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_network_total_bytes:gauge}} IS NOT NULL
+        | STATS bytes = AVG(LAST_OVER_TIME({{metric:node_network_total_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | EVAL node = {{label:node}}
+        | STATS bytes = AVG(bytes) BY time_bucket, node
+        | KEEP time_bucket, node, bytes
+        | SORT time_bucket ASC
+    - title_match: "Pods - Historical"
+      panel_id: 22
+      kibana_type_override: area
+      approximation_note: "Running pods and container restarts on one chart, matching the source. The two series use different scales."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_number_of_running_pods:gauge}} IS NOT NULL OR {{metric:pod_number_of_container_restarts:gauge}} IS NOT NULL
+        | STATS running_pods = SUM(LAST_OVER_TIME({{metric:node_number_of_running_pods:gauge}})), container_restarts = SUM(LAST_OVER_TIME({{metric:pod_number_of_container_restarts:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, running_pods, container_restarts
+        | SORT time_bucket ASC
+    - title_match: "Containers - Historical"
+      panel_id: 20
+      kibana_type_override: area
+      approximation_note: "node_number_of_running_containers over time. The source statistic is SampleCount, which counts CloudWatch samples rather than containers."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_number_of_running_containers:gauge}} IS NOT NULL
+        | STATS containers = SUM(LAST_OVER_TIME({{metric:node_number_of_running_containers:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, containers
+        | SORT time_bucket ASC
+    - title_match: "Container Restarts"
+      panel_id: 39
+      kibana_type_override: line
+      approximation_note: "pod_number_of_container_restarts summed over time."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:pod_number_of_container_restarts:gauge}} IS NOT NULL
+        | STATS restarts = SUM(LAST_OVER_TIME({{metric:pod_number_of_container_restarts:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, restarts
+        | SORT time_bucket ASC
+    - title_match: "Average Filesystem Utilization - By Node"
+      panel_id: 38
+      kibana_type_override: line
+      approximation_note: "node_filesystem_utilization by node. The value is already 0-100."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:node_filesystem_utilization:gauge}} IS NOT NULL
+        | STATS percent = AVG(LAST_OVER_TIME({{metric:node_filesystem_utilization:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | EVAL node = {{label:node}}
+        | STATS percent = AVG(percent) BY time_bucket, node
+        | KEEP time_bucket, node, percent
+        | SORT time_bucket ASC
+    - title_match: "[EKS Cluster Logs]"
+      panel_id: 14
+      kibana_type_override: datatable
+      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists the latest 100 cloudwatch_log_event documents whose log_stream is eks-cluster, one row per event. The source pins one account and one EKS log group."
+      esql_query: |
+        FROM metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cloudwatch_log_event:gauge}} IS NOT NULL
+        | WHERE {{label:log_stream}} == "eks-cluster"
+        | EVAL logged_at = @timestamp, message = {{label:message}}
+        | KEEP logged_at, message
+        | SORT logged_at DESC
+        | LIMIT 100
+    - title_match: "[Fluentbit Cloudwatch Logs]"
+      panel_id: 1
+      kibana_type_override: datatable
+      approximation_note: "CloudWatch Logs Insights is not a metric query. This table lists the latest 100 cloudwatch_log_event documents whose log_stream is fluentbit, one row per event."
+      esql_query: |
+        FROM metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cloudwatch_log_event:gauge}} IS NOT NULL
+        | WHERE {{label:log_stream}} == "fluentbit"
+        | EVAL logged_at = @timestamp, message = {{label:message}}
+        | KEEP logged_at, message
+        | SORT logged_at DESC
+        | LIMIT 100
+    - title_match: "S3 - Error Counts"
+      panel_id: 4
+      kibana_type_override: line
+      approximation_note: "AWS/S3 4xxErrors and 5xxErrors. Those CloudWatch names are not valid ES|QL identifiers, so the fields are s3_4xx_errors and s3_5xx_errors."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:s3_4xx_errors:gauge}} IS NOT NULL OR {{metric:s3_5xx_errors:gauge}} IS NOT NULL
+        | STATS errors_4xx = AVG(LAST_OVER_TIME({{metric:s3_4xx_errors:gauge}})), errors_5xx = AVG(LAST_OVER_TIME({{metric:s3_5xx_errors:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, errors_4xx, errors_5xx
+        | SORT time_bucket ASC
+    - title_match: "S3 - Latency"
+      panel_id: 11
+      kibana_type_override: line
+      approximation_note: "TotalRequestLatency, ReplicationLatency, and FirstByteLatency, in milliseconds. Fields are s3_total_request_latency, s3_replication_latency, and s3_first_byte_latency."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:s3_total_request_latency:gauge}} IS NOT NULL OR {{metric:s3_replication_latency:gauge}} IS NOT NULL OR {{metric:s3_first_byte_latency:gauge}} IS NOT NULL
+        | STATS total_request = AVG(LAST_OVER_TIME({{metric:s3_total_request_latency:gauge}})), replication = AVG(LAST_OVER_TIME({{metric:s3_replication_latency:gauge}})), first_byte = AVG(LAST_OVER_TIME({{metric:s3_first_byte_latency:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, total_request, replication, first_byte
+        | SORT time_bucket ASC
+    - title_match: "CloudFront Requests"
+      panel_id: 13
+      kibana_type_override: line
+      approximation_note: "AWS/CloudFront Requests, stored as cloudfront_requests so the name does not collide with other request counters."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cloudfront_requests:gauge}} IS NOT NULL
+        | STATS requests = AVG(LAST_OVER_TIME({{metric:cloudfront_requests:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, requests
+        | SORT time_bucket ASC
+    - title_match: "CloudFront Error Rates (by Range)"
+      panel_id: 5
+      kibana_type_override: line
+      approximation_note: "4xxErrorRate and 5xxErrorRate, stored as cloudfront_4xx_error_rate and cloudfront_5xx_error_rate. Values are CloudWatch percents."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cloudfront_4xx_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_5xx_error_rate:gauge}} IS NOT NULL
+        | STATS error_4xx = AVG(LAST_OVER_TIME({{metric:cloudfront_4xx_error_rate:gauge}})), error_5xx = AVG(LAST_OVER_TIME({{metric:cloudfront_5xx_error_rate:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, error_4xx, error_5xx
+        | SORT time_bucket ASC
+    - title_match: "CloudFront Error Rates (by Code)"
+      panel_id: 12
+      kibana_type_override: line
+      approximation_note: "401, 403, 404, 502, 503, and 504 error rates. CloudWatch names start with a digit, so the fields are cloudfront_401_error_rate and the same pattern for the other codes."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:cloudfront_401_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_403_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_404_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_502_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_503_error_rate:gauge}} IS NOT NULL OR {{metric:cloudfront_504_error_rate:gauge}} IS NOT NULL
+        | STATS error_401 = AVG(LAST_OVER_TIME({{metric:cloudfront_401_error_rate:gauge}})), error_403 = AVG(LAST_OVER_TIME({{metric:cloudfront_403_error_rate:gauge}})), error_404 = AVG(LAST_OVER_TIME({{metric:cloudfront_404_error_rate:gauge}})), error_502 = AVG(LAST_OVER_TIME({{metric:cloudfront_502_error_rate:gauge}})), error_503 = AVG(LAST_OVER_TIME({{metric:cloudfront_503_error_rate:gauge}})), error_504 = AVG(LAST_OVER_TIME({{metric:cloudfront_504_error_rate:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, error_401, error_403, error_404, error_502, error_503, error_504
+        | SORT time_bucket ASC
+    - title_match: "SQS Messages"
+      panel_id: 6
+      kibana_type_override: line
+      approximation_note: "NumberOfMessagesSent, NumberOfMessagesReceived, and NumberOfMessagesDeleted, stored as sqs_messages_sent, sqs_messages_received, and sqs_messages_deleted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:sqs_messages_sent:gauge}} IS NOT NULL OR {{metric:sqs_messages_received:gauge}} IS NOT NULL OR {{metric:sqs_messages_deleted:gauge}} IS NOT NULL
+        | STATS sent = AVG(LAST_OVER_TIME({{metric:sqs_messages_sent:gauge}})), received = AVG(LAST_OVER_TIME({{metric:sqs_messages_received:gauge}})), deleted = AVG(LAST_OVER_TIME({{metric:sqs_messages_deleted:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, sent, received, deleted
+        | SORT time_bucket ASC
+    - title_match: "Panel Title"
+      panel_id: 10
+      kibana_type_override: metric
+      approximation_note: "The source Secrets Manager panel has an empty CloudWatch metric name. This tile reads secretsmanager_resource_count when that gauge is ingested, and stays a missing-telemetry card otherwise."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:secretsmanager_resource_count:gauge}} IS NOT NULL
+        | STATS secrets = SUM(LAST_OVER_TIME({{metric:secretsmanager_resource_count:gauge}}))
+        | KEEP secrets
+
+  layout_overrides:
+    - title_match: "EKS (Summary)"
+      collapsed: false
+    - title_match: "Current Nodes"
+      panel_id: 24
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Current Pods"
+      panel_id: 18
+      hide_title: false
+      size: {w: 6, h: 12}
+      position: {x: 6, y: 0}
+    - title_match: "Current Containers"
+      panel_id: 17
+      hide_title: false
+      size: {w: 6, h: 6}
+      position: {x: 12, y: 0}
+    - title_match: "Container Restarts"
+      panel_id: 32
+      hide_title: false
+      size: {w: 6, h: 6}
+      position: {x: 12, y: 6}
+    - title_match: "Nodes - Max Bytes"
+      panel_id: 31
+      hide_title: false
+      size: {w: 6, h: 6}
+      position: {x: 18, y: 0}
+    - title_match: "Nodes - Total Bytes"
+      panel_id: 30
+      hide_title: false
+      size: {w: 6, h: 6}
+      position: {x: 18, y: 6}
+    - title_match: "Nodes - Max Filesystem Utilization"
+      panel_id: 37
+      hide_title: false
+      size: {w: 8, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "Pods - Max Bytes Sent"
+      panel_id: 35
+      hide_title: false
+      size: {w: 8, h: 6}
+      position: {x: 32, y: 0}
+    - title_match: "Pods - Total Bytes Sent"
+      panel_id: 36
+      hide_title: false
+      size: {w: 8, h: 6}
+      position: {x: 32, y: 6}
+    - title_match: "Pods - Max Bytes Received"
+      panel_id: 33
+      hide_title: false
+      size: {w: 8, h: 6}
+      position: {x: 40, y: 0}
+    - title_match: "Pods - Total Bytes Received"
+      panel_id: 34
+      hide_title: false
+      size: {w: 8, h: 6}
+      position: {x: 40, y: 6}
+    - title_match: "Current Node CPU %"
+      panel_id: 25
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 0, y: 12}
+    - title_match: "Current Node Mem %"
+      panel_id: 26
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 12, y: 12}
+    - title_match: "Current Pod CPU %"
+      panel_id: 27
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 24, y: 12}
+    - title_match: "Current Pod Mem %"
+      panel_id: 28
+      hide_title: false
+      size: {w: 12, h: 10}
+      position: {x: 36, y: 12}
+    - title_match: "EKS (Historical)"
+      collapsed: false
+    - title_match: "Node Utilization %'s"
+      panel_id: 16
+      hide_title: false
+      legend_position: right
+      size: {w: 16, h: 16}
+      position: {x: 0, y: 0}
+    - title_match: "Node Utilization %'s (by IP)"
+      panel_id: 19
+      title: "Node CPU % by node"
+      hide_title: false
+      legend_position: right
+      xy_mode: unstacked
+      size: {w: 32, h: 16}
+      position: {x: 16, y: 0}
+    - title_match: "Node Network Total Bytes"
+      panel_id: 23
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 16}
+    - title_match: "Pods - Historical"
+      panel_id: 22
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 30}
+    - title_match: "Containers - Historical"
+      panel_id: 20
+      hide_title: false
+      legend_position: bottom
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 44}
+    - title_match: "EKS (Additional Alerts)"
+      collapsed: false
+    - title_match: "Container Restarts"
+      panel_id: 39
+      hide_title: false
+      legend_position: bottom
+      size: {w: 48, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "Average Filesystem Utilization - By Node"
+      panel_id: 38
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 12}
+    - title_match: "EKS (Logs)"
+      collapsed: false
+    - title_match: "[EKS Cluster Logs]"
+      panel_id: 14
+      title: "EKS cluster logs"
+      hide_title: false
+      size: {w: 48, h: 16}
+      position: {x: 0, y: 0}
+    - title_match: "[Fluentbit Cloudwatch Logs]"
+      panel_id: 1
+      title: "Fluent Bit logs"
+      hide_title: false
+      size: {w: 48, h: 16}
+      position: {x: 0, y: 16}
+    - title_match: "S3"
+      collapsed: false
+    - title_match: "S3 - Error Counts"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "S3 - Latency"
+      panel_id: 11
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 0}
+    - title_match: "Cloudfront"
+      collapsed: false
+    - title_match: "CloudFront Requests"
+      panel_id: 13
+      hide_title: false
+      legend_position: bottom
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 0}
+    - title_match: "CloudFront Error Rates (by Range)"
+      panel_id: 5
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 0}
+    - title_match: "CloudFront Error Rates (by Code)"
+      panel_id: 12
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 12}
+    - title_match: "SQS"
+      collapsed: false
+    - title_match: "SQS Messages"
+      panel_id: 6
+      hide_title: false
+      legend_position: right
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "Secrets Manager"
+      collapsed: false
+    - title_match: "Panel Title"
+      panel_id: 10
+      title: "Secrets Manager"
+      hide_title: false
+      size: {w: 48, h: 8}
+      position: {x: 0, y: 0}
