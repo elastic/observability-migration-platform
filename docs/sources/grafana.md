@@ -127,7 +127,11 @@ field-caps proved absent is stripped from the hand-written override so the
 rest of the panel can still render. Metrics listed in the pack's
 `live_optional_metrics` are expected omissions and are not reported as pack
 gaps; any other stripped metric is reported as "Target telemetry missing from
-curated override" and caps the panel at `migrated_with_warnings`. A presence
+curated override" and caps the panel at `migrated_with_warnings`. An override
+that leaves a source metric out on purpose (for example a PromQL `and on(...)`
+join with no ES|QL equivalent) lists it under `dropped_source_metrics` and
+explains the drop in `approximation_note`; the note caps the status, and the
+listed metric is not also reported as missing telemetry. A presence
 filter (`metric IS NOT NULL`) that was the only use of an absent metric does
 not leave a count of every series: when no remaining aggregation reads a
 metric, the panel becomes a missing-telemetry card. When stripping removes
@@ -365,6 +369,28 @@ one per day so the line stays inside the dashboard time range. OpenShift
 `pv_collector_*` counts are `kube_persistentvolumeclaim_status_phase`. The
 Grafana alert list is a gap.
 
+The namespace volume dashboard (11455) is that cluster dashboard scoped to one
+namespace. The namespace control is an exact match. When the upload can reach
+Elasticsearch, the control opens on the first namespace, as Grafana does for a
+variable with no saved value. Otherwise it starts empty. An empty control and
+the `.*` option both match every namespace. Per-claim series and rows
+keep the namespace (`namespace (claim)`), so claims with the same name in
+different namespaces stay separate. The "current" table is the exception: the
+source query lists infrastructure namespaces (`openshift-*`, `kube-*`,
+`default`, `logging`) and a week of growth, and it does not follow the
+namespace control. Fill-in-a-week and the revision-6 textbox default of 80% use
+the same approximations as the cluster dashboard. The hourly, daily, and weekly
+rates keep their 1-hour, 24-hour, and 168-hour windows, but all three are
+plotted hourly as sliding windows. A daily or weekly bucket starts at midnight,
+before the start of the default 6-hour range, and Kibana would hide its only
+point. OpenShift `pv_collector_*` counts are
+`kube_persistentvolumeclaim_status_phase` in the selected namespace. PVC Stats
+also lists claims that have `kube_persistentvolumeclaim_info` but no kubelet
+stats (pending or unmounted), with empty values. Grafana repeats one
+used-and-capacity chart per claim from a hidden claim variable. Kibana has no
+panel repeat, so the migration emits one chart that plots used and capacity for
+every claim in the namespace, and no claim control.
+
 The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
 are capacity minus available, and free inodes are total minus used. The
 percent tiles use that same sum, so a volume reported by more than one kubelet
@@ -397,6 +423,29 @@ they keep the source axis max of 1. The issue and unscheduled tables stay
 cluster-wide, as in the source queries. The job control filters restarts. It
 has no All option and defaults to `kube-state-metrics`, as in the source;
 clearing it shows every job.
+
+The namespace view (15758) measures the selected namespaces against the
+cluster. CPU and memory gauges divide namespace usage by
+`machine_cpu_cores` and `machine_memory_bytes` and stay on a 0–1 scale.
+The CPU and memory stats list Real, Requests, Limits, and Cluster Total.
+Requests and limits cannot express the PromQL `and on` running-pod join, so
+they use the namespace and cluster controls. Cluster Total does not follow
+the namespace selection. Series with an empty container name are omitted
+where the source filters `image!=""`. The owner control matches the start
+of the pod name, which is how the source uses `created_by_name` on cAdvisor
+series that have no owner label. Ready and Running follow that owner;
+Waiting, the current restart count, and Terminated stay on the namespace.
+Unavailable replicas ignore the owner prefix because that gauge has no pod
+label. Unexpected phases are one series per pod; the source legend says
+deployment and the query groups by pod. Status reason stays cluster-wide.
+The QoS chart does not draw the total-pods line again, because that line is
+the sum of the classes. Received traffic is positive and transmitted is
+negative. Persistent-volume percent and free inodes stay on a 0–1 scale.
+An empty namespace or owner selection, including Grafana's All value `.*`,
+is every value. Object types the target did not ingest are left off the
+resource count. When `kube_pod_status_reason` was not ingested, the panel names that
+missing metric instead of inventing a reason. The `resolution` variable is a scrape step; chart buckets follow the
+dashboard time range.
 
 The global view (15757) turns the CPU and memory bargauges into Real,
 Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
@@ -460,6 +509,17 @@ legend, Workload, and the pack renames it Cluster counts. Per-key taint stats
 are folded into the normal-node count. The microservice row is expanded.
 Titles that contain `$Node` or `$NameSpace` are matched after Grafana's
 variable text is removed.
+
+The kubelet dashboard (12123) keeps the mixin counters as rates and the
+gauges as last values. Cluster is an exact match. Instance is an exact match,
+and an empty value or `.*` is every instance. The scrape `metrics_path`
+selector is omitted. Runtime, storage, cgroup, PLEG, and request-latency 99th
+percentiles are the upper bound of the first classic histogram bucket whose
+cumulative rate reaches 0.99, the same reduction as the apiserver dashboard.
+The pod start-duration series in the source calls `histogram_quantile` on the
+`_count` metric; that line uses the bucket metric. Config errors are the
+change in the gauge over 5 minutes, divided by 300. RPC rate is one series per
+status class (`2xx`, `3xx`, `4xx`, `5xx`).
 
 The system API server dashboard (15761) is the kube-prometheus-stack view.
 Values match the source queries, including two wrong source unit labels:
@@ -1211,6 +1271,12 @@ Use that doc for:
   `--assets dashboards`, runtime normalization upgrades the run to `--assets all`.
 - Dashboard artifacts are written under `<output-dir>/dashboards`; alert
   artifacts are written under `<output-dir>/alerts`.
+- Panels that Grafana saved as repeat clones (`repeatPanelId` pointing at a
+  panel with `repeat`) are not migrated. Grafana discards and rebuilds those
+  clones on load, so the migration works from the repeat template: it fans the
+  template out per value when the variable's values are known, and otherwise
+  keeps the single template panel with a warning. Clones inside repeated rows
+  are kept.
 - Native PromQL is the preferred, highest-fidelity target. When
   `--es-url` reaches a target *confirmed* to lack ES|QL `PROMQL` support, the
   run downgrades to ES|QL translation; an inconclusive probe keeps native PromQL
