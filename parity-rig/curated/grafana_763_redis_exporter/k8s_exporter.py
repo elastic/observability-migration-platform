@@ -171,11 +171,11 @@ def render() -> str:
             f'{int((5.0 + ni) * 1024**3)}'
         )
         L.append(
-            f'container_fs_usage_bytes{{id="/",device="/dev/sda1",instance="{n}"}} '
+            f'container_fs_usage_bytes{{id="/",device="/dev/sda1",instance="{n}",node="{n}"}} '
             f'{int((30 + 5 * ni) * 1024**3)}'
         )
         L.append(
-            f'container_fs_limit_bytes{{id="/",device="/dev/sda1",instance="{n}"}} '
+            f'container_fs_limit_bytes{{id="/",device="/dev/sda1",instance="{n}",node="{n}"}} '
             f'{(100 * 1024**3)}'
         )
 
@@ -188,7 +188,7 @@ def render() -> str:
             cgroup_id = f"/kubepods/{pod}/{container}"
             base = (
                 f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
-                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}",node="{n}"'
             )
             cpu = elapsed * (0.05 + 0.02 * (idx % 5))
             L.append(f"container_cpu_usage_seconds_total{{{base}}} {cpu:.4f}")
@@ -233,8 +233,13 @@ def render() -> str:
         # Ready condition present; OutOfDisk intentionally absent (removed in 1.12).
         L.append(f'kube_node_status_condition{{node="{n}",condition="Ready",status="true"}} 1')
         for resource, alloc, cap in (("pods", 110, 110), ("cpu", 4, 4), ("memory", 15 * 1024**3, 16 * 1024**3)):
-            L.append(f'kube_node_status_allocatable{{node="{n}",resource="{resource}"}} {alloc}')
-            L.append(f'kube_node_status_capacity{{node="{n}",resource="{resource}"}} {cap}')
+            unit = {"cpu": "core", "memory": "byte", "pods": "integer"}[resource]
+            L.append(
+                f'kube_node_status_allocatable{{node="{n}",resource="{resource}",unit="{unit}"}} {alloc}'
+            )
+            L.append(
+                f'kube_node_status_capacity{{node="{n}",resource="{resource}",unit="{unit}"}} {cap}'
+            )
 
     # ---- kube-state-metrics: pods ---------------------------------------
     L.append("# HELP kube_pod_info Information about pod")
@@ -373,7 +378,7 @@ def render() -> str:
             cgroup_id = f"/kubepods/{pod}/{container}"
             base = (
                 f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
-                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}",node="{n}"'
             )
             cpu = elapsed * (0.05 + 0.02 * (idx % 5))
             mem = int((128 + 40 * (idx % 6)) * 1024**2)
@@ -602,6 +607,101 @@ def render() -> str:
     L.append(
         'kube_persistentvolumeclaim_status_phase{namespace="default",persistentvolumeclaim="pending",phase="Pending"} 1'
     )
+
+    # Grafana 15661. Real cAdvisor and kube-state-metrics names. The batch
+    # namespace sits over the 0.5 core and 1GiB working-set thresholds.
+    # Namespace, service, configmap, secret, limit, and volume-stats series
+    # come from the shared blocks above.
+    L.append("# HELP container_memory_rss Resident set size")
+    L.append("# TYPE container_memory_rss gauge")
+    L.append("# HELP kube_pod_created Pod creation time")
+    L.append("# TYPE kube_pod_created gauge")
+    L.append("# HELP kube_deployment_metadata_generation Deployment generation")
+    L.append("# TYPE kube_deployment_metadata_generation gauge")
+    L.append("# HELP kube_daemonset_metadata_generation Daemonset generation")
+    L.append("# TYPE kube_daemonset_metadata_generation gauge")
+    L.append("# HELP kube_statefulset_metadata_generation Statefulset generation")
+    L.append("# TYPE kube_statefulset_metadata_generation gauge")
+    L.append("# HELP kube_node_spec_taint Node taint")
+    L.append("# TYPE kube_node_spec_taint gauge")
+    L.append("# HELP kube_pod_spec_volumes_persistentvolumeclaims_info PVC mounts")
+    L.append("# TYPE kube_pod_spec_volumes_persistentvolumeclaims_info gauge")
+    L.append(f'kube_namespace_created{{namespace="batch"}} {now - 86400:.0f}')
+    for ns, deps in DEPLOYMENTS.items():
+        for dep, _replicas in deps.items():
+            L.append(
+                f'kube_deployment_metadata_generation{{namespace="{ns}",deployment="{dep}"}} 1'
+            )
+    L.append(
+        'kube_daemonset_metadata_generation{namespace="kube-system",daemonset="kube-proxy"} 1'
+    )
+    L.append('kube_statefulset_metadata_generation{namespace="default",statefulset="web"} 1')
+    L.append('kube_node_spec_taint{node="node-1",key="node.kubernetes.io/unschedulable"} 1')
+    L.append('kube_node_spec_taint{node="node-2",key="dedicated"} 1')
+    idx = 0
+    for ns, pods in WORKLOADS.items():
+        for pod, container in pods:
+            n = _node_for(idx)
+            idx += 1
+            cgroup_id = f"/kubepods/{pod}/{container}"
+            base = (
+                f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",'
+                f'instance="{n}",node="{n}"'
+            )
+            mem = int((128 + 40 * (idx % 6)) * 1024**2)
+            L.append(f"container_memory_rss{{{base}}} {int(mem * 0.8)}")
+            L.append(f'container_fs_usage_bytes{{{base},device="/dev/sda1"}} {2 * 1024**3}')
+            L.append(f'container_fs_limit_bytes{{{base},device="/dev/sda1"}} {20 * 1024**3}')
+            L.append(f'kube_pod_created{{namespace="{ns}",pod="{pod}"}} {int(now - 3600 * idx)}')
+    L.append(
+        'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="default",pod="web-0",'
+        'persistentvolumeclaim="data"} 1'
+    )
+    bbase = (
+        'id="/kubepods/worker-0/worker",namespace="batch",pod="worker-0",container="worker",'
+        'image="registry/worker:latest",name="k8s_worker_worker-0",instance="node-1",node="node-1"'
+    )
+    L.append(f"container_cpu_usage_seconds_total{{{bbase}}} {elapsed * 0.8:.4f}")
+    L.append(f"container_memory_working_set_bytes{{{bbase}}} {2 * 1024**3}")
+    L.append(f"container_memory_rss{{{bbase}}} {int(1.5 * 1024**3)}")
+    L.append(f"container_spec_cpu_quota{{{bbase}}} 100000")
+    L.append(f"container_spec_cpu_period{{{bbase}}} 100000")
+    L.append(f"container_spec_memory_limit_bytes{{{bbase}}} {4 * 1024**3}")
+    # Pod network is on the sandbox cgroup with no container label, the way
+    # containerd's cAdvisor emits it.
+    sandbox = (
+        'id="/kubepods/worker-0",namespace="batch",pod="worker-0",'
+        'image="registry/pause:3.9",name="k8s_POD_worker-0",instance="node-1",node="node-1"'
+    )
+    L.append(f"container_network_receive_bytes_total{{{sandbox}}} {elapsed * 8000:.0f}")
+    L.append(f"container_network_transmit_bytes_total{{{sandbox}}} {elapsed * 4000:.0f}")
+    L.append(
+        'kube_pod_info{namespace="batch",pod="worker-0",node="node-1",'
+        'created_by_kind="ReplicaSet",created_by_name="worker"} 1'
+    )
+    L.append(
+        'kube_pod_container_info{namespace="batch",pod="worker-0",container="worker",'
+        'image="registry/worker:latest"} 1'
+    )
+    L.append(
+        'kube_pod_container_resource_requests{namespace="batch",pod="worker-0",container="worker",'
+        'node="node-1",resource="cpu",unit="core"} 0.5'
+    )
+    L.append(
+        f'kube_pod_container_resource_requests{{namespace="batch",pod="worker-0",container="worker",'
+        f'node="node-1",resource="memory",unit="byte"}} {1024**3}'
+    )
+    L.append(
+        'kube_pod_container_resource_limits{namespace="batch",pod="worker-0",container="worker",'
+        'node="node-1",resource="cpu",unit="core"} 2'
+    )
+    L.append(
+        f'kube_pod_container_resource_limits{{namespace="batch",pod="worker-0",container="worker",'
+        f'node="node-1",resource="memory",unit="byte"}} {4 * 1024**3}'
+    )
+    L.append(f'kube_pod_created{{namespace="batch",pod="worker-0"}} {int(now - 7200)}')
+
     return _stamp_cluster("\n".join(L))
 
 

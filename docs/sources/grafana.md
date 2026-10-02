@@ -493,6 +493,31 @@ off the request-latency chart. The cache hit ratio is hits divided by hits
 plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
 with the cache hit ratio.
 
+The K8S dashboard (15661) keeps node, namespace, container, and pod as exact
+matches. An empty control or `.*` is every value. The `origin_prometheus`
+selector is omitted, the same way a scrape `metrics_path` selector is omitted:
+that label is not a target field, so panels include every series and no
+control is emitted for it.
+CPU rates are `irate`. Memory, requests, and limits are last gauges. Tables
+and bars show each column's newest bucket that has a value, so an `irate` in a
+bucket with one sample does not blank the cell. Usage
+ratios divide by allocatable, and container CPU percent divides usage by
+`container_spec_cpu_quota / 100000`. Namespace charts keep the source
+thresholds, more than 0.5 cores and more than 1GiB of working set. The
+Cassandra heap series is omitted. cAdvisor reports pod network on the pod
+sandbox, not on app containers, so the source joins it onto containers with
+`group_right`. The pack does the same by grouping by pod: pod network sums
+every network series of the pod, and the Container control keeps pods that
+have a matching `kube_pod_container_info` series. In the pod table, restarts
+take their node from the pod's other series, as the source's `kube_pod_info`
+join does. Series that the source legends by pod alone add the container name,
+so a pod with two containers draws two lines. The untitled cluster stat is
+titled from its first legend, Workload, and the pack renames it Cluster counts.
+Per-key taint stats are folded into the normal-node count. With no other
+taints, Normal Node is the node count. The microservice row is expanded.
+Titles that contain `$Node` or `$NameSpace` are matched after Grafana's
+variable text is removed.
+
 The kubelet dashboard (12123) keeps the mixin counters as rates and the
 gauges as last values. Cluster is an exact match. Instance is an exact match,
 and an empty value or `.*` is every instance. The scrape `metrics_path`
