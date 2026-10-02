@@ -1,0 +1,182 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+#
+# Fidelity manifest — Grafana 15758 Kubernetes / Views / Namespaces (revision 46).
+
+schema_version: 1
+gnet_id: 15758
+gnet_revision: 46
+dashboard_title: "Kubernetes / Views / Namespaces"
+maintainer: "community"
+
+panels:
+  - title: "Namespace(s) usage on total cluster CPU in %"
+    panel_id: 46
+    grafana_type: gauge
+    kibana_type: gauge
+    fidelity: APPROXIMATE
+    notes: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile is the rate over the last hour of the dashboard range."
+    delta: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile is the rate over the last hour of the dashboard range."
+  - title: "Namespace(s) usage on total cluster RAM in %"
+    panel_id: 48
+    grafana_type: gauge
+    kibana_type: gauge
+    fidelity: APPROXIMATE
+    notes: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile is the latest working set in the last hour of the dashboard range."
+    delta: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile is the latest working set in the last hour of the dashboard range."
+  - title: "Kubernetes Resource Count"
+    panel_id: 32
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "One series per object the source legend names. Object types the target did not ingest are omitted. Horizontal Pod Autoscalers reads kube_hpa_labels, as the source does; kube-state-metrics v2 renamed it kube_horizontalpodautoscaler_labels, so on those clusters the series is omitted in Grafana and Kibana alike."
+    delta: "One series per object the source legend names. Object types the target did not ingest are omitted. Horizontal Pod Autoscalers reads kube_hpa_labels, as the source does; kube-state-metrics v2 renamed it kube_horizontalpodautoscaler_labels, so on those clusters the series is omitted in Grafana and Kibana alike."
+  - title: "Namespace(s) CPU Usage in cores"
+    panel_id: 62
+    grafana_type: stat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". Real is the rate over the last hour of the dashboard range; Requests, Limits, and Cluster Total are the latest values in that hour."
+    delta: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". Real is the rate over the last hour of the dashboard range; Requests, Limits, and Cluster Total are the latest values in that hour."
+  - title: "Namespace(s) RAM Usage in bytes"
+    panel_id: 64
+    grafana_type: stat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    notes: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile shows the latest values in the last hour of the dashboard range."
+    delta: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile shows the latest values in the last hour of the dashboard range."
+  - title: "CPU usage by Pod"
+    panel_id: 29
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Cores by pod. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name. The rate window follows the dashboard time range."
+    delta: "Cores by pod. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name. The rate window follows the dashboard time range."
+  - title: "Memory usage by Pod"
+    panel_id: 30
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Working set by pod. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name."
+    delta: "Working set by pod. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name."
+  - title: "CPU Throttled seconds by pod"
+    panel_id: 68
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Throttled seconds by pod, only pods above zero. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name."
+    delta: "Throttled seconds by pod, only pods above zero. Empty container names are omitted, standing in for image!=\"\". The owner control matches the start of the pod name."
+  - title: "Kubernetes Pods QoS classes"
+    panel_id: 70
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Pods by QoS class. The source total-pods line is the sum of these classes in Lens, so it is not drawn again."
+    delta: "Pods by QoS class. The source total-pods line is the sum of these classes in Lens, so it is not drawn again."
+  - title: "Kubernetes Pods Status Reason"
+    panel_id: 72
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Pods by status reason. The source query does not filter namespace, so the chart stays cluster-wide. When kube_pod_status_reason was not ingested, the panel names that missing metric instead of inventing a reason."
+  - title: "OOM Events by namespace, pod"
+    panel_id: 74
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+    delta: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+  - title: "Container Restarts by namespace, pod"
+    panel_id: 75
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+    delta: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+  - title: "Nb of pods by state"
+    panel_id: 5
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Ready and Running follow the owner prefix. Waiting, the current restart count, and Terminated stay on the namespace, as in the source. Restarts Total is the current counter value, not a rate."
+  - title: "Nb of containers by pod"
+    panel_id: 2
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Containers per pod. The owner control matches the start of the pod name."
+  - title: "Replicas available by deployment"
+    panel_id: 7
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Available replicas by deployment."
+  - title: "Replicas unavailable by deployment"
+    panel_id: 8
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Unavailable replicas by deployment. The source pod prefix is omitted because this gauge has no pod label, so a selected owner would hide every series."
+    delta: "Unavailable replicas by deployment. The source pod prefix is omitted because this gauge has no pod label, so a selected owner would hide every series."
+  - title: "Pods with unexpected status"
+    panel_id: 83
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "One series per pod whose phase is not Running or Succeeded. The source legend says deployment, and the query groups by pod."
+    delta: "One series per pod whose phase is not Running or Succeeded. The source legend says deployment, and the query groups by pod."
+  - title: "Container Image Used"
+    panel_id: 82
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Containers per image. Empty container names are omitted, standing in for image!=\"\". The series identity is pod and container. The owner control matches the start of the pod name."
+    delta: "Containers per image. Empty container names are omitted, standing in for image!=\"\". The series identity is pod and container. The owner control matches the start of the pod name."
+  - title: "Persistent Volumes - Capacity and usage in %"
+    panel_id: 65
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Used bytes divided by capacity, by namespace and claim, on a 0-1 scale."
+  - title: "Persistent Volumes - Capacity and usage in bytes"
+    panel_id: 66
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Used and capacity bytes, by namespace and claim."
+  - title: "Persistent Volumes - Inodes"
+    panel_id: 27
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Free inodes as one minus used divided by total, by claim, on a 0-1 scale."
+  - title: "Network - Bandwidth by pod"
+    panel_id: 78
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+  - title: "Network - Packets Rate by pod"
+    panel_id: 79
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+  - title: "Network - Packets Dropped by pod"
+    panel_id: 80
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+  - title: "Network - Errors by pod"
+    panel_id: 81
+    grafana_type: timeseries
+    kibana_type: line
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
