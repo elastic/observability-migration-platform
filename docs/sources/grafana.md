@@ -127,7 +127,11 @@ field-caps proved absent is stripped from the hand-written override so the
 rest of the panel can still render. Metrics listed in the pack's
 `live_optional_metrics` are expected omissions and are not reported as pack
 gaps; any other stripped metric is reported as "Target telemetry missing from
-curated override" and caps the panel at `migrated_with_warnings`. A presence
+curated override" and caps the panel at `migrated_with_warnings`. An override
+that leaves a source metric out on purpose (for example a PromQL `and on(...)`
+join with no ES|QL equivalent) lists it under `dropped_source_metrics` and
+explains the drop in `approximation_note`; the note caps the status, and the
+listed metric is not also reported as missing telemetry. A presence
 filter (`metric IS NOT NULL`) that was the only use of an absent metric does
 not leave a count of every series: when no remaining aggregation reads a
 metric, the panel becomes a missing-telemetry card. When stripping removes
@@ -410,6 +414,29 @@ they keep the source axis max of 1. The issue and unscheduled tables stay
 cluster-wide, as in the source queries. The job control filters restarts. It
 has no All option and defaults to `kube-state-metrics`, as in the source;
 clearing it shows every job.
+
+The namespace view (15758) measures the selected namespaces against the
+cluster. CPU and memory gauges divide namespace usage by
+`machine_cpu_cores` and `machine_memory_bytes` and stay on a 0–1 scale.
+The CPU and memory stats list Real, Requests, Limits, and Cluster Total.
+Requests and limits cannot express the PromQL `and on` running-pod join, so
+they use the namespace and cluster controls. Cluster Total does not follow
+the namespace selection. Series with an empty container name are omitted
+where the source filters `image!=""`. The owner control matches the start
+of the pod name, which is how the source uses `created_by_name` on cAdvisor
+series that have no owner label. Ready and Running follow that owner;
+Waiting, the current restart count, and Terminated stay on the namespace.
+Unavailable replicas ignore the owner prefix because that gauge has no pod
+label. Unexpected phases are one series per pod; the source legend says
+deployment and the query groups by pod. Status reason stays cluster-wide.
+The QoS chart does not draw the total-pods line again, because that line is
+the sum of the classes. Received traffic is positive and transmitted is
+negative. Persistent-volume percent and free inodes stay on a 0–1 scale.
+An empty namespace or owner selection, including Grafana's All value `.*`,
+is every value. Object types the target did not ingest are left off the
+resource count. When `kube_pod_status_reason` was not ingested, the panel names that
+missing metric instead of inventing a reason. The `resolution` variable is a scrape step; chart buckets follow the
+dashboard time range.
 
 The global view (15757) turns the CPU and memory bargauges into Real,
 Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
