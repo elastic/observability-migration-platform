@@ -516,6 +516,50 @@ def test_curated_override_downgrades_when_source_metric_dropped():
     ), result.reasons
 
 
+def test_curated_override_declared_dropped_metric_is_not_a_telemetry_gap():
+    """A source metric the pack lists in ``dropped_source_metrics`` was left out
+    on purpose (e.g. an ``and on`` join) and is disclosed by the approximation
+    note, so it must not also be reported as missing target telemetry."""
+    rule_pack = RulePackConfig(
+        panel_query_overrides=[
+            {
+                "title_match": "Two Series",
+                "esql_query": (
+                    "TS metrics-*\n"
+                    "| WHERE {{metric:foo_total:counter}} IS NOT NULL\n"
+                    "| STATS value = MAX(LAST_OVER_TIME({{metric:foo_total:counter}}))\n"
+                    "| KEEP value"
+                ),
+                "status_override": "migrated",
+                "approximation_note": "The bar_total join is dropped.",
+                "dropped_source_metrics": ["bar_total"],
+            }
+        ]
+    )
+    resolver = SchemaResolver(rule_pack)
+    resolver._field_cache = {
+        "foo_total": {"double": {"type": "double"}},
+        "bar_total": {"double": {"type": "double"}},
+    }
+    resolver._discovery_attempted = True
+    resolver._discovery_status = "ok"
+
+    panel = {
+        "type": "gauge",
+        "title": "Two Series",
+        "targets": [
+            {"expr": "foo_total", "refId": "A"},
+            {"expr": "bar_total", "refId": "B"},
+        ],
+    }
+
+    _yaml_panel, result = translate_panel(panel, rule_pack=rule_pack, resolver=resolver)
+
+    assert result.status == "migrated_with_warnings", result.reasons
+    assert "The bar_total join is dropped." in result.reasons
+    assert not any("curated override" in reason for reason in result.reasons), result.reasons
+
+
 def test_curated_override_status_ceiling_not_downgraded_when_no_gap():
     """Sanity companion: when the override legitimately covers every source
     metric, ``status_override: migrated`` must NOT be downgraded."""

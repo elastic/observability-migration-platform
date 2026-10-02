@@ -127,7 +127,11 @@ field-caps proved absent is stripped from the hand-written override so the
 rest of the panel can still render. Metrics listed in the pack's
 `live_optional_metrics` are expected omissions and are not reported as pack
 gaps; any other stripped metric is reported as "Target telemetry missing from
-curated override" and caps the panel at `migrated_with_warnings`. A presence
+curated override" and caps the panel at `migrated_with_warnings`. An override
+that leaves a source metric out on purpose (for example a PromQL `and on(...)`
+join with no ES|QL equivalent) lists it under `dropped_source_metrics` and
+explains the drop in `approximation_note`; the note caps the status, and the
+listed metric is not also reported as missing telemetry. A presence
 filter (`metric IS NOT NULL`) that was the only use of an absent metric does
 not leave a count of every series: when no remaining aggregation reads a
 metric, the panel becomes a missing-telemetry card. When stripping removes

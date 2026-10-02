@@ -17,36 +17,36 @@ panels:
     grafana_type: gauge
     kibana_type: gauge
     fidelity: APPROXIMATE
-    notes: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
-    delta: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
+    notes: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile is the rate over the last hour of the dashboard range."
+    delta: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile is the rate over the last hour of the dashboard range."
   - title: "Namespace(s) usage on total cluster RAM in %"
     panel_id: 48
     grafana_type: gauge
     kibana_type: gauge
     fidelity: APPROXIMATE
-    notes: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
-    delta: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
+    notes: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile is the latest working set in the last hour of the dashboard range."
+    delta: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile is the latest working set in the last hour of the dashboard range."
   - title: "Kubernetes Resource Count"
     panel_id: 32
     grafana_type: timeseries
     kibana_type: line
     fidelity: APPROXIMATE
-    notes: "One series per object the source legend names. Object types the target did not ingest are omitted."
-    delta: "One series per object the source legend names. Object types the target did not ingest are omitted."
+    notes: "One series per object the source legend names. Object types the target did not ingest are omitted. Horizontal Pod Autoscalers reads kube_hpa_labels, as the source does; kube-state-metrics v2 renamed it kube_horizontalpodautoscaler_labels, so on those clusters the series is omitted in Grafana and Kibana alike."
+    delta: "One series per object the source legend names. Object types the target did not ingest are omitted. Horizontal Pod Autoscalers reads kube_hpa_labels, as the source does; kube-state-metrics v2 renamed it kube_horizontalpodautoscaler_labels, so on those clusters the series is omitted in Grafana and Kibana alike."
   - title: "Namespace(s) CPU Usage in cores"
     panel_id: 62
     grafana_type: stat
     kibana_type: metric
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
-    delta: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
+    notes: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". Real is the rate over the last hour of the dashboard range; Requests, Limits, and Cluster Total are the latest values in that hour."
+    delta: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". Real is the rate over the last hour of the dashboard range; Requests, Limits, and Cluster Total are the latest values in that hour."
   - title: "Namespace(s) RAM Usage in bytes"
     panel_id: 64
     grafana_type: stat
     kibana_type: metric
     fidelity: APPROXIMATE
-    notes: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
-    delta: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
+    notes: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile shows the latest values in the last hour of the dashboard range."
+    delta: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile shows the latest values in the last hour of the dashboard range."
   - title: "CPU usage by Pod"
     panel_id: 29
     grafana_type: timeseries
@@ -85,14 +85,16 @@ panels:
     panel_id: 74
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Increase over the dashboard time range, by namespace and pod, only series above zero."
+    fidelity: APPROXIMATE
+    notes: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+    delta: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
   - title: "Container Restarts by namespace, pod"
     panel_id: 75
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Increase over the dashboard time range, by namespace and pod, only series above zero."
+    fidelity: APPROXIMATE
+    notes: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
+    delta: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
   - title: "Nb of pods by state"
     panel_id: 5
     grafana_type: timeseries
@@ -154,23 +156,27 @@ panels:
     panel_id: 78
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source."
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
   - title: "Network - Packets Rate by pod"
     panel_id: 79
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source."
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
   - title: "Network - Packets Dropped by pod"
     panel_id: 80
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source."
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
   - title: "Network - Errors by pod"
     panel_id: 81
     grafana_type: timeseries
     kibana_type: line
-    fidelity: PERFECT
-    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source."
+    fidelity: APPROXIMATE
+    notes: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
+    delta: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."

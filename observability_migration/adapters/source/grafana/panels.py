@@ -4542,6 +4542,18 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         _dropped_curated_metrics = _source_metrics_absent_from_query(
                             _source_target_exprs, _emitted_query, resolver
                         )
+                        # The pack declared these drops and disclosed them in
+                        # approximation_note; they are not a telemetry gap.
+                        _declared_dropped = {
+                            str(name).strip()
+                            for name in _override.get("dropped_source_metrics") or []
+                            if str(name).strip()
+                        }
+                        _dropped_curated_metrics = [
+                            metric
+                            for metric in _dropped_curated_metrics
+                            if metric not in _declared_dropped
+                        ]
                         # live_optional_metrics already stripped these because
                         # field-caps proved them absent. Re-flagging them as a
                         # pack omission fights that design and yellows panels

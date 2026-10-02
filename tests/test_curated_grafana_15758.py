@@ -1,5 +1,4 @@
-# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
-# or more contributor license agreements.
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
 # SPDX-License-Identifier: Elastic-2.0
 
 """Curated pack for Grafana 15758 Kubernetes / Views / Namespaces."""
@@ -123,8 +122,10 @@ def test_15758_cpu_gauge_divides_namespace_usage_by_cluster_cores():
     assert "denom = SUM(LAST_OVER_TIME(machine_cpu_cores))" in query
     assert "busy / denom" in query
     assert "* 100" not in query
-    assert "TBUCKET(30 minutes)" in query
-    assert "?_tend - 1 hour" in query
+    # One window over the last hour: a clock-aligned partial bucket would
+    # divide its RATE by the full bucket span and read low.
+    assert "TBUCKET" not in query
+    assert "@timestamp > ?_tend - 1 hour" in query
     assert yaml_panel["esql"]["type"] == "gauge"
     assert yaml_panel["esql"]["metric"]["format"]["type"] == "percent"
     assert yaml_panel["esql"]["minimum"]["field"] == "_gauge_min"
@@ -292,3 +293,45 @@ def test_15758_overview_layout_matches_the_kibana_grid():
     assert "resolution" not in controls
     errors = dashboard_schema_errors(yaml_dict["panels"])
     assert errors == [], errors
+
+
+def test_15758_dropped_joins_are_declared_on_the_override():
+    resolved, _resolver = _resolve()
+    by_id = {
+        int(row["panel_id"]): row
+        for row in resolved.panel_query_overrides
+        if row.get("panel_id") is not None
+    }
+    assert by_id[62]["dropped_source_metrics"] == ["kube_pod_status_phase"]
+    assert by_id[64]["dropped_source_metrics"] == ["kube_pod_status_phase"]
+    assert by_id[70]["dropped_source_metrics"] == ["kube_pod_info"]
+    for panel_id in (62, 64, 70):
+        assert by_id[panel_id].get("approximation_note")
+
+
+def test_15758_image_count_collapses_owner_duplicates_before_counting():
+    _result, query, _yaml_panel = _translate(_panel(82, "Container Image Used", "timeseries"))
+    expand = query.index("MV_EXPAND __owner")
+    dedupe = query.index("STATS sample = MAX(sample) BY time_bucket", expand)
+    count = query.index("STATS containers = COUNT(", expand)
+    assert expand < dedupe < count
+
+
+def test_15758_bucket_windowed_counters_are_disclosed():
+    for panel_id, title in (
+        (74, "OOM Events by namespace, pod"),
+        (75, "Container Restarts by namespace, pod"),
+        (78, "Network - Bandwidth by pod"),
+        (81, "Network - Errors by pod"),
+    ):
+        result, _query, _yaml_panel = _translate(_panel(panel_id, title, "timeseries"))
+        assert result.status == "migrated_with_warnings", (title, result.reasons)
+        assert any("follows the dashboard time range" in reason for reason in result.reasons)
+
+
+def test_15758_stat_tiles_filter_namespace_once():
+    _result, query, _yaml_panel = _translate(
+        _panel(62, "Namespace(s) CPU Usage in cores", "stat")
+    )
+    assert query.count("MV_COUNT(?namespace)") == 1
+    assert "machine_cpu_cores IS NOT NULL OR (MV_COUNT(?namespace) == 0" in query

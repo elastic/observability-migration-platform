@@ -87,34 +87,34 @@ panel:
     - title_match: "Namespace(s) usage on total cluster CPU in %"
       panel_id: 46
       kibana_type_override: gauge
-      approximation_note: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
+      approximation_note: "Namespace CPU rate divided by cluster machine_cpu_cores, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator is every node and does not follow the namespace selection. The tile is the rate over the last hour of the dashboard range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp > ?_tend - 1 hour
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:machine_cpu_cores:gauge}} IS NOT NULL
-        | STATS busy = SUM(CASE({{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} != "" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), denom = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(30 minutes)
-        | WHERE time_bucket >= ?_tend - 1 hour
+        | WHERE {{metric:machine_cpu_cores:gauge}} IS NOT NULL OR (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}}))
+        | STATS busy = SUM(CASE({{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} != "", RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), denom = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}}))
         | EVAL computed_value = CASE(denom > 0, busy / denom, NULL)
-        | STATS computed_value = AVG(computed_value)
         | KEEP computed_value
     - title_match: "Namespace(s) usage on total cluster RAM in %"
       panel_id: 48
       kibana_type_override: gauge
-      approximation_note: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile averages 30-minute buckets over the last hour."
+      approximation_note: "Namespace working set divided by cluster machine_memory_bytes, on a 0-1 scale. Empty container names are omitted, standing in for image!=\"\". The denominator does not follow the namespace selection. The tile is the latest working set in the last hour of the dashboard range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp > ?_tend - 1 hour
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
-        | STATS busy = SUM(CASE({{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} != "" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), denom = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(30 minutes)
-        | WHERE time_bucket >= ?_tend - 1 hour
+        | WHERE {{metric:machine_memory_bytes:gauge}} IS NOT NULL OR (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}}))
+        | STATS busy = SUM(CASE({{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), denom = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}}))
         | EVAL computed_value = CASE(denom > 0, busy / denom, NULL)
-        | STATS computed_value = AVG(computed_value)
         | KEEP computed_value
     - title_match: "Kubernetes Resource Count"
       panel_id: 32
-      approximation_note: "One series per object the source legend names. Object types the target did not ingest are omitted."
+      approximation_note: "One series per object the source legend names. Object types the target did not ingest are omitted. Horizontal Pod Autoscalers reads kube_hpa_labels, as the source does; kube-state-metrics v2 renamed it kube_horizontalpodautoscaler_labels, so on those clusters the series is omitted in Grafana and Kibana alike."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -127,15 +127,17 @@ panel:
     - title_match: "Namespace(s) CPU Usage in cores"
       panel_id: 62
       kibana_type_override: metric
-      approximation_note: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
+      approximation_note: "Real, Requests, Limits, and Cluster Total in cores. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_cpu_cores and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". Real is the rate over the last hour of the dashboard range; Requests, Limits, and Cluster Total are the latest values in that hour."
+      dropped_source_metrics:
+        - kube_pod_status_phase
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp > ?_tend - 1 hour
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_cpu_cores:gauge}} IS NOT NULL
-        | STATS real = SUM(CASE({{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} != "" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), requests = SUM(CASE({{label:resource}} == "cpu" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), shown_total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}})) BY time_bucket = TBUCKET(30 minutes)
-        | WHERE time_bucket >= ?_tend - 1 hour
-        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), shown_total = AVG(shown_total)
+        | WHERE {{metric:machine_cpu_cores:gauge}} IS NOT NULL OR (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}}))
+        | STATS real = SUM(CASE({{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL AND {{label:container}} != "", RATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), requests = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), shown_total = SUM(LAST_OVER_TIME({{metric:machine_cpu_cores:gauge}}))
         | EVAL __ab = MV_APPEND("Real", "Requests"), __cd = MV_APPEND("Limits", "Cluster Total")
         | EVAL __labels = MV_APPEND(__ab, __cd)
         | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(shown_total), ""))
@@ -148,15 +150,17 @@ panel:
     - title_match: "Namespace(s) RAM Usage in bytes"
       panel_id: 64
       kibana_type_override: metric
-      approximation_note: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile averages 30-minute buckets over the last hour."
+      approximation_note: "Real, Requests, Limits, and Cluster Total in bytes. Requests and limits drop the PromQL and-on running-pod join. Cluster Total is machine_memory_bytes and does not follow the namespace selection. Empty container names are omitted on Real, standing in for image!=\"\". The tile shows the latest values in the last hour of the dashboard range."
+      dropped_source_metrics:
+        - kube_pod_status_phase
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE @timestamp > ?_tend - 1 hour
         | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:machine_memory_bytes:gauge}} IS NOT NULL
-        | STATS real = SUM(CASE({{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} != "" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory" AND (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}})), LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), shown_total = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}})) BY time_bucket = TBUCKET(30 minutes)
-        | WHERE time_bucket >= ?_tend - 1 hour
-        | STATS real = AVG(real), requests = AVG(requests), limits = AVG(limits), shown_total = AVG(shown_total)
+        | WHERE {{metric:machine_memory_bytes:gauge}} IS NOT NULL OR (MV_COUNT(?namespace) == 0 OR MV_CONTAINS(TO_STRING(?namespace), ".*") OR MV_CONTAINS(TO_STRING(?namespace), {{label:namespace}}))
+        | STATS real = SUM(CASE({{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL AND {{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), shown_total = SUM(LAST_OVER_TIME({{metric:machine_memory_bytes:gauge}}))
         | EVAL __ab = MV_APPEND("Real", "Requests"), __cd = MV_APPEND("Limits", "Cluster Total")
         | EVAL __labels = MV_APPEND(__ab, __cd)
         | EVAL __vab = MV_APPEND(COALESCE(TO_STRING(real), ""), COALESCE(TO_STRING(requests), "")), __vcd = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(shown_total), ""))
@@ -227,6 +231,8 @@ panel:
     - title_match: "Kubernetes Pods QoS classes"
       panel_id: 70
       approximation_note: "Pods by QoS class. The source total-pods line is the sum of these classes in Lens, so it is not drawn again."
+      dropped_source_metrics:
+        - kube_pod_info
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -252,6 +258,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "OOM Events by namespace, pod"
       panel_id: 74
+      approximation_note: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -266,6 +273,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Container Restarts by namespace, pod"
       panel_id: 75
+      approximation_note: "Increase per chart bucket, by namespace and pod, only series above zero. The increase window follows the dashboard time range instead of the Grafana rate interval, so wider ranges show larger per-point increases."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -370,6 +378,7 @@ panel:
         | EVAL __owner = CASE(__pass_all, "", ?created_by)
         | MV_EXPAND __owner
         | WHERE __pass_all OR STARTS_WITH(TO_STRING({{label:pod}}), TO_STRING(__owner))
+        | STATS sample = MAX(sample) BY time_bucket, {{label:image}}, {{label:pod}}, {{label:container}}
         | STATS containers = COUNT({{label:pod}}) BY time_bucket, {{label:image}}
         | EVAL image = {{label:image}}
         | STATS containers = AVG(containers) BY time_bucket, image
@@ -418,6 +427,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Network - Bandwidth by pod"
       panel_id: 78
+      approximation_note: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -436,6 +446,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Network - Packets Rate by pod"
       panel_id: 79
+      approximation_note: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -454,6 +465,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Network - Packets Dropped by pod"
       panel_id: 80
+      approximation_note: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -472,6 +484,7 @@ panel:
         | SORT time_bucket ASC
     - title_match: "Network - Errors by pod"
       panel_id: 81
+      approximation_note: "Received is positive and transmitted is negative, by pod. The owner control matches the start of the pod name. Network series are not filtered by container, matching the source. The rate window follows the dashboard time range."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend

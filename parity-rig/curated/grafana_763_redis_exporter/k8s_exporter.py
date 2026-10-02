@@ -24,6 +24,7 @@
 # `OutOfDisk` node condition is deliberately NOT emitted (removed in k8s 1.12) so
 # the 6417 "Nodes Out of Disk" panel stays an honest empty gap.
 
+import re
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -42,6 +43,8 @@ DEPLOYMENTS = {
 }
 
 _START = time.time()
+# The ``cluster`` label itself, not a suffix such as ``kube_cluster="..."``.
+_HAS_CLUSTER_LABEL = re.compile(r'[{,]cluster="')
 
 
 def _node_for(idx: int) -> str:
@@ -56,7 +59,7 @@ def _stamp_cluster(body: str) -> str:
     """
     stamped: list[str] = []
     for line in body.splitlines():
-        if not line or line.startswith("#") or 'cluster="' in line:
+        if not line or line.startswith("#") or _HAS_CLUSTER_LABEL.search(line):
             stamped.append(line)
             continue
         if "{" in line:
@@ -106,10 +109,8 @@ def _append_namespace_objects(lines: list[str]) -> None:
                 typed.add(metric)
             for name in names:
                 lines.append(f'{metric}{{namespace="{ns}",{label}="{name}"}} 1')
-        if "kube_deployment_labels" not in typed:
-            lines.append("# HELP kube_deployment_labels Kubernetes labels converted to Prometheus labels")
-            lines.append("# TYPE kube_deployment_labels gauge")
-            typed.add("kube_deployment_labels")
+    lines.append("# HELP kube_deployment_labels Kubernetes labels converted to Prometheus labels")
+    lines.append("# TYPE kube_deployment_labels gauge")
     for ns, deps in DEPLOYMENTS.items():
         for name in deps:
             lines.append(f'kube_deployment_labels{{namespace="{ns}",deployment="{name}"}} 1')
