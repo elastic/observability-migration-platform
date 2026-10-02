@@ -10690,7 +10690,19 @@ def _expand_repeat_panels(
         for v in (dashboard.get("templating", {}).get("list") or [])
         if isinstance(v, dict) and v.get("name")
     }
-    if not variables:
+    # Grafana saves the clones it rendered for a repeat as extra panels with
+    # ``repeatPanelId`` pointing at the template. Grafana discards and rebuilds
+    # them on load, so translating them would only duplicate the template (or
+    # the fresh clones built below). Row-repeat clones are left alone because
+    # row repeats are not rebuilt here.
+    repeat_template_ids = {
+        panel.get("id")
+        for panel in _flatten_dashboard_panels(dashboard)
+        if panel.get("type") != "row"
+        and _repeat_variable_name(panel.get("repeat"))
+        and panel.get("id") is not None
+    }
+    if not variables and not repeat_template_ids:
         # No variables -> no repeats can resolve; cheap-skip.
         return dashboard
 
@@ -10717,6 +10729,14 @@ def _expand_repeat_panels(
                 new_panel = dict(panel)
                 new_panel["panels"] = expand_panels(panel["panels"])
                 out.append(new_panel)
+                continue
+
+            if (
+                panel.get("type") != "row"
+                and not panel.get("repeatedByRow")
+                and not _repeat_variable_name(panel.get("repeat"))
+                and panel.get("repeatPanelId") in repeat_template_ids
+            ):
                 continue
 
             repeat_name = _repeat_variable_name(panel.get("repeat"))

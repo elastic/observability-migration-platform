@@ -209,6 +209,15 @@ packs:
     dashboard_sha256: "ad674d50a254959cf652638cf0d1d0a7a8706f17a803468f0613fbc206c5a3bd"
     description: "Cluster volume usage — fill-in-a-week slope, PVC percent table, hourly/daily/weekly rates, KSM phase counts"
 
+  - gnet_id: 11455
+    name: grafana_11455_k8s_storage_volumes_namespace
+    title_hint: "K8s / Storage / Volumes / Namespace"
+    tags_hint: ["openshift", "k8s", "storage"]
+    path: grafana_11455_k8s_storage_volumes_namespace
+    gnet_revision: 6
+    dashboard_sha256: "f655d91f4137a9afa64a05a7df5775d432340ee02413b420c1fc8f9ad175ac1d"
+    description: "Namespace volume usage — fill-in-a-week slope, 80% PVC table, hourly/daily/weekly rates, KSM phase counts"
+
   - gnet_id: 12660
     name: grafana_12660_k8s_persistent_volumes
     title_hint: "Kubernetes / Persistent Volumes"

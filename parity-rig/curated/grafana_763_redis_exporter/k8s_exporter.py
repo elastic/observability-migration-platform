@@ -72,7 +72,7 @@ def _stamp_cluster(body: str) -> str:
 
 
 def _append_namespace_objects(lines: list[str]) -> None:
-    """kube-state-metrics info gauges and kubelet volume stats for dashboard 15758.
+    """kube-state-metrics info gauges for dashboard 15758.
 
     One series per object, with the labels those collectors actually publish.
     """
@@ -81,7 +81,7 @@ def _append_namespace_objects(lines: list[str]) -> None:
             "kube_service_info": ("service", ("web", "cache")),
             "kube_ingress_info": ("ingress", ("web",)),
             "kube_statefulset_labels": ("statefulset", ("cache",)),
-            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data",)),
+            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data", "logs", "pending")),
             "kube_hpa_labels": ("horizontalpodautoscaler", ("web",)),
             "kube_configmap_info": ("configmap", ("web",)),
             "kube_secret_info": ("secret", ("web",)),
@@ -114,20 +114,6 @@ def _append_namespace_objects(lines: list[str]) -> None:
     for ns, deps in DEPLOYMENTS.items():
         for name in deps:
             lines.append(f'kube_deployment_labels{{namespace="{ns}",deployment="{name}"}} 1')
-    lines.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
-    lines.append("# TYPE kubelet_volume_stats_capacity_bytes gauge")
-    lines.append("# HELP kubelet_volume_stats_used_bytes Volume bytes used")
-    lines.append("# TYPE kubelet_volume_stats_used_bytes gauge")
-    lines.append("# HELP kubelet_volume_stats_inodes Volume inode count")
-    lines.append("# TYPE kubelet_volume_stats_inodes gauge")
-    lines.append("# HELP kubelet_volume_stats_inodes_used Volume inodes used")
-    lines.append("# TYPE kubelet_volume_stats_inodes_used gauge")
-    for ns in ("default", "staging"):
-        claim = f'namespace="{ns}",persistentvolumeclaim="data"'
-        lines.append(f"kubelet_volume_stats_capacity_bytes{{{claim}}} {10 * 1024**3}")
-        lines.append(f"kubelet_volume_stats_used_bytes{{{claim}}} {4 * 1024**3}")
-        lines.append(f"kubelet_volume_stats_inodes{{{claim}}} 1000000")
-        lines.append(f"kubelet_volume_stats_inodes_used{{{claim}}} 250000")
 
 
 def render() -> str:
@@ -477,9 +463,59 @@ def render() -> str:
         L.append(f"node_filesystem_size_bytes{{{labels}}} {(100 * 1024**3)}")
         L.append(f"node_filesystem_free_bytes{{{labels}}} {((60 - 5) * 1024**3)}")
 
-    # Grafana 15758 resource-count and volume panels. Names, labels, and types
-    # match kube-state-metrics and the kubelet volume stats collector.
+    # Grafana 15758 resource-count panels. Names, labels, and types match
+    # kube-state-metrics.
     _append_namespace_objects(L)
+
+    # ---- kubelet volume stats + PVC phase (Grafana 11455, 15758) -------
+    # Real exporter names. `data` in default grows fast enough that a short
+    # scrape window still projects full within a week, and its capacity is
+    # expanded as it fills (free space stays at 1.5 GiB) so the projection and
+    # the rate panels hold however long the exporter runs. `data` and `logs` in
+    # default sit above the 80% warning line; `data` in staging is flat and
+    # below it. `pending` has an info series and a phase but no kubelet stats.
+    L.append("# HELP kube_namespace_created Unix time the namespace was created")
+    L.append("# TYPE kube_namespace_created gauge")
+    L.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
+    L.append("# TYPE kubelet_volume_stats_capacity_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_used_bytes Volume bytes used")
+    L.append("# TYPE kubelet_volume_stats_used_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_available_bytes Volume bytes available")
+    L.append("# TYPE kubelet_volume_stats_available_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_inodes Volume inode count")
+    L.append("# TYPE kubelet_volume_stats_inodes gauge")
+    L.append("# HELP kubelet_volume_stats_inodes_used Volume inodes used")
+    L.append("# TYPE kubelet_volume_stats_inodes_used gauge")
+    L.append("# HELP kube_persistentvolumeclaim_status_phase PVC phase flag")
+    L.append("# TYPE kube_persistentvolumeclaim_status_phase gauge")
+    for ns in ("default", "staging", "kube-system"):
+        L.append(f'kube_namespace_created{{namespace="{ns}"}} {now - 86400:.0f}')
+    # (namespace, claim, capacity, used at start, bytes/s, phase); capacity
+    # None means the volume is expanded to keep 1.5 GiB free.
+    claims = (
+        ("default", "data", None, 8 * 1024**3, 500_000, "Bound"),
+        ("default", "logs", 10 * 1024**3, int(9.2 * 1024**3), 1_000, "Bound"),
+        ("staging", "data", 10 * 1024**3, 4 * 1024**3, 0, "Bound"),
+    )
+    for ns, claim, capacity, used_base, per_sec, phase in claims:
+        used = used_base + int(elapsed * per_sec)
+        if capacity is None:
+            capacity = used + int(1.5 * 1024**3)
+        else:
+            used = min(used, capacity - 100 * 1024**2)
+        available = capacity - used
+        labels = f'namespace="{ns}",persistentvolumeclaim="{claim}",node="node-1"'
+        L.append(f"kubelet_volume_stats_capacity_bytes{{{labels}}} {capacity}")
+        L.append(f"kubelet_volume_stats_used_bytes{{{labels}}} {used}")
+        L.append(f"kubelet_volume_stats_available_bytes{{{labels}}} {available}")
+        L.append(f"kubelet_volume_stats_inodes{{{labels}}} 1000000")
+        L.append(f"kubelet_volume_stats_inodes_used{{{labels}}} 250000")
+        L.append(
+            f'kube_persistentvolumeclaim_status_phase{{namespace="{ns}",persistentvolumeclaim="{claim}",phase="{phase}"}} 1'
+        )
+    L.append(
+        'kube_persistentvolumeclaim_status_phase{namespace="default",persistentvolumeclaim="pending",phase="Pending"} 1'
+    )
     return _stamp_cluster("\n".join(L))
 
 
