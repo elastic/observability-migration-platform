@@ -209,6 +209,15 @@ packs:
     dashboard_sha256: "ad674d50a254959cf652638cf0d1d0a7a8706f17a803468f0613fbc206c5a3bd"
     description: "Cluster volume usage — fill-in-a-week slope, PVC percent table, hourly/daily/weekly rates, KSM phase counts"
 
+  - gnet_id: 11455
+    name: grafana_11455_k8s_storage_volumes_namespace
+    title_hint: "K8s / Storage / Volumes / Namespace"
+    tags_hint: ["openshift", "k8s", "storage"]
+    path: grafana_11455_k8s_storage_volumes_namespace
+    gnet_revision: 6
+    dashboard_sha256: "f655d91f4137a9afa64a05a7df5775d432340ee02413b420c1fc8f9ad175ac1d"
+    description: "Namespace volume usage — fill-in-a-week slope, 80% PVC table, hourly/daily/weekly rates, KSM phase counts"
+
   - gnet_id: 12660
     name: grafana_12660_k8s_persistent_volumes
     title_hint: "Kubernetes / Persistent Volumes"
@@ -253,6 +262,15 @@ packs:
     gnet_revision: 43
     dashboard_sha256: "d859386ea6505791f5eca2804fab2922c06b03a0473019177a4ac5784f43bd4c"
     description: "Global view — Real/Requests/Limits tiles, resource counts, namespace and instance charts, mirrored network"
+
+  - gnet_id: 15758
+    name: grafana_15758_k8s_views_namespaces
+    title_hint: "Kubernetes / Views / Namespaces"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15758_k8s_views_namespaces
+    gnet_revision: 46
+    dashboard_sha256: "2d970440c28ca6b674fb497f4f38ce2ee89effccb9e784447bf4450ca37aa0a8"
+    description: "Namespace view — cluster usage ratios, owner-prefixed pod charts, volume bytes, mirrored network"
 
   - gnet_id: 13646
     name: grafana_13646_k8s_persistent_volumes

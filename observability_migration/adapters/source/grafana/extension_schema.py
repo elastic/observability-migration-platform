@@ -109,6 +109,12 @@ class PanelQueryOverrideModel(_StrictModel):
     # deliberately-approximate override (e.g. cross-host system aggregation) is
     # never reported as a clean ``migrated`` (project rule: never hide a gap).
     approximation_note: str | None = None
+    # Source metrics the override deliberately does not read (e.g. a PromQL
+    # ``and on(...)`` join with no ES|QL equivalent). The approximation_note
+    # must disclose the drop; listing the metric here stops the engine from
+    # also reporting it as "Target telemetry missing", which would tell the
+    # operator to ingest a metric the pack never queries.
+    dropped_source_metrics: list[str] = Field(default_factory=list)
 
 
 class PanelPositionOverrideModel(_StrictModel):

@@ -306,6 +306,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["primary_format"] = override.primary_format
             if override.approximation_note:
                 entry["approximation_note"] = override.approximation_note
+            if override.dropped_source_metrics:
+                entry["dropped_source_metrics"] = list(override.dropped_source_metrics)
             pack.panel_query_overrides.append(entry)
         for override in panel_cfg.layout_overrides:
             entry = {
