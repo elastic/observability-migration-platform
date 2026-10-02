@@ -310,7 +310,7 @@ def render() -> str:
             )
             restarts = int(elapsed / 600) + (idx % 3)
             L.append(
-                f'kube_pod_container_status_restarts_total{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}"}} {restarts}'
+                f'kube_pod_container_status_restarts_total{{namespace="{ns}",pod="{pod}",container="{container}"}} {restarts}'
             )
             L.append(
                 f'kube_pod_container_resource_requests{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="cpu",unit="core"}} 0.25'
@@ -668,8 +668,14 @@ def render() -> str:
     L.append(f"container_spec_cpu_quota{{{bbase}}} 100000")
     L.append(f"container_spec_cpu_period{{{bbase}}} 100000")
     L.append(f"container_spec_memory_limit_bytes{{{bbase}}} {4 * 1024**3}")
-    L.append(f"container_network_receive_bytes_total{{{bbase}}} {elapsed * 8000:.0f}")
-    L.append(f"container_network_transmit_bytes_total{{{bbase}}} {elapsed * 4000:.0f}")
+    # Pod network is on the sandbox cgroup with no container label, the way
+    # containerd's cAdvisor emits it.
+    sandbox = (
+        'id="/kubepods/worker-0",namespace="batch",pod="worker-0",'
+        'image="registry/pause:3.9",name="k8s_POD_worker-0",instance="node-1",node="node-1"'
+    )
+    L.append(f"container_network_receive_bytes_total{{{sandbox}}} {elapsed * 8000:.0f}")
+    L.append(f"container_network_transmit_bytes_total{{{sandbox}}} {elapsed * 4000:.0f}")
     L.append(
         'kube_pod_info{namespace="batch",pod="worker-0",node="node-1",'
         'created_by_kind="ReplicaSet",created_by_name="worker"} 1'

@@ -76,9 +76,10 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS util_n = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS util_n = SUM(CASE({{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), alloc = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL util = CASE(alloc > 0, util_n / alloc, NULL), request = CASE(alloc > 0, req / alloc, NULL), limit_ratio = CASE(alloc > 0, lim / alloc, NULL)
-        | STATS util = LAST(util, time_bucket), request = LAST(request, time_bucket), limit_ratio = LAST(limit_ratio, time_bucket)
+        | EVAL __t_util = CASE(util IS NOT NULL, time_bucket, NULL), __t_request = CASE(request IS NOT NULL, time_bucket, NULL), __t_limit_ratio = CASE(limit_ratio IS NOT NULL, time_bucket, NULL)
+        | STATS util = LAST(util, __t_util), request = LAST(request, __t_request), limit_ratio = LAST(limit_ratio, __t_limit_ratio)
         | EVAL __labels = MV_APPEND(MV_APPEND("Memory Utilization", "Memory Request Rate"), "Memory Limit Rate")
         | EVAL __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(util), ""), COALESCE(TO_STRING(request), "")), COALESCE(TO_STRING(limit_ratio), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -93,9 +94,10 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS util_n = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), alloc = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS util_n = SUM(CASE({{label:container}} != "", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), alloc = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL util = CASE(alloc > 0, util_n / alloc, NULL), request = CASE(alloc > 0, req / alloc, NULL), limit_ratio = CASE(alloc > 0, lim / alloc, NULL)
-        | STATS util = LAST(util, time_bucket), request = LAST(request, time_bucket), limit_ratio = LAST(limit_ratio, time_bucket)
+        | EVAL __t_util = CASE(util IS NOT NULL, time_bucket, NULL), __t_request = CASE(request IS NOT NULL, time_bucket, NULL), __t_limit_ratio = CASE(limit_ratio IS NOT NULL, time_bucket, NULL)
+        | STATS util = LAST(util, __t_util), request = LAST(request, __t_request), limit_ratio = LAST(limit_ratio, __t_limit_ratio)
         | EVAL __labels = MV_APPEND(MV_APPEND("CPU Utilization Rate", "CPU Request Rate"), "CPU Limit Rate")
         | EVAL __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(util), ""), COALESCE(TO_STRING(request), "")), COALESCE(TO_STRING(limit_ratio), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -110,8 +112,9 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kube_node_info:gauge}} IS NOT NULL OR {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
         | STATS nodes = SUM(LAST_OVER_TIME({{metric:kube_node_info:gauge}})), pods = SUM(CASE(({{label:created_by_kind}} IS NULL OR ({{label:created_by_kind}} != "<none>" AND {{label:created_by_kind}} != "Job")) AND (?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node), LAST_OVER_TIME({{metric:kube_pod_info:gauge}}), NULL)), cap = SUM(CASE({{label:resource}} == "pods" AND {{label:unit}} == "integer" AND (?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node), LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | STATS nodes = LAST(nodes, time_bucket), pods = LAST(pods, time_bucket), cap = LAST(cap, time_bucket)
-        | EVAL __labels = MV_APPEND(MV_APPEND("Number of nodes", "Pod Number"), "Upper limit Pod")
+        | EVAL __t_nodes = CASE(nodes IS NOT NULL, time_bucket, NULL), __t_pods = CASE(pods IS NOT NULL, time_bucket, NULL), __t_cap = CASE(cap IS NOT NULL, time_bucket, NULL)
+        | STATS nodes = LAST(nodes, __t_nodes), pods = LAST(pods, __t_pods), cap = LAST(cap, __t_cap)
+        | EVAL __labels = MV_APPEND(MV_APPEND("Number of nodes", "Pod Number of nodes"), "Upper limit Pod")
         | EVAL __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(nodes), ""), COALESCE(TO_STRING(pods), "")), COALESCE(TO_STRING(cap), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -125,8 +128,9 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_service_info:gauge}} IS NOT NULL OR {{metric:kube_deployment_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_daemonset_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_statefulset_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_configmap_info:gauge}} IS NOT NULL OR {{metric:kube_secret_info:gauge}} IS NOT NULL
         | STATS pods = SUM(CASE((?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node), LAST_OVER_TIME({{metric:kube_pod_info:gauge}}), NULL)), svc = SUM(LAST_OVER_TIME({{metric:kube_service_info:gauge}})), dep = SUM(LAST_OVER_TIME({{metric:kube_deployment_metadata_generation:gauge}})), ds = SUM(LAST_OVER_TIME({{metric:kube_daemonset_metadata_generation:gauge}})), sts = SUM(LAST_OVER_TIME({{metric:kube_statefulset_metadata_generation:gauge}})), configmaps = SUM(LAST_OVER_TIME({{metric:kube_configmap_info:gauge}})), secrets = SUM(LAST_OVER_TIME({{metric:kube_secret_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}
-        | STATS pods = LAST(pods, time_bucket), svc = LAST(svc, time_bucket), dep = LAST(dep, time_bucket), ds = LAST(ds, time_bucket), sts = LAST(sts, time_bucket), configmaps = LAST(configmaps, time_bucket), secrets = LAST(secrets, time_bucket) BY {{label:namespace}}
-        | EVAL workloads = dep + ds + sts
+        | EVAL __t_pods = CASE(pods IS NOT NULL, time_bucket, NULL), __t_svc = CASE(svc IS NOT NULL, time_bucket, NULL), __t_dep = CASE(dep IS NOT NULL, time_bucket, NULL), __t_ds = CASE(ds IS NOT NULL, time_bucket, NULL), __t_sts = CASE(sts IS NOT NULL, time_bucket, NULL), __t_configmaps = CASE(configmaps IS NOT NULL, time_bucket, NULL), __t_secrets = CASE(secrets IS NOT NULL, time_bucket, NULL)
+        | STATS pods = LAST(pods, __t_pods), svc = LAST(svc, __t_svc), dep = LAST(dep, __t_dep), ds = LAST(ds, __t_ds), sts = LAST(sts, __t_sts), configmaps = LAST(configmaps, __t_configmaps), secrets = LAST(secrets, __t_secrets) BY {{label:namespace}}
+        | EVAL workloads = CASE(dep IS NULL AND ds IS NULL AND sts IS NULL, NULL, COALESCE(dep, 0) + COALESCE(ds, 0) + COALESCE(sts, 0))
         | KEEP {{label:namespace}}, pods, svc, workloads, configmaps, secrets
         | SORT {{label:namespace}} ASC
     - title_match: "Network Overview（Associable nodes and namespaces）"
@@ -156,8 +160,9 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS total = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), usage = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | STATS total = LAST(total, time_bucket), usage = LAST(usage, time_bucket), requests = LAST(requests, time_bucket), limits = LAST(limits, time_bucket)
+        | STATS total = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), usage = SUM(CASE({{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL __t_total = CASE(total IS NOT NULL, time_bucket, NULL), __t_usage = CASE(usage IS NOT NULL, time_bucket, NULL), __t_requests = CASE(requests IS NOT NULL, time_bucket, NULL), __t_limits = CASE(limits IS NOT NULL, time_bucket, NULL)
+        | STATS total = LAST(total, __t_total), usage = LAST(usage, __t_usage), requests = LAST(requests, __t_requests), limits = LAST(limits, __t_limits)
         | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Total Memory", "Usage"), "Requests"), "Limits")
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(total), ""), COALESCE(TO_STRING(usage), "")), COALESCE(TO_STRING(requests), "")), COALESCE(TO_STRING(limits), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -173,7 +178,8 @@ panel:
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
         | STATS total = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), usage = SUM(CASE({{label:id}} == "/", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), requests = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | STATS total = LAST(total, time_bucket), usage = LAST(usage, time_bucket), requests = LAST(requests, time_bucket), limits = LAST(limits, time_bucket)
+        | EVAL __t_total = CASE(total IS NOT NULL, time_bucket, NULL), __t_usage = CASE(usage IS NOT NULL, time_bucket, NULL), __t_requests = CASE(requests IS NOT NULL, time_bucket, NULL), __t_limits = CASE(limits IS NOT NULL, time_bucket, NULL)
+        | STATS total = LAST(total, __t_total), usage = LAST(usage, __t_usage), requests = LAST(requests, __t_requests), limits = LAST(limits, __t_limits)
         | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Total Cores", "Usage"), "Requests"), "Limit")
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(total), ""), COALESCE(TO_STRING(usage), "")), COALESCE(TO_STRING(requests), "")), COALESCE(TO_STRING(limits), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -188,9 +194,10 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:container_fs_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_limit_bytes:gauge}} IS NOT NULL
-        | STATS usage = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "^/dev/.*", LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}}), NULL)), total = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "^/dev/.*", LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | STATS usage = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "/dev/.*", LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}}), NULL)), total = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "/dev/.*", LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
         | EVAL ratio = CASE(total > 0, usage / total, NULL)
-        | STATS ratio = LAST(ratio, time_bucket), usage = LAST(usage, time_bucket), total = LAST(total, time_bucket)
+        | EVAL __t_ratio = CASE(ratio IS NOT NULL, time_bucket, NULL), __t_usage = CASE(usage IS NOT NULL, time_bucket, NULL), __t_total = CASE(total IS NOT NULL, time_bucket, NULL)
+        | STATS ratio = LAST(ratio, __t_ratio), usage = LAST(usage, __t_usage), total = LAST(total, __t_total)
         | EVAL __labels = MV_APPEND(MV_APPEND("Utilization Rate", "Usage"), "Total")
         | EVAL __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(ratio), ""), COALESCE(TO_STRING(usage), "")), COALESCE(TO_STRING(total), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -200,14 +207,15 @@ panel:
     - title_match: "Workload"
       panel_id: 88
       kibana_type_override: metric
-      approximation_note: "Total nodes, total pods, workload objects, and normal nodes (node count minus taint series whose key does not match node.kubernetes.io.*). The source also draws one stat per taint key. The pack titles the untitled strip Cluster counts."
+      approximation_note: "Total nodes, total pods, workload objects, and normal nodes (node count minus taint series whose key does not match node.kubernetes.io.*). With no such taints, Normal Node is the node count; the source subtracts an empty series and shows no value. The source also draws one stat per taint key. The pack titles the untitled strip Cluster counts."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kube_node_info:gauge}} IS NOT NULL OR {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_deployment_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_daemonset_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_statefulset_metadata_generation:gauge}} IS NOT NULL OR {{metric:kube_node_spec_taint:gauge}} IS NOT NULL
         | STATS nodes = SUM(LAST_OVER_TIME({{metric:kube_node_info:gauge}})), pods = SUM(LAST_OVER_TIME({{metric:kube_pod_info:gauge}})), dep = SUM(LAST_OVER_TIME({{metric:kube_deployment_metadata_generation:gauge}})), ds = SUM(LAST_OVER_TIME({{metric:kube_daemonset_metadata_generation:gauge}})), sts = SUM(LAST_OVER_TIME({{metric:kube_statefulset_metadata_generation:gauge}})), custom_taints = SUM(CASE({{label:key}} IS NOT NULL AND NOT ({{label:key}} RLIKE "node.kubernetes.io.*"), LAST_OVER_TIME({{metric:kube_node_spec_taint:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | EVAL workloads = dep + ds + sts, normal = nodes - custom_taints
-        | STATS nodes = LAST(nodes, time_bucket), pods = LAST(pods, time_bucket), dep = LAST(dep, time_bucket), ds = LAST(ds, time_bucket), sts = LAST(sts, time_bucket), workloads = LAST(workloads, time_bucket), custom_taints = LAST(custom_taints, time_bucket), normal = LAST(normal, time_bucket)
+        | EVAL workloads = CASE(dep IS NULL AND ds IS NULL AND sts IS NULL, NULL, COALESCE(dep, 0) + COALESCE(ds, 0) + COALESCE(sts, 0)), normal = nodes - COALESCE(custom_taints, 0)
+        | EVAL __t_nodes = CASE(nodes IS NOT NULL, time_bucket, NULL), __t_pods = CASE(pods IS NOT NULL, time_bucket, NULL), __t_dep = CASE(dep IS NOT NULL, time_bucket, NULL), __t_ds = CASE(ds IS NOT NULL, time_bucket, NULL), __t_sts = CASE(sts IS NOT NULL, time_bucket, NULL), __t_workloads = CASE(workloads IS NOT NULL, time_bucket, NULL), __t_custom_taints = CASE(custom_taints IS NOT NULL, time_bucket, NULL), __t_normal = CASE(normal IS NOT NULL, time_bucket, NULL)
+        | STATS nodes = LAST(nodes, __t_nodes), pods = LAST(pods, __t_pods), dep = LAST(dep, __t_dep), ds = LAST(ds, __t_ds), sts = LAST(sts, __t_sts), workloads = LAST(workloads, __t_workloads), custom_taints = LAST(custom_taints, __t_custom_taints), normal = LAST(normal, __t_normal)
         | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Total Nodes", "Total Pod"), "Workload"), "Normal Node")
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(nodes), ""), COALESCE(TO_STRING(pods), "")), COALESCE(TO_STRING(workloads), "")), COALESCE(TO_STRING(normal), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
@@ -222,8 +230,8 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS total = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), usage = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Total Memory", "Usage"), "Requests"), "Limits")
+        | STATS total = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), usage = SUM(CASE({{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), requests = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), limits = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND("Total Memory", "Usage"), "Requests"), "Limit")
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(total), ""), COALESCE(TO_STRING(usage), "")), COALESCE(TO_STRING(requests), "")), COALESCE(TO_STRING(limits), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -254,7 +262,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kube_node_info:gauge}} IS NOT NULL OR {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
         | STATS nodes = SUM(LAST_OVER_TIME({{metric:kube_node_info:gauge}})), pods = SUM(CASE(({{label:created_by_kind}} IS NULL OR ({{label:created_by_kind}} != "<none>" AND {{label:created_by_kind}} != "Job")) AND (?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node), LAST_OVER_TIME({{metric:kube_pod_info:gauge}}), NULL)), cap = SUM(CASE({{label:resource}} == "pods" AND {{label:unit}} == "integer" AND (?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node), LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
-        | EVAL __labels = MV_APPEND(MV_APPEND("Number of nodes", "Pod Number"), "Upper limit Pod")
+        | EVAL __labels = MV_APPEND(MV_APPEND("Number of nodes", "Pod Number"), "Upper Limit Pod")
         | EVAL __values = MV_APPEND(MV_APPEND(COALESCE(TO_STRING(nodes), ""), COALESCE(TO_STRING(pods), "")), COALESCE(TO_STRING(cap), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -269,7 +277,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
-        | STATS numer = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), den = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | STATS numer = SUM(CASE({{label:container}} != "", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), den = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
         | EVAL value = CASE(den > 0, numer / den * 100, NULL)
         | EVAL label = TO_STRING({{label:node}})
         | KEEP time_bucket, label, value
@@ -282,7 +290,7 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL
-        | STATS numer = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), den = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | STATS numer = SUM(CASE({{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), den = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
         | EVAL value = CASE(den > 0, numer / den * 100, NULL)
         | EVAL label = TO_STRING({{label:node}})
         | KEEP time_bucket, label, value
@@ -313,8 +321,9 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
         | WHERE {{metric:kube_pod_info:gauge}} IS NOT NULL OR {{metric:kube_node_status_allocatable:gauge}} IS NOT NULL OR {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_limit_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
-        | STATS pods = SUM(CASE(({{label:created_by_kind}} IS NULL OR ({{label:created_by_kind}} != "<none>" AND {{label:created_by_kind}} != "Job")), LAST_OVER_TIME({{metric:kube_pod_info:gauge}}), NULL)), cpu = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), cpu_alloc = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), cpu_req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), mem = SUM(CASE({{label:container}} != "" AND {{label:container}} != "POD", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), mem_alloc = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), mem_req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), mem_lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), disk = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "^/dev/.*", LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}}), NULL)), disk_lim = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "^/dev/.*", LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}}), NULL)), pod_cap = SUM(CASE({{label:resource}} == "pods" AND {{label:unit}} == "integer", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
-        | STATS pods = LAST(pods, time_bucket), cpu = LAST(cpu, time_bucket), cpu_alloc = LAST(cpu_alloc, time_bucket), cpu_req = LAST(cpu_req, time_bucket), cpu_lim = LAST(cpu_lim, time_bucket), mem = LAST(mem, time_bucket), mem_alloc = LAST(mem_alloc, time_bucket), mem_req = LAST(mem_req, time_bucket), mem_lim = LAST(mem_lim, time_bucket), disk = LAST(disk, time_bucket), disk_lim = LAST(disk_lim, time_bucket), pod_cap = LAST(pod_cap, time_bucket) BY {{label:node}}
+        | STATS pods = SUM(CASE(({{label:created_by_kind}} IS NULL OR ({{label:created_by_kind}} != "<none>" AND {{label:created_by_kind}} != "Job")), LAST_OVER_TIME({{metric:kube_pod_info:gauge}}), NULL)), cpu = SUM(CASE({{label:container}} != "", IRATE({{metric:container_cpu_usage_seconds_total:counter}}), NULL)), cpu_alloc = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), cpu_req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), mem = SUM(CASE({{label:container}} != "", LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}}), NULL)), mem_alloc = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)), mem_req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), mem_lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), disk = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "/dev/.*", LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}}), NULL)), disk_lim = SUM(CASE({{label:id}} == "/" AND {{label:device}} RLIKE "/dev/.*", LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}}), NULL)), pod_cap = SUM(CASE({{label:resource}} == "pods" AND {{label:unit}} == "integer", LAST_OVER_TIME({{metric:kube_node_status_allocatable:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:node}}
+        | EVAL __t_pods = CASE(pods IS NOT NULL, time_bucket, NULL), __t_cpu = CASE(cpu IS NOT NULL, time_bucket, NULL), __t_cpu_alloc = CASE(cpu_alloc IS NOT NULL, time_bucket, NULL), __t_cpu_req = CASE(cpu_req IS NOT NULL, time_bucket, NULL), __t_cpu_lim = CASE(cpu_lim IS NOT NULL, time_bucket, NULL), __t_mem = CASE(mem IS NOT NULL, time_bucket, NULL), __t_mem_alloc = CASE(mem_alloc IS NOT NULL, time_bucket, NULL), __t_mem_req = CASE(mem_req IS NOT NULL, time_bucket, NULL), __t_mem_lim = CASE(mem_lim IS NOT NULL, time_bucket, NULL), __t_disk = CASE(disk IS NOT NULL, time_bucket, NULL), __t_disk_lim = CASE(disk_lim IS NOT NULL, time_bucket, NULL), __t_pod_cap = CASE(pod_cap IS NOT NULL, time_bucket, NULL)
+        | STATS pods = LAST(pods, __t_pods), cpu = LAST(cpu, __t_cpu), cpu_alloc = LAST(cpu_alloc, __t_cpu_alloc), cpu_req = LAST(cpu_req, __t_cpu_req), cpu_lim = LAST(cpu_lim, __t_cpu_lim), mem = LAST(mem, __t_mem), mem_alloc = LAST(mem_alloc, __t_mem_alloc), mem_req = LAST(mem_req, __t_mem_req), mem_lim = LAST(mem_lim, __t_mem_lim), disk = LAST(disk, __t_disk), disk_lim = LAST(disk_lim, __t_disk_lim), pod_cap = LAST(pod_cap, __t_pod_cap) BY {{label:node}}
         | EVAL memory_ratio = CASE(mem_alloc > 0, mem / mem_alloc, NULL), memory_request_ratio = CASE(mem_alloc > 0, mem_req / mem_alloc, NULL), memory_limit_ratio = CASE(mem_alloc > 0, mem_lim / mem_alloc, NULL), cpu_ratio = CASE(cpu_alloc > 0, cpu / cpu_alloc, NULL), cpu_request_ratio = CASE(cpu_alloc > 0, cpu_req / cpu_alloc, NULL), cpu_limit_ratio = CASE(cpu_alloc > 0, cpu_lim / cpu_alloc, NULL), disk_ratio = CASE(disk_lim > 0, disk / disk_lim, NULL)
         | KEEP {{label:node}}, pods, pod_cap, cpu, cpu_alloc, cpu_req, cpu_lim, mem, mem_alloc, mem_req, mem_lim, disk, disk_lim, memory_ratio, memory_request_ratio, memory_limit_ratio, cpu_ratio, cpu_request_ratio, cpu_limit_ratio, disk_ratio
         | SORT {{label:node}} ASC
@@ -326,7 +335,8 @@ panel:
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
         | WHERE {{metric:kubelet_volume_stats_used_bytes:gauge}} IS NOT NULL OR {{metric:kubelet_volume_stats_available_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_spec_volumes_persistentvolumeclaims_info:gauge}} IS NOT NULL
         | STATS used = MAX(LAST_OVER_TIME({{metric:kubelet_volume_stats_used_bytes:gauge}})), avail = MIN(LAST_OVER_TIME({{metric:kubelet_volume_stats_available_bytes:gauge}})), mounts = SUM(LAST_OVER_TIME({{metric:kube_pod_spec_volumes_persistentvolumeclaims_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:persistentvolumeclaim}}
-        | STATS used = LAST(used, time_bucket), avail = LAST(avail, time_bucket), mounts = LAST(mounts, time_bucket) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
+        | EVAL __t_used = CASE(used IS NOT NULL, time_bucket, NULL), __t_avail = CASE(avail IS NOT NULL, time_bucket, NULL), __t_mounts = CASE(mounts IS NOT NULL, time_bucket, NULL)
+        | STATS used = LAST(used, __t_used), avail = LAST(avail, __t_avail), mounts = LAST(mounts, __t_mounts) BY {{label:namespace}}, {{label:persistentvolumeclaim}}
         | EVAL total = avail + used, usage_pct = CASE(total > 0, used / total * 100, NULL)
         | KEEP {{label:namespace}}, {{label:persistentvolumeclaim}}, used, total, usage_pct, mounts
         | SORT {{label:namespace}} ASC
@@ -359,19 +369,28 @@ panel:
     - title_match: "Pod Resource Detail(Associable Nodes)"
       panel_id: 47
       kibana_type_override: datatable
-      approximation_note: "Per-container CPU, memory, disk, restarts, and pod network bytes per second. Pod age and the copy of node onto restarts used a pod join, so age is omitted and restarts keep the node label on their own series. Network is the series' own rate, not a container-info join."
+      approximation_note: "Per-container CPU, memory, disk, restarts, and pod network bits per second. Rows merge by pod the way the source joins do: node comes from the pod's other series, so restarts without a node label still land on the container row, and pod network from every series of the pod is copied onto each of its container rows. Pod age needs time() and is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
+        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node OR {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL
         | WHERE ?NameSpace IS NULL OR ?NameSpace == "" OR ?NameSpace == ".*" OR {{label:namespace}} == ?NameSpace
         | WHERE ?Pod IS NULL OR ?Pod == "" OR ?Pod == ".*" OR {{label:pod}} == ?Pod
-        | WHERE ?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR {{label:container}} == ?Container
-        | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:container_memory_rss:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_limit_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_status_restarts_total:counter}} IS NOT NULL OR {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
         | STATS cpu = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), quota = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_quota:gauge}})), cpu_req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), wss = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), rss = SUM(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), mem_limit = SUM(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})), mem_req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), mem_lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), disk = SUM(LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}})), disk_lim = SUM(LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}})), restarts = MAX(LAST_OVER_TIME({{metric:kube_pod_container_status_restarts_total:counter}})), receive = SUM(IRATE({{metric:container_network_receive_bytes_total:counter}})), transmit = SUM(IRATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:node}}
-        | STATS cpu = LAST(cpu, time_bucket), quota = LAST(quota, time_bucket), cpu_req = LAST(cpu_req, time_bucket), cpu_lim = LAST(cpu_lim, time_bucket), wss = LAST(wss, time_bucket), rss = LAST(rss, time_bucket), mem_limit = LAST(mem_limit, time_bucket), mem_req = LAST(mem_req, time_bucket), mem_lim = LAST(mem_lim, time_bucket), disk = LAST(disk, time_bucket), disk_lim = LAST(disk_lim, time_bucket), restarts = LAST(restarts, time_bucket), receive = LAST(receive, time_bucket), transmit = LAST(transmit, time_bucket) BY {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:node}}
+        | EVAL __t_cpu = CASE(cpu IS NOT NULL, time_bucket, NULL), __t_quota = CASE(quota IS NOT NULL, time_bucket, NULL), __t_cpu_req = CASE(cpu_req IS NOT NULL, time_bucket, NULL), __t_cpu_lim = CASE(cpu_lim IS NOT NULL, time_bucket, NULL), __t_wss = CASE(wss IS NOT NULL, time_bucket, NULL), __t_rss = CASE(rss IS NOT NULL, time_bucket, NULL), __t_mem_limit = CASE(mem_limit IS NOT NULL, time_bucket, NULL), __t_mem_req = CASE(mem_req IS NOT NULL, time_bucket, NULL), __t_mem_lim = CASE(mem_lim IS NOT NULL, time_bucket, NULL), __t_disk = CASE(disk IS NOT NULL, time_bucket, NULL), __t_disk_lim = CASE(disk_lim IS NOT NULL, time_bucket, NULL), __t_restarts = CASE(restarts IS NOT NULL, time_bucket, NULL), __t_receive = CASE(receive IS NOT NULL, time_bucket, NULL), __t_transmit = CASE(transmit IS NOT NULL, time_bucket, NULL)
+        | STATS cpu = LAST(cpu, __t_cpu), quota = LAST(quota, __t_quota), cpu_req = LAST(cpu_req, __t_cpu_req), cpu_lim = LAST(cpu_lim, __t_cpu_lim), wss = LAST(wss, __t_wss), rss = LAST(rss, __t_rss), mem_limit = LAST(mem_limit, __t_mem_limit), mem_req = LAST(mem_req, __t_mem_req), mem_lim = LAST(mem_lim, __t_mem_lim), disk = LAST(disk, __t_disk), disk_lim = LAST(disk_lim, __t_disk_lim), restarts = LAST(restarts, __t_restarts), receive = LAST(receive, __t_receive), transmit = LAST(transmit, __t_transmit) BY {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:node}}
+        | EVAL ctr = CASE({{label:container}} != "" AND {{label:container}} != "POD" AND (?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR {{label:container}} == ?Container), TO_STRING({{label:container}}), NULL)
+        | STATS cpu = SUM(cpu), quota = SUM(quota), cpu_req = SUM(cpu_req), cpu_lim = SUM(cpu_lim), wss = SUM(wss), rss = SUM(rss), mem_limit = SUM(mem_limit), mem_req = SUM(mem_req), mem_lim = SUM(mem_lim), disk = SUM(disk), disk_lim = SUM(disk_lim), restarts = MAX(restarts), receive = SUM(receive), transmit = SUM(transmit), node_name = MAX({{label:node}}) BY {{label:namespace}}, {{label:pod}}, ctr
+        | EVAL __row = CASE(ctr IS NOT NULL, CONCAT(ctr, "\t", COALESCE(TO_STRING(cpu), "_"), "\t", COALESCE(TO_STRING(quota), "_"), "\t", COALESCE(TO_STRING(cpu_req), "_"), "\t", COALESCE(TO_STRING(cpu_lim), "_"), "\t", COALESCE(TO_STRING(wss), "_"), "\t", COALESCE(TO_STRING(rss), "_"), "\t", COALESCE(TO_STRING(mem_limit), "_"), "\t", COALESCE(TO_STRING(mem_req), "_"), "\t", COALESCE(TO_STRING(mem_lim), "_"), "\t", COALESCE(TO_STRING(disk), "_"), "\t", COALESCE(TO_STRING(disk_lim), "_"), "\t", COALESCE(TO_STRING(restarts), "_")), NULL)
+        | STATS receive = SUM(receive), transmit = SUM(transmit), node_name = MAX(node_name), __rows = VALUES(__row) BY {{label:namespace}}, {{label:pod}}
+        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR node_name == ?Node
+        | MV_EXPAND __rows
+        | WHERE __rows IS NOT NULL
+        | EVAL __f = SPLIT(__rows, "\t")
+        | EVAL {{label:container}} = MV_SLICE(__f, 0, 0), {{label:node}} = node_name, cpu = TO_DOUBLE(CASE(MV_SLICE(__f, 1, 1) == "_", NULL, MV_SLICE(__f, 1, 1))), quota = TO_DOUBLE(CASE(MV_SLICE(__f, 2, 2) == "_", NULL, MV_SLICE(__f, 2, 2))), cpu_req = TO_DOUBLE(CASE(MV_SLICE(__f, 3, 3) == "_", NULL, MV_SLICE(__f, 3, 3))), cpu_lim = TO_DOUBLE(CASE(MV_SLICE(__f, 4, 4) == "_", NULL, MV_SLICE(__f, 4, 4))), wss = TO_DOUBLE(CASE(MV_SLICE(__f, 5, 5) == "_", NULL, MV_SLICE(__f, 5, 5))), rss = TO_DOUBLE(CASE(MV_SLICE(__f, 6, 6) == "_", NULL, MV_SLICE(__f, 6, 6))), mem_limit = TO_DOUBLE(CASE(MV_SLICE(__f, 7, 7) == "_", NULL, MV_SLICE(__f, 7, 7))), mem_req = TO_DOUBLE(CASE(MV_SLICE(__f, 8, 8) == "_", NULL, MV_SLICE(__f, 8, 8))), mem_lim = TO_DOUBLE(CASE(MV_SLICE(__f, 9, 9) == "_", NULL, MV_SLICE(__f, 9, 9))), disk = TO_DOUBLE(CASE(MV_SLICE(__f, 10, 10) == "_", NULL, MV_SLICE(__f, 10, 10))), disk_lim = TO_DOUBLE(CASE(MV_SLICE(__f, 11, 11) == "_", NULL, MV_SLICE(__f, 11, 11))), restarts = TO_DOUBLE(CASE(MV_SLICE(__f, 12, 12) == "_", NULL, MV_SLICE(__f, 12, 12)))
         | EVAL cpu_ratio = CASE(quota > 0, cpu / (quota / 100000), NULL), wss_ratio = CASE(mem_limit > 0, wss / mem_limit, NULL), rss_ratio = CASE(mem_limit > 0, rss / mem_limit, NULL), receive = receive * 8, transmit = transmit * 8
+        | STATS cpu_ratio = MAX(cpu_ratio), cpu = MAX(cpu), cpu_req = MAX(cpu_req), cpu_lim = MAX(cpu_lim), wss_ratio = MAX(wss_ratio), wss = MAX(wss), rss_ratio = MAX(rss_ratio), rss = MAX(rss), mem_req = MAX(mem_req), mem_lim = MAX(mem_lim), disk = MAX(disk), disk_lim = MAX(disk_lim), restarts = MAX(restarts), receive = MAX(receive), transmit = MAX(transmit) BY {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:node}}
         | KEEP {{label:namespace}}, {{label:pod}}, {{label:container}}, {{label:node}}, cpu_ratio, cpu, cpu_req, cpu_lim, wss_ratio, wss, rss_ratio, rss, mem_req, mem_lim, disk, disk_lim, restarts, receive, transmit
         | SORT {{label:namespace}} ASC
     - title_match: "Pod Containers CPU Utilization (Maximum100%Associable Nodes)"
@@ -394,7 +413,7 @@ panel:
     - title_match: "Pod Container Memory Usage (Associatable Nodes)"
       panel_id: 27
       kibana_type_override: line
-      approximation_note: "Working set and RSS as a percent of the container memory limit. The Cassandra heap series is omitted."
+      approximation_note: "Working set and RSS as a percent of the container memory limit. The legend adds the container name so a pod with two containers draws two series. The Cassandra heap series is omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -406,7 +425,7 @@ panel:
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:container_memory_rss:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL
         | STATS wss = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), rss = MAX(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), mem_limit = MAX(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}, {{label:pod}}
         | EVAL wss_pct = CASE(mem_limit > 0, wss / mem_limit * 100, NULL), rss_pct = CASE(mem_limit > 0, rss / mem_limit * 100, NULL)
-        | EVAL __labels = MV_APPEND(CONCAT("WSS:", TO_STRING({{label:pod}})), CONCAT("RSS:", TO_STRING({{label:pod}})))
+        | EVAL __labels = MV_APPEND(CONCAT("WSS:", TO_STRING({{label:pod}}), " ", TO_STRING({{label:container}})), CONCAT("RSS:", TO_STRING({{label:pod}}), " ", TO_STRING({{label:container}})))
         | EVAL __values = MV_APPEND(COALESCE(TO_STRING(wss_pct), ""), COALESCE(TO_STRING(rss_pct), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
@@ -416,16 +435,16 @@ panel:
     - title_match: "Pod Network bandwidth per second (Associable Nodes)"
       panel_id: 77
       kibana_type_override: line
-      approximation_note: "Pod receive and transmit rates, max and sum, in bits per second. The source copies the pod rate onto each container with a join; this uses the network series' own pod."
+      approximation_note: "Pod receive and transmit rates, max and sum, in bits per second, from every network series of the pod. The source keeps pods that have a kube_pod_container_info series matching the Container control; this keeps the same pods by grouping that series with the network series by pod. The sum series use that container match, not the source's pod-name substring, and the image and k8s_ name selectors are omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
+        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node OR {{metric:kube_pod_container_info:gauge}} IS NOT NULL
         | WHERE ?NameSpace IS NULL OR ?NameSpace == "" OR ?NameSpace == ".*" OR {{label:namespace}} == ?NameSpace
         | WHERE ?Pod IS NULL OR ?Pod == "" OR ?Pod == ".*" OR {{label:pod}} == ?Pod
-        | WHERE ?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR {{label:container}} == ?Container
-        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
-        | STATS max_rx = MAX(IRATE({{metric:container_network_receive_bytes_total:counter}})), max_tx = MAX(IRATE({{metric:container_network_transmit_bytes_total:counter}})), sum_rx = SUM(IRATE({{metric:container_network_receive_bytes_total:counter}})), sum_tx = SUM(IRATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_info:gauge}} IS NOT NULL
+        | STATS max_rx = MAX(IRATE({{metric:container_network_receive_bytes_total:counter}})), max_tx = MAX(IRATE({{metric:container_network_transmit_bytes_total:counter}})), sum_rx = SUM(IRATE({{metric:container_network_receive_bytes_total:counter}})), sum_tx = SUM(IRATE({{metric:container_network_transmit_bytes_total:counter}})), matched = MAX(CASE(?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR {{label:container}} == ?Container, LAST_OVER_TIME({{metric:kube_pod_container_info:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:pod}}
+        | WHERE matched IS NOT NULL AND (max_rx IS NOT NULL OR max_tx IS NOT NULL)
         | EVAL max_rx = max_rx * 8, max_tx = max_tx * 8, sum_rx = sum_rx * 8, sum_tx = sum_tx * 8
         | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND(CONCAT("Inflow:", TO_STRING({{label:pod}})), CONCAT("Outflow:", TO_STRING({{label:pod}}))), CONCAT("sum in:", TO_STRING({{label:pod}}))), CONCAT("sum out:", TO_STRING({{label:pod}})))
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(max_rx), ""), COALESCE(TO_STRING(max_tx), "")), COALESCE(TO_STRING(sum_rx), "")), COALESCE(TO_STRING(sum_tx), ""))
@@ -437,7 +456,7 @@ panel:
     - title_match: "Pod Containers CPU Core Usage"
       panel_id: 82
       kibana_type_override: line
-      approximation_note: "Container CPU cores and the CPU limit. The limit is kept on each pod series. The source draws one limit line per container name."
+      approximation_note: "Container CPU cores per pod and container, and the CPU limit per container name. The usage legend adds the container name so a pod with two containers draws two series."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -448,17 +467,19 @@ panel:
         | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
         | STATS usage = MAX(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), limits = MAX(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}, {{label:pod}}
-        | EVAL __labels = MV_APPEND(CONCAT("CPU Usage:", TO_STRING({{label:pod}})), CONCAT("CPU Limit:", TO_STRING({{label:container}})))
+        | EVAL __labels = MV_APPEND(CONCAT("CPU Usage:", TO_STRING({{label:pod}}), " ", TO_STRING({{label:container}})), CONCAT("Pod CPU Limitations:", TO_STRING({{label:container}})))
         | EVAL __values = MV_APPEND(COALESCE(TO_STRING(usage), ""), COALESCE(TO_STRING(limits), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
         | EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))
+        | STATS value = MAX(value) BY time_bucket, label
+        | WHERE value IS NOT NULL
         | KEEP time_bucket, label, value
         | SORT time_bucket ASC
     - title_match: "Pod Containers WSS Memory Usage (Associable Nodes)"
       panel_id: 84
       kibana_type_override: line
-      approximation_note: "Container working set and the memory limit. The limit is kept on each pod series. The source draws one limit line per container name."
+      approximation_note: "Container working set per pod and container, and the memory limit per container name. The working-set legend adds the container name so a pod with two containers draws two series."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -469,16 +490,19 @@ panel:
         | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
         | STATS usage = MAX(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), limits = MAX(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}, {{label:pod}}
-        | EVAL __labels = MV_APPEND(CONCAT("WSS:", TO_STRING({{label:pod}})), CONCAT("Memory Limit:", TO_STRING({{label:container}})))
+        | EVAL __labels = MV_APPEND(CONCAT("WSS:", TO_STRING({{label:pod}}), " ", TO_STRING({{label:container}})), CONCAT("PodMemory Limits:", TO_STRING({{label:container}})))
         | EVAL __values = MV_APPEND(COALESCE(TO_STRING(usage), ""), COALESCE(TO_STRING(limits), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
         | EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))
+        | STATS value = MAX(value) BY time_bucket, label
+        | WHERE value IS NOT NULL
         | KEEP time_bucket, label, value
         | SORT time_bucket ASC
     - title_match: "Pod Containers RSS Memory Usage (Associable Nodes)"
       panel_id: 83
       kibana_type_override: line
+      approximation_note: "Container RSS per pod and container. The legend adds the container name so a pod with two containers draws two series."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
@@ -489,7 +513,7 @@ panel:
         | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_memory_rss:gauge}} IS NOT NULL
         | STATS value = MAX(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}, {{label:pod}}
-        | EVAL label = CONCAT("RSS:", TO_STRING({{label:pod}}))
+        | EVAL label = CONCAT("RSS:", TO_STRING({{label:pod}}), " ", TO_STRING({{label:container}}))
         | KEEP time_bucket, label, value
         | SORT time_bucket ASC
     - title_match: "Microservices (Container Name) Resource Statistics"
@@ -504,7 +528,8 @@ panel:
         | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:container_spec_cpu_quota:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_requests:gauge}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL OR {{metric:container_memory_working_set_bytes:gauge}} IS NOT NULL OR {{metric:container_memory_rss:gauge}} IS NOT NULL OR {{metric:container_spec_memory_limit_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_usage_bytes:gauge}} IS NOT NULL OR {{metric:container_fs_limit_bytes:gauge}} IS NOT NULL OR {{metric:kube_pod_container_info:gauge}} IS NOT NULL
         | STATS cpu = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})), quota = SUM(LAST_OVER_TIME({{metric:container_spec_cpu_quota:gauge}})), cpu_req = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), cpu_lim = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), wss = SUM(LAST_OVER_TIME({{metric:container_memory_working_set_bytes:gauge}})), rss = SUM(LAST_OVER_TIME({{metric:container_memory_rss:gauge}})), mem_limit = SUM(LAST_OVER_TIME({{metric:container_spec_memory_limit_bytes:gauge}})), mem_req = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_requests:gauge}}), NULL)), mem_lim = SUM(CASE({{label:resource}} == "memory" AND {{label:unit}} == "byte", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), disk = AVG(LAST_OVER_TIME({{metric:container_fs_usage_bytes:gauge}})), disk_lim = AVG(LAST_OVER_TIME({{metric:container_fs_limit_bytes:gauge}})), pods = SUM(LAST_OVER_TIME({{metric:kube_pod_container_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:container}}
-        | STATS cpu = LAST(cpu, time_bucket), quota = LAST(quota, time_bucket), cpu_req = LAST(cpu_req, time_bucket), cpu_lim = LAST(cpu_lim, time_bucket), wss = LAST(wss, time_bucket), rss = LAST(rss, time_bucket), mem_limit = LAST(mem_limit, time_bucket), mem_req = LAST(mem_req, time_bucket), mem_lim = LAST(mem_lim, time_bucket), disk = LAST(disk, time_bucket), disk_lim = LAST(disk_lim, time_bucket), pods = LAST(pods, time_bucket) BY {{label:namespace}}, {{label:container}}
+        | EVAL __t_cpu = CASE(cpu IS NOT NULL, time_bucket, NULL), __t_quota = CASE(quota IS NOT NULL, time_bucket, NULL), __t_cpu_req = CASE(cpu_req IS NOT NULL, time_bucket, NULL), __t_cpu_lim = CASE(cpu_lim IS NOT NULL, time_bucket, NULL), __t_wss = CASE(wss IS NOT NULL, time_bucket, NULL), __t_rss = CASE(rss IS NOT NULL, time_bucket, NULL), __t_mem_limit = CASE(mem_limit IS NOT NULL, time_bucket, NULL), __t_mem_req = CASE(mem_req IS NOT NULL, time_bucket, NULL), __t_mem_lim = CASE(mem_lim IS NOT NULL, time_bucket, NULL), __t_disk = CASE(disk IS NOT NULL, time_bucket, NULL), __t_disk_lim = CASE(disk_lim IS NOT NULL, time_bucket, NULL), __t_pods = CASE(pods IS NOT NULL, time_bucket, NULL)
+        | STATS cpu = LAST(cpu, __t_cpu), quota = LAST(quota, __t_quota), cpu_req = LAST(cpu_req, __t_cpu_req), cpu_lim = LAST(cpu_lim, __t_cpu_lim), wss = LAST(wss, __t_wss), rss = LAST(rss, __t_rss), mem_limit = LAST(mem_limit, __t_mem_limit), mem_req = LAST(mem_req, __t_mem_req), mem_lim = LAST(mem_lim, __t_mem_lim), disk = LAST(disk, __t_disk), disk_lim = LAST(disk_lim, __t_disk_lim), pods = LAST(pods, __t_pods) BY {{label:namespace}}, {{label:container}}
         | EVAL cpu_ratio = CASE(quota > 0, cpu / (quota / 100000), NULL), wss_ratio = CASE(mem_limit > 0, wss / mem_limit, NULL), rss_ratio = CASE(mem_limit > 0, rss / mem_limit, NULL)
         | KEEP {{label:namespace}}, {{label:container}}, pods, cpu_ratio, cpu, cpu_req, cpu_lim, wss_ratio, wss, rss_ratio, rss, mem_req, mem_lim, disk, disk_lim
         | SORT {{label:container}} ASC
@@ -545,21 +570,28 @@ panel:
     - title_match: "Microservice (Container Name) Network bandwidth per second (Associable Nodes)"
       panel_id: 16
       kibana_type_override: line
-      approximation_note: "Receive and transmit by container, in bits per second, plus the pod byte rate and its negative. The source sums pod network onto the container with a join."
+      approximation_note: "Inflow and outflow sum each pod's network rate onto every container that kube_pod_container_info lists in the pod, in bits per second, the same as the source join. The pod byte rate and its negative are per pod, filtered by the Pod control and by pod names that contain the Container value. The image and k8s_ name selectors are omitted."
       esql_query: |
         TS metrics-*
         | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
-        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node
+        | WHERE ?Node IS NULL OR ?Node == "" OR ?Node == ".*" OR {{label:node}} == ?Node OR {{metric:kube_pod_container_info:gauge}} IS NOT NULL
         | WHERE ?NameSpace IS NULL OR ?NameSpace == "" OR ?NameSpace == ".*" OR {{label:namespace}} == ?NameSpace
-        | WHERE ?Pod IS NULL OR ?Pod == "" OR ?Pod == ".*" OR {{label:pod}} == ?Pod
-        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL
-        | STATS rx = SUM(IRATE({{metric:container_network_receive_bytes_total:counter}})), tx = SUM(IRATE({{metric:container_network_transmit_bytes_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}, {{label:pod}}
-        | EVAL inflow = rx * 8, outflow = tx * 8, inbound = rx, outbound = 0 - tx
-        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND(CONCAT("Inflow:", TO_STRING({{label:container}})), CONCAT("Outflow:", TO_STRING({{label:container}}))), CONCAT("-> ", TO_STRING({{label:pod}}))), CONCAT("<- ", TO_STRING({{label:pod}})))
+        | WHERE {{metric:container_network_receive_bytes_total:counter}} IS NOT NULL OR {{metric:container_network_transmit_bytes_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_info:gauge}} IS NOT NULL
+        | STATS rx = SUM(IRATE({{metric:container_network_receive_bytes_total:counter}})), tx = SUM(IRATE({{metric:container_network_transmit_bytes_total:counter}})), rx_rate = SUM(RATE({{metric:container_network_receive_bytes_total:counter}})), tx_rate = SUM(RATE({{metric:container_network_transmit_bytes_total:counter}})), info = MAX(LAST_OVER_TIME({{metric:kube_pod_container_info:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:namespace}}, {{label:pod}}, {{label:container}}
+        | EVAL ctr = CASE(info IS NOT NULL AND (?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR {{label:container}} == ?Container), TO_STRING({{label:container}}), NULL)
+        | STATS rx = SUM(rx), tx = SUM(tx), rx_rate = SUM(rx_rate), tx_rate = SUM(tx_rate), ctrs = VALUES(ctr) BY time_bucket, {{label:namespace}}, {{label:pod}}
+        | EVAL pod_ok = (?Pod IS NULL OR ?Pod == "" OR ?Pod == ".*" OR {{label:pod}} == ?Pod) AND (?Container IS NULL OR ?Container == "" OR ?Container == ".*" OR LOCATE(TO_STRING({{label:pod}}), ?Container) > 0)
+        | EVAL inflow = rx * 8, outflow = tx * 8, inbound = CASE(pod_ok, rx_rate, NULL), outbound = CASE(pod_ok, 0 - tx_rate, NULL)
+        | MV_EXPAND ctrs
+        | EVAL __labels = MV_APPEND(MV_APPEND(MV_APPEND(CONCAT("Inflow:", COALESCE(ctrs, "")), CONCAT("Outflow:", COALESCE(ctrs, ""))), CONCAT("-> ", TO_STRING({{label:pod}}))), CONCAT("<- ", TO_STRING({{label:pod}})))
         | EVAL __values = MV_APPEND(MV_APPEND(MV_APPEND(COALESCE(TO_STRING(inflow), ""), COALESCE(TO_STRING(outflow), "")), COALESCE(TO_STRING(inbound), "")), COALESCE(TO_STRING(outbound), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
         | EVAL label = MV_FIRST(SPLIT(__pairs, "\t")), value = TO_DOUBLE(MV_LAST(SPLIT(__pairs, "\t")))
+        | WHERE label != "Inflow:" AND label != "Outflow:"
+        | STATS total = SUM(value), top = MAX(value) BY time_bucket, label
+        | EVAL value = CASE(STARTS_WITH(label, "Inflow:") OR STARTS_WITH(label, "Outflow:"), total, top)
+        | WHERE value IS NOT NULL
         | KEEP time_bucket, label, value
         | SORT time_bucket ASC
     - title_match: "Microservices (Container Name) Overall CPU Cores Used"
@@ -573,7 +605,7 @@ panel:
         | WHERE {{label:container}} != "" AND {{label:container}} != "POD"
         | WHERE {{metric:container_cpu_usage_seconds_total:counter}} IS NOT NULL OR {{metric:kube_pod_container_resource_limits:gauge}} IS NOT NULL
         | STATS limits = SUM(CASE({{label:resource}} == "cpu" AND {{label:unit}} == "core", LAST_OVER_TIME({{metric:kube_pod_container_resource_limits:gauge}}), NULL)), usage = SUM(IRATE({{metric:container_cpu_usage_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:container}}
-        | EVAL __labels = MV_APPEND(CONCAT("CPU Limit:", TO_STRING({{label:container}})), CONCAT("CPU Usage:", TO_STRING({{label:container}})))
+        | EVAL __labels = MV_APPEND(CONCAT("CPU Limitations:", TO_STRING({{label:container}})), CONCAT("CPU Core Usage:", TO_STRING({{label:container}})))
         | EVAL __values = MV_APPEND(COALESCE(TO_STRING(limits), ""), COALESCE(TO_STRING(usage), ""))
         | EVAL __pairs = MV_ZIP(__labels, __values, "\t")
         | MV_EXPAND __pairs
