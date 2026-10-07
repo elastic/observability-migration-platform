@@ -26,6 +26,7 @@
 # `OutOfDisk` node condition is deliberately NOT emitted (removed in k8s 1.12) so
 # the 6417 "Nodes Out of Disk" panel stays an honest empty gap.
 
+import re
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -44,10 +45,77 @@ DEPLOYMENTS = {
 }
 
 _START = time.time()
+# The ``cluster`` label itself, not a suffix such as ``kube_cluster="..."``.
+_HAS_CLUSTER_LABEL = re.compile(r'[{,]cluster="')
 
 
 def _node_for(idx: int) -> str:
     return NODES[idx % len(NODES)]
+
+
+def _stamp_cluster(body: str) -> str:
+    """Attach the kube-prometheus ``cluster`` external label to every series.
+
+    The Views dashboards filter ``cluster`` on the series themselves. Node info
+    already carries it; stamping the rest matches a Prometheus external label.
+    """
+    stamped: list[str] = []
+    for line in body.splitlines():
+        if not line or line.startswith("#") or _HAS_CLUSTER_LABEL.search(line):
+            stamped.append(line)
+            continue
+        if "{" in line:
+            line = line.replace("{", f'{{cluster="{CLUSTER}",', 1)
+        else:
+            name, _, rest = line.partition(" ")
+            line = f'{name}{{cluster="{CLUSTER}"}} {rest}'
+        stamped.append(line)
+    return "\n".join(stamped) + "\n"
+
+
+def _append_namespace_objects(lines: list[str]) -> None:
+    """kube-state-metrics info gauges for dashboard 15758.
+
+    One series per object, with the labels those collectors actually publish.
+    """
+    objects = {
+        "default": {
+            "kube_service_info": ("service", ("web", "cache")),
+            "kube_ingress_info": ("ingress", ("web",)),
+            "kube_statefulset_labels": ("statefulset", ("cache",)),
+            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data", "logs", "pending")),
+            "kube_hpa_labels": ("horizontalpodautoscaler", ("web",)),
+            "kube_configmap_info": ("configmap", ("web",)),
+            "kube_secret_info": ("secret", ("web",)),
+            "kube_networkpolicy_labels": ("networkpolicy", ("default-deny",)),
+        },
+        "staging": {
+            "kube_service_info": ("service", ("api",)),
+            "kube_configmap_info": ("configmap", ("api",)),
+            "kube_secret_info": ("secret", ("api",)),
+            "kube_persistentvolumeclaim_info": ("persistentvolumeclaim", ("data",)),
+        },
+        "kube-system": {
+            "kube_service_info": ("service", ("coredns",)),
+            "kube_daemonset_labels": ("daemonset", ("kube-proxy",)),
+            "kube_configmap_info": ("configmap", ("coredns",)),
+            "kube_secret_info": ("secret", ("coredns",)),
+        },
+    }
+    typed: set[str] = set()
+    for ns, metrics in objects.items():
+        for metric, (label, names) in metrics.items():
+            if metric not in typed:
+                lines.append(f"# HELP {metric} Information about a {label}")
+                lines.append(f"# TYPE {metric} gauge")
+                typed.add(metric)
+            for name in names:
+                lines.append(f'{metric}{{namespace="{ns}",{label}="{name}"}} 1')
+    lines.append("# HELP kube_deployment_labels Kubernetes labels converted to Prometheus labels")
+    lines.append("# TYPE kube_deployment_labels gauge")
+    for ns, deps in DEPLOYMENTS.items():
+        for name in deps:
+            lines.append(f'kube_deployment_labels{{namespace="{ns}",deployment="{name}"}} 1')
 
 
 def render() -> str:
@@ -73,6 +141,22 @@ def render() -> str:
     L.append("# TYPE container_network_receive_bytes_total counter")
     L.append("# HELP container_network_transmit_bytes_total Cumulative bytes transmitted")
     L.append("# TYPE container_network_transmit_bytes_total counter")
+    L.append("# HELP container_network_receive_packets_total Cumulative packets received")
+    L.append("# TYPE container_network_receive_packets_total counter")
+    L.append("# HELP container_network_transmit_packets_total Cumulative packets transmitted")
+    L.append("# TYPE container_network_transmit_packets_total counter")
+    L.append("# HELP container_network_receive_packets_dropped_total Cumulative packets dropped while receiving")
+    L.append("# TYPE container_network_receive_packets_dropped_total counter")
+    L.append("# HELP container_network_transmit_packets_dropped_total Cumulative packets dropped while transmitting")
+    L.append("# TYPE container_network_transmit_packets_dropped_total counter")
+    L.append("# HELP container_network_receive_errors_total Cumulative receive errors")
+    L.append("# TYPE container_network_receive_errors_total counter")
+    L.append("# HELP container_network_transmit_errors_total Cumulative transmit errors")
+    L.append("# TYPE container_network_transmit_errors_total counter")
+    L.append("# HELP container_cpu_cfs_throttled_seconds_total Total time the container was throttled")
+    L.append("# TYPE container_cpu_cfs_throttled_seconds_total counter")
+    L.append("# HELP container_oom_events_total Count of out of memory events")
+    L.append("# TYPE container_oom_events_total counter")
     L.append("# HELP container_fs_usage_bytes Filesystem bytes consumed")
     L.append("# TYPE container_fs_usage_bytes gauge")
     L.append("# HELP container_fs_limit_bytes Filesystem capacity in bytes")
@@ -89,17 +173,18 @@ def render() -> str:
             f'{int((5.0 + ni) * 1024**3)}'
         )
         # Several partitions so 1621 (device=~^/dev/.*) sums scsi + nvme while
-        # 315's ^/dev/[sv]d[a-z][1-9]$ still matches only sda1.
+        # 315's ^/dev/[sv]d[a-z][1-9]$ still matches only sda1. The node label
+        # is what the namespace-view packs filter on.
         for device, used_gib, limit_gib in (
             ("/dev/sda1", 30 + 5 * ni, 100),
             ("/dev/nvme0n1p1", 10 + ni, 50),
         ):
             L.append(
-                f'container_fs_usage_bytes{{id="/",device="{device}",instance="{n}"}} '
+                f'container_fs_usage_bytes{{id="/",device="{device}",instance="{n}",node="{n}"}} '
                 f"{int(used_gib * 1024**3)}"
             )
             L.append(
-                f'container_fs_limit_bytes{{id="/",device="{device}",instance="{n}"}} '
+                f'container_fs_limit_bytes{{id="/",device="{device}",instance="{n}",node="{n}"}} '
                 f"{int(limit_gib * 1024**3)}"
             )
 
@@ -112,7 +197,7 @@ def render() -> str:
             cgroup_id = f"/kubepods/{pod}/{container}"
             base = (
                 f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
-                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}",node="{n}"'
             )
             cpu = elapsed * (0.05 + 0.02 * (idx % 5))
             L.append(f"container_cpu_usage_seconds_total{{{base}}} {cpu:.4f}")
@@ -124,6 +209,21 @@ def render() -> str:
             tx = elapsed * (1500 + 200 * (idx % 7))
             L.append(f"container_network_receive_bytes_total{{{base}}} {rx:.0f}")
             L.append(f"container_network_transmit_bytes_total{{{base}}} {tx:.0f}")
+            # Packet, drop, and error counters share the byte series' labels.
+            # Grafana 15758 rates them by pod.
+            packets_rx = elapsed * (40 + idx)
+            packets_tx = elapsed * (30 + idx)
+            L.append(f"container_network_receive_packets_total{{{base}}} {packets_rx:.0f}")
+            L.append(f"container_network_transmit_packets_total{{{base}}} {packets_tx:.0f}")
+            L.append(f"container_network_receive_packets_dropped_total{{{base}}} {idx % 3}")
+            L.append(f"container_network_transmit_packets_dropped_total{{{base}}} {idx % 2}")
+            L.append(f"container_network_receive_errors_total{{{base}}} {idx % 2}")
+            L.append(f"container_network_transmit_errors_total{{{base}}} {0 if idx % 4 else 1}")
+            # CFS throttle and OOM are per-container counters, same as cAdvisor.
+            L.append(
+                f"container_cpu_cfs_throttled_seconds_total{{{base}}} {elapsed * 0.01 * (idx % 4):.4f}"
+            )
+            L.append(f"container_oom_events_total{{{base}}} {int(elapsed / 120) if idx % 5 == 0 else 0}")
 
     # ---- kube-state-metrics: nodes --------------------------------------
     L.append("# HELP kube_node_info Information about a cluster node")
@@ -142,14 +242,25 @@ def render() -> str:
         # Ready condition present; OutOfDisk intentionally absent (removed in 1.12).
         L.append(f'kube_node_status_condition{{node="{n}",condition="Ready",status="true"}} 1')
         for resource, alloc, cap in (("pods", 110, 110), ("cpu", 4, 4), ("memory", 15 * 1024**3, 16 * 1024**3)):
-            L.append(f'kube_node_status_allocatable{{node="{n}",resource="{resource}"}} {alloc}')
-            L.append(f'kube_node_status_capacity{{node="{n}",resource="{resource}"}} {cap}')
+            unit = {"cpu": "core", "memory": "byte", "pods": "integer"}[resource]
+            L.append(
+                f'kube_node_status_allocatable{{node="{n}",resource="{resource}",unit="{unit}"}} {alloc}'
+            )
+            L.append(
+                f'kube_node_status_capacity{{node="{n}",resource="{resource}",unit="{unit}"}} {cap}'
+            )
 
     # ---- kube-state-metrics: pods ---------------------------------------
     L.append("# HELP kube_pod_info Information about pod")
     L.append("# TYPE kube_pod_info gauge")
+    L.append("# HELP kube_pod_status_qos_class The pod's QoS class")
+    L.append("# TYPE kube_pod_status_qos_class gauge")
+    L.append("# HELP kube_pod_container_status_ready Whether the container is ready")
+    L.append("# TYPE kube_pod_container_status_ready gauge")
     L.append("# HELP kube_pod_container_info Information about a container in a pod")
     L.append("# TYPE kube_pod_container_info gauge")
+    L.append("# HELP kube_pod_container_resource_limits Limit on container resources")
+    L.append("# TYPE kube_pod_container_resource_limits gauge")
     L.append("# HELP kube_pod_status_phase The pods current phase")
     L.append("# TYPE kube_pod_status_phase gauge")
     L.append("# HELP kube_pod_container_status_running Whether the container is running")
@@ -167,14 +278,24 @@ def render() -> str:
         for pod, container in pods:
             n = _node_for(idx)
             idx += 1
+            owner = pod.rsplit("-", 1)[0]
+            owner_kind = "DaemonSet" if owner == "kube-proxy" else "ReplicaSet"
+            qos = "Guaranteed" if idx % 2 == 0 else "Burstable"
             pod_ip = f"10.244.0.{idx}"
             L.append(
                 f'kube_pod_info{{namespace="{ns}",pod="{pod}",node="{n}",'
-                f'pod_ip="{pod_ip}",host_ip="10.0.0.{1 + (idx % 2)}"}} 1'
+                f'pod_ip="{pod_ip}",host_ip="10.0.0.{1 + (idx % 2)}",'
+                f'created_by_kind="{owner_kind}",created_by_name="{owner}"}} 1'
             )
             L.append(
-                f'kube_pod_container_info{{namespace="{ns}",pod="{pod}",'
-                f'container="{container}",image="registry/{container}:latest"}} 1'
+                f'kube_pod_status_qos_class{{namespace="{ns}",pod="{pod}",qos_class="{qos}"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_status_ready{{namespace="{ns}",pod="{pod}",container="{container}"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_info{{namespace="{ns}",pod="{pod}",container="{container}",'
+                f'image="registry/{container}:latest"}} 1'
             )
             # kube-state-metrics emits every phase as a 0/1 series; 0-valued
             # non-Running phases keep the Pending/Failed/Succeeded/Unknown
@@ -207,6 +328,12 @@ def render() -> str:
             )
             L.append(
                 f'kube_pod_container_resource_requests{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="memory",unit="byte"}} {int(0.5 * 1024**3)}'
+            )
+            L.append(
+                f'kube_pod_container_resource_limits{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="cpu",unit="core"}} 1'
+            )
+            L.append(
+                f'kube_pod_container_resource_limits{{namespace="{ns}",pod="{pod}",container="{container}",node="{n}",resource="memory",unit="byte"}} {1024**3}'
             )
 
     # ---- kube-state-metrics: deployments --------------------------------
@@ -262,7 +389,7 @@ def render() -> str:
             cgroup_id = f"/kubepods/{pod}/{container}"
             base = (
                 f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
-                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}"'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",instance="{n}",node="{n}"'
             )
             cpu = elapsed * (0.05 + 0.02 * (idx % 5))
             mem = int((128 + 40 * (idx % 6)) * 1024**2)
@@ -352,7 +479,241 @@ def render() -> str:
         L.append(f"node_filesystem_size_bytes{{{labels}}} {(100 * 1024**3)}")
         L.append(f"node_filesystem_free_bytes{{{labels}}} {((60 - 5) * 1024**3)}")
 
-    return "\n".join(L) + "\n"
+    # ---- kubelet (Grafana 12123) ----------------------------------------
+    # Real kubelet metric names. Two instances so the instance control changes
+    # the running-pod count. Histograms are cumulative classic buckets.
+    L.append("# HELP kubelet_running_pod_count Running pods")
+    L.append("# TYPE kubelet_running_pod_count gauge")
+    L.append("# HELP kubelet_running_container_count Running containers")
+    L.append("# TYPE kubelet_running_container_count gauge")
+    L.append("# HELP volume_manager_total_volumes Volumes the kubelet knows")
+    L.append("# TYPE volume_manager_total_volumes gauge")
+    L.append("# HELP kubelet_node_config_error Node config error")
+    L.append("# TYPE kubelet_node_config_error gauge")
+    counters = [
+        "kubelet_runtime_operations_total",
+        "kubelet_runtime_operations_errors_total",
+        "kubelet_runtime_operations_duration_seconds_bucket",
+        "kubelet_pod_start_duration_seconds_count",
+        "kubelet_pod_worker_duration_seconds_count",
+        "kubelet_pod_start_duration_seconds_bucket",
+        "kubelet_pod_worker_duration_seconds_bucket",
+        "storage_operation_duration_seconds_count",
+        "storage_operation_errors_total",
+        "storage_operation_duration_seconds_bucket",
+        "kubelet_cgroup_manager_duration_seconds_count",
+        "kubelet_cgroup_manager_duration_seconds_bucket",
+        "kubelet_pleg_relist_duration_seconds_count",
+        "kubelet_pleg_relist_interval_seconds_bucket",
+        "kubelet_pleg_relist_duration_seconds_bucket",
+        "rest_client_requests_total",
+        "rest_client_request_latency_seconds_bucket",
+        "process_cpu_seconds_total",
+    ]
+    for name in counters:
+        L.append(f"# TYPE {name} counter")
+    L.append("# TYPE process_resident_memory_bytes gauge")
+    L.append("# TYPE go_goroutines gauge")
+    L.append("# TYPE up gauge")
+    les = (("0.1", 0.5), ("0.5", 0.9), ("1", 0.99), ("+Inf", 1.0))
+    for idx, inst in enumerate(("node-1:10250", "node-2:10250")):
+        base = f'cluster="{CLUSTER}",job="kubelet",instance="{inst}"'
+        scale = 2 + idx
+        L.append(f"up{{{base}}} 1")
+        L.append(f"kubelet_running_pod_count{{{base}}} {4 if idx == 0 else 2}")
+        L.append(f"kubelet_running_container_count{{{base}}} {6 if idx == 0 else 3}")
+        L.append(f'volume_manager_total_volumes{{{base},state="actual_state_of_world"}} {3 + idx}')
+        L.append(f'volume_manager_total_volumes{{{base},state="desired_state_of_world"}} {3 + idx}')
+        L.append(f"kubelet_node_config_error{{{base}}} {int(elapsed / 30)}")
+        ops = elapsed * scale
+        for op in ("create_container", "start_container"):
+            L.append(f'kubelet_runtime_operations_total{{{base},operation_type="{op}"}} {ops:.0f}')
+            L.append(f'kubelet_runtime_operations_errors_total{{{base},operation_type="{op}"}} {ops * 0.02:.0f}')
+            for le, frac in les:
+                L.append(
+                    f'kubelet_runtime_operations_duration_seconds_bucket{{{base},operation_type="{op}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f"kubelet_pod_start_duration_seconds_count{{{base}}} {ops:.0f}")
+        L.append(f"kubelet_pod_worker_duration_seconds_count{{{base}}} {ops * 1.2:.0f}")
+        for le, frac in les:
+            L.append(f'kubelet_pod_start_duration_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+            L.append(f'kubelet_pod_worker_duration_seconds_bucket{{{base},le="{le}"}} {ops * 1.2 * frac:.0f}')
+        for op, plugin in (("volume_mount", "kubernetes.io/empty-dir"),):
+            L.append(f'storage_operation_duration_seconds_count{{{base},operation_name="{op}",volume_plugin="{plugin}"}} {ops:.0f}')
+            L.append(f'storage_operation_errors_total{{{base},operation_name="{op}",volume_plugin="{plugin}"}} {ops * 0.01:.0f}')
+            for le, frac in les:
+                L.append(
+                    f'storage_operation_duration_seconds_bucket{{{base},operation_name="{op}",volume_plugin="{plugin}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f'kubelet_cgroup_manager_duration_seconds_count{{{base},operation_type="create"}} {ops:.0f}')
+        for le, frac in les:
+            L.append(
+                f'kubelet_cgroup_manager_duration_seconds_bucket{{{base},operation_type="create",le="{le}"}} {ops * frac:.0f}'
+            )
+        L.append(f"kubelet_pleg_relist_duration_seconds_count{{{base}}} {ops:.0f}")
+        for le, frac in les:
+            L.append(f'kubelet_pleg_relist_duration_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+            L.append(f'kubelet_pleg_relist_interval_seconds_bucket{{{base},le="{le}"}} {ops * frac:.0f}')
+        for code, frac in (("200", 0.9), ("404", 0.05), ("500", 0.02)):
+            L.append(f'rest_client_requests_total{{{base},code="{code}"}} {ops * frac:.0f}')
+        for verb, url in (("GET", "/pods"),):
+            for le, frac in les:
+                L.append(
+                    f'rest_client_request_latency_seconds_bucket{{{base},verb="{verb}",url="{url}",le="{le}"}} {ops * frac:.0f}'
+                )
+        L.append(f"process_resident_memory_bytes{{{base}}} {200 * 1024 * 1024}")
+        L.append(f"process_cpu_seconds_total{{{base}}} {elapsed * 0.05 * scale:.4f}")
+        L.append(f"go_goroutines{{{base}}} {40 + idx}")
+
+    # Grafana 15758 resource-count panels. Names, labels, and types match
+    # kube-state-metrics.
+    _append_namespace_objects(L)
+
+    # ---- kubelet volume stats + PVC phase (Grafana 11455, 15758) -------
+    # Real exporter names. `data` in default grows fast enough that a short
+    # scrape window still projects full within a week, and its capacity is
+    # expanded as it fills (free space stays at 1.5 GiB) so the projection and
+    # the rate panels hold however long the exporter runs. `data` and `logs` in
+    # default sit above the 80% warning line; `data` in staging is flat and
+    # below it. `pending` has an info series and a phase but no kubelet stats.
+    L.append("# HELP kube_namespace_created Unix time the namespace was created")
+    L.append("# TYPE kube_namespace_created gauge")
+    L.append("# HELP kubelet_volume_stats_capacity_bytes Volume capacity")
+    L.append("# TYPE kubelet_volume_stats_capacity_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_used_bytes Volume bytes used")
+    L.append("# TYPE kubelet_volume_stats_used_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_available_bytes Volume bytes available")
+    L.append("# TYPE kubelet_volume_stats_available_bytes gauge")
+    L.append("# HELP kubelet_volume_stats_inodes Volume inode count")
+    L.append("# TYPE kubelet_volume_stats_inodes gauge")
+    L.append("# HELP kubelet_volume_stats_inodes_used Volume inodes used")
+    L.append("# TYPE kubelet_volume_stats_inodes_used gauge")
+    L.append("# HELP kube_persistentvolumeclaim_status_phase PVC phase flag")
+    L.append("# TYPE kube_persistentvolumeclaim_status_phase gauge")
+    for ns in ("default", "staging", "kube-system"):
+        L.append(f'kube_namespace_created{{namespace="{ns}"}} {now - 86400:.0f}')
+    # (namespace, claim, capacity, used at start, bytes/s, phase); capacity
+    # None means the volume is expanded to keep 1.5 GiB free.
+    claims = (
+        ("default", "data", None, 8 * 1024**3, 500_000, "Bound"),
+        ("default", "logs", 10 * 1024**3, int(9.2 * 1024**3), 1_000, "Bound"),
+        ("staging", "data", 10 * 1024**3, 4 * 1024**3, 0, "Bound"),
+    )
+    for ns, claim, capacity, used_base, per_sec, phase in claims:
+        used = used_base + int(elapsed * per_sec)
+        if capacity is None:
+            capacity = used + int(1.5 * 1024**3)
+        else:
+            used = min(used, capacity - 100 * 1024**2)
+        available = capacity - used
+        labels = f'namespace="{ns}",persistentvolumeclaim="{claim}",node="node-1"'
+        L.append(f"kubelet_volume_stats_capacity_bytes{{{labels}}} {capacity}")
+        L.append(f"kubelet_volume_stats_used_bytes{{{labels}}} {used}")
+        L.append(f"kubelet_volume_stats_available_bytes{{{labels}}} {available}")
+        L.append(f"kubelet_volume_stats_inodes{{{labels}}} 1000000")
+        L.append(f"kubelet_volume_stats_inodes_used{{{labels}}} 250000")
+        L.append(
+            f'kube_persistentvolumeclaim_status_phase{{namespace="{ns}",persistentvolumeclaim="{claim}",phase="{phase}"}} 1'
+        )
+    L.append(
+        'kube_persistentvolumeclaim_status_phase{namespace="default",persistentvolumeclaim="pending",phase="Pending"} 1'
+    )
+
+    # Grafana 15661. Real cAdvisor and kube-state-metrics names. The batch
+    # namespace sits over the 0.5 core and 1GiB working-set thresholds.
+    # Namespace, service, configmap, secret, limit, and volume-stats series
+    # come from the shared blocks above.
+    L.append("# HELP container_memory_rss Resident set size")
+    L.append("# TYPE container_memory_rss gauge")
+    L.append("# HELP kube_pod_created Pod creation time")
+    L.append("# TYPE kube_pod_created gauge")
+    L.append("# HELP kube_deployment_metadata_generation Deployment generation")
+    L.append("# TYPE kube_deployment_metadata_generation gauge")
+    L.append("# HELP kube_daemonset_metadata_generation Daemonset generation")
+    L.append("# TYPE kube_daemonset_metadata_generation gauge")
+    L.append("# HELP kube_statefulset_metadata_generation Statefulset generation")
+    L.append("# TYPE kube_statefulset_metadata_generation gauge")
+    L.append("# HELP kube_node_spec_taint Node taint")
+    L.append("# TYPE kube_node_spec_taint gauge")
+    L.append("# HELP kube_pod_spec_volumes_persistentvolumeclaims_info PVC mounts")
+    L.append("# TYPE kube_pod_spec_volumes_persistentvolumeclaims_info gauge")
+    L.append(f'kube_namespace_created{{namespace="batch"}} {now - 86400:.0f}')
+    for ns, deps in DEPLOYMENTS.items():
+        for dep, _replicas in deps.items():
+            L.append(
+                f'kube_deployment_metadata_generation{{namespace="{ns}",deployment="{dep}"}} 1'
+            )
+    L.append(
+        'kube_daemonset_metadata_generation{namespace="kube-system",daemonset="kube-proxy"} 1'
+    )
+    L.append('kube_statefulset_metadata_generation{namespace="default",statefulset="web"} 1')
+    L.append('kube_node_spec_taint{node="node-1",key="node.kubernetes.io/unschedulable"} 1')
+    L.append('kube_node_spec_taint{node="node-2",key="dedicated"} 1')
+    idx = 0
+    for ns, pods in WORKLOADS.items():
+        for pod, container in pods:
+            n = _node_for(idx)
+            idx += 1
+            cgroup_id = f"/kubepods/{pod}/{container}"
+            base = (
+                f'id="{cgroup_id}",namespace="{ns}",pod="{pod}",container="{container}",'
+                f'image="registry/{container}:latest",name="k8s_{container}_{pod}",'
+                f'instance="{n}",node="{n}"'
+            )
+            mem = int((128 + 40 * (idx % 6)) * 1024**2)
+            L.append(f"container_memory_rss{{{base}}} {int(mem * 0.8)}")
+            L.append(f'container_fs_usage_bytes{{{base},device="/dev/sda1"}} {2 * 1024**3}')
+            L.append(f'container_fs_limit_bytes{{{base},device="/dev/sda1"}} {20 * 1024**3}')
+            L.append(f'kube_pod_created{{namespace="{ns}",pod="{pod}"}} {int(now - 3600 * idx)}')
+    L.append(
+        'kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="default",pod="web-0",'
+        'persistentvolumeclaim="data"} 1'
+    )
+    bbase = (
+        'id="/kubepods/worker-0/worker",namespace="batch",pod="worker-0",container="worker",'
+        'image="registry/worker:latest",name="k8s_worker_worker-0",instance="node-1",node="node-1"'
+    )
+    L.append(f"container_cpu_usage_seconds_total{{{bbase}}} {elapsed * 0.8:.4f}")
+    L.append(f"container_memory_working_set_bytes{{{bbase}}} {2 * 1024**3}")
+    L.append(f"container_memory_rss{{{bbase}}} {int(1.5 * 1024**3)}")
+    L.append(f"container_spec_cpu_quota{{{bbase}}} 100000")
+    L.append(f"container_spec_cpu_period{{{bbase}}} 100000")
+    L.append(f"container_spec_memory_limit_bytes{{{bbase}}} {4 * 1024**3}")
+    # Pod network is on the sandbox cgroup with no container label, the way
+    # containerd's cAdvisor emits it.
+    sandbox = (
+        'id="/kubepods/worker-0",namespace="batch",pod="worker-0",'
+        'image="registry/pause:3.9",name="k8s_POD_worker-0",instance="node-1",node="node-1"'
+    )
+    L.append(f"container_network_receive_bytes_total{{{sandbox}}} {elapsed * 8000:.0f}")
+    L.append(f"container_network_transmit_bytes_total{{{sandbox}}} {elapsed * 4000:.0f}")
+    L.append(
+        'kube_pod_info{namespace="batch",pod="worker-0",node="node-1",'
+        'created_by_kind="ReplicaSet",created_by_name="worker"} 1'
+    )
+    L.append(
+        'kube_pod_container_info{namespace="batch",pod="worker-0",container="worker",'
+        'image="registry/worker:latest"} 1'
+    )
+    L.append(
+        'kube_pod_container_resource_requests{namespace="batch",pod="worker-0",container="worker",'
+        'node="node-1",resource="cpu",unit="core"} 0.5'
+    )
+    L.append(
+        f'kube_pod_container_resource_requests{{namespace="batch",pod="worker-0",container="worker",'
+        f'node="node-1",resource="memory",unit="byte"}} {1024**3}'
+    )
+    L.append(
+        'kube_pod_container_resource_limits{namespace="batch",pod="worker-0",container="worker",'
+        'node="node-1",resource="cpu",unit="core"} 2'
+    )
+    L.append(
+        f'kube_pod_container_resource_limits{{namespace="batch",pod="worker-0",container="worker",'
+        f'node="node-1",resource="memory",unit="byte"}} {4 * 1024**3}'
+    )
+    L.append(f'kube_pod_created{{namespace="batch",pod="worker-0"}} {int(now - 7200)}')
+
+    return _stamp_cluster("\n".join(L))
 
 
 class Handler(BaseHTTPRequestHandler):

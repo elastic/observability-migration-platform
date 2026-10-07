@@ -3,6 +3,7 @@
 
 """Curated packs for Grafana 15762, 16367, and 20577."""
 
+import itertools
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from observability_migration.adapters.source.grafana.panels import (
 )
 from observability_migration.adapters.source.grafana.rules import RulePackConfig, resolve_pack_for_dashboard
 from observability_migration.adapters.source.grafana.schema import SchemaResolver
+from observability_migration.targets.kibana.dashboards_api import build_dashboard_payload_from_ir
 
 DASHBOARD_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "docs" / "dashboards" / "schema.json"
 
@@ -288,7 +290,7 @@ def test_16367_quota_table_uses_raw_cadvisor_and_requests():
     assert '== "cpu"' not in memory
 
 
-def test_16367_dashboard_matches_the_schema():
+def _translate_16367():
     def chart(panel_id, title, y):
         return {
             "id": panel_id,
@@ -311,13 +313,17 @@ def test_16367_dashboard_matches_the_schema():
         {"id": 4, "type": "table-old", "title": "Memory Quota", "targets": [{"expr": "up", "refId": "A"}], "gridPos": {"x": 0, "y": 25, "w": 24, "h": 7}},
     ]
     resolved, resolver = _resolve(16367, "Kubernetes / Compute Resources / Node (Pods)", ["kubernetes-mixin"])
-    result = translate_dashboard(
+    return translate_dashboard(
         {"gnetId": 16367, "title": "Kubernetes / Compute Resources / Node (Pods)", "tags": ["kubernetes-mixin"], "panels": panels},
         datasource_index="metrics-*",
         esql_index="metrics-*",
         rule_pack=resolved,
         resolver=resolver,
     )
+
+
+def test_16367_dashboard_matches_the_schema():
+    result = _translate_16367()
     yaml_panels = result.dashboard_ir.to_yaml_dict()["panels"]
     leaves = _leaf_panels(yaml_panels)
     assert {panel["title"] for panel in leaves} == {
@@ -330,6 +336,57 @@ def test_16367_dashboard_matches_the_schema():
     assert cpu["esql"]["type"] == "line"
     assert "max capacity" in cpu["esql"]["query"]
     assert _errors(yaml_panels) == []
+
+
+def test_16367_layout_keeps_the_source_row_order():
+    # Three of the four source rows hold a single panel whose title repeats the
+    # row title, so they are flattened to the top level and the pack's layout
+    # positions are dashboard-absolute. With section-relative y they all land on
+    # y 0, and the overlap resolver breaks the tie by title -- CPU Quota first.
+    result = _translate_16367()
+    top_level = result.dashboard_ir.to_yaml_dict()["panels"]
+    assert [
+        (panel["title"], "section" if panel.get("section") else "panel")
+        for panel in top_level
+    ] == [
+        ("CPU Usage", "panel"),
+        ("CPU Quota", "panel"),
+        ("Memory Usage", "section"),
+        ("Memory Quota", "panel"),
+    ]
+    section = next(panel for panel in top_level if panel.get("section"))
+    assert [child["title"] for child in section["section"]["panels"]] == [
+        "Memory Usage (w/o cache)"
+    ]
+
+    # Every top-level panel is full width, so "bottom of one is at or above the
+    # top of the next" is both strictly increasing y and non-overlapping.
+    stacked = [panel for panel in top_level if not panel.get("section")]
+    assert {panel["position"]["x"] for panel in stacked} == {0}
+    assert {panel["size"]["w"] for panel in stacked} == {48}
+    for upper, lower in itertools.pairwise(stacked):
+        assert upper["position"]["y"] + upper["size"]["h"] <= lower["position"]["y"]
+
+    # The native payload is what Kibana receives: a section's y is derived from
+    # the panels before it, so the section must clear CPU Quota and still leave
+    # Memory Quota strictly below it (a tie lets Kibana reorder the two).
+    payload, _counts, _reasons = build_dashboard_payload_from_ir(result.dashboard_ir)
+    native = [
+        (
+            panel.get("title") if "panels" in panel else (panel.get("config") or {}).get("title"),
+            panel["grid"],
+        )
+        for panel in payload["panels"]
+    ]
+    assert [title for title, _grid in native] == [
+        "CPU Usage",
+        "CPU Quota",
+        "Memory Usage",
+        "Memory Quota",
+    ]
+    grids = dict(native)
+    assert grids["Memory Usage"]["y"] >= grids["CPU Quota"]["y"] + grids["CPU Quota"]["h"]
+    assert grids["Memory Usage"]["y"] < grids["Memory Quota"]["y"]
 
 
 def test_20577_registry_and_cloudwatch_panels_are_esql():
