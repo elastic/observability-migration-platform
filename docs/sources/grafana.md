@@ -114,9 +114,12 @@ only when the dashboard still has tags. Query fixes land through
 `panel.query_overrides`; scope-only or misleading variable controls can be
 suppressed or rewritten through curated-pack plugins; layout fixes land through
 `panel.layout_overrides` after the standard Kibana layout transform and before
-final overlap cleanup. `query_overrides.status_override` is a ceiling, not an
-unconditional assignment: if the panel's own targets reference a source metric
-the hand-written override never emits, the panel downgrades to
+final overlap cleanup. A `query_overrides` entry with a non-empty `esql_query`
+also replaces a Grafana `text` panel with that query, so markdown that only
+interpolated template variables becomes a live tile; text panels without such
+an override still migrate as markdown. `query_overrides.status_override` is a
+ceiling, not an unconditional assignment: if the panel's own targets reference
+a source metric the hand-written override never emits, the panel downgrades to
 `migrated_with_warnings` (confidence capped at `0.6`) with an explicit "Target
 telemetry missing from curated override" reason, the same disclosure the
 non-pack path uses for a metric that never made it into an otherwise-migrated
@@ -248,6 +251,31 @@ an honest empty via an impossible-filter override instead of erroring on a
 non-existent breakdown column. The cluster-total KPI strip additionally needs the
 node `machine_*` metrics and the root-cgroup (`id="/"`) + `container_fs_*` series
 to populate.
+
+The Kubernetes cluster-monitoring 1621 pack is the community fork of 315 whose
+Cluster Filesystem usage sums every cAdvisor `device=~"^/dev/.*$"` partition
+instead of 315's `^/dev/[sv]d[a-z][1-9]$` (which misses nvme and extra disks).
+Filesystem KPIs `LAST_OVER_TIME` per device then `SUM`. Unlike 315, `$Node` is
+kept: `kubernetes_io_hostname` rewrites to canonical `instance`, the plugin
+populates from `label_values(machine_cpu_cores, instance)` and marks the control
+multi-select so first paint is Grafana All. Duplicate Used/Total tiles are
+renamed Memory/CPU/Filesystem used/total on a 48-col strip. A copy that drops
+`gnetId` is 1621 when a panel query still contains `^/dev/.*$`; otherwise the
+shared title stays on 315.
+
+The Kubernetes Pod Metrics (747) pack is pod-scoped cAdvisor plus
+kube-state-metrics. Heapster `pod_name` / `io_kubernetes_pod_name` rewrite to
+canonical `pod`; `$Node` follows the 741/1621 instance bridge. Hidden Grafana
+variables (`$Pod_ip`, `$phase`, `$container`) only interpolated markdown
+(`# $Pod_ip`); Kibana cannot interpolate those, so curated ES|QL datatables
+list `pod` → `pod_ip` / `container`, and the phase tile keeps the 9628-style
+metric legend. `$Pod` is multi-select on
+`kube_pod_info`. Restarts map `kube_pod_container_status_restarts` → `*_total`.
+Pod-scoped queries also require the canonical `pod` label so `MV_CONTAINS`
+cannot include the root cgroup (`id="/"`) the way PromQL `pod=~` would reject
+unlabeled series. Grafana's CPU Total tile queried node-wide container CPU rate with
+`format=bytes`; Kibana titles it Node CPU and shows a number. Network
+butterflies are named Received/Sent; All-processes panels group by cgroup `id`.
 
 The Kubernetes Cluster (kube-state-metrics 6417) pack targets the KSM +
 `node_exporter` family and was authored against an older lineage: `metric_map`

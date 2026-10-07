@@ -9,7 +9,9 @@
 #   1. Exact gnetId match (preferred — reliable even when title differs)
 #   2. Exact title_hint match when gnetId is absent. Empty dashboard tags still
 #      match (copies/re-imports often strip both gnetId and tags). When the
-#      dashboard still has tags, require overlap with tags_hint.
+#      dashboard still has tags, require overlap with tags_hint. Packs that
+#      share a title declare query_contains; the fragment that appears in a
+#      panel expr wins, and the pack with no fragment stays the default.
 #
 # `gnet_revision` and `dashboard_sha256` are maintainer-verified provenance
 # pins, not a migration-time enforcement mechanism: they record which exact
@@ -136,6 +138,28 @@ packs:
     gnet_revision: 3
     dashboard_sha256: "6fb5e045bc6d860f0f22ce7e145f4da04d2e25fd4fbf9fda29355cef6d63aeae"
     description: "cAdvisor cluster monitoring — pre-1.16 label remap (pod_name/container_name → pod/container), obsolete rkt/docker/systemd series dropped as gaps, machine_*/container_fs_* KPIs"
+
+  - gnet_id: 1621
+    name: grafana_1621_kubernetes_cadvisor
+    # Same grafana.com title as 315. A copy that dropped gnetId is 1621 only
+    # when a panel query still has this filesystem matcher; otherwise the
+    # unsigned 315 title_hint wins.
+    title_hint: "Kubernetes cluster monitoring (via Prometheus)"
+    query_contains: '^/dev/.*$'
+    tags_hint: ["kubernetes"]
+    path: grafana_1621_kubernetes_cadvisor
+    gnet_revision: 1
+    dashboard_sha256: "d714551536ca794e3088ac535e59b3d2f93dd705e3b60f84d6f3c42da40fe9d4"
+    description: "cAdvisor cluster monitoring (315 fork) — filesystem KPIs sum every /dev/* partition, $Node via instance, named Memory/CPU/Filesystem tiles"
+
+  - gnet_id: 747
+    name: grafana_747_kubernetes_pod_metrics
+    title_hint: "Kubernetes Pod Metrics"
+    tags_hint: ["kubernetes"]
+    path: grafana_747_kubernetes_pod_metrics
+    gnet_revision: 2
+    dashboard_sha256: "47837bfea31e6156decd5c152379addfd9c3f9a9991a0cc96d764f91388b2d55"
+    description: "Pod-scoped cAdvisor + kube-state-metrics — Heapster label remap, hidden $Pod_ip/$phase/$container → metric tiles, $Node via instance, restarts_total map"
 
   - gnet_id: 6417
     name: grafana_6417_kubernetes_ksm
