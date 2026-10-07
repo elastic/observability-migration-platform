@@ -4473,12 +4473,25 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         # its ``setdefault`` preserves it (e.g. elapsed-seconds
                         # Start Time → duration display) (PR #369).
                         _primary_format_unit = _override.get("primary_format")
-                        if _primary_format_unit and isinstance(
-                            _native_panel.get("primary"), dict
-                        ):
+                        if _primary_format_unit and isinstance(_native_panel, dict):
                             _pf = grafana_unit_to_yaml_format(_primary_format_unit)
                             if _pf:
-                                _native_panel["primary"]["format"] = _pf
+                                _primary = _native_panel.get("primary")
+                                _xy_metrics = _native_panel.get("metrics")
+                                if isinstance(_primary, dict):
+                                    _primary["format"] = dict(_pf)
+                                elif (
+                                    _override_type in ("line", "area", "bar")
+                                    and isinstance(_xy_metrics, list)
+                                    and len(_xy_metrics) == 1
+                                    and isinstance(_xy_metrics[0], dict)
+                                ):
+                                    # A single-series XY chart whose pack
+                                    # corrects the source unit (CoreDNS cache
+                                    # entries are a count; the source unit is
+                                    # bytes). Multi-series and datatable
+                                    # columns keep their own formats.
+                                    _xy_metrics[0]["format"] = dict(_pf)
                         # Curated overrides skip PANEL_TRANSLATORS; honour
                         # pack-level timeFrom drops before enrich applies
                         # Grafana panel time_range.

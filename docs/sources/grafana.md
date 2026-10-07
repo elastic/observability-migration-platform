@@ -548,6 +548,63 @@ and lists every job; the default `.*` selection still keeps health, CPU, and
 memory on jobs whose name contains `apiserver`. The `resolution` variable is a
 scrape step; chart buckets follow the dashboard time range.
 
+The system CoreDNS dashboard (15762) is the kube-prometheus-stack view.
+Health is the latest `up` per instance. CPU is `process_cpu_seconds_total`
+in cores; the source `percentunit` axis shows that core count as a fraction
+of one core. Average packet size is the size-sum rate divided by the
+size-count rate. Forward requests and DNS errors do not filter on instance.
+Cache hits and misses are both split by cache type. Cache size is
+`coredns_cache_entries` by type; the source unit is bytes, which draws an
+entry count as a size, so the Kibana axis is a count. The three heatmaps are
+the per-second rate of each finite cumulative `le` bucket, so each bucket
+includes every smaller one and the widest buckets read hottest. Grafana
+(`format: heatmap`) converts the buckets to per-bucket counts and uses
+`increase`; ES|QL has no window function to subtract neighbouring buckets.
+`+Inf` is left off so the axis stays on the finite buckets, and the request
+and response size charts also drop `le="0"`. An empty cluster, job, or instance selection, including
+Grafana's All value `.*`, is every value. An empty protocol selection is
+every protocol. The `$protocol` titles no longer mention the variable. The
+`resolution` variable is a scrape step; chart buckets follow the dashboard
+time range. When field caps prove `coredns_build_info` is absent, the job
+dropdown lists jobs from `coredns_dns_requests_total` (or another CoreDNS
+metric) instead of every scraped job. When no CoreDNS metric is present, it
+offers one value that matches no series, so panels stay empty instead of
+plotting other exporters.
+
+The node pod resources dashboard (16367) expands the kubernetes-mixin
+recording rules to cAdvisor and kube-state-metrics. CPU and memory charts
+draw one series per pod plus a `max capacity` series from
+`kube_node_status_capacity`. Capacity is aggregated on its own branch,
+because one time-series aggregation drops a gauge that does not share the
+pod counter series. Quota tables list usage, requests, limits, and
+the usage ratio. Requests and limits come from
+kube-state-metrics for the `cpu` or `memory` resource, a separate series
+from cAdvisor, so each is aggregated on its own branch and joined by pod. The
+ratio uses a 0–100 scale because one datatable cannot format cores
+and `percentunit` as different columns. Memory quota also lists RSS, cache,
+and swap, in bytes. The pod cgroup (empty container name) is omitted. The
+node filter uses the `node` label on the series; the mixin joins
+`kube_pod_info` when cAdvisor has no node label. Pending and Running are not
+joined, so a succeeded pod can still appear. An empty cluster or node
+selection is every value.
+
+The AWS EKS dashboard (20577) is CloudWatch ContainerInsights, not PromQL.
+Tiles and charts read the ContainerInsights metric names. CloudWatch names
+that are not ES|QL identifiers (`4xxErrors`, `401ErrorRate`, and the other
+status-code rates) are stored under `s3_*`, `cloudfront_*`, and `sqs_*`
+fields documented on the panel. The pack emits no `data_stream.dataset`
+dashboard filter, because CloudWatch data is not in the `prometheus`
+dataset. The source pins `ClusterName` to one
+cluster; these queries include every cluster. Utilization gauges stay on a
+0–100 scale with the source thresholds at 60, 80, and 90. The by-node CPU
+chart is labeled by node. Container history plots the running-container
+gauge; the source `SampleCount` counted CloudWatch samples. Log panels list
+the latest 100 `cloudwatch_log_event` documents, one row per event, for
+`log_stream` `eks-cluster` and `fluentbit`, because CloudWatch Logs Insights is not a metric query. The
+Secrets Manager panel has an empty metric name in the source, so it reads
+`secretsmanager_resource_count` and stays a missing-telemetry card until
+that gauge exists.
+
 The Traefik official Kubernetes dashboard (17347) keeps the source Apdex
 formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket
 rate, divided by two, divided by the count rate. The 1.2s bucket is already
