@@ -1,0 +1,29 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 7187 Kubernetes Resource Requests (revision 1).
+
+schema_version: 1
+gnet_id: 7187
+gnet_revision: 1
+dashboard_title: "Kubernetes Resource Requests"
+maintainer: "community"
+
+panels:
+  - title: "CPU Cores"
+    panel_id: 1
+    fidelity: APPROXIMATE
+    notes: "Smallest node's allocatable CPU and the busiest node's requests and limits. *_cpu_cores reshaped onto resource=cpu."
+  - title: "CPU Cores"
+    panel_id: 2
+    fidelity: APPROXIMATE
+    notes: "Busiest-node CPU request over smallest-node allocatable. *_cpu_cores reshaped onto resource=cpu."
+  - title: "Memory"
+    panel_id: 3
+    fidelity: APPROXIMATE
+    notes: "Smallest node's allocatable memory and the busiest node's requests and limits, in bytes."
+  - title: "Memory"
+    panel_id: 4
+    fidelity: APPROXIMATE
+    notes: "Busiest-node memory request over smallest-node allocatable. *_memory_bytes reshaped onto resource=memory."

@@ -167,6 +167,28 @@ reported with status `duplicate_id`, which is a failure on the same terms as
 `lossy` (never `uploaded_ok`, fails the exit code). A loud stop is preferable to
 a run that claims two dashboards and leaves one.
 
+#### Dashboards with nothing to upload
+
+A payload with no leaf panels is refused rather than sent, because a dashboard
+of empty collapsible sections is how silently dropped panels look from the
+outside. Two unrelated situations reach that check, and they are reported
+differently.
+
+A payload that carries *something* — sections, controls, or a non-zero
+mapped/unmapped count — but no leaf panels lost its panels on the way here. It
+keeps status `empty`, a failure on the same terms as `lossy`.
+
+A payload that carries *nothing at all*, from a source dashboard with no
+panels, is reported as `source_empty`: no dashboard is created, and the reason
+travels in the upload record's `output`. It is not `uploaded_ok` — nothing
+reached Kibana — but it is not a defect either, so `datadog-migrate` prints
+`UPLOAD SKIPPED` and records `runtime_summary.upload.status: "skipped"` instead
+of a failure. Real accounts carry scratch dashboards with no widgets (three of
+six on the account used to develop this), and reporting those as upload errors
+buries the failures that matter. The distinction is drawn from the payload's own
+shape, not from a caller's claim, so a source that drops panels without
+counting them cannot reach the benign answer by staying quiet.
+
 #### Control data views
 
 A control's `data_view_id` starts life as an index pattern (`metrics-*`), which

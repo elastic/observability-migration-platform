@@ -114,18 +114,33 @@ only when the dashboard still has tags. Query fixes land through
 `panel.query_overrides`; scope-only or misleading variable controls can be
 suppressed or rewritten through curated-pack plugins; layout fixes land through
 `panel.layout_overrides` after the standard Kibana layout transform and before
-final overlap cleanup. `query_overrides.status_override` is a ceiling, not an
-unconditional assignment: if the panel's own targets reference a source metric
-the hand-written override never emits, the panel downgrades to
+final overlap cleanup. A `query_overrides` entry with a non-empty `esql_query`
+also replaces a Grafana `text` panel with that query, so markdown that only
+interpolated template variables becomes a live tile; text panels without such
+an override still migrate as markdown. `query_overrides.status_override` is a
+ceiling, not an unconditional assignment: if the panel's own targets reference
+a source metric the hand-written override never emits, the panel downgrades to
 `migrated_with_warnings` (confidence capped at `0.6`) with an explicit "Target
 telemetry missing from curated override" reason, the same disclosure the
 non-pack path uses for a metric that never made it into an otherwise-migrated
 fused query ("Dropped from migrated query"). Both checks require live
 field-caps discovery (`--es-url`) to resolve the metric's actual field name;
-without it they no-op rather than guess. Metrics listed in the pack's
-`live_optional_metrics` that field-caps proved absent are stripped from the
-hand-written override so the rest of the panel can still render; those
-omissions are not reported as pack gaps. `kibana_type_override` forces the
+without it they no-op rather than guess. Any `{{metric:}}` token that
+field-caps proved absent is stripped from the hand-written override so the
+rest of the panel can still render. Metrics listed in the pack's
+`live_optional_metrics` are expected omissions and are not reported as pack
+gaps; any other stripped metric is reported as "Target telemetry missing from
+curated override" and caps the panel at `migrated_with_warnings`. An override
+that leaves a source metric out on purpose (for example a PromQL `and on(...)`
+join with no ES|QL equivalent) lists it under `dropped_source_metrics` and
+explains the drop in `approximation_note`; the note caps the status, and the
+listed metric is not also reported as missing telemetry. A presence
+filter (`metric IS NOT NULL`) that was the only use of an absent metric does
+not leave a count of every series: when no remaining aggregation reads a
+metric, the panel becomes a missing-telemetry card. When stripping removes
+every series, or leaves only group columns such as the time bucket (for
+example a ratio that lost one operand), the panel is that same card instead of
+an Elasticsearch unknown-column error or an empty chart. `kibana_type_override` forces the
 Lens chart type when the curated query shape does not match the Grafana panel
 (for example a stacked CPU graph emitted as overlay lines). `drop_time_from`
 strips Grafana's panel `timeFrom` so the override follows the dashboard time
@@ -145,7 +160,10 @@ also `title`-renames the chrome, the inner Lens label is cleared against the
 `xy_mode` to pick the Lens chart (stacked bar for composition-over-time,
 line for rates) without replacing the query, and `legend_position` to move an
 XY legend (`right` for a long categorical breakdown that does not fit under
-the plot). Those last three are **presentation-only** and stay inside the XY
+the plot). `metric_color: none` drops a metric tile's threshold color, the same
+as Grafana's stat `colorMode: none`, for a plain value such as an uptime
+duration; on any other panel type the request is skipped with a panel warning.
+The `kibana_type_override`, `xy_mode`, and `legend_position` keys are **presentation-only** and stay inside the XY
 family: `layout_overrides.kibana_type_override` accepts `line` / `bar` / `area`
 only (a rule pack asking for `metric`, `gauge`, `datatable`, … is rejected at
 load time), because this late pass rewrites `esql.type` / `mode` / `legend`
@@ -234,6 +252,31 @@ non-existent breakdown column. The cluster-total KPI strip additionally needs th
 node `machine_*` metrics and the root-cgroup (`id="/"`) + `container_fs_*` series
 to populate.
 
+The Kubernetes cluster-monitoring 1621 pack is the community fork of 315 whose
+Cluster Filesystem usage sums every cAdvisor `device=~"^/dev/.*$"` partition
+instead of 315's `^/dev/[sv]d[a-z][1-9]$` (which misses nvme and extra disks).
+Filesystem KPIs `LAST_OVER_TIME` per device then `SUM`. Unlike 315, `$Node` is
+kept: `kubernetes_io_hostname` rewrites to canonical `instance`, the plugin
+populates from `label_values(machine_cpu_cores, instance)` and marks the control
+multi-select so first paint is Grafana All. Duplicate Used/Total tiles are
+renamed Memory/CPU/Filesystem used/total on a 48-col strip. A copy that drops
+`gnetId` is 1621 when a panel query still contains `^/dev/.*$`; otherwise the
+shared title stays on 315.
+
+The Kubernetes Pod Metrics (747) pack is pod-scoped cAdvisor plus
+kube-state-metrics. Heapster `pod_name` / `io_kubernetes_pod_name` rewrite to
+canonical `pod`; `$Node` follows the 741/1621 instance bridge. Hidden Grafana
+variables (`$Pod_ip`, `$phase`, `$container`) only interpolated markdown
+(`# $Pod_ip`); Kibana cannot interpolate those, so curated ES|QL datatables
+list `pod` → `pod_ip` / `container`, and the phase tile keeps the 9628-style
+metric legend. `$Pod` is multi-select on
+`kube_pod_info`. Restarts map `kube_pod_container_status_restarts` → `*_total`.
+Pod-scoped queries also require the canonical `pod` label so `MV_CONTAINS`
+cannot include the root cgroup (`id="/"`) the way PromQL `pod=~` would reject
+unlabeled series. Grafana's CPU Total tile queried node-wide container CPU rate with
+`format=bytes`; Kibana titles it Node CPU and shows a number. Network
+butterflies are named Received/Sent; All-processes panels group by cgroup `id`.
+
 The Kubernetes Cluster (kube-state-metrics 6417) pack targets the KSM +
 `node_exporter` family and was authored against an older lineage: `metric_map`
 bridges the renamed names (`node_filesystem_size`/`_free` →
@@ -292,6 +335,27 @@ the Info and Activity sections. KPI chrome titles are shortened for Kibana
 tiles (Safe to autoscale, Unscheduled pods, Since scale-down/autoscale, Net
 scaled nodes); the 0/1 safe-to-scale gauge has no Yes/No value map.
 
+The node-exporter disk graphs (9852) pack covers the second most-popular node
+exporter dashboard (~5M downloads). Three things the engine handles without pack
+help: the IO Wait per core two-layer Min/Avg/Max split (issue #355), the
+element-wise `rate(A)/rate(B)` same-bucket ratio (issue #376), and the
+`$RateInterval` interval-variable disclosure (issue #356 — the rate window is
+fixed at 5m in the translated PROMQL; ES|QL panels use a TBUCKET bucket-width).
+What the pack adds: `node_vmstat_oom_kill` is pinned as a **gauge** —
+node_exporter declares it `# TYPE ... untyped` (Prometheus reports its type as
+`unknown`) because it is a raw `/proc/vmstat` passthrough, so there is no
+counter declaration to honour. The source panel still calls `irate()` on it,
+which Prometheus permits only because it does not type-check; Elasticsearch
+does, and rejects `RATE`/`IRATE` on a field it did not map `counter_*`. The pin
+lets the engine degrade `irate()` to its gauge analogue (surfaced as a warning)
+rather than emit an `IRATE` the target rejects at runtime. `$Node` / `$CPU` /
+`$Disk` variables map to `instance` / `cpu` / `device` labels; the Disk IO
+panel names its three series `Weighted IO time` / `Write time` / `Read time`
+grouped per device; and the four per-device ratio panels (`Write size`, `Write
+latency`, `Read size`, `Read latency`) produce a named output column instead of
+`computed_value`. The 24-column source layout scales cleanly to the 48-column
+Kibana grid without gaps.
+
 The Kubernetes App Metrics (1471) pack is a pre-1.16 cAdvisor + app-HTTP mix.
 Heapster labels (`container_name`, `pod_name`, `kubernetes_io_hostname`) and
 HTTP `kubernetes_namespace` rewrite to canonical `container` / `pod` /
@@ -305,6 +369,309 @@ Lens breakdown, not a cartesian Native-by-code legend). nginx/haproxy metrics ar
 and drop Grafana's limit/request reference lines (Lens XY has one breakdown).
 Response-time panels approximate `histogram_quantile` with `PERCENTILE` of
 the duration gauge.
+
+The kube-state-metrics v2 (13332) pack keeps the modern `resource=` cluster
+tiles and shows them as percents. Container CPU and memory request tiles still
+authored against `kube_pod_container_resource_requests_cpu_cores` /
+`_memory_bytes` are reshaped onto `kube_pod_container_resource_requests`.
+`changes()` on the restart counter is `RATE` on the latest 30-minute
+bucket per series, times 1800 seconds (ES|QL `DELTA` rejects counter fields).
+Earlier buckets in that window are not added. Deployment, StatefulSet, job, and PVC
+tables group by the object the Grafana legend named. The HPA chart splits
+series by namespace and name. HPAs sitting on their min or max are tables
+and stay cluster-wide, because those source queries do not filter cluster
+or namespace. The CPU capacity chart names capacity, allocatable,
+requested, and limit after the metric each series plots. Cluster memory
+capacity is shown in bytes; the source axis unit is `bits`. Cluster, node,
+and namespace controls stay on the queries.
+
+The cluster volume dashboard (11454) approximates `predict_linear` fill-in-a-week
+as available bytes divided by one day of used-byte growth. The infrastructure
+"current" table is the exception: its source range is a week, so that slope is
+a week of growth scaled back to a daily rate. The pack replaces the
+0/1 alert-history graphs with a count of volumes at risk. PVCs at or above the
+revision-14 textbox default of 80% are a count, a table, and an hourly count.
+Hourly, daily, and weekly use-rate charts keep those windows (`DELTA` over
+1 hour, 24 hours, and 168 hours) and one series per claim. Weekly points are
+one per day so the line stays inside the dashboard time range. OpenShift
+`pv_collector_*` counts are `kube_persistentvolumeclaim_status_phase`. The
+Grafana alert list is a gap.
+
+The namespace volume dashboard (11455) is that cluster dashboard scoped to one
+namespace. The namespace control is an exact match. When the upload can reach
+Elasticsearch, the control opens on the first namespace, as Grafana does for a
+variable with no saved value. Otherwise it starts empty. An empty control and
+the `.*` option both match every namespace. Per-claim series and rows
+keep the namespace (`namespace (claim)`), so claims with the same name in
+different namespaces stay separate. The "current" table is the exception: the
+source query lists infrastructure namespaces (`openshift-*`, `kube-*`,
+`default`, `logging`) and a week of growth, and it does not follow the
+namespace control. Fill-in-a-week and the revision-6 textbox default of 80% use
+the same approximations as the cluster dashboard. The hourly, daily, and weekly
+rates keep their 1-hour, 24-hour, and 168-hour windows, but all three are
+plotted hourly as sliding windows. A daily or weekly bucket starts at midnight,
+before the start of the default 6-hour range, and Kibana would hide its only
+point. OpenShift `pv_collector_*` counts are
+`kube_persistentvolumeclaim_status_phase` in the selected namespace. PVC Stats
+also lists claims that have `kube_persistentvolumeclaim_info` but no kubelet
+stats (pending or unmounted), with empty values. Grafana repeats one
+used-and-capacity chart per claim from a hidden claim variable. Kibana has no
+panel repeat, so the migration emits one chart that plots used and capacity for
+every claim in the namespace, and no claim control.
+
+The persistent-volume dashboard (12660) keeps one selected volume. Used bytes
+are capacity minus available, and free inodes are total minus used. The
+percent tiles use that same sum, so a volume reported by more than one kubelet
+stays a single number. Cluster, namespace, and volume controls filter the
+queries when set and match every volume when unset, so the panels populate on
+first load and where the cluster label is absent, along with the kubelet job.
+The scrape `metrics_path` selector is
+omitted; that label is not stored as a metric dimension. The two source rows
+are both titled `Dashboard Row`; Kibana names them Bytes and Inodes.
+
+The resource-requests dashboard (7187) reads the pre-1.14
+`*_cpu_cores` and `*_memory_bytes` names from
+`kube_node_status_allocatable`, `kube_pod_container_resource_requests`, and
+`kube_pod_container_resource_limits` with `resource` `cpu` or `memory`.
+Charts plot the smallest node's allocatable and the busiest node's requests
+and limits. The percent tiles divide that busiest-node request by that
+smallest-node allocatable. Memory stays in bytes.
+
+The pod view (15760) turns the info stats into tables of the legend labels
+(owner, node, IP, priority, QoS, last termination) for every selected pod.
+Request and limit ratios cannot express the PromQL `and on` running-pod join,
+so they use the namespace, pod, and cluster controls and stay on the 0–1
+scale of the source `percentunit` axis. Each tile averages 30-minute buckets
+over the last hour, so it has a value on any dashboard time range. Empty
+container names are omitted on every per-container panel, so the pod cgroup is
+not summed with each container or drawn as its own series. Per-container CPU
+and memory drop the cAdvisor `id` breakdown and sum across the selected pods. Received traffic is positive and transmitted is negative.
+OOM and restart charts are an increase over the dashboard time range, and
+they keep the source axis max of 1. The issue and unscheduled tables stay
+cluster-wide, as in the source queries. The job control filters restarts. It
+has no All option and defaults to `kube-state-metrics`, as in the source;
+clearing it shows every job.
+
+The namespace view (15758) measures the selected namespaces against the
+cluster. CPU and memory gauges divide namespace usage by
+`machine_cpu_cores` and `machine_memory_bytes` and stay on a 0–1 scale.
+The CPU and memory stats list Real, Requests, Limits, and Cluster Total.
+Requests and limits cannot express the PromQL `and on` running-pod join, so
+they use the namespace and cluster controls. Cluster Total does not follow
+the namespace selection. Series with an empty container name are omitted
+where the source filters `image!=""`. The owner control matches the start
+of the pod name, which is how the source uses `created_by_name` on cAdvisor
+series that have no owner label. Ready and Running follow that owner;
+Waiting, the current restart count, and Terminated stay on the namespace.
+Unavailable replicas ignore the owner prefix because that gauge has no pod
+label. Unexpected phases are one series per pod; the source legend says
+deployment and the query groups by pod. Status reason stays cluster-wide.
+The QoS chart does not draw the total-pods line again, because that line is
+the sum of the classes. Received traffic is positive and transmitted is
+negative. Persistent-volume percent and free inodes stay on a 0–1 scale.
+An empty namespace or owner selection, including Grafana's All value `.*`,
+is every value. Object types the target did not ingest are left off the
+resource count. When `kube_pod_status_reason` was not ingested, the panel names that
+missing metric instead of inventing a reason. The `resolution` variable is a scrape step; chart buckets follow the
+dashboard time range.
+
+The global view (15757) turns the CPU and memory bargauges into Real,
+Requests, and Limits tiles. Windows series are omitted, so Real is the Linux
+reading a kube-prometheus-stack cluster shows after the source averages or
+sums the two OS series. Requests and limits stay ratios of machine capacity
+on the gauges and absolute cores or bytes on the stat tiles. The resource
+count chart names each object; namespaces use `kube_namespace_created`, and
+object types the target did not ingest are left off the chart. Namespace
+charts drop the Windows `+ on(namespace)` join and drop the cAdvisor series
+with an empty container name, matching `image!=""`. Pod network is unfiltered,
+because kubelet reports it on the sandbox series. Received traffic is positive
+and transmitted is negative. Virtual devices matching `veth`, `azv`, or `lxc`
+stay off the device chart. The Nodes, Namespaces, and Running Pods tiles
+count the last 5 minutes before the end of the time range, like a Prometheus
+instant query. An empty job selection is every job. Requests and limits on the
+CPU and memory gauges use `machine_cpu_cores` and `machine_memory_bytes` when
+those kube-prometheus recording rules are present, and node CPU count or
+MemTotal otherwise. The `resolution` variable is a scrape step; chart buckets
+follow the dashboard time range.
+
+The persistent-volume dashboard (13646) approximates `predict_linear` full-in
+2 days, 5 days, and 1 week as available bytes divided by one day of decline
+in available bytes, which is the series `predict_linear` reads. The tiles read
+the day before the range start, so the decline is a full day whatever the
+dashboard time range. The warning tile counts claims at or above 80% used, the
+revision-2 textbox default. The claim table shows capacity, used, and
+available in GiB, used percent, and the phase name. Storage class and volume
+name stay off that table because the info series does not share the kubelet
+label set. The storage-class table uses the kube-state-metrics v2 labels
+`reclaim_policy` and `volume_binding_mode`. Hourly, daily, and weekly rates
+keep those windows (`DELTA` over 1 hour, 24 hours, and 168 hours); the daily
+and weekly queries read one window before the range start so the first points
+are not cut short. An empty namespace selection is every namespace.
+
+The apiserver dashboard (12006) names latency series p95, p90, and p50.
+kube-apiserver publishes classic `*_bucket` counters, not a duration gauge,
+so each point is the upper bound of the first bucket whose cumulative rate
+reaches the quantile, without `histogram_quantile` interpolation. Bucket
+bounds are read from the `le` label as numbers, so `1e-08`, `1`, and `1.0`
+all work and any bucket layout is accepted. When only `+Inf` reaches the
+quantile, the point is the highest finite bound, as in Prometheus. Targets
+that store these durations only as a `histogram` field, with no `*_bucket`
+series, show the missing-telemetry card. Request rate stays one series per verb. CONNECT and WATCH stay
+off the request-latency chart. The cache hit ratio is hits divided by hits
+plus misses and stays on a 0–1 scale. The etcd latency chart shares a row
+with the cache hit ratio.
+
+The K8S dashboard (15661) keeps node, namespace, container, and pod as exact
+matches. An empty control or `.*` is every value. The `origin_prometheus`
+selector is omitted, the same way a scrape `metrics_path` selector is omitted:
+that label is not a target field, so panels include every series and no
+control is emitted for it.
+CPU rates are `irate`. Memory, requests, and limits are last gauges. Tables
+and bars show each column's newest bucket that has a value, so an `irate` in a
+bucket with one sample does not blank the cell. Usage
+ratios divide by allocatable, and container CPU percent divides usage by
+`container_spec_cpu_quota / 100000`. Namespace charts keep the source
+thresholds, more than 0.5 cores and more than 1GiB of working set. The
+Cassandra heap series is omitted. cAdvisor reports pod network on the pod
+sandbox, not on app containers, so the source joins it onto containers with
+`group_right`. The pack does the same by grouping by pod: pod network sums
+every network series of the pod, and the Container control keeps pods that
+have a matching `kube_pod_container_info` series. In the pod table, restarts
+take their node from the pod's other series, as the source's `kube_pod_info`
+join does. Series that the source legends by pod alone add the container name,
+so a pod with two containers draws two lines. The untitled cluster stat is
+titled from its first legend, Workload, and the pack renames it Cluster counts.
+Per-key taint stats are folded into the normal-node count. With no other
+taints, Normal Node is the node count. The microservice row is expanded.
+Titles that contain `$Node` or `$NameSpace` are matched after Grafana's
+variable text is removed.
+
+The kubelet dashboard (12123) keeps the mixin counters as rates and the
+gauges as last values. Cluster is an exact match. Instance is an exact match,
+and an empty value or `.*` is every instance. The scrape `metrics_path`
+selector is omitted. Runtime, storage, cgroup, PLEG, and request-latency 99th
+percentiles are the upper bound of the first classic histogram bucket whose
+cumulative rate reaches 0.99, the same reduction as the apiserver dashboard.
+The pod start-duration series in the source calls `histogram_quantile` on the
+`_count` metric; that line uses the bucket metric. Config errors are the
+change in the gauge over 5 minutes, divided by 300. RPC rate is one series per
+status class (`2xx`, `3xx`, `4xx`, `5xx`).
+
+The system API server dashboard (15761) is the kube-prometheus-stack view.
+Values match the source queries, including two wrong source unit labels:
+mean latency (the duration-sum rate divided by the duration-count rate) is in
+seconds under an `ms` unit, and CPU (`process_cpu_seconds_total`) is in cores
+under a `percent` unit. The 5xx ratio stays on a 0–1 scale. Requests by code,
+by verb, and the stacked instance chart do not filter on job. The job control
+has no All option and opens on `.*`; Grafana opens on the first apiserver job.
+With `.*` or no job selected, the latency and error charts show every job
+(only the API server exports those metrics), and Health Status, Work Queue,
+CPU, and Memory show only jobs whose name contains `apiserver`, because every
+target exports `up` and the process metrics. Pick a job if yours is named
+differently. Deprecated APIs list group, version, resource, and
+removed_release, as the source groups them, plus the gauge value as a `seen`
+column. An empty cluster selection is every cluster. When field caps prove
+`apiserver_request_total` is absent, the job dropdown cannot be scoped to it
+and lists every job; the default `.*` selection still keeps health, CPU, and
+memory on jobs whose name contains `apiserver`. The `resolution` variable is a
+scrape step; chart buckets follow the dashboard time range.
+
+The system CoreDNS dashboard (15762) is the kube-prometheus-stack view.
+Health is the latest `up` per instance. CPU is `process_cpu_seconds_total`
+in cores; the source `percentunit` axis shows that core count as a fraction
+of one core. Average packet size is the size-sum rate divided by the
+size-count rate. Forward requests and DNS errors do not filter on instance.
+Cache hits and misses are both split by cache type. Cache size is
+`coredns_cache_entries` by type; the source unit is bytes, which draws an
+entry count as a size, so the Kibana axis is a count. The three heatmaps are
+the per-second rate of each finite cumulative `le` bucket, so each bucket
+includes every smaller one and the widest buckets read hottest. Grafana
+(`format: heatmap`) converts the buckets to per-bucket counts and uses
+`increase`; ES|QL has no window function to subtract neighbouring buckets.
+`+Inf` is left off so the axis stays on the finite buckets, and the request
+and response size charts also drop `le="0"`. An empty cluster, job, or instance selection, including
+Grafana's All value `.*`, is every value. An empty protocol selection is
+every protocol. The `$protocol` titles no longer mention the variable. The
+`resolution` variable is a scrape step; chart buckets follow the dashboard
+time range. When field caps prove `coredns_build_info` is absent, the job
+dropdown lists jobs from `coredns_dns_requests_total` (or another CoreDNS
+metric) instead of every scraped job. When no CoreDNS metric is present, it
+offers one value that matches no series, so panels stay empty instead of
+plotting other exporters.
+
+The node pod resources dashboard (16367) expands the kubernetes-mixin
+recording rules to cAdvisor and kube-state-metrics. CPU and memory charts
+draw one series per pod plus a `max capacity` series from
+`kube_node_status_capacity`. Capacity is aggregated on its own branch,
+because one time-series aggregation drops a gauge that does not share the
+pod counter series. Quota tables list usage, requests, limits, and
+the usage ratio. Requests and limits come from
+kube-state-metrics for the `cpu` or `memory` resource, a separate series
+from cAdvisor, so each is aggregated on its own branch and joined by pod. The
+ratio uses a 0–100 scale because one datatable cannot format cores
+and `percentunit` as different columns. Memory quota also lists RSS, cache,
+and swap, in bytes. The pod cgroup (empty container name) is omitted. The
+node filter uses the `node` label on the series; the mixin joins
+`kube_pod_info` when cAdvisor has no node label. Pending and Running are not
+joined, so a succeeded pod can still appear. An empty cluster or node
+selection is every value.
+
+The AWS EKS dashboard (20577) is CloudWatch ContainerInsights, not PromQL.
+Tiles and charts read the ContainerInsights metric names. CloudWatch names
+that are not ES|QL identifiers (`4xxErrors`, `401ErrorRate`, and the other
+status-code rates) are stored under `s3_*`, `cloudfront_*`, and `sqs_*`
+fields documented on the panel. The pack emits no `data_stream.dataset`
+dashboard filter, because CloudWatch data is not in the `prometheus`
+dataset. The source pins `ClusterName` to one
+cluster; these queries include every cluster. Utilization gauges stay on a
+0–100 scale with the source thresholds at 60, 80, and 90. The by-node CPU
+chart is labeled by node. Container history plots the running-container
+gauge; the source `SampleCount` counted CloudWatch samples. Log panels list
+the latest 100 `cloudwatch_log_event` documents, one row per event, for
+`log_stream` `eks-cluster` and `fluentbit`, because CloudWatch Logs Insights is not a metric query. The
+Secrets Manager panel has an empty metric name in the source, so it reads
+`secretsmanager_resource_count` and stays a missing-telemetry card until
+that gauge exists.
+
+The Traefik official Kubernetes dashboard (17347) keeps the source Apdex
+formula: for HTTP 200, by method, the 0.3s bucket rate plus the 1.2s bucket
+rate, divided by two, divided by the count rate. The 1.2s bucket is already
+cumulative, so this is not classic Apdex. SLO panels stay on a 0–1 scale and
+drop services that are inside the threshold. Service names drop the
+`@provider` suffix, in the service control as in the source variable regex and
+in chart series. Series that share a name once the suffix is dropped are
+summed; latency and SLO ratios sum their parts before dividing. The `service`
+filter reads Traefik's own `service` label, never `service.name`. An empty
+entrypoint or service selection is every value; a chosen service matches that
+prefix (`service=~"$service.*"`). Traefik Instances counts instances seen in
+the last 5 minutes before the end of the time range, like the source
+`lastNotNull` reduce. Other codes keeps requests without a `code` label. The
+`interval` variable is a Grafana step, so rates follow the dashboard time
+range and the 2xx, 5xx, and other-code titles no longer mention `$interval`.
+`topk(15)` is omitted so each chart stays one stable time series.
+
+The node view (15759) lists pods on the selected node. The pod count and the
+pod list use the last 5 minutes before the end of the time range, like a
+Prometheus instant query, so deleted pods drop out. The overview is one
+row of CPU, memory, and pod count, with used, total, and uptime flush
+underneath and the pod list beside both rows. Uptime stays a plain duration:
+Kibana metric color fills the whole tile, so the source green/yellow/red
+value thresholds are not copied. CPU, memory, load,
+network, and filesystem charts filter on the selected instance instead of
+drawing one series per instance. `percentunit` ratios stay 0–1; panels whose
+source unit is already `percent` stay on a 0–100 scale. The instance dropdown
+does not apply the source `nodename` regex, so choose the instance that
+matches the node. The `resolution` variable is a scrape step; chart buckets
+follow the dashboard time range. CPU usage by pod sums cAdvisor
+`container_cpu_usage_seconds_total` by pod on the selected node;
+`node_cpu_seconds_total` has no pod label; memory usage by pod omits the pod
+cgroup the same way. Number of CPU Core Throttled keeps the node_exporter
+`node_cpu_core_throttles_total` thermal throttle rate for the selected instance.
+The CPU and RAM tiles average 30-minute buckets over the last hour. With no
+instance selected, the CPU tile averages every CPU of every instance, so it
+stays 0–1.
+`node_disk_io_now` is a gauge of in-progress I/O; ES|QL cannot `rate()` a
+gauge, so that chart shows the last count by device.
 
 Each pack is registered in `curated_packs/registry.yaml` with a
 `gnet_revision` and `dashboard_sha256` — maintainer-verified provenance pins
@@ -492,7 +859,10 @@ a concrete non-canonical field (escape hatch).
 
 Bundled curated packs follow the same contract. Hand-written `esql_query`
 strings use `` `{{label:pod}}` `` / `{{metric:name:gauge}}` placeholders so
-grouping columns and metrics resolve per profile. `metric_map` targets are
+grouping columns and metrics resolve per profile. `{{metric:name:histogram}}`
+is a `PERCENTILE()` operand: it resolves to `TO_TDIGEST(field)` when the target
+field is a classic `histogram` and to the bare field otherwise, the same rule
+the generic `histogram_quantile` translation uses. `metric_map` targets are
 bare logical metric names (see `docs/command-contract.md`). Grafana migrate
 exits non-zero if a target already has the active Prometheus profile prefix
 (`metrics.*` under `prometheus_native`, and the equivalent for
@@ -553,6 +923,47 @@ To emit a validated starter rule-pack template:
 | Live field discovery | `--es-url` verifies the plan; does not silently remap | `--es-url` loads `_field_caps` into the profile |
 | Built-in defaults | Prometheus → OTel candidate list | Per-profile tag maps (OTel, Prometheus, Elastic Agent) |
 | Named profiles | `otel`, `prometheus_remote_write`, `prometheus_metrics`, `prometheus_native`, `passthrough`, `auto` (Grafana-only) | `otel`, `elastic_agent`, `prometheus` (Metricbeat), `prometheus_native` (ES `/_prometheus`), `passthrough`, or YAML path |
+
+### Label Matcher Value Types
+
+A PromQL label matcher value is always a string — `{le="0.5"}`, `{status_code="500"}`
+— but the target field has a real type, and ES|QL rejects a cross-family
+comparison (`first argument ... is [numeric] so second argument must also be
+[numeric]`). With live field caps loaded (`--es-url`), two things happen:
+
+* **Non-`le` labels** whose target field is numeric have the matcher **dropped**,
+  and the panel records `Dropped label filters with incompatible target field
+  types during migration`. The filter is lost but reported — the query stays
+  valid.
+* **Histogram `le`** cannot be dropped: the bucket boundary *is* the series
+  identity, so `histogram_quantile` would be wrong without it. A numeric `le`
+  is therefore compared numerically:
+
+| Target `le` mapping | Matcher | Emitted ES\|QL |
+| --- | --- | --- |
+| `double` / `long` | `le="0.5"` | `le == 0.5` |
+| `double` / `long` | `le="1"` | `le == 1` |
+| `double` / `long` | `le!="0.5"` | `(le != 0.5 OR le IS NULL)` |
+| `double` / `long` | `le=~"0\.5"` | `TO_STRING(le) RLIKE "0\.5"` |
+| `double` / `long` | `le="+Inf"` | `TO_STRING(le) == "+Inf"` |
+| `keyword` | `le="1"` | `(le == "1" OR le == "1.0")` |
+| unknown (no `--es-url`) | `le="1"` | `(le == "1" OR le == "1.0")` |
+
+A numeric mapping needs no `"1"`/`"1.0"` spelling alternation — `le == 1`
+already matches a stored `1.0`. That alternation exists only because string
+equality cannot see the two spellings are the same boundary, and it stays for
+the keyword exporters (e.g. express-prometheus-middleware) that need it.
+
+`RLIKE` and `LIKE` take a string argument, so a numeric field is cast rather
+than compared directly. `+Inf` is a real histogram boundary but not an ES|QL
+numeric literal, so it also compares through `TO_STRING(...)`: a numeric field
+holds no such value, so no rows can match, but the query stays valid instead of
+failing verification.
+
+Residual: an `le` matcher bound to a Grafana template variable (`le="$bucket"`)
+still emits `le == ?bucket`, which will fail if the control binds a string
+against a numeric field. Literal `le` values — what `histogram_quantile`
+dashboards actually use — are covered.
 
 ### Grouping Template Variables (Late-Bound `by ($var)`)
 
@@ -953,6 +1364,12 @@ Use that doc for:
   `--assets dashboards`, runtime normalization upgrades the run to `--assets all`.
 - Dashboard artifacts are written under `<output-dir>/dashboards`; alert
   artifacts are written under `<output-dir>/alerts`.
+- Panels that Grafana saved as repeat clones (`repeatPanelId` pointing at a
+  panel with `repeat`) are not migrated. Grafana discards and rebuilds those
+  clones on load, so the migration works from the repeat template: it fans the
+  template out per value when the variable's values are known, and otherwise
+  keeps the single template panel with a warning. Clones inside repeated rows
+  are kept.
 - Native PromQL is the preferred, highest-fidelity target. When
   `--es-url` reaches a target *confirmed* to lack ES|QL `PROMQL` support, the
   run downgrades to ES|QL translation; an inconclusive probe keeps native PromQL
@@ -1091,7 +1508,7 @@ is available at `examples/cue/grafana-rule-pack.cue`.
 - `topk(k, expr)` and `bottomk(k, expr)` have two translation modes. Non-XY targets (for example `barchart`, `stat`, table-like snapshots) translate to an ES|QL `SORT value DESC/ASC | LIMIT k` over the latest bucket per group. XY targets (`graph`, `timeseries`, `trend`) keep the full time-series breakdown instead, because ES|QL has no subquery form that can both preserve time buckets and rank groups across the whole window; those panels therefore warn that all series are shown and the top-N filter is only approximated. Ungrouped forms still collapse to a single-series ranking with a `preferred_group_labels` hint. When a `drop_rate` metric_map entry remaps the inner metric to a gauge, both `topk`/`bottomk` and scaled-rate expressions (`sum(rate(...)) * scalar`) switch to `FROM` source automatically — using `TS` source on a gauge field would query the wrong index and inflate averages.
 - Nested aggregations (`max(sum by (ns) (metric))`, `quantile(0.99, sum(metric) by (instance))`) lower to a two-stage `STATS`: the inner aggregation groups by the time bucket plus the inner `by()` labels, and the outer aggregation collapses that intermediate column per bucket. Because the inner aggregation is evaluated per instant in PromQL, the time bucket is part of the inner grouping even on a scalar panel, and a scalar panel then reduces the per-bucket series through the shared summary collapse rather than with the outer aggregation — collapsing with the outer aggregation reported the window's extreme instead of the panel's current value. As on every other summary path, that collapse honours the panel's declared `reduceOptions.calcs` for `lastNotNull`/`last` (Grafana's default for stat/gauge/bargauge), `mean`/`avg` and `min`, and falls back to `max` for any other reducer. Source selection follows the same policy as the single-level `sum(metric)` form: counter-typed metrics use `TS` + `LAST_OVER_TIME` (issue #380, because ES|QL rejects `SUM`/`AVG`/`MIN`/`MAX`/`PERCENTILE` directly on `counter_long` / `counter_double`), and gauges use `TS` when they are provably (or, per `assume_tsds_gauges`, presumably) TSDS gauges, since `FROM` would aggregate every per-sample document in a bucket. When the metric kind cannot be verified (no reachable `--es-url` and no rule-pack `metric_kinds` pin) the query is still emitted, with the same counter-typing warning the single-level path uses. The inner `count` variant (`max(count by (ns) (metric))`) counts documents rather than series and keeps its existing approximation.
 - Some PromQL families still degrade to `not_feasible` or manual review, especially subqueries, `count_values`, known-wrong histogram field types (for example `aggregate_metric_double`), generic `sum(A/B)` that is not a `_sum`/`_count` pair, `__name__` introspection, and multi-branch join/or cases that cannot fuse.
-- `histogram_quantile` translates to ES|QL `PERCENTILE()` for both the common `sum(rate(bucket[w])) by (le)` shape and the bare `rate(bucket[w])` shape (no outer aggregation — `rate()` preserves `le` implicitly). An outer aggregation that explicitly drops `le` — e.g. `sum by (instance) (rate(bucket[w]))` — stays `not_feasible` because the bucket boundaries are destroyed. The target field must be a histogram or exponential_histogram; unknown types assume exponential_histogram and warn. Prefer ES ≥ 9.5 native `histogram_quantile` when available; `PERCENTILE` is approximate (t-digest).
+- `histogram_quantile` translates to ES|QL `PERCENTILE()` for both the common `sum(rate(bucket[w])) by (le)` shape and the bare `rate(bucket[w])` shape (no outer aggregation — `rate()` preserves `le` implicitly). An outer aggregation that explicitly drops `le` — e.g. `sum by (instance) (rate(bucket[w]))` — stays `not_feasible` because the bucket boundaries are destroyed. The target field must be a histogram or exponential_histogram; unknown types assume exponential_histogram and warn. When field caps prove the base field is absent and the `*_bucket` series is an ordinary counter, the panel is `not_feasible` instead of `PERCENTILE()` — classic Prometheus buckets are not an Elasticsearch histogram. Prefer ES ≥ 9.5 native `histogram_quantile` when available; `PERCENTILE` is approximate (t-digest).
 - Explicit vector matching (`on(...)`, `ignoring(...)`, `group_left`, `group_right`) reaches the native `PROMQL` path only when **both** halves of the decision agree, and otherwise keeps the ES|QL translation described in the next bullet. (1) The target must evaluate it: Elasticsearch gained it on Serverless and Stack 9.6 (elastic/elasticsearch#155634), and migration probes for it rather than reading `version.number` so Serverless is detected correctly. The probe fails closed — an older stack, an auth error, or an unreachable cluster all keep ES|QL — and its verdict is reported as `PROMQL vector matching (on/ignoring/group_*)` under `Target PromQL profile`. (2) The operand shapes must be plannable: Elasticsearch only matches operands whose label set it can determine statically, so **both sides must be aggregations** — `sum by (instance) (...)`, or a bare `sum(...)`/`avg(...)` whose result has no labels — optionally wrapped in functions or arithmetic (`abs(sum by (d) (A))`, `histogram_quantile(0.9, sum by (d,le) (A))`, `sum by (d) (A) * 1`), or `vector(n)`. A raw selector, a `rate()`/`*_over_time()` over one, and `without (...)` are all indeterminate; matching against them fails analysis with `vector matching requires operands with concrete label sets`, which in Kibana is a hard panel error rather than an empty result — so `node_hwmon_temp_celsius * on(chip) group_left(chip_name) node_hwmon_chip_names` stays on ES|QL even on 9.6. Panels that stay on ES|QL say which half declined in their notes. `or` / `and` / `unless` combined with `on`/`ignoring` are never emitted natively (elasticsearch#158181). Panels that do go native record `minimum_kibana_version: 9.6.0`, because the artifact is portable and the emitted query needs a 9.6 target.
 - Label-enrichment info-metric joins (`metric * on(k) group_left(extra_labels) metric_info`) whose outer `by()` references the enrichment labels are now feasible for `*_info` metrics: the join is dropped and the outer aggregation runs directly on the primary metric with the enrichment labels as additional `BY` dimensions. A schema-check warning is added when the dimensions cannot be confirmed from live field capabilities. This ES|QL path is what a matched expression falls back to when either vector-matching condition above is unmet.
 - `label_join(v, dst, separator, src1, src2, ...)` translates to a post-`STATS` `| EVAL dst = CONCAT(src1, "separator", src2, ...)` when all source labels appear in the inner expression's `by()` clause. If any source label is absent from the `by()` clause, the panel stays `not_feasible` (the column would not exist in the `STATS` output and `CONCAT` cannot reference it).

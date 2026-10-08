@@ -1,0 +1,366 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 15762
+# https://grafana.com/grafana/dashboards/15762-kubernetes-system-coredns/
+#
+# Kubernetes / System / CoreDNS (revision 22). Rates follow the dashboard
+# time range; $resolution is a scrape step. An empty cluster, job, or
+# instance selection (including Grafana's All value .*) is every value.
+# An empty protocol selection is every proto. CPU is process CPU in cores;
+# the source percentunit axis shows that core count as a fraction of one
+# core. Heatmaps are the per-second rate of each finite cumulative histogram
+# bucket; Grafana converts the buckets to per-bucket counts, ES|QL cannot.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    up: gauge
+    process_cpu_seconds_total: counter
+    process_resident_memory_bytes: gauge
+    coredns_build_info: gauge
+    coredns_dns_requests_total: counter
+    coredns_dns_request_size_bytes_sum: counter
+    coredns_dns_request_size_bytes_count: counter
+    coredns_dns_responses_total: counter
+    coredns_proxy_request_duration_seconds_count: counter
+    coredns_cache_hits_total: counter
+    coredns_cache_misses_total: counter
+    coredns_cache_entries: gauge
+    coredns_dns_request_duration_seconds_bucket: counter
+    coredns_dns_request_size_bytes_bucket: counter
+    coredns_dns_response_size_bytes_bucket: counter
+
+  live_optional_metrics:
+    - up
+    - process_cpu_seconds_total
+    - process_resident_memory_bytes
+    - coredns_build_info
+    - coredns_dns_requests_total
+    - coredns_dns_request_size_bytes_sum
+    - coredns_dns_request_size_bytes_count
+    - coredns_dns_responses_total
+    - coredns_proxy_request_duration_seconds_count
+    - coredns_cache_hits_total
+    - coredns_cache_misses_total
+    - coredns_cache_entries
+    - coredns_dns_request_duration_seconds_bucket
+    - coredns_dns_request_size_bytes_bucket
+    - coredns_dns_response_size_bytes_bucket
+
+panel:
+  query_overrides:
+    - title_match: "CoreDNS - Health Status"
+      panel_id: 25
+      kibana_type_override: metric
+      approximation_note: "Latest up value per instance. An empty job selection is every job, and All on instance is every instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:up:gauge}} IS NOT NULL
+        | STATS up = MAX(LAST_OVER_TIME({{metric:up:gauge}})) BY {{label:instance}}
+        | EVAL instance = {{label:instance}}
+        | STATS up = MAX(up) BY instance
+        | KEEP instance, up
+    - title_match: "CoreDNS - CPU Usage by instance"
+      panel_id: 19
+      kibana_type_override: area
+      approximation_note: "process_cpu_seconds_total rate, in cores. The source percentunit axis shows that core count as a fraction of one core. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:process_cpu_seconds_total:counter}} IS NOT NULL
+        | STATS cores = SUM(RATE({{metric:process_cpu_seconds_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | EVAL instance = {{label:instance}}
+        | STATS cores = AVG(cores) BY time_bucket, instance
+        | KEEP time_bucket, instance, cores
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Memory Usage by instance"
+      panel_id: 21
+      kibana_type_override: area
+      approximation_note: "process_resident_memory_bytes, latest value per bucket, by instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:process_resident_memory_bytes:gauge}} IS NOT NULL
+        | STATS bytes = SUM(LAST_OVER_TIME({{metric:process_resident_memory_bytes:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:instance}}
+        | EVAL instance = {{label:instance}}
+        | STATS bytes = AVG(bytes) BY time_bucket, instance
+        | KEEP time_bucket, instance, bytes
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Total DNS Requests"
+      panel_id: 9
+      kibana_type_override: area
+      approximation_note: "Requests per second for the selected protocol. An empty protocol selection is every protocol. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE (?protocol == "" OR {{label:proto}} == ?protocol)
+        | WHERE {{metric:coredns_dns_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:coredns_dns_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, requests
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Average Packet Size"
+      panel_id: 7
+      kibana_type_override: area
+      approximation_note: "Mean request size, size-sum rate divided by size-count rate, for the selected protocol. An empty protocol selection is every protocol."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE (?protocol == "" OR {{label:proto}} == ?protocol)
+        | WHERE {{metric:coredns_dns_request_size_bytes_sum:counter}} IS NOT NULL OR {{metric:coredns_dns_request_size_bytes_count:counter}} IS NOT NULL
+        | STATS total = SUM(RATE({{metric:coredns_dns_request_size_bytes_sum:counter}})), n = SUM(RATE({{metric:coredns_dns_request_size_bytes_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL bytes = CASE(n > 0, total / n, NULL)
+        | KEEP time_bucket, bytes
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Requests by type"
+      panel_id: 2
+      kibana_type_override: area
+      approximation_note: "Requests per second by DNS type. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:coredns_dns_requests_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:coredns_dns_requests_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:type}}
+        | EVAL type = {{label:type}}
+        | STATS requests = AVG(requests) BY time_bucket, type
+        | KEEP time_bucket, type, requests
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Requests by return code"
+      panel_id: 4
+      kibana_type_override: area
+      approximation_note: "Responses per second by rcode. The rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:coredns_dns_responses_total:counter}} IS NOT NULL
+        | STATS responses = SUM(RATE({{metric:coredns_dns_responses_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:rcode}}
+        | EVAL rcode = {{label:rcode}}
+        | STATS responses = AVG(responses) BY time_bucket, rcode
+        | KEEP time_bucket, rcode, responses
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Total Forward Requests"
+      panel_id: 23
+      kibana_type_override: area
+      approximation_note: "Forward-proxy requests per second. The source query does not filter instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE {{label:proxy_name}} == "forward"
+        | WHERE {{metric:coredns_proxy_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:coredns_proxy_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | KEEP time_bucket, requests
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - DNS Errors"
+      panel_id: 13
+      kibana_type_override: area
+      approximation_note: "Forward-proxy SERVFAIL and REFUSED responses per second, by rcode. The source query does not filter instance."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE {{label:proxy_name}} == "forward"
+        | WHERE {{label:rcode}} RLIKE "SERVFAIL|REFUSED"
+        | WHERE {{metric:coredns_proxy_request_duration_seconds_count:counter}} IS NOT NULL
+        | STATS errors = SUM(RATE({{metric:coredns_proxy_request_duration_seconds_count:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:rcode}}
+        | EVAL rcode = {{label:rcode}}
+        | STATS errors = AVG(errors) BY time_bucket, rcode
+        | KEEP time_bucket, rcode, errors
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Cache Hits / Misses"
+      panel_id: 17
+      kibana_type_override: area
+      approximation_note: "Cache hits and misses per second, both split by cache type. The source miss series is grouped by type but labeled only misses, so types overwrite each other."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{metric:coredns_cache_hits_total:counter}} IS NOT NULL OR {{metric:coredns_cache_misses_total:counter}} IS NOT NULL
+        | STATS hits = SUM(RATE({{metric:coredns_cache_hits_total:counter}})), misses = SUM(RATE({{metric:coredns_cache_misses_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:type}}
+        | EVAL type = {{label:type}}
+        | STATS hits = AVG(hits), misses = AVG(misses) BY time_bucket, type
+        | KEEP time_bucket, type, hits, misses
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - Cache Size"
+      panel_id: 15
+      kibana_type_override: area
+      # The source unit is bytes, but coredns_cache_entries is a count.
+      primary_format: short
+      approximation_note: "coredns_cache_entries summed by cache type. The source unit is bytes, which draws an entry count as a size, so the axis is a count. The source query does not filter instance. The gauge is the latest value in each bucket."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE {{metric:coredns_cache_entries:gauge}} IS NOT NULL
+        | STATS entries = SUM(LAST_OVER_TIME({{metric:coredns_cache_entries:gauge}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:type}}
+        | EVAL type = {{label:type}}
+        | STATS entries = AVG(entries) BY time_bucket, type
+        | KEEP time_bucket, type, entries
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - DNS request duration"
+      panel_id: 27
+      kibana_type_override: heatmap
+      approximation_note: "Per-second rate of coredns_dns_request_duration_seconds_bucket by the bucket upper bound, in seconds. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The +Inf bucket is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{label:le}} != "+Inf"
+        | WHERE {{metric:coredns_dns_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS observations = SUM(RATE({{metric:coredns_dns_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL le = {{label:le}}
+        | EVAL bucket = TO_DOUBLE(le)
+        | STATS observations = AVG(observations) BY time_bucket, bucket
+        | KEEP time_bucket, bucket, observations
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - DNS request size"
+      panel_id: 28
+      kibana_type_override: heatmap
+      approximation_note: "Per-second rate of coredns_dns_request_size_bytes_bucket by the bucket upper bound, in bytes. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The source drops le 0. The +Inf bucket is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{label:le}} != "0"
+        | WHERE {{label:le}} != "+Inf"
+        | WHERE {{metric:coredns_dns_request_size_bytes_bucket:counter}} IS NOT NULL
+        | STATS observations = SUM(RATE({{metric:coredns_dns_request_size_bytes_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL le = {{label:le}}
+        | EVAL bucket = TO_DOUBLE(le)
+        | STATS observations = AVG(observations) BY time_bucket, bucket
+        | KEEP time_bucket, bucket, observations
+        | SORT time_bucket ASC
+    - title_match: "CoreDNS - DNS response size"
+      panel_id: 29
+      kibana_type_override: heatmap
+      approximation_note: "Per-second rate of coredns_dns_response_size_bytes_bucket by the bucket upper bound, in bytes. These are cumulative le buckets: each row includes every smaller bucket, so the widest buckets read hottest. Grafana (format heatmap) converts them to per-bucket counts and uses increase, not a per-second rate; ES|QL has no window function to subtract neighbouring buckets. The source drops le 0. The +Inf bucket is omitted."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE (?cluster == "" OR ({{label:cluster}} RLIKE ?cluster OR ({{label:cluster}} IS NULL AND "" RLIKE ?cluster)))
+        | WHERE (?job IS NULL OR ?job == "" OR MV_COUNT(?job) == 0 OR MV_CONTAINS(TO_STRING(?job), {{label:job}}))
+        | WHERE (?instance == "" OR ?instance == ".*" OR {{label:instance}} RLIKE ?instance OR ({{label:instance}} IS NULL AND "" RLIKE ?instance))
+        | WHERE {{label:le}} != "0"
+        | WHERE {{label:le}} != "+Inf"
+        | WHERE {{metric:coredns_dns_response_size_bytes_bucket:counter}} IS NOT NULL
+        | STATS observations = SUM(RATE({{metric:coredns_dns_response_size_bytes_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL le = {{label:le}}
+        | EVAL bucket = TO_DOUBLE(le)
+        | STATS observations = AVG(observations) BY time_bucket, bucket
+        | KEEP time_bucket, bucket, observations
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "CoreDNS - Health Status"
+      panel_id: 25
+      hide_title: false
+      size: {w: 48, h: 6}
+      position: {x: 0, y: 0}
+    - title_match: "CoreDNS - CPU Usage by instance"
+      panel_id: 19
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 6}
+    - title_match: "CoreDNS - Memory Usage by instance"
+      panel_id: 21
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 6}
+    - title_match: "CoreDNS - Total DNS Requests"
+      panel_id: 9
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 18}
+    - title_match: "CoreDNS - Average Packet Size"
+      panel_id: 7
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 18}
+    - title_match: "CoreDNS - Requests by type"
+      panel_id: 2
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 30}
+    - title_match: "CoreDNS - Requests by return code"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 30}
+    - title_match: "CoreDNS - Total Forward Requests"
+      panel_id: 23
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 42}
+    - title_match: "CoreDNS - DNS Errors"
+      panel_id: 13
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 42}
+    - title_match: "CoreDNS - Cache Hits / Misses"
+      panel_id: 17
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 0, y: 54}
+    - title_match: "CoreDNS - Cache Size"
+      panel_id: 15
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 12}
+      position: {x: 24, y: 54}
+    - title_match: "CoreDNS - DNS request duration"
+      panel_id: 27
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 66}
+    - title_match: "CoreDNS - DNS request size"
+      panel_id: 28
+      hide_title: false
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 66}
+    - title_match: "CoreDNS - DNS response size"
+      panel_id: 29
+      hide_title: false
+      size: {w: 48, h: 14}
+      position: {x: 0, y: 80}

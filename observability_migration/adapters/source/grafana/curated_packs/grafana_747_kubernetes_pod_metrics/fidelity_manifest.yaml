@@ -1,0 +1,82 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 747 (Kubernetes Pod Metrics)
+# https://grafana.com/grafana/dashboards/747-pod-metrics/
+
+schema_version: 1
+gnet_id: 747
+gnet_revision: 2
+dashboard_title: "Kubernetes Pod Metrics"
+maintainer: "community"
+
+panels:
+  - title: "Pod IP Address"
+    fidelity: PERFECT
+    notes: "Grafana markdown `# $Pod_ip`. Kibana datatable of pod → pod_ip from kube_pod_info so All-selected shows every address (metric tiles clipped)."
+  - title: "Pod Status"
+    fidelity: PERFECT
+    notes: "Active kube_pod_status_phase==1 shown as the metric-tile legend instead of interpolating hidden $phase."
+  - title: "Pod Container"
+    fidelity: PERFECT
+    notes: "Datatable of pod → container from kube_pod_container_info."
+  - title: "Container restarts"
+    fidelity: PERFECT
+    notes: "Old kube_pod_container_status_restarts mapped to *_total; exact Pod bind (better than Grafana's pod=~$Pod.*$ prefix)."
+
+  - title: "Network I/O pressure"
+    fidelity: PERFECT
+    notes: "Received/Sent butterfly scoped to selected pod(s)."
+
+  - title: "Pod memory usage"
+    fidelity: APPROXIMATE
+    notes: "pod working set / machine_memory_bytes. Cross-metric ratio; Node binds instance, Pod binds pod."
+  - title: "Pod CPU usage"
+    fidelity: APPROXIMATE
+    notes: "pod CPU rate / machine_cpu_cores."
+  - title: "Memory used"
+    fidelity: PERFECT
+    notes: "sum(working set) for selected pod(s). Kibana title renamed from duplicate Used."
+  - title: "Memory total"
+    fidelity: APPROXIMATE
+    notes: "sum(machine_memory_bytes) for selected node(s)."
+  - title: "CPU used"
+    fidelity: PERFECT
+    notes: "pod CPU rate. Grafana format=bytes was wrong; Kibana shows cores (short number)."
+  - title: "Node CPU"
+    fidelity: PERFECT
+    notes: "Source title Total queried node-wide container CPU rate, not machine_cpu_cores. Kibana title says Node CPU so the number is not mistaken for capacity."
+  - title: "Pod memory working bytes"
+    fidelity: PERFECT
+    notes: "Same query as Memory used; kept as a named tile rather than Grafana's 1px-tall full-width strip."
+
+  - title: "Pods CPU usage"
+    fidelity: PERFECT
+    notes: "by pod (Heapster io_kubernetes_pod_name rewritten). Curated ES|QL breakdown aligned."
+  - title: "Pods memory usage"
+    fidelity: PERFECT
+    notes: "LAST_OVER_TIME working set by pod."
+  - title: "Pods network I/O"
+    fidelity: PERFECT
+    notes: "Received/Sent by pod."
+  - title: "All processes CPU usage"
+    fidelity: APPROXIMATE
+    notes: "Grouped by cgroup id excluding /."
+  - title: "All processes memory usage"
+    fidelity: APPROXIMATE
+    notes: "As above."
+  - title: "All processes network I/O"
+    fidelity: APPROXIMATE
+    notes: "As above; Received/Sent."
+
+summary:
+  total_panels: 18
+  perfect: 12
+  approximate: 6
+  gap: 0
+  notes: >
+    Hidden Grafana variables ($Pod_ip / $phase / $container) become live
+    metric tiles. $Node populates from machine_cpu_cores instance; $Pod stays
+    on kube_pod_info and is multi-select so first paint is Grafana All.
+    Duplicate Used/Total titles are renamed. Grafana's CPU Total (node-wide
+    container rate mis-titled and format=bytes) is Node CPU.

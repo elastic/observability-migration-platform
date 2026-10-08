@@ -99,16 +99,24 @@ class PanelQueryOverrideModel(_StrictModel):
     # Used when a pinned window (e.g. 24h hourly bars) renders empty in Lens
     # on mixed ``metrics-*`` despite the same query returning rows via ``_query``.
     drop_time_from: bool = False
-    # Grafana unit string applied to the emitted metric/gauge ``primary`` value
-    # (mapped via ``grafana_unit_to_yaml_format``). Lets a display override that
-    # synthesizes a value column (e.g. elapsed-seconds Start Time) request a
-    # duration/date format the source panel's unit no longer carries.
+    # Grafana unit string applied to the emitted metric/gauge ``primary`` value,
+    # or to the only metric of a single-series XY chart (mapped via
+    # ``grafana_unit_to_yaml_format``). Lets a display override that
+    # synthesizes a value column (e.g. elapsed-seconds Start Time) or that
+    # corrects a wrong source unit (a cache-entry count labeled bytes) request
+    # the format the source panel's unit does not carry.
     primary_format: str | None = None
     # Honest-approximation disclosure. When set, the note is surfaced as a
     # warning and the panel status is capped at ``migrated_with_warnings`` so a
     # deliberately-approximate override (e.g. cross-host system aggregation) is
     # never reported as a clean ``migrated`` (project rule: never hide a gap).
     approximation_note: str | None = None
+    # Source metrics the override deliberately does not read (e.g. a PromQL
+    # ``and on(...)`` join with no ES|QL equivalent). The approximation_note
+    # must disclose the drop; listing the metric here stops the engine from
+    # also reporting it as "Target telemetry missing", which would tell the
+    # operator to ingest a metric the pack never queries.
+    dropped_source_metrics: list[str] = Field(default_factory=list)
 
 
 class PanelPositionOverrideModel(_StrictModel):
@@ -147,6 +155,10 @@ class PanelLayoutOverrideModel(_StrictModel):
     xy_mode: str | None = None
     # Late override of the XY legend placement (``bottom`` / ``right`` / …).
     legend_position: str | None = None
+    # ``none`` drops a metric tile's threshold color, the same as Grafana's
+    # stat ``colorMode: none``. Kibana paints the whole tile, which a plain
+    # value (e.g. an uptime duration) should not get.
+    metric_color: str | None = None
 
     @field_validator("kibana_type_override")
     @classmethod
@@ -183,6 +195,15 @@ class PanelLayoutOverrideModel(_StrictModel):
                 "xy_mode"
             )
         return self
+
+    @field_validator("metric_color")
+    @classmethod
+    def validate_metric_color(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value != "none":
+            raise ValueError(f"metric_color must be 'none', got {value!r}")
+        return value
 
     @field_validator("legend_position")
     @classmethod

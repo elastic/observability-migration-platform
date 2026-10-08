@@ -14030,6 +14030,9 @@ class TestDisplayMetadata(unittest.TestCase):
         area_appearance = extract_xy_appearance(panel, chart_type="area")
         self.assertEqual(area_appearance.get("line_style"), "monotone-x")
         self.assertEqual(area_appearance.get("fill_opacity"), 0.7)
+        line_appearance = extract_xy_appearance(panel, chart_type="line")
+        self.assertEqual(line_appearance.get("line_style"), "monotone-x")
+        self.assertNotIn("fill_opacity", line_appearance)
 
     def test_clean_template_dollar_var(self):
         from observability_migration.targets.kibana.emit.display import clean_template_variables
@@ -17423,6 +17426,84 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
         # after the 2x scale). Laid out horizontally they should
         # occupy x=0, 16, 32 in Kibana coordinates.
         self.assertEqual(xs, [0, 16, 32], f"horizontal lay-out fan-out, got x={xs}")
+
+    def test_saved_repeat_clones_are_dropped_when_repeat_resolves(self):
+        """Grafana saves rendered clones with ``repeatPanelId``; they are
+        rebuilt from the template, so the saved copies must not duplicate
+        the fresh fan-out."""
+        dashboard = {
+            "title": "T", "uid": "rep-saved-1", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "custom",
+                "options": [
+                    {"text": "a", "value": "a"},
+                    {"text": "b", "value": "b"},
+                ],
+            }]},
+            "panels": [
+                {"id": 1, "type": "stat", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+                {"id": 2, "type": "stat", "title": "$instance",
+                 "repeatPanelId": 1,
+                 "scopedVars": {"instance": {"text": "b", "value": "b"}},
+                 "gridPos": {"x": 8, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        titles = [p.get("title") for p in self._walk_leaves(dash.get("panels") or [])]
+        self.assertEqual(titles, ["a", "b"])
+
+    def test_saved_repeat_clones_are_dropped_when_repeat_is_unresolved(self):
+        """An unresolvable repeat keeps one template panel; its saved clones
+        would otherwise become identical copies."""
+        dashboard = {
+            "title": "T", "uid": "rep-saved-2", "schemaVersion": 39,
+            "templating": {"list": [{
+                "name": "instance", "type": "query",
+                "query": "label_values(up, instance)",
+                "current": {}, "options": [], "hide": 2,
+            }]},
+            "panels": [
+                {"id": 1, "type": "timeseries", "title": "$instance",
+                 "repeat": "instance",
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ] + [
+                {"id": pid, "type": "timeseries", "title": "$instance",
+                 "repeatPanelId": 1,
+                 "gridPos": {"x": 8 * (pid - 1), "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]}
+                for pid in (2, 3)
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        leaves = list(self._walk_leaves(dash.get("panels") or []))
+        self.assertEqual(len(leaves), 1, [p.get("title") for p in leaves])
+
+    def test_panel_with_repeat_panel_id_but_no_template_is_kept(self):
+        """A dangling ``repeatPanelId`` (template deleted) is a real panel."""
+        dashboard = {
+            "title": "T", "uid": "rep-saved-3", "schemaVersion": 39,
+            "templating": {"list": [{"name": "instance", "type": "custom",
+                                     "options": [{"text": "a", "value": "a"}]}]},
+            "panels": [
+                {"id": 2, "type": "stat", "title": "Orphan",
+                 "repeatPanelId": 1,
+                 "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"},
+                 "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        _, dash = self._translate(dashboard)
+        titles = [p.get("title") for p in self._walk_leaves(dash.get("panels") or [])]
+        self.assertEqual(titles, ["Orphan"])
 
 
 class L3RowAwareSectioningTests(unittest.TestCase):

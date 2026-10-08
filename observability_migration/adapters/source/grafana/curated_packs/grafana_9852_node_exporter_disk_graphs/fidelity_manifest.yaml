@@ -1,0 +1,88 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana dashboard 9852 (node-exporter disk graphs)
+# https://grafana.com/grafana/dashboards/9852-stians-disk-graphs/
+#
+# PERFECT     = same information as Grafana on standard node_exporter scrape.
+# APPROXIMATE = documented semantic delta vs Grafana source.
+#
+# Approximations in this dashboard:
+#   IO Wait per core — engine splits grouped rate() and bare min/avg/max into
+#     two ES|QL layers (issue #355); semantically equivalent but different shape.
+#   Disk IO — engine fuses three colocated metrics; pack names Weighted IO time /
+#     Write time / Read time and breaks down by device only (not device+instance).
+#   Write/Read size and latency — element-wise rate(A)/rate(B) uses same-bucket
+#     ES|QL math (issue #376/PR#438); pack improves column naming and per-device
+#     grouping but the approximation class remains.
+#
+# $RateInterval disclosure (issue #356): Grafana's $RateInterval interval variable
+#   is dropped during migration. ES|QL panels use a TBUCKET bucket-width; native
+#   PROMQL panels inline a fixed range (5m). This is an engine-level disclosure,
+#   not a pack gap — it affects every panel using [$RateInterval] uniformly.
+
+# Field-profile portable: pack.yaml authors canonical names; the resolver
+# namespaces per --field-profile. Verified by the cross-profile leakage gate.
+
+schema_version: 1
+gnet_id: 9852
+gnet_revision: 1
+dashboard_title: "node-exporter disk graphs"
+maintainer: "community"
+
+panels:
+  # Row: Memory
+  - title: "Memory"
+    fidelity: PERFECT
+    notes: "Four gauge targets (Active, Buffers, Cached, MemTotal) named Memory active / Memory buffers / Memory cached / Total memory, broken down by node (RENAME of {{label:instance}} to avoid dotted column name; Kibana Lens treats dots as nested-path separators in ES|QL breakdown columns)."
+  - title: "Memory write cache"
+    fidelity: PERFECT
+    notes: "Dirty bytes / Writeback bytes gauge time series, broken down by node (same RENAME fix as Memory)."
+  - title: "OOM killed procs"
+    fidelity: APPROXIMATE
+    notes: "Source calls irate(node_vmstat_oom_kill), but node_exporter declares that metric `# TYPE ... untyped` (Prometheus metadata type \"unknown\") -- it is a raw /proc/vmstat passthrough, not a declared counter. Prometheus permits irate() on it only because it does not type-check; Elasticsearch rejects RATE/IRATE on a field not mapped counter_*. The pack pins it gauge so the engine degrades irate() to its gauge analogue and discloses the delta, rather than emitting an IRATE the target rejects at runtime."
+  # Row: Disk
+  - title: "IO Wait per core"
+    fidelity: APPROXIMATE
+    notes: "Engine issue #355: grouped rate(node_cpu_seconds_total) by (cpu) and bare min/avg/max targets split into two ES|QL layers. The per-cpu breakdown (layer 1) and the fleet-wide Min/Avg/Max summary (layer 2) are semantically equivalent to Grafana's rendering."
+  - title: "Disk active time"
+    fidelity: PERFECT
+    notes: "rate(node_disk_io_time_seconds_total) by instance+device, sr0 excluded, $Disk filter applied. Native PROMQL path."
+  - title: "Disk IO"
+    fidelity: APPROXIMATE
+    notes: "Three colocated metrics (io_time_weighted / write_time / read_time) named Weighted IO time / Write time / Read time by device. Grafana legends include instance; pack groups by device only so the legend matches the typical single-node view."
+  - title: "IOPS"
+    fidelity: PERFECT
+    notes: "rate(node_disk_writes_completed_total) by instance+device. Native PROMQL path."
+  - title: "Write bandwidth"
+    fidelity: PERFECT
+    notes: "rate(node_disk_written_bytes_total) by instance+device. Native PROMQL path."
+  - title: "Write size"
+    fidelity: APPROXIMATE
+    notes: "rate(written_bytes) / rate(writes_completed) per device. Engine same-bucket STATS+EVAL math (issue #376); pack names the output Write size and breaks down by device only."
+  - title: "Write latency"
+    fidelity: APPROXIMATE
+    notes: "rate(write_time) / rate(writes_completed) per device. Same same-bucket approximation as Write size."
+  - title: "Read bandwidth"
+    fidelity: PERFECT
+    notes: "rate(node_disk_read_bytes_total) by instance+device. Native PROMQL path."
+  - title: "Read size"
+    fidelity: APPROXIMATE
+    notes: "rate(read_bytes) / rate(reads_completed) per device. Same same-bucket approximation as Write size."
+  - title: "Read latency"
+    fidelity: APPROXIMATE
+    notes: "rate(read_time) / rate(reads_completed) per device. Same same-bucket approximation as Write latency."
+
+summary:
+  total_panels: 13
+  perfect: 6
+  approximate: 7
+  gap: 0
+  notes: >
+    All 13 leaf panels translated without UNKNOWN. The pack pins 9 counter
+    metrics and 8 gauges (node_vmstat_oom_kill among the gauges: node_exporter
+    leaves it untyped, so RATE/IRATE is not valid against it in ES|QL), maps
+    $Node/$CPU/$Disk to instance/cpu/device labels, and provides named ES|QL
+    overrides for the Disk IO fusion panel and the four rate-ratio panels.
+    $RateInterval is intentionally dropped (engine issue #356, documented in
+    docs/sources/grafana.md).

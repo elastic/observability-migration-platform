@@ -563,6 +563,7 @@ def audit_dashboard_elements(
     expected_kind_by_title: dict[str, str] | None = None,
     breakdown_titles: Iterable[str] | None = None,
     breakdown_by_title: dict[str, list[str]] | None = None,
+    query_columns_by_title: dict[str, list[str]] | None = None,
     available_fields: Iterable[str] | None = None,
     expects_data_titles: Iterable[str] | None = None,
     metrics_by_title: dict[str, list[str]] | None = None,
@@ -597,6 +598,7 @@ def audit_dashboard_elements(
     expected_kind_by_title = expected_kind_by_title or {}
     breakdown_by_title = breakdown_by_title or {}
     metrics_by_title = metrics_by_title or {}
+    query_columns_by_title = query_columns_by_title or {}
     breakdown = set(breakdown_titles) if breakdown_titles is not None else set(breakdown_by_title)
     segments, unmatched = segment_panels(
         snapshot_text,
@@ -620,6 +622,7 @@ def audit_dashboard_elements(
                     True if expects_data_titles is None else title in set(expects_data_titles)
                 ),
                 referenced_metrics=metrics_by_title.get(title, []),
+                query_defined_columns=query_columns_by_title.get(title, []),
                 available_metrics=panel_fields,
             )
             el.detail = classified.detail or el.detail
@@ -774,6 +777,7 @@ def classify_panel(
     expects_data: bool = False,
     referenced_metrics: Iterable[str] = (),
     available_metrics: Iterable[str] | None = None,
+    query_defined_columns: Iterable[str] = (),
 ) -> PanelRenderResult:
     """Classify a single panel's rendered region.
 
@@ -825,6 +829,21 @@ def classify_panel(
                     detail=(
                         f"{markers[0]}; names column(s) {evidence.columns} but target "
                         "field caps were unavailable, so absence is unconfirmed"
+                    ),
+                )
+            # A column this panel's own query creates was never meant to be in
+            # the index, so "confirmed absent from target" is not evidence of a
+            # data gap -- it is the expected state, and the error is a
+            # construction bug (the query referenced its own output too early,
+            # or named a column it never defined).
+            synthetic = [c for c in evidence.columns if c in set(query_defined_columns or ())]
+            if synthetic:
+                return PanelRenderResult(
+                    title=title, status="error", error_class="render_error",
+                    detail=(
+                        f"{markers[0]}; column(s) {synthetic} are defined by this "
+                        "panel's own query, so their absence from the target is "
+                        "expected and cannot explain the error"
                     ),
                 )
             present = [c for c in evidence.columns if c in set(available_fields)]
@@ -896,6 +915,7 @@ def classify_render_per_panel(
     panels: Iterable[tuple[str, str]],
     *,
     breakdown_by_title: dict[str, list[str]] | None = None,
+    query_columns_by_title: dict[str, list[str]] | None = None,
     available_fields: Iterable[str] | None = None,
     expects_data_titles: Iterable[str] | None = None,
     metrics_by_title: dict[str, list[str]] | None = None,
@@ -920,6 +940,7 @@ def classify_render_per_panel(
     """
     breakdown_by_title = breakdown_by_title or {}
     metrics_by_title = metrics_by_title or {}
+    query_columns_by_title = query_columns_by_title or {}
     expects = set(expects_data_titles or ())
     verdict = RenderVerdict()
     for title, text in panels:
@@ -933,6 +954,7 @@ def classify_render_per_panel(
             available_metrics=_panel_target_fields(
                 title, target_fields_by_title, available_metrics
             ),
+            query_defined_columns=query_columns_by_title.get(title, []),
         )
         verdict.panels.append(result)
 
@@ -1136,6 +1158,28 @@ def _column_candidates(text: str) -> list[str]:
     return out
 
 
+def query_defined_columns_from_query(query: str) -> list[str]:
+    """The columns an ES|QL query creates for itself.
+
+    Every ``EVAL``/``STATS`` assignment target and ``RENAME ... AS`` alias: the
+    synthetic columns the translator emitted, as opposed to the index columns
+    the query reads. The distinction decides how ``Unknown column`` is read --
+    a synthetic column is *supposed* to be absent from the target, so its
+    absence explains nothing and the error is a construction bug.
+    """
+    text = _QUOTED_RE.sub('""', _TRIPLE_QUOTED_RE.sub('""', str(query or "")))
+    names: list[str] = []
+    for match in _ALIAS_ASSIGNMENT_RE.finditer(text):
+        name = match.group(1).strip("`")
+        if name and name not in names:
+            names.append(name)
+    for match in _RENAME_ALIAS_RE.finditer(text):
+        name = match.group(1).strip("`")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def metric_fields_from_query(query: str) -> list[str]:
     """The index columns an ES|QL query reads as its metric.
 
@@ -1223,6 +1267,22 @@ def metric_fields_by_panel(report: dict) -> dict[str, list[str]]:
             name
             for query in panel_esql_queries(panel)
             for name in metric_fields_from_query(query)
+        ],
+    )
+
+
+def query_defined_columns_by_panel(report: dict) -> dict[str, list[str]]:
+    """Each panel's synthetic columns — the ones its own query creates.
+
+    Feeds :func:`classify_panel` so an ``Unknown column`` naming one of them is
+    read as a construction bug rather than excused as a target field gap.
+    """
+    return _by_panel_title(
+        report,
+        lambda panel: [
+            name
+            for query in panel_esql_queries(panel)
+            for name in query_defined_columns_from_query(query)
         ],
     )
 

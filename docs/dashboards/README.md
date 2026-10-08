@@ -9,6 +9,15 @@ Dashboard authoring flow for local migration work:
   `DashboardIR.to_yaml_dict()` produces and `dashboards_api`'s `*_yaml_*`
   mappers accept.
 
+  The committed schema carries local extensions that `kb-dashboard-core`
+  (0.4.1) does not generate: metric `columns` and `styling`
+  (`ESQLMetricPanelStyling`), ES|QL chart `time_range` (`PanelTimeRange`), and
+  cross-index XY `layers` (`ESQLXYLayer`). `PanelTimeRange` and `ESQLXYLayer`
+  name the Dashboards API schema they mirror in their `description`. Running the
+  generator drops them, so re-apply them (or confirm upstream now generates
+  them) before committing a regenerated schema; otherwise the schema gate
+  rejects every panel that uses them.
+
 - `docs/dashboards/kibana_dashboards_api.openapi.yaml`
   Pinned native Kibana Dashboards API OpenAPI bundle for `/api/dashboards`.
   This is the schema authority for what the typed upload path may emit.

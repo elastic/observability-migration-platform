@@ -1,0 +1,179 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 12123 Kubernetes / Kubelet (revision 1).
+
+schema_version: 1
+gnet_id: 12123
+gnet_revision: 1
+dashboard_title: "Kubernetes / Kubelet"
+maintainer: "community"
+
+panels:
+  - id: 2
+    title: "Up"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. Each instance counts once even when several scrape endpoints report up; the source selects metrics_path=\"/metrics\" instead."
+    notes: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. Each instance counts once even when several scrape endpoints report up; the source selects metrics_path=\"/metrics\" instead."
+  - id: 3
+    title: "Running Pods"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+    notes: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+  - id: 4
+    title: "Running Container"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+    notes: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+  - id: 5
+    title: "Actual Volume Count"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+    notes: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+  - id: 6
+    title: "Desired Volume Count"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+    notes: "Minimum over the time range of the per-bucket sum, like the source valueName \"min\". The first bucket and a final bucket with under a minute of data are skipped. On ranges shorter than about 75 scrape intervals a bucket can miss a scrape and read low. The scrape metrics_path selector is omitted."
+  - id: 7
+    title: "Config Error Count"
+    grafana_type: singlestat
+    kibana_type: metric
+    fidelity: APPROXIMATE
+    delta: "rate() of the config-error gauge, as each kubelet's change over the last 5 minutes of the time range divided by 300. The source valueName \"min\" is the minimum over the range; this tile is the value at the end of the range."
+    notes: "rate() of the config-error gauge, as each kubelet's change over the last 5 minutes of the time range divided by 300. The source valueName \"min\" is the minimum over the range; this tile is the value at the end of the range."
+  - id: 8
+    title: "Operation Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 9
+    title: "Operation Error Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 10
+    title: "Operation duration 99th quantile"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 11
+    title: "Pod Start Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 12
+    title: "Pod Start Duration"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile of pod and worker start duration. The source pod series calls histogram_quantile on the _count series; the pod line uses the bucket metric. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile of pod and worker start duration. The source pod series calls histogram_quantile on the _count series; the pod line uses the bucket metric. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 13
+    title: "Storage Operation Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 14
+    title: "Storage Operation Error Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 15
+    title: "Storage Operation Duration 99th quantile"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 16
+    title: "Cgroup manager operation rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The legend is the instance and operation type so each kubelet stays its own series; the source legend is the operation type alone. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The legend is the instance and operation type so each kubelet stays its own series; the source legend is the operation type alone. The scrape metrics_path selector is omitted."
+  - id: 17
+    title: "Cgroup manager 99th quantile"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 18
+    title: "PLEG relist rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 19
+    title: "PLEG relist interval"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 20
+    title: "PLEG relist duration"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 21
+    title: "RPC Rate"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 22
+    title: "Request duration 99th quantile"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "99th percentile from the classic histogram buckets. The point is the upper bound of the first bucket whose cumulative rate reaches 0.99, without in-bucket interpolation. The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 23
+    title: "Memory"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. The scrape metrics_path selector is omitted."
+  - id: 24
+    title: "CPU usage"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: APPROXIMATE
+    delta: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+    notes: "The 5m rate window follows the dashboard time range. The scrape metrics_path selector is omitted."
+  - id: 25
+    title: "Goroutines"
+    grafana_type: graph
+    kibana_type: line
+    fidelity: PERFECT
+    notes: "Same aggregation, rate or gauge, and grouping as the source. The scrape metrics_path selector is omitted."

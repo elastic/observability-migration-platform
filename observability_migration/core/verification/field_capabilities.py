@@ -216,6 +216,30 @@ def fetch_field_capabilities(
     return capabilities
 
 
+# ``object`` / ``nested`` / ``passthrough`` are path nodes. ``_field_caps``
+# reports them, but ES|QL cannot select the node itself. ``flattened`` is not
+# in this set: Elasticsearch 9.6 reads a flattened root directly. Only its
+# subfields need ``FIELD_EXTRACT``.
+# https://www.elastic.co/docs/reference/query-languages/esql/esql-flattened-fields
+OBJECT_CONTAINER_TYPES = frozenset({"object", "nested", "passthrough"})
+
+
+def is_object_container_field(capability: FieldCapability | None) -> bool:
+    """True when the capability describes a path node rather than a field.
+
+    ``_field_caps`` reports the intermediate nodes of a dotted path as their
+    own entries, so a target holding ``service.name`` also answers for
+    ``service`` with type ``object``. That node cannot be selected, filtered or
+    aggregated -- ES|QL answers ``Unknown column [service], did you mean
+    [service.name]?`` -- so treating its presence as proof the field exists is
+    wrong.
+
+    A ``flattened`` root is a field ES|QL can read. Classifying it with the
+    path nodes marks a valid root query ``status: missing``.
+    """
+    return bool(capability and capability.type in OBJECT_CONTAINER_TYPES)
+
+
 def is_numeric_field(capability: FieldCapability | None) -> bool:
     return bool(capability and capability.type_family == "numeric")
 
@@ -309,6 +333,7 @@ __all__ = [
     "DATE_FIELD_TYPES",
     "KEYWORD_FIELD_TYPES",
     "NUMERIC_FIELD_TYPES",
+    "OBJECT_CONTAINER_TYPES",
     "TEXT_FIELD_TYPES",
     "FieldCapability",
     "FieldUsageAssessment",
@@ -322,6 +347,7 @@ __all__ = [
     "is_date_like_field",
     "is_keyword_like_field",
     "is_numeric_field",
+    "is_object_container_field",
     "is_searchable_field",
     "is_string_field",
     "is_text_like_field",

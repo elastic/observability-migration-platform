@@ -1,0 +1,73 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Fidelity manifest — Grafana 11454 K8s / Storage / Volumes / Cluster (revision 14).
+
+schema_version: 1
+gnet_id: 11454
+gnet_revision: 14
+dashboard_title: "K8s / Storage / Volumes / Cluster"
+maintainer: "community"
+
+panels:
+  - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate"
+    fidelity: APPROXIMATE
+    notes: "predict_linear over 1d extrapolated 7d, approximated as available/one-day growth < 7."
+  - title: "User Namespace Volumes Full in Week Based on Daily Use Rate"
+    fidelity: APPROXIMATE
+    notes: "Same slope approximation for non-infrastructure namespaces."
+  - title: "Dashboard Alerts"
+    fidelity: GAP
+    notes: "Grafana alert list has no Kibana dashboard equivalent."
+  - title: "Running PVCs Above % Used Warning Threshold"
+    fidelity: APPROXIMATE
+    notes: "Count of PVCs at or above 80% used. Textbox default from revision 14."
+  - title: "Unbound PVCs"
+    fidelity: APPROXIMATE
+    notes: "pv_collector_unbound_pvc_count replaced with phase!=Bound."
+  - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+    fidelity: APPROXIMATE
+    notes: "predict_linear over 1w extrapolated 7d. Week of used-byte growth scaled to a daily rate; days left under 7."
+  - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+    fidelity: APPROXIMATE
+    notes: "Count of at-risk infrastructure volumes over time."
+  - title: "Infrastructure Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+    fidelity: APPROXIMATE
+    notes: "Projected bytes after 7 days of growth, where that projection is negative."
+  - title: "User Namespace Volumes Full in Week Based on Daily Use Rate - Current"
+    fidelity: APPROXIMATE
+    notes: "Table of user-namespace volumes with days of space left under 7."
+  - title: "User Namespace Volumes Full in Week Based on Daily Use Rate - Alert History"
+    fidelity: APPROXIMATE
+    notes: "Count of at-risk user volumes over time."
+  - title: "User Namespace Volumes Full in Week Based on Daily Use Rate - Predicted Available Space History"
+    fidelity: APPROXIMATE
+    notes: "Projected bytes after 7 days of growth for user namespaces."
+  - title: "Running PVCs Above % Used Warning Threshold Stats - Current"
+    fidelity: APPROXIMATE
+    notes: "Claims at or above 80% with used, capacity, free, and percent."
+  - title: "Running PVCs Above % Used Warning Threshold - History"
+    fidelity: APPROXIMATE
+    notes: "Count of claims at or above 80% over time."
+  - title: "Bound PVCs"
+    fidelity: APPROXIMATE
+    notes: "pv_collector_bound_pvc_count replaced with phase=Bound."
+  - title: "PVC Stats"
+    fidelity: APPROXIMATE
+    notes: "Per-claim used, capacity, free, and percent. Existence-only info targets dropped."
+  - title: "All Running PVCs Used Bytes"
+    fidelity: PERFECT
+    notes: "Used bytes by namespace and claim."
+  - title: "Running PVCs % Used"
+    fidelity: APPROXIMATE
+    notes: "Same-bucket used/capacity percent by claim."
+  - title: "Hourly Volume Use Rate"
+    fidelity: APPROXIMATE
+    notes: "DELTA over 1 hour / 3600, per claim."
+  - title: "Daily Volume Use Rate"
+    fidelity: APPROXIMATE
+    notes: "DELTA over 24 hours / 86400, per claim."
+  - title: "Weekly Volume Use Rate"
+    fidelity: APPROXIMATE
+    notes: "DELTA over 168 hours / 604800, per claim, plotted daily."

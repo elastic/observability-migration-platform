@@ -395,6 +395,172 @@ keeps its own metric index (for example, `prometheus` keeps
 `metrics-prometheus-*` instead of being overwritten by the OTel default
 `metrics-*`).
 
+#### Dotted Names and `subobjects`
+
+Datadog's namespace is full of metrics that are also the *prefix* of another
+metric — `redis.keys` alongside `redis.keys.evicted`, `rabbitmq.queues`
+alongside `rabbitmq.queues.created.count`. Under Elasticsearch's **default**
+object mapping the pair is rejected:
+
+```
+can't merge a non object mapping [redis.keys] with an object mapping
+```
+
+That is a default, not a limit. Verified against Elasticsearch 9.6.0:
+
+| Mapping | Result |
+| --- | --- |
+| default | rejected |
+| `subobjects: false` | accepted; both indexed; ES\|QL returns both values |
+| `subobjects: "auto"` | rejected — `unknown subobjects value: auto` |
+
+`subobjects: false` stores a dotted name as a literal leaf rather than an
+object path, and it composes with `index.mode: time_series`. The seeder's
+generated index templates therefore set it, which is also what lets `service`
+and `service.name` coexist. Elastic's own OTel metrics mapping
+(`metrics-otel@template`) reaches the same place differently, by declaring
+`metrics` and `attributes` as `passthrough` objects — which is why a real
+OTLP target can hold these pairs.
+
+The practical consequence: under `passthrough`, dotted Datadog metric names no
+longer collide, and the profile reaches the same runnable-query count as the
+flattening profiles on the in-repo corpus (261 of 261).
+
+If you build the target index yourself rather than with `seed-sample-data`,
+set `subobjects: false` on the metrics mapping or the same collisions will
+reject your ingest.
+
+#### Passthrough Tag Names
+
+`passthrough` keeps tag names verbatim and carries **no** tag mappings, where
+`otel` carries 39 (`host` → `host.name`, `service` → `service.name`,
+`status` → `log.level`). Against a target whose *attributes* are ECS-shaped —
+which is what OTLP produces even when it preserves dotted *metric* names — a
+`{service:shop-lab}` scope emits `service == "shop-lab"` against a target that
+only has `service.name`. With `--es-url` this is reported under DATA READINESS
+for metrics, group-by fields and scope filters.
+
+If you need dotted metric names *and* the ECS tag baseline, neither built-in
+profile fits: write a custom YAML profile that takes the `otel` `tag_map` and
+leaves metric names alone.
+
+#### Metric Name Flattening (and when it is wrong)
+
+`otel` is the **default** profile and it does exactly one thing to metric
+names: replaces dots with underscores. `shop.orders.active` →
+`shop_orders_active`. It carries **no metric renames at all** — its
+`metric_map` is empty. The only built-in profile with metric renames is
+`elastic_agent` (18 entries, e.g. `system.cpu.user` → `system.cpu.user.pct`).
+
+That matters because the flattening is right for some targets and wrong for
+others:
+
+| How the metric reached Elasticsearch | Stored as | Correct profile |
+| --- | --- | --- |
+| Prometheus remote-write / Metricbeat | `prometheus.metrics.shop_orders_active` | `prometheus` |
+| Elasticsearch native `/_prometheus` | `metrics.shop_orders_active` | `prometheus_native` |
+| **OTLP, name preserved** | **`shop.orders.active`** | **`passthrough`** (or a custom profile) |
+| Elastic Agent system integration | `system.cpu.user.pct` | `elastic_agent` |
+
+OTLP keeps the dotted metric name, so a custom Datadog metric shipped straight
+through OTLP lands in Elasticsearch as `shop.orders.active` — dots intact — and
+the default `otel` profile will query `shop_orders_active`, which does not
+exist.
+
+Switching to `passthrough` fixes the metric names and costs you the **tag**
+baseline, not any metric renames: `otel` has 39 tag mappings
+(`host` → `host.name`, `env` → `deployment.environment`,
+`status` → `log.level`, …) and `passthrough` has none. If you need dotted
+metric names *and* the ECS tag baseline, write a custom YAML profile that sets
+`tag_map` from the `otel` baseline and leaves metric names alone, or start from
+`otel` and supply `--metric-map-file` identity entries for the dotted metrics.
+
+With `--es-url`, a run that resolves a metric to a name the target does not
+have now reports it under **DATA READINESS** and marks those panels
+`Warning` rather than `OK`:
+
+```
+DATA READINESS (2 panel(s) will show an error until telemetry lands):
+  [Shop — Orders] Active orders: 'shop_orders_active' is absent from the target.
+```
+
+Without `--es-url` there are no field caps, so absence is unknowable and no
+such warning is emitted — another reason to pass it.
+
+#### Tag Filter Value Types
+
+Datadog tag values are untyped strings: `{http.response.status_code:500}`
+carries `"500"` whatever the target field holds. ES|QL compares only within a
+type family and rejects a cross-family comparison outright:
+
+```
+verification_exception - first argument of [http.response.status_code == "500"]
+is [numeric] so second argument must also be [numeric] but was [keyword]
+```
+
+OTel semantic conventions map `http.response.status_code` to `long`, so the
+filter value has to be emitted as a number, not a quoted string. Live field
+caps decide this:
+
+| Target field type | Emitted ES\|QL |
+| --- | --- |
+| numeric (caps loaded) | `http.response.status_code == 500` |
+| keyword / text (caps loaded) | `service.name == "shop-lab"` |
+| unknown (no `--es-url`) | `TO_STRING(http.response.status_code) == "500"` |
+
+With caps loaded the comparison is exact. Without them the type is unknown, so
+a digit-only value is compared through `TO_STRING(...)`, which stays valid
+against both a keyword and a numeric mapping rather than guessing one and
+failing at query time. Non-numeric values are unambiguous and are quoted
+directly in every case.
+
+The same typing applies to `!=`, `a|b` OR expansion, `IN (...)` lists, a rule
+pack's `metric_map` `attribute_filter`, and monitor scopes (alert rules go
+through the same renderer). `LIKE` needs a string pattern, so a wildcard value
+against a caps-confirmed numeric field casts the field:
+`TO_STRING(http.response.status_code) LIKE "5*"`.
+
+#### Field Name Quoting
+
+A target field path is quoted per *segment*, and only where a segment needs it:
+a leading digit, a hyphen or space, or a collision with an ES|QL keyword.
+
+| Target field | Emitted ES\|QL |
+| --- | --- |
+| `system.cpu.user` | `system.cpu.user` |
+| `system.network.in.bytes` | ``system.network.`in`.bytes`` (`in` is an ES\|QL keyword) |
+| `prometheus.labels.client-id` | ``prometheus.labels.`client-id`` `` |
+| `labels.5xx` | ``labels.`5xx` `` |
+
+Two things this gets right that are easy to get wrong:
+
+* **Whole-path quoting is not a substitute.** Wrapping an already-quoted name
+  produces nested backticks — ``` `prometheus.labels.`client-id`` ``` — which
+  Elasticsearch rejects with `token recognition error`. Quoting is idempotent,
+  so a prefixed name (the `prometheus*` profiles prepend `prometheus.labels.`)
+  can pass through more than one layer safely.
+* **Reserved words must be quoted even mid-path.** `SUM(system.network.in.bytes)`
+  fails with `no viable alternative at input 'SUM(system.network.in'`. The word
+  list is shared with the Grafana adapter and was derived by probing every
+  ES\|QL keyword against a live cluster; 19 are rejected as a bare dotted
+  segment, including `in`, `is`, `by`, `on`, `with`, `nulls`, `first` and `last`.
+
+#### Tag Filter Wildcards
+
+ES|QL `LIKE` uses the same glob syntax as a Datadog tag filter — `*` for zero
+or more characters, `?` for exactly one — so a glob value passes through
+unchanged. `%` and `_` are *literal characters* in ES|QL, not wildcards.
+
+| Datadog scope | Emitted ES\|QL |
+| --- | --- |
+| `{host:web-*}` | `host.name LIKE "web-*"` |
+| `{!host:canary*}` | `host.name NOT LIKE "canary*"` |
+| `{host:web-*\|db-*}` | `(host.name LIKE "web-*" OR host.name LIKE "db-*")` |
+| `{host:100%}` | `host.name == "100%"` (exact, `%` is literal) |
+
+Passing `--es-url` is therefore worth it for filter correctness alone, not just
+for the readiness contract.
+
 ## Command Coverage
 
 Datadog command examples and the canonical shared migration contract are
