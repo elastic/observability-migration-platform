@@ -24,6 +24,7 @@ from typing import Any
 from observability_migration.core.verification.field_capabilities import (
     FieldCapability,
     assess_field_usage,
+    is_object_container_field,
 )
 
 from .field_map import FieldMapProfile, detect_metric_layout
@@ -66,6 +67,18 @@ class PreflightResult:
     @property
     def warnings(self) -> list[PreflightIssue]:
         return [i for i in self.issues if i.level == "warn"]
+
+
+def preflight_status_label(passed: bool) -> str:
+    """The single verdict word for a preflight result.
+
+    Only a blocking issue fails a preflight -- warnings and info are carried by
+    the ``Warn``/``Info`` counts printed beside this label and by the listed
+    issues. Both the in-run line and the end-of-run report derive the word from
+    here so they cannot disagree about the same result, and so neither can
+    contradict the ``passed`` flag written to the manifest.
+    """
+    return "pass" if passed else "issues"
 
 
 def check_kibana_version(
@@ -336,7 +349,11 @@ def build_target_readiness_contract(
 
             status = "unknown"
             field_type = None
-            if capability is not None:
+            if is_object_container_field(capability):
+                # A dotted path's parent node is reported by _field_caps but
+                # cannot be queried; treat it as absent, not as present.
+                status = "missing" if context_has_caps else "unknown"
+            elif capability is not None:
                 status = "confirmed"
                 field_type = capability.type
             elif context_has_caps:

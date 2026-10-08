@@ -500,14 +500,19 @@ class KibanaTargetAdapter(TargetAdapter):
         return {
             "artifact": label,
             "success": result.status in {"created", "updated"},
+            # Not a failure and not an upload: the source dashboard had no
+            # panels, so the caller should report a skip rather than an error.
+            "nothing_to_upload": result.status == "source_empty",
             "output": (
                 f"{result.dashboard or '(untitled)'}: {result.status}"
-                # A "lossy"/"duplicate_id" status alone reads like a shrug; the
-                # message names what the operator lost, so it travels with it
-                # into ``upload_error`` and the migration report.
+                # A bare status reads like a shrug; the message names what the
+                # operator lost -- or, for ``source_empty``, why nothing was
+                # sent -- so it travels into ``upload_error`` and the migration
+                # report with the status.
                 + (
                     f" — {result.message}"
-                    if result.status in {"lossy", "duplicate_id"} and result.message
+                    if result.status in {"lossy", "duplicate_id", "source_empty"}
+                    and result.message
                     else ""
                 )
             ),
@@ -600,6 +605,9 @@ class KibanaTargetAdapter(TargetAdapter):
         return {
             "artifact": artifact_path.name,
             "success": result.status in {"created", "updated"},
+            # Not a failure and not an upload: the source dashboard had no
+            # panels, so the caller should report a skip rather than an error.
+            "nothing_to_upload": result.status == "source_empty",
             "output": f"{result.dashboard or '(untitled)'}: {result.status}"
             if not result.message
             else result.message,
@@ -755,6 +763,7 @@ class KibanaTargetAdapter(TargetAdapter):
         _fail_record_on_unavailable_data_view(record, referenced_patterns, unavailable)
         return {
             "success": record["success"],
+            "nothing_to_upload": bool(record.get("nothing_to_upload")),
             "output": record["output"],
             "space_id": record["space_id"],
             "kibana_url": record["kibana_url"],

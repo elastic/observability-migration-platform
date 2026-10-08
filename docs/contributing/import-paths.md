@@ -25,6 +25,7 @@ All code lives in the `observability_migration/` package.
 | `DashboardIR` | `observability_migration.core.assets.dashboard` |
 | `enrich_yaml_panel_display` | `observability_migration.targets.kibana.emit.display` |
 | `ESQLShape`, `extract_esql_columns` | `observability_migration.targets.kibana.emit.esql_utils` |
+| `esql_identifier`, `esql_identifier_segments`, `ESQL_RESERVED_IDENTIFIERS` | `observability_migration.targets.kibana.emit.esql_utils` |
 
 **Removed with the dashboard-YAML path.** These helpers no longer exist at the
 import path shown, so importing them from there raises `ImportError`.

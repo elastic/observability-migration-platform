@@ -4784,20 +4784,34 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
         )
 
     if panel_type == "text":
-        content = _normalized_text_panel_content(panel)
-        yaml_panel["markdown"] = {"content": content or "*(migrated text panel)*"}
-        if not str(panel.get("title") or "").strip():
-            yaml_panel["hide_title"] = True
-        panel_result = PanelResult(title, panel_type, "markdown", "migrated", 1.0)
-        return yaml_panel, _enrich_panel_result(
-            panel_result,
-            panel=panel,
-            datasource=datasource,
-            query_language="text",
-            notes=panel_notes,
-            inventory=panel_inventory,
-            yaml_panel=yaml_panel,
-        )
+        # Curated packs may replace Grafana markdown that only interpolates
+        # template variables (``# $Pod_ip``) with a live ES|QL metric tile.
+        # Without an override, keep the existing markdown path.
+        _text_override = None
+        if rule_pack.panel_query_overrides:
+            _text_override = _select_panel_pack_override(
+                rule_pack.panel_query_overrides,
+                title,
+                section_title=section_title,
+                panel_id=panel.get("id") or panel.get("panelId") or "",
+            )
+        if not (
+            _text_override and str(_text_override.get("esql_query") or "").strip()
+        ):
+            content = _normalized_text_panel_content(panel)
+            yaml_panel["markdown"] = {"content": content or "*(migrated text panel)*"}
+            if not str(panel.get("title") or "").strip():
+                yaml_panel["hide_title"] = True
+            panel_result = PanelResult(title, panel_type, "markdown", "migrated", 1.0)
+            return yaml_panel, _enrich_panel_result(
+                panel_result,
+                panel=panel,
+                datasource=datasource,
+                query_language="text",
+                notes=panel_notes,
+                inventory=panel_inventory,
+                yaml_panel=yaml_panel,
+            )
 
     if panel_analysis.get("mixed_datasource"):
         reasons = ["Mixed datasource or query-language panel targets require manual redesign"]
@@ -4958,12 +4972,25 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         # its ``setdefault`` preserves it (e.g. elapsed-seconds
                         # Start Time → duration display) (PR #369).
                         _primary_format_unit = _override.get("primary_format")
-                        if _primary_format_unit and isinstance(
-                            _native_panel.get("primary"), dict
-                        ):
+                        if _primary_format_unit and isinstance(_native_panel, dict):
                             _pf = grafana_unit_to_yaml_format(_primary_format_unit)
                             if _pf:
-                                _native_panel["primary"]["format"] = _pf
+                                _primary = _native_panel.get("primary")
+                                _xy_metrics = _native_panel.get("metrics")
+                                if isinstance(_primary, dict):
+                                    _primary["format"] = dict(_pf)
+                                elif (
+                                    _override_type in ("line", "area", "bar")
+                                    and isinstance(_xy_metrics, list)
+                                    and len(_xy_metrics) == 1
+                                    and isinstance(_xy_metrics[0], dict)
+                                ):
+                                    # A single-series XY chart whose pack
+                                    # corrects the source unit (CoreDNS cache
+                                    # entries are a count; the source unit is
+                                    # bytes). Multi-series and datatable
+                                    # columns keep their own formats.
+                                    _xy_metrics[0]["format"] = dict(_pf)
                         # Curated overrides skip PANEL_TRANSLATORS; honour
                         # pack-level timeFrom drops before enrich applies
                         # Grafana panel time_range.
@@ -5027,19 +5054,40 @@ def translate_panel(panel, datasource_index="metrics-*", esql_index=None, rule_p
                         _dropped_curated_metrics = _source_metrics_absent_from_query(
                             _source_target_exprs, _emitted_query, resolver
                         )
+                        # The pack declared these drops and disclosed them in
+                        # approximation_note; they are not a telemetry gap.
+                        _declared_dropped = {
+                            str(name).strip()
+                            for name in _override.get("dropped_source_metrics") or []
+                            if str(name).strip()
+                        }
+                        _dropped_curated_metrics = [
+                            metric
+                            for metric in _dropped_curated_metrics
+                            if metric not in _declared_dropped
+                        ]
                         # live_optional_metrics already stripped these because
                         # field-caps proved them absent. Re-flagging them as a
                         # pack omission fights that design and yellows panels
                         # (TCP Errors / TCPRcvQDrop) whose remaining series
                         # still render.
-                        _optional_omitted = set(
-                            _optional_metric_result.omitted_metrics or []
-                        )
                         _optional_declared = {
                             str(name).strip()
                             for name in (rule_pack.live_optional_metrics or [])
                             if str(name).strip()
                         }
+                        # Only pack-declared optional metrics are an expected
+                        # omission. Any other absent metric was stripped so the
+                        # rest of the query runs, but the panel lost a series
+                        # and must say so.
+                        _optional_omitted = {
+                            metric
+                            for metric in (_optional_metric_result.omitted_metrics or [])
+                            if metric in _optional_declared
+                        }
+                        for metric in _optional_metric_result.omitted_metrics or []:
+                            if metric not in _optional_declared:
+                                _append_unique(_dropped_curated_metrics, metric)
                         if _optional_omitted or _optional_declared:
                             _dropped_curated_metrics = [
                                 metric
@@ -6777,7 +6825,7 @@ _extract_esql_columns = _extract_esql_columns_canonical
 _TIME_DIMENSION_FIELDS = {"time_bucket", "timestamp_bucket", "step"}
 _CURATED_QUERY_TOKEN_RE = re.compile(
     r"\{\{\s*(?P<kind>control|label|metric):(?P<name>[A-Za-z0-9_.-]+)"
-    r"(?::(?P<prefer>counter|gauge))?\s*\}\}"
+    r"(?::(?P<prefer>counter|gauge|histogram))?\s*\}\}"
 )
 
 
@@ -6807,6 +6855,17 @@ def _materialize_curated_query_override(query, resolver):
                 resolve = getattr(resolver, "resolve_label", None)
                 resolved = resolve(name) if callable(resolve) else None
                 return resolved or name
+            if kind == "metric" and prefer == "histogram":
+                # PERCENTILE() operand, typed like histogram_quantile_family_rule:
+                # a classic ``histogram`` field needs TO_TDIGEST(); an
+                # exponential_histogram (or unknown type) is used as-is.
+                resolve = getattr(resolver, "resolve_metric_field", None)
+                resolved = (resolve(name, prefer=None) if callable(resolve) else None) or name
+                field_type = getattr(resolver, "field_type", None)
+                kind_name = (field_type(resolved) if callable(field_type) else None) or ""
+                if kind_name.strip().lower() == "histogram":
+                    return f"TO_TDIGEST({resolved})"
+                return resolved
             if kind == "metric":
                 resolve = getattr(resolver, "resolve_metric_field", None)
                 resolved = resolve(name, prefer=prefer) if callable(resolve) else None
@@ -6820,7 +6879,7 @@ def _materialize_curated_query_override(query, resolver):
 
 def _curated_metric_token_pattern(metric_name: str) -> re.Pattern[str]:
     return re.compile(
-        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge))?\s*\}}\}}",
+        rf"\{{\{{\s*metric\s*:\s*{re.escape(metric_name)}\s*(?::(?:counter|gauge|histogram))?\s*\}}\}}",
         re.IGNORECASE,
     )
 
@@ -6873,34 +6932,76 @@ def _esql_expr_references_aliases(expression: str, aliases: set[str]) -> bool:
     return False
 
 
-def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str]) -> bool:
+def _quoted_label_is_removed_alias(text: str, removed_aliases: set[str], query: str) -> bool:
+    """True when a display title names a stripped series.
+
+    ``"Requests"`` is the tile for alias ``requests``. ``"Total"`` is not the
+    tile for a removed ``total`` when a longer alias such as ``shown_total``
+    still carries that tile.
+    """
+    folded = text.lower()
+    for alias in removed_aliases:
+        name = alias.lower()
+        exact = text == alias or text.startswith(f"{alias} - ")
+        titled = folded == name or folded.startswith(f"{name} - ")
+        if not exact and not titled:
+            continue
+        if exact:
+            return True
+        # Only query aliases (``name =``) can carry the tile. Metric and label
+        # tokens (``{{metric:foo_requests_total}}``) and field names are not
+        # series columns, and nearly every counter ends in ``_total``.
+        aliases_text = re.sub(r"\{\{[^}]*\}\}", " ", query or "")
+        longer = re.compile(rf"\b([A-Za-z_][A-Za-z0-9_]*_{re.escape(name)})\s*=(?!=)")
+        if any(match.group(1) not in removed_aliases for match in longer.finditer(aliases_text)):
+            continue
+        return True
+    return False
+
+
+def _tail_is_removed_unpivot_piece(tail: str, removed_aliases: set[str], query: str = "") -> bool:
     """True when an ``MV_APPEND(inner, tail)`` tail is a stripped optional series."""
     if _esql_expr_references_aliases(tail, removed_aliases):
         return True
     stripped = str(tail or "").strip()
     if len(stripped) >= 2 and stripped[0] in {'"', "'"} and stripped[-1] == stripped[0]:
-        text = stripped[1:-1]
-        for alias in removed_aliases:
-            if text == alias or text.startswith(f"{alias} - "):
-                return True
+        return _quoted_label_is_removed_alias(stripped[1:-1], removed_aliases, query)
     return False
 
 
-def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str]) -> str:
-    """Peel ``MV_APPEND(inner, stripped_series)`` layers left by optional omit."""
+def _prune_removed_unpivot_mv_append(expression: str, removed_aliases: set[str], query: str) -> str | None:
+    """Drop stripped pieces anywhere in an ``MV_APPEND`` tree; None if all go.
+
+    Labels and values are parallel trees (``MV_APPEND("Limits", "Total")`` and
+    ``MV_APPEND(limits, shown_total)``), so a removed head must go the same way
+    as a removed tail or the zipped pairs shift onto the wrong tiles.
+    """
     expr = str(expression or "").strip()
-    while True:
-        upper = expr.upper()
-        if not upper.startswith("MV_APPEND(") or not expr.endswith(")"):
-            return expr
-        body = expr[len("MV_APPEND("):-1]
-        parts = [part.strip() for part in _split_top_level_csv(body) if part.strip()]
-        if len(parts) != 2:
-            return expr
-        inner, tail = parts
-        if not _tail_is_removed_unpivot_piece(tail, removed_aliases):
-            return expr
-        expr = inner.strip()
+    if expr.upper().startswith("MV_APPEND(") and expr.endswith(")"):
+        parts = [part.strip() for part in _split_top_level_csv(expr[len("MV_APPEND("):-1]) if part.strip()]
+        if len(parts) == 2:
+            head = _prune_removed_unpivot_mv_append(parts[0], removed_aliases, query)
+            tail = _prune_removed_unpivot_mv_append(parts[1], removed_aliases, query)
+            if head is None or tail is None:
+                return tail if head is None else head
+            if head == parts[0] and tail == parts[1]:
+                return expr
+            return f"MV_APPEND({head}, {tail})"
+        return expr
+    if _tail_is_removed_unpivot_piece(expr, removed_aliases, query):
+        return None
+    return expr
+
+
+def _unwrap_removed_unpivot_mv_appends(expression: str, removed_aliases: set[str], query: str = "") -> str:
+    """Remove stripped series from ``MV_APPEND`` unpivot label/value trees."""
+    expr = str(expression or "").strip()
+    if not expr.upper().startswith("MV_APPEND("):
+        return expr
+    pruned = _prune_removed_unpivot_mv_append(expr, removed_aliases, query)
+    # Every piece was stripped: leave it for the caller's removed-alias check,
+    # which drops the whole assignment.
+    return expr if pruned is None else pruned
 
 
 def _strip_optional_metric_token_from_curated_esql_result(
@@ -6917,18 +7018,36 @@ def _strip_optional_metric_token_from_curated_esql_result(
     removed_aliases: list[str] = []
     stripped_stages: list[str] = []
     removed_alias_set: set[str] = set()
+    # Columns that still exist before the current stage. An EVAL that
+    # reassigns one of them from the stripped series (``x = CASE(opt > 0, …,
+    # x)``) is an override-when-present: dropping it keeps the earlier value.
+    defined_aliases: set[str] = set()
+    # A WHERE stage whose every predicate existed only to select this metric
+    # (``metric IS NOT NULL``) is the series identity. Dropping it while
+    # leaving ``COUNT_DISTINCT(instance)`` counts every series in the index.
+    dropped_series_where = False
+    # STATS BY columns (time bucket, breakdown labels) are not measures. A KEEP
+    # left with only those after stripping has nothing to plot.
+    group_aliases: set[str] = set()
+    # Whether a surviving STATS assignment still reads some metric token.
+    kept_stats_read_metric = False
+    seen_stats = False
     for stage in _split_esql_pipeline(query):
         stripped = str(stage or "").strip()
         upper = stripped.upper()
         if upper.startswith("WHERE "):
             predicates = _split_top_level_boolean_terms(stripped[6:].strip(), "OR")
             kept_predicates = []
+            dropped_metric_predicate = False
             for predicate in predicates:
                 if token_re.search(predicate):
+                    dropped_metric_predicate = True
                     continue
                 if _esql_expr_references_aliases(predicate, removed_alias_set):
                     continue
                 kept_predicates.append(predicate)
+            if not kept_predicates and dropped_metric_predicate:
+                dropped_series_where = True
             if kept_predicates:
                 stripped_stages.append("WHERE " + " OR ".join(kept_predicates))
             continue
@@ -6944,7 +7063,10 @@ def _strip_optional_metric_token_from_curated_esql_result(
             for assignment in assignments:
                 left, right = _split_top_level_assignment(assignment)
                 alias = _canonical_esql_alias(left)
-                if token_re.search(right or assignment):
+                rhs = right if right is not None else assignment
+                if token_re.search(rhs) or _esql_expr_references_aliases(
+                    rhs, removed_alias_set
+                ):
                     if alias:
                         _append_unique(removed_aliases, alias)
                         removed_alias_set.add(alias)
@@ -6960,6 +7082,26 @@ def _strip_optional_metric_token_from_curated_esql_result(
             if by_text:
                 rebuilt += f" BY {by_text}"
             stripped_stages.append(rebuilt)
+            if not seen_stats:
+                # Later STATS stages read the first stage's aliases, not tokens.
+                seen_stats = True
+                kept_stats_read_metric = any(
+                    match.group("kind").lower() == "metric"
+                    for assignment in kept_assignments
+                    for match in _CURATED_QUERY_TOKEN_RE.finditer(assignment)
+                )
+            defined_aliases = set()
+            group_aliases = set()
+            for part in _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    group_aliases.add(alias)
+            for part in kept_assignments + _split_top_level_csv(by_text or ""):
+                left, _right = _split_top_level_assignment(part.strip())
+                alias = _canonical_esql_alias(left or part.strip())
+                if alias:
+                    defined_aliases.add(alias)
             continue
         if upper.startswith("EVAL "):
             assignments = [
@@ -6971,11 +7113,12 @@ def _strip_optional_metric_token_from_curated_esql_result(
             while changed:
                 changed = False
                 kept_assignments: list[str] = []
+                defined_in_stage = set(defined_aliases)
                 for assignment in assignments:
                     left, right = _split_top_level_assignment(assignment)
                     rhs = right if right is not None else assignment
                     rewritten = _unwrap_removed_unpivot_mv_appends(
-                        rhs, removed_alias_set
+                        rhs, removed_alias_set, query
                     )
                     if rewritten != rhs:
                         assignment = (
@@ -6983,19 +7126,22 @@ def _strip_optional_metric_token_from_curated_esql_result(
                         )
                         rhs = rewritten
                         changed = True
+                    alias = _canonical_esql_alias(left) if left else ""
                     if token_re.search(rhs) or _esql_expr_references_aliases(
                         rhs, removed_alias_set
                     ):
-                        alias = _canonical_esql_alias(left) if left else ""
-                        if alias:
+                        if alias and alias not in defined_in_stage:
                             _append_unique(removed_aliases, alias)
                             removed_alias_set.add(alias)
                         changed = True
                         continue
                     kept_assignments.append(assignment)
+                    if alias:
+                        defined_in_stage.add(alias)
                 assignments = kept_assignments
             if assignments:
                 stripped_stages.append("EVAL " + ", ".join(assignments))
+                defined_aliases = defined_in_stage
             continue
         if upper.startswith("KEEP ") and removed_aliases:
             keep_parts = [
@@ -7008,12 +7154,41 @@ def _strip_optional_metric_token_from_curated_esql_result(
                 for part in keep_parts
                 if _canonical_esql_alias(part) not in removed_alias_set
             ]
+            # ``KEEP time_bucket, pct`` with ``pct`` gone is only the time
+            # axis: no series is left to plot.
+            had_measure = any(
+                _canonical_esql_alias(part) not in group_aliases for part in keep_parts
+            )
+            has_measure = any(
+                _canonical_esql_alias(part) not in group_aliases for part in kept_parts
+            )
+            if had_measure and not has_measure:
+                return _CuratedOptionalMetricStripResult(
+                    query="",
+                    removed_aliases=removed_aliases,
+                    exhausted=True,
+                )
             if kept_parts:
                 stripped_stages.append("KEEP " + ", ".join(kept_parts))
             continue
         stripped_stages.append(stripped)
+    rebuilt = " | ".join(stripped_stages)
+    # The metric survived only as a presence filter, and that filter is gone.
+    # An aggregation that reads no metric (a distinct instance count) would
+    # otherwise tally every series, even when a sibling metric-based
+    # assignment was stripped with it. Treat that as no series left.
+    if (
+        dropped_series_where
+        and not kept_stats_read_metric
+        and not token_re.search(rebuilt)
+    ):
+        return _CuratedOptionalMetricStripResult(
+            query="",
+            removed_aliases=removed_aliases,
+            exhausted=True,
+        )
     return _CuratedOptionalMetricStripResult(
-        query=" | ".join(stripped_stages),
+        query=rebuilt,
         removed_aliases=removed_aliases,
     )
 
@@ -7027,15 +7202,36 @@ def _strip_optional_metric_token_from_curated_esql(query: str, metric_name: str)
     return _strip_optional_metric_token_from_curated_esql_result(query, metric_name).query
 
 
+def _curated_metric_token_names(query: str) -> list[str]:
+    """Logical metric names written as ``{{metric:name}}`` in a curated override."""
+    names: list[str] = []
+    for match in _CURATED_QUERY_TOKEN_RE.finditer(query or ""):
+        if str(match.group("kind") or "").lower() != "metric":
+            continue
+        _append_unique(names, match.group("name"))
+    return names
+
+
 def _omit_absent_optional_metrics_from_curated_query_result(
     query,
     optional_metrics,
     resolver,
 ) -> _CuratedOptionalMetricOmissionResult:
-    """Strip live-optional metric tokens that field-caps prove are absent."""
+    """Strip metric tokens that field-caps prove are absent.
+
+    ``optional_metrics`` is the pack's ``live_optional_metrics`` list. Every
+    ``{{metric:}}`` token in the override is considered too: a column field
+    caps proved missing fails the whole ES|QL query in Kibana, so leaving it
+    in (whether or not the pack marked it optional) turns a renderable panel
+    into an Unknown column error.
+    """
     if not query:
         return _CuratedOptionalMetricOmissionResult(query=query)
-    metrics = [str(name).strip() for name in (optional_metrics or []) if str(name).strip()]
+    metrics: list[str] = []
+    for name in list(optional_metrics or []) + _curated_metric_token_names(str(query)):
+        text = str(name).strip()
+        if text:
+            _append_unique(metrics, text)
     if not metrics or not resolver:
         return _CuratedOptionalMetricOmissionResult(query=query)
     out = str(query)
@@ -11049,7 +11245,19 @@ def _expand_repeat_panels(
         for v in (dashboard.get("templating", {}).get("list") or [])
         if isinstance(v, dict) and v.get("name")
     }
-    if not variables:
+    # Grafana saves the clones it rendered for a repeat as extra panels with
+    # ``repeatPanelId`` pointing at the template. Grafana discards and rebuilds
+    # them on load, so translating them would only duplicate the template (or
+    # the fresh clones built below). Row-repeat clones are left alone because
+    # row repeats are not rebuilt here.
+    repeat_template_ids = {
+        panel.get("id")
+        for panel in _flatten_dashboard_panels(dashboard)
+        if panel.get("type") != "row"
+        and _repeat_variable_name(panel.get("repeat"))
+        and panel.get("id") is not None
+    }
+    if not variables and not repeat_template_ids:
         # No variables -> no repeats can resolve; cheap-skip.
         return dashboard
 
@@ -11076,6 +11284,14 @@ def _expand_repeat_panels(
                 new_panel = dict(panel)
                 new_panel["panels"] = expand_panels(panel["panels"])
                 out.append(new_panel)
+                continue
+
+            if (
+                panel.get("type") != "row"
+                and not panel.get("repeatedByRow")
+                and not _repeat_variable_name(panel.get("repeat"))
+                and panel.get("repeatPanelId") in repeat_template_ids
+            ):
                 continue
 
             repeat_name = _repeat_variable_name(panel.get("repeat"))
@@ -12197,6 +12413,36 @@ def _apply_layout_presentation_override(
         esql["legend"] = legend
 
 
+def _apply_layout_metric_color(
+    panel: dict, override: dict, warnings: list | None
+) -> None:
+    """Drop a metric tile's ``primary.color`` for ``metric_color: none``.
+
+    Any other panel type has no metric color to drop; the request is reported
+    as a warning rather than silently ignored.
+    """
+    if str(override.get("metric_color") or "").strip() != "none":
+        return
+    if isinstance(panel.get("section"), dict):
+        return
+    esql = panel.get("esql")
+    if isinstance(esql, dict) and esql.get("type") == "metric":
+        primary = esql.get("primary")
+        if isinstance(primary, dict):
+            primary.pop("color", None)
+        return
+    if warnings is not None:
+        title = str(override.get("title_match") or panel.get("title") or "").strip()
+        warnings.append(
+            (
+                panel,
+                f"curated layout override for panel '{title}' requested "
+                "metric_color 'none', but the migrated panel is not a Kibana metric "
+                "tile, so the color change was skipped",
+            )
+        )
+
+
 def _apply_one_panel_layout_override(
     panel: dict, override: dict, warnings: list | None = None
 ) -> None:
@@ -12231,6 +12477,7 @@ def _apply_one_panel_layout_override(
     if isinstance(new_title, str) and new_title.strip():
         panel["title"] = new_title.strip()
     _apply_layout_presentation_override(panel, override, warnings)
+    _apply_layout_metric_color(panel, override, warnings)
 
 
 def _apply_panel_layout_overrides_recursively(

@@ -306,6 +306,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["primary_format"] = override.primary_format
             if override.approximation_note:
                 entry["approximation_note"] = override.approximation_note
+            if override.dropped_source_metrics:
+                entry["dropped_source_metrics"] = list(override.dropped_source_metrics)
             pack.panel_query_overrides.append(entry)
         for override in panel_cfg.layout_overrides:
             entry = {
@@ -342,6 +344,8 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
                 entry["xy_mode"] = override.xy_mode
             if override.legend_position:
                 entry["legend_position"] = override.legend_position
+            if override.metric_color:
+                entry["metric_color"] = override.metric_color
             pack.panel_layout_overrides.append(entry)
 
         for field_name in (
@@ -362,6 +366,14 @@ def load_rule_pack_files(paths: Sequence[str] | None) -> RulePackConfig:
             dashboard_value = getattr(dashboard_cfg, field_name)
             if query_value not in (None, "", []):
                 setattr(pack, field_name, query_value)
+            elif (
+                query_value == ""
+                and field_name in raw_query_cfg
+                and field_name in ("metrics_dataset_filter", "logs_dataset_filter")
+            ):
+                # An explicit empty dataset filter means "no filter" (e.g. a
+                # CloudWatch pack whose data is not in the prometheus dataset).
+                setattr(pack, field_name, "")
             elif dashboard_value not in (None, "", []):
                 setattr(pack, field_name, dashboard_value)
             if field_name in raw_query_cfg or field_name in raw_dashboard_cfg:
@@ -402,7 +414,7 @@ def _load_curated_pack_for(dashboard: dict[str, Any]) -> RulePackConfig | None:
     title = str(dashboard.get("title") or "")
     tags = list(dashboard.get("tags") or [])
 
-    entry = find_curated_pack(gnet_id=gnet_id, title=title, tags=tags)
+    entry = find_curated_pack(gnet_id=gnet_id, title=title, tags=tags, dashboard=dashboard)
     if entry is None:
         return None
 

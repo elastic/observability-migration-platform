@@ -15,6 +15,9 @@ from typing import Any, NamedTuple
 
 from observability_migration.core.metric_mapping import plan_rate_transform
 from observability_migration.core.verification.field_capabilities import NUMERIC_FIELD_TYPES
+from observability_migration.targets.kibana.emit.esql_utils import (
+    ESQL_RESERVED_IDENTIFIERS,
+)
 
 from .rules import RulePackConfig
 from .runtime_features import binds_esql_named_params
@@ -54,28 +57,9 @@ def _is_label_enrichment_metric(metric_name, rule_pack):
 # so when such a token is used as a column alias it must be backtick-quoted or
 # ES|QL rejects the whole query (``mismatched input 'IN'``). Kept lowercase for
 # case-insensitive matching; the emitted alias text is preserved verbatim.
-_ESQL_RESERVED_IDENTIFIERS = frozenset(
-    {
-        "and",
-        "as",
-        "asc",
-        "by",
-        "desc",
-        "false",
-        "first",
-        "in",
-        "is",
-        "last",
-        "like",
-        "limit",
-        "not",
-        "null",
-        "or",
-        "rlike",
-        "true",
-        "where",
-    }
-)
+# Shared with the Datadog adapter so both sources quote the same words;
+# see esql_utils for how the list was derived against a live cluster.
+_ESQL_RESERVED_IDENTIFIERS = ESQL_RESERVED_IDENTIFIERS
 
 
 # Kibana ES|QL control-variable references. A single ``?`` prefixes a *value*
@@ -2010,6 +1994,36 @@ def _le_float_alt(value: str) -> str | None:
 
 # Labels that use floating-point storage in some Prometheus exporters.
 _FLOAT_LABEL_NAMES = frozenset({"le"})
+# A plain finite decimal. Deliberately excludes "+Inf"/"NaN": a histogram's
+# overflow bucket is a real `le` value but not an ES|QL numeric literal.
+_NUMERIC_LABEL_VALUE_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+
+
+def _numeric_field_matcher_operands(label, value, resolver):
+    """Return ``(lhs, rhs)`` for a matcher on a numeric target field, else ``None``.
+
+    Only labels exempt from :func:`_matcher_has_incompatible_target_field`
+    reach this -- in practice histogram ``le``, which must survive translation
+    because the boundary *is* the series identity, so it cannot simply be
+    dropped the way other numeric-field matchers are.
+
+    ES|QL compares only within a type family, so a numeric ``le`` mapping needs
+    a bare number: ``le == "0.5"`` is rejected with "first argument ... is
+    [numeric] so second argument must also be [numeric]". A non-numeric value
+    such as ``+Inf`` cannot be a numeric literal, so it compares through
+    ``TO_STRING(...)`` -- wrong rows are impossible (a numeric field holds no
+    such value) but the query stays valid instead of failing verification.
+
+    Returns ``None`` when caps are unavailable or the field is not numeric, so
+    the pre-existing string behavior is untouched.
+    """
+    if resolver is None or not hasattr(resolver, "field_type_family"):
+        return None
+    if resolver.field_type_family(label) != "numeric":
+        return None
+    if _NUMERIC_LABEL_VALUE_RE.fullmatch(str(value).strip()):
+        return label, str(value).strip()
+    return f"TO_STRING({label})", _quote_esql_string(value)
 
 
 def _target_binds_label_matcher_params(resolver):
@@ -2199,6 +2213,11 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
     if value.startswith("label_") or value.startswith("^label_") or re.search(r"\$\w", value):
         return None
     if op == "=":
+        numeric = _numeric_field_matcher_operands(label, value, resolver)
+        if numeric is not None:
+            # A numeric target needs no "1"/"1.0" alternation: `le == 1`
+            # already matches a stored 1.0.
+            return f"{numeric[0]} == {numeric[1]}"
         if matcher["label"] in _FLOAT_LABEL_NAMES:
             alt = _le_float_alt(value)
             if alt is not None:
@@ -2209,6 +2228,12 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
         return f"{label} == {_quote_esql_string(value)}"
     if op == "!=":
         # PromQL matches an absent label here (absent == ""), ES|QL NULL does not.
+        numeric = _numeric_field_matcher_operands(label, value, resolver)
+        if numeric is not None:
+            # `_absent_aware`'s empty-string branch would itself be a
+            # cross-type comparison here; absent always satisfies `!=`, so
+            # `IS NULL` alone carries the PromQL semantics.
+            return f"({numeric[0]} != {numeric[1]} OR {label} IS NULL)"
         return _absent_aware(
             label,
             f"{label} != {_quote_esql_string(value)}",
@@ -2217,16 +2242,24 @@ def _matcher_to_esql(matcher, resolver, metric_field=None):
     if op == "=~":
         if value in (".*", ".+", ""):
             return None
-        return f"{label} RLIKE {_quote_esql_string(value)}"
+        return f"{_rlike_field(label, resolver)} RLIKE {_quote_esql_string(value)}"
     if op == "!~":
         if value in (".*", ".+", ""):
             return None
         return _absent_aware(
             label,
-            f"NOT ({label} RLIKE {_quote_esql_string(value)})",
+            f"NOT ({_rlike_field(label, resolver)} RLIKE {_quote_esql_string(value)})",
             f'NOT ("" RLIKE {_quote_esql_string(value)})',
         )
     return None
+
+
+def _rlike_field(label, resolver):
+    """``RLIKE`` takes a string argument, so cast a caps-confirmed numeric field."""
+    if resolver is not None and hasattr(resolver, "field_type_family"):
+        if resolver.field_type_family(label) == "numeric":
+            return f"TO_STRING({label})"
+    return label
 
 
 def _matcher_has_incompatible_target_field(matcher, label, resolver):

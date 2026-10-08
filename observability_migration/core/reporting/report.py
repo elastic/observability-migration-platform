@@ -458,6 +458,58 @@ def print_field_discovery_warning(field_discovery):
     )
 
 
+DATA_READINESS_REASON = "missing from live schema discovery"
+
+
+def collect_data_readiness_gaps(results):
+    """Return ``(dashboard, panel, field)`` for every provably absent target field.
+
+    Live discovery can PROVE a field is absent while the query is still emitted
+    so the panel self-heals once telemetry lands. ES|QL rejects an unknown
+    column outright, so until then Kibana renders a red "Unknown column" card
+    where Grafana would simply have drawn an empty panel.
+    """
+    gaps = []
+    for result in results:
+        for panel in getattr(result, "panel_results", []) or []:
+            for reason in (getattr(panel, "reasons", None) or []):
+                text = str(reason)
+                if DATA_READINESS_REASON in text:
+                    field = text.split("Target field ", 1)[-1].split(" is missing", 1)[0]
+                    gaps.append(
+                        (
+                            getattr(result, "dashboard_title", ""),
+                            getattr(panel, "title", ""),
+                            field,
+                        )
+                    )
+    return gaps
+
+
+def print_data_readiness(results):
+    """Print the DATA READINESS section, if any field is provably absent.
+
+    Shared by the Grafana and Datadog reporters. It used to live inline in the
+    Grafana-facing ``print_report`` only, so a Datadog run that had already
+    recorded ``status: missing`` in its target readiness contract still printed
+    a clean 100% / zero-warning summary and the operator met the failure in
+    Kibana instead.
+    """
+    gaps = collect_data_readiness_gaps(results)
+    if not gaps:
+        return
+    print(f"\nDATA READINESS ({len(gaps)} panel(s) will show an error until telemetry lands):")
+    for dash_title, panel_title, field_name in gaps[:20]:
+        print(f"  [{dash_title}] {panel_title}: '{field_name}' is absent from the target.")
+    if len(gaps) > 20:
+        print(f"  ... and {len(gaps) - 20} more")
+    print(
+        "  These panels are translated correctly. Kibana shows 'Unknown column'\n"
+        "  rather than an empty chart because ES|QL rejects unknown columns; they\n"
+        "  start working as soon as the metric is ingested."
+    )
+
+
 def print_report(results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
@@ -567,24 +619,7 @@ def print_report(results, field_discovery=None):
     # then Kibana renders a red "Unknown column [...]" card -- where Grafana
     # would simply have drawn an empty panel. Staying quiet about that means
     # the operator meets it in the browser instead of in the run that knew.
-    readiness_gaps = []
-    for result in results:
-        for panel in getattr(result, "panel_results", []) or []:
-            for reason in (getattr(panel, "reasons", None) or []):
-                if "missing from live schema discovery" in str(reason):
-                    readiness_gaps.append(
-                        (result.dashboard_title, getattr(panel, "title", ""), str(reason))
-                    )
-    if readiness_gaps:
-        print(f"\nDATA READINESS ({len(readiness_gaps)} panel(s) will show an error until telemetry lands):")
-        for dash_title, panel_title, reason in readiness_gaps[:20]:
-            field = reason.split("Target field ", 1)[-1].split(" is missing", 1)[0]
-            print(f"  [{dash_title}] {panel_title}: '{field}' is absent from the target.")
-        print(
-            "  These panels are translated correctly. Kibana shows 'Unknown column'\n"
-            "  rather than an empty chart because ES|QL rejects unknown columns; they\n"
-            "  start working as soon as the metric is ingested."
-        )
+    print_data_readiness(results)
 
     total_alerts = sum(len(getattr(r, "alert_results", [])) for r in results)
     if total_alerts:
@@ -891,15 +926,18 @@ def build_summary_view(
 
 
 __all__ = [
+    "DATA_READINESS_REASON",
     "MigrationResult",
     "PanelResult",
     "_ir_to_dict",
     "_panel_query_index",
     "build_runtime_summary",
     "build_summary_view",
+    "collect_data_readiness_gaps",
     "mark_panel_requires_manual_after_failed_validation",
     "mark_panel_requires_manual_after_validation",
     "pct",
+    "print_data_readiness",
     "print_report",
     "recompute_result_counts",
     "save_detailed_report",

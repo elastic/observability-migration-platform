@@ -9,7 +9,9 @@
 #   1. Exact gnetId match (preferred — reliable even when title differs)
 #   2. Exact title_hint match when gnetId is absent. Empty dashboard tags still
 #      match (copies/re-imports often strip both gnetId and tags). When the
-#      dashboard still has tags, require overlap with tags_hint.
+#      dashboard still has tags, require overlap with tags_hint. Packs that
+#      share a title declare query_contains; the fragment that appears in a
+#      panel expr wins, and the pack with no fragment stays the default.
 #
 # `gnet_revision` and `dashboard_sha256` are maintainer-verified provenance
 # pins, not a migration-time enforcement mechanism: they record which exact
@@ -137,6 +139,28 @@ packs:
     dashboard_sha256: "6fb5e045bc6d860f0f22ce7e145f4da04d2e25fd4fbf9fda29355cef6d63aeae"
     description: "cAdvisor cluster monitoring — pre-1.16 label remap (pod_name/container_name → pod/container), obsolete rkt/docker/systemd series dropped as gaps, machine_*/container_fs_* KPIs"
 
+  - gnet_id: 1621
+    name: grafana_1621_kubernetes_cadvisor
+    # Same grafana.com title as 315. A copy that dropped gnetId is 1621 only
+    # when a panel query still has this filesystem matcher; otherwise the
+    # unsigned 315 title_hint wins.
+    title_hint: "Kubernetes cluster monitoring (via Prometheus)"
+    query_contains: '^/dev/.*$'
+    tags_hint: ["kubernetes"]
+    path: grafana_1621_kubernetes_cadvisor
+    gnet_revision: 1
+    dashboard_sha256: "d714551536ca794e3088ac535e59b3d2f93dd705e3b60f84d6f3c42da40fe9d4"
+    description: "cAdvisor cluster monitoring (315 fork) — filesystem KPIs sum every /dev/* partition, $Node via instance, named Memory/CPU/Filesystem tiles"
+
+  - gnet_id: 747
+    name: grafana_747_kubernetes_pod_metrics
+    title_hint: "Kubernetes Pod Metrics"
+    tags_hint: ["kubernetes"]
+    path: grafana_747_kubernetes_pod_metrics
+    gnet_revision: 2
+    dashboard_sha256: "47837bfea31e6156decd5c152379addfd9c3f9a9991a0cc96d764f91388b2d55"
+    description: "Pod-scoped cAdvisor + kube-state-metrics — Heapster label remap, hidden $Pod_ip/$phase/$container → metric tiles, $Node via instance, restarts_total map"
+
   - gnet_id: 6417
     name: grafana_6417_kubernetes_ksm
     title_hint: "Kubernetes Cluster (Prometheus)"
@@ -181,3 +205,174 @@ packs:
     gnet_revision: 1
     dashboard_sha256: "27552f4c9ba5ce3e43ae7c962c98c6979e87e1e4c2f4d463f26df62652cabc52"
     description: "Kubernetes App Metrics — Heapster label remap, $namespace/$container populate, HTTP native/nginx/haproxy series, cAdvisor ratios"
+
+  - gnet_id: 15661
+    name: grafana_15661_k8s_dashboard
+    title_hint: "K8S Dashboard"
+    tags_hint: ["Prometheus", "Kubernetes"]
+    path: grafana_15661_k8s_dashboard
+    gnet_revision: 2
+    dashboard_sha256: "21cbac15de7957e55ae8b064fda68570bae9e564766af7168e4492d8806a3161"
+    description: "K8S Dashboard — node ratios, namespace and pod tables, irate CPU, working-set thresholds, pod network without the container join"
+
+  - gnet_id: 9852
+    name: grafana_9852_node_exporter_disk_graphs
+    title_hint: "node-exporter disk graphs"
+    tags_hint: []
+    path: grafana_9852_node_exporter_disk_graphs
+    gnet_revision: 1
+    dashboard_sha256: "273ed2e26432d4d3aca9f008ef589007a1fcf5d09b101528924b755bcfda65a7"
+    description: "node-exporter disk graphs — node_vmstat_oom_kill gauge pin (exporter leaves it untyped), per-device rate-ratio joins for disk size/latency, named Disk IO series, Node/CPU/Disk label pins"
+
+  - gnet_id: 13332
+    name: grafana_13332_kube_state_metrics_v2
+    title_hint: "kube-state-metrics-v2"
+    tags_hint: ["kubernetes", "kubernetes-app"]
+    path: grafana_13332_kube_state_metrics_v2
+    gnet_revision: 12
+    dashboard_sha256: "1cd308bcd7bcbb4bda2cb089c91e7ba164f237bdd39effc8fdccd45961b5bf97"
+    description: "kube-state-metrics v2 — resource-split requests, restart DELTA, per-object tables, 48-col sections"
+
+  - gnet_id: 11454
+    name: grafana_11454_k8s_storage_volumes
+    title_hint: "K8s / Storage / Volumes / Cluster"
+    tags_hint: ["openshift", "k8s", "storage"]
+    path: grafana_11454_k8s_storage_volumes
+    gnet_revision: 14
+    dashboard_sha256: "ad674d50a254959cf652638cf0d1d0a7a8706f17a803468f0613fbc206c5a3bd"
+    description: "Cluster volume usage — fill-in-a-week slope, PVC percent table, hourly/daily/weekly rates, KSM phase counts"
+
+  - gnet_id: 11455
+    name: grafana_11455_k8s_storage_volumes_namespace
+    title_hint: "K8s / Storage / Volumes / Namespace"
+    tags_hint: ["openshift", "k8s", "storage"]
+    path: grafana_11455_k8s_storage_volumes_namespace
+    gnet_revision: 6
+    dashboard_sha256: "f655d91f4137a9afa64a05a7df5775d432340ee02413b420c1fc8f9ad175ac1d"
+    description: "Namespace volume usage — fill-in-a-week slope, 80% PVC table, hourly/daily/weekly rates, KSM phase counts"
+
+  - gnet_id: 12660
+    name: grafana_12660_k8s_persistent_volumes
+    title_hint: "Kubernetes / Persistent Volumes"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_12660_k8s_persistent_volumes
+    gnet_revision: 1
+    dashboard_sha256: "c97b492b88ecbd8e9b71f97406cb5650fb89eff22e8ae42996dfc8de91be8462"
+    description: "One persistent volume — used and free bytes and inodes, with percent tiles bound to cluster, namespace, and volume"
+
+  - gnet_id: 7187
+    name: grafana_7187_k8s_resource_requests
+    title_hint: "Kubernetes Resource Requests"
+    tags_hint: ["kubernetes"]
+    path: grafana_7187_k8s_resource_requests
+    gnet_revision: 1
+    dashboard_sha256: "3c877a83770e88c52b8890ee56d2154da08f7e02faac70de51fe3548b533054b"
+    description: "Cluster CPU and memory requests versus allocatable — resource-label reshape, cluster sums, percent tiles"
+
+  - gnet_id: 15760
+    name: grafana_15760_k8s_views_pods
+    title_hint: "Kubernetes / Views / Pods"
+    tags_hint: ["kubernetes"]
+    path: grafana_15760_k8s_views_pods
+    gnet_revision: 41
+    dashboard_sha256: "b30b712b67def51760b9543b136978a446602ced8077c51da4824b542fe8c983"
+    description: "Pod view — label tables, request and limit ratios, per-container CPU and memory, mirrored network"
+
+  - gnet_id: 15759
+    name: grafana_15759_k8s_views_nodes
+    title_hint: "Kubernetes / Views / Nodes"
+    tags_hint: ["kubernetes"]
+    path: grafana_15759_k8s_views_nodes
+    gnet_revision: 40
+    dashboard_sha256: "008c4e78d094610c809ba0c36086af939cc4c0077103724fc3419b5f975796dd"
+    description: "Node view — pod list, instance-scoped CPU and memory, filesystem and disk, mirrored network"
+
+  - gnet_id: 15757
+    name: grafana_15757_k8s_views_global
+    title_hint: "Kubernetes / Views / Global"
+    tags_hint: ["kubernetes"]
+    path: grafana_15757_k8s_views_global
+    gnet_revision: 43
+    dashboard_sha256: "d859386ea6505791f5eca2804fab2922c06b03a0473019177a4ac5784f43bd4c"
+    description: "Global view — Real/Requests/Limits tiles, resource counts, namespace and instance charts, mirrored network"
+
+  - gnet_id: 15758
+    name: grafana_15758_k8s_views_namespaces
+    title_hint: "Kubernetes / Views / Namespaces"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15758_k8s_views_namespaces
+    gnet_revision: 46
+    dashboard_sha256: "2d970440c28ca6b674fb497f4f38ce2ee89effccb9e784447bf4450ca37aa0a8"
+    description: "Namespace view — cluster usage ratios, owner-prefixed pod charts, volume bytes, mirrored network"
+
+  - gnet_id: 13646
+    name: grafana_13646_k8s_persistent_volumes
+    title_hint: "kubernetes-persistent-volumes"
+    tags_hint: []
+    path: grafana_13646_k8s_persistent_volumes
+    gnet_revision: 2
+    dashboard_sha256: "7f5e137459616501cbef01012ce3f92c5c17e91677b4112b51fe520a7f37c0e7"
+    description: "Persistent volumes — fill-in-N-days slope, 80% warning, GiB claim table, hourly/daily/weekly rates"
+
+  - gnet_id: 12006
+    name: grafana_12006_k8s_apiserver
+    title_hint: "Kubernetes apiserver"
+    tags_hint: []
+    path: grafana_12006_k8s_apiserver
+    gnet_revision: 1
+    dashboard_sha256: "238b95b69f704e19ad7c65e2c3834f29e26c2e2ede62cd8b8829f5350182d69a"
+    description: "Apiserver — request rate by verb, named p95/p90/p50 latency, cache hit ratio"
+
+  - gnet_id: 12123
+    name: grafana_12123_k8s_kubelet
+    title_hint: "Kubernetes / Kubelet"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_12123_k8s_kubelet
+    gnet_revision: 1
+    dashboard_sha256: "ccd78bc80ca8a44b20de53911242fca7930b918d45ee48ad358e4d5494434502"
+    description: "Kubelet — runtime and storage rates, bucket 99th percentiles, PLEG, RPC classes, process CPU and memory"
+
+  - gnet_id: 15761
+    name: grafana_15761_k8s_system_apiserver
+    title_hint: "Kubernetes / System / API Server"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15761_k8s_system_apiserver
+    gnet_revision: 21
+    dashboard_sha256: "5a4c8aa3ae92a33abf3a701dca2a83d0137e5c80fa7943ea53ce928cfe0f7330"
+    description: "System API server — health, deprecated APIs, request rate, mean latency, 5xx ratio"
+
+  - gnet_id: 17347
+    name: grafana_17347_traefik
+    title_hint: "Traefik Official Kubernetes Dashboard"
+    tags_hint: []
+    path: grafana_17347_traefik
+    gnet_revision: 9
+    dashboard_sha256: "57baaca89a9062312aab8e16caa8271b19229d00eac4092287ecd5549ba166c0"
+    description: "Traefik — entrypoint rate, source Apdex, HTTP codes, SLO miss, request and response bytes"
+
+  - gnet_id: 15762
+    name: grafana_15762_k8s_system_coredns
+    title_hint: "Kubernetes / System / CoreDNS"
+    tags_hint: ["kubernetes", "prometheus"]
+    path: grafana_15762_k8s_system_coredns
+    gnet_revision: 22
+    dashboard_sha256: "e3790fb6641129517430aa6fd50891fafc87ed3bafb441fb94b06ef7ff7cf9e1"
+    description: "System CoreDNS — health, request rate, cache, and histogram heatmaps"
+
+  - gnet_id: 16367
+    name: grafana_16367_k8s_node_pods
+    title_hint: "Kubernetes / Compute Resources / Node (Pods)"
+    tags_hint: ["kubernetes-mixin"]
+    path: grafana_16367_k8s_node_pods
+    gnet_revision: 1
+    dashboard_sha256: "aff444006794d7d4085a8910f106b815bf0eaf904b5d3ecf3745d51bd5b40ce3"
+    description: "Node pod resources — CPU and memory usage against capacity, plus quota tables"
+
+  - gnet_id: 20577
+    name: grafana_20577_aws_eks
+    title_hint: "AWS - EKS"
+    tags_hint: ["auto", "aws", "eks"]
+    path: grafana_20577_aws_eks
+    gnet_revision: 1
+    dashboard_sha256: "269beb26d84a9b43f20505fea6726b9c5c0ec1c80513103c87a63eb9dc800e95"
+    description: "EKS ContainerInsights — node and pod tiles, utilization, and AWS service charts"

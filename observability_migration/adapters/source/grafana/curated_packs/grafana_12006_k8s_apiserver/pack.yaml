@@ -1,0 +1,175 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+# or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+#
+# Curated pack — Grafana dashboard 12006
+# https://grafana.com/grafana/dashboards/12006-kubernetes-apiserver/
+#
+# Kubernetes apiserver (revision 1). Latency charts name p95, p90, and p50.
+# kube-apiserver exposes classic histograms (*_bucket counters with an le
+# label), not a duration gauge. Each point is the upper bound of the bucket
+# whose cumulative rate crosses the quantile; le is parsed as a number, so
+# client_golang spellings (1e-08) and Prometheus 3 ones (1.0) both work. When
+# only +Inf crosses, the highest finite bound is used, as in Prometheus.
+# CONNECT and WATCH stay off the
+# request-latency chart. The two bottom charts share one row.
+
+query:
+  metrics_dataset_filter: "prometheus"
+
+  metric_kinds:
+    apiserver_request_total: counter
+    etcd_helper_cache_hit_total: counter
+    etcd_helper_cache_miss_total: counter
+    apiserver_request_duration_seconds_bucket: counter
+    etcd_request_duration_seconds_bucket: counter
+    workqueue_queue_duration_seconds_bucket: counter
+    workqueue_work_duration_seconds_bucket: counter
+
+  live_optional_metrics:
+    - apiserver_request_total
+    - apiserver_request_duration_seconds_bucket
+    - workqueue_queue_duration_seconds_bucket
+    - workqueue_work_duration_seconds_bucket
+    - etcd_helper_cache_hit_total
+    - etcd_helper_cache_miss_total
+    - etcd_request_duration_seconds_bucket
+
+panel:
+  query_overrides:
+    - title_match: "apiserver request rate"
+      panel_id: 8
+      kibana_type_override: line
+      approximation_note: "Requests per second by verb. The 5m rate window follows the dashboard time range."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:apiserver_request_total:counter}} IS NOT NULL
+        | STATS requests = SUM(RATE({{metric:apiserver_request_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:verb}}
+        | EVAL verb = {{label:verb}}
+        | STATS requests = AVG(requests) BY time_bucket, verb
+        | KEEP time_bucket, verb, requests
+        | SORT time_bucket ASC
+    - title_match: "workqueue service time"
+      panel_id: 10
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of workqueue queue duration from workqueue_queue_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:workqueue_queue_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:workqueue_queue_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+
+    - title_match: "apiserver request latency"
+      panel_id: 2
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of request duration from apiserver_request_duration_seconds_bucket. CONNECT and WATCH are excluded. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{label:verb}} != "CONNECT" AND {{label:verb}} != "WATCH"
+        | WHERE {{metric:apiserver_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:apiserver_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+
+    - title_match: "workqueue processing time"
+      panel_id: 12
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of workqueue processing duration from workqueue_work_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:workqueue_work_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:workqueue_work_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+
+    - title_match: "etcd request latency"
+      panel_id: 4
+      kibana_type_override: line
+      approximation_note: "p95, p90, and p50 of etcd request duration from etcd_request_duration_seconds_bucket. The point is the upper bound of the first bucket whose cumulative rate reaches the quantile, the same sum(rate()) by le reduction as histogram_quantile, without in-bucket interpolation. Bucket bounds are read from the le label as numbers, so any bucket layout works. When only +Inf reaches the quantile, the point is the highest finite bound, as in Prometheus."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:etcd_request_duration_seconds_bucket:counter}} IS NOT NULL
+        | STATS cumulative = SUM(RATE({{metric:etcd_request_duration_seconds_bucket:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), {{label:le}}
+        | EVAL bound = CASE({{label:le}} == "+Inf", NULL, TO_DOUBLE({{label:le}}))
+        | STATS total = MAX(CASE({{label:le}} == "+Inf", cumulative, NULL)), top = MAX(bound), pairs = VALUES(CASE(bound IS NOT NULL, CONCAT(TO_STRING(cumulative), "|", TO_STRING(bound)), NULL)) BY time_bucket
+        | MV_EXPAND pairs
+        | EVAL cumulative = TO_DOUBLE(MV_FIRST(SPLIT(pairs, "|"))), bound = TO_DOUBLE(MV_LAST(SPLIT(pairs, "|")))
+        | STATS p95 = MIN(CASE(total > 0 AND cumulative >= total * 0.949999999, bound, NULL)), p90 = MIN(CASE(total > 0 AND cumulative >= total * 0.899999999, bound, NULL)), p50 = MIN(CASE(total > 0 AND cumulative >= total * 0.499999999, bound, NULL)), total = MAX(total), top = MAX(top) BY time_bucket
+        | EVAL p95 = CASE(total > 0, COALESCE(p95, top), NULL), p90 = CASE(total > 0, COALESCE(p90, top), NULL), p50 = CASE(total > 0, COALESCE(p50, top), NULL)
+        | KEEP time_bucket, p95, p90, p50
+        | SORT time_bucket ASC
+
+    - title_match: "etcd helper cache hit ratio"
+      panel_id: 6
+      kibana_type_override: line
+      approximation_note: "Cache hits divided by hits plus misses. The ratio stays 0-1, matching the source axis."
+      esql_query: |
+        TS metrics-*
+        | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend
+        | WHERE {{metric:etcd_helper_cache_hit_total:counter}} IS NOT NULL OR {{metric:etcd_helper_cache_miss_total:counter}} IS NOT NULL
+        | STATS hits = SUM(RATE({{metric:etcd_helper_cache_hit_total:counter}})), misses = SUM(RATE({{metric:etcd_helper_cache_miss_total:counter}})) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend)
+        | EVAL ratio = CASE(hits + misses > 0, hits / (hits + misses), NULL)
+        | KEEP time_bucket, ratio
+        | SORT time_bucket ASC
+
+  layout_overrides:
+    - title_match: "apiserver request rate"
+      panel_id: 8
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 0}
+    - title_match: "workqueue service time"
+      panel_id: 10
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 0}
+    - title_match: "apiserver request latency"
+      panel_id: 2
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 14}
+    - title_match: "workqueue processing time"
+      panel_id: 12
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 14}
+    - title_match: "etcd request latency"
+      panel_id: 4
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 0, y: 28}
+    - title_match: "etcd helper cache hit ratio"
+      panel_id: 6
+      hide_title: false
+      legend_position: right
+      size: {w: 24, h: 14}
+      position: {x: 24, y: 28}
