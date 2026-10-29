@@ -1398,6 +1398,12 @@ def _apply_smoke_dashboard_state(
             f"{len(smoke_dashboard.get('null_series_panels', []) or [])} null-series panel(s), "
             f"{len(smoke_dashboard.get('empty_controls', []) or [])} control(s) without options"
         )
+    elif status == "has_unreadable_axes":
+        result.smoke_status = "unreadable_axis"
+        result.smoke_error = (
+            f"{len(smoke_dashboard.get('unreadable_axis_panels', []) or [])} panel(s) whose duration "
+            "axis reads the same value on every tick"
+        )
     elif status == "has_empty_panels":
         result.smoke_status = "empty_result"
         result.smoke_error = f"{len(smoke_dashboard.get('empty_panels', []) or [])} empty panel(s)"

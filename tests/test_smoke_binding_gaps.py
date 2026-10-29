@@ -286,6 +286,63 @@ class HelperTests(unittest.TestCase):
         self.assertIn("service.instance.id", smoke._alternative_label_fields("instance"))
 
 
+def _duration_panel(title, decimals, field="v"):
+    """Lens state as Kibana 9.7 stores the Dashboards API ``duration`` format."""
+    params = {"compact": True, "fromUnit": "seconds", "toUnit": "humanizePrecise"}
+    if decimals is not None:
+        params["decimals"] = decimals
+    panel = _lens_panel(0, title, f"TS metrics-* | KEEP t, {field}")
+    panel["embeddableConfig"]["attributes"]["state"]["datasourceStates"] = {
+        "textBased": {
+            "layers": {
+                "l0": {
+                    "columns": [
+                        {"fieldName": "t", "meta": {"type": "date"}},
+                        {"fieldName": field, "params": {"format": {"id": "duration", "params": params}}},
+                    ]
+                }
+            }
+        }
+    }
+    return panel
+
+
+class UnreadableAxisTests(unittest.TestCase):
+    """#480: a 0.2 ms series with Kibana 9.7's ``decimals: 0`` duration reads "0 ms" on every tick."""
+
+    def _inspect(self, panel, values):
+        saved = {"id": "d", "attributes": {"title": "D", "panelsJSON": json.dumps([panel])}}
+        session = mock.Mock()
+        session.post.return_value = _FakeResponse(
+            {
+                "columns": [{"name": "t", "type": "date"}, {"name": "v", "type": "double"}],
+                "values": [[_TS, value] for value in values],
+            }
+        )
+        with mock.patch.object(smoke.requests, "Session", return_value=session):
+            return smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+    def test_sub_millisecond_series_with_zero_decimals_is_flagged(self):
+        result = self._inspect(_duration_panel("Time Spent", 0), [0.00012, 0.00028])
+
+        self.assertEqual(result["status"], "has_unreadable_axes")
+        [panel] = result["unreadable_axis_panels"]
+        self.assertEqual(panel["unreadable_axes"], [{"column": "v", "peak_seconds": 0.00028, "decimals": 0}])
+
+    def test_readable_cases_are_not_flagged(self):
+        cases = {
+            "series reaches 1 ms": (_duration_panel("T", 0), [0.0002, 0.006]),
+            "format keeps decimals (Kibana 9.5 style)": (_duration_panel("T", None), [0.0002]),
+            "two decimals show 0.28 ms": (_duration_panel("T", 2), [0.00028]),
+            "all zero": (_duration_panel("T", 0), [0.0, 0.0]),
+        }
+        for name, (panel, values) in cases.items():
+            with self.subTest(name):
+                result = self._inspect(panel, values)
+                self.assertEqual(result["unreadable_axis_panels"], [])
+                self.assertEqual(result["status"], "clean")
+
+
 class MergeAndGateTests(unittest.TestCase):
     def test_rollups_reach_the_verification_gate(self):
         smoke_report = {
@@ -301,6 +358,7 @@ class MergeAndGateTests(unittest.TestCase):
                     "empty_controls": [
                         {"dependent_panels": ["Total Memory Usage", "Clients"], "native_promql_dependents": ["Clients"]}
                     ],
+                    "unreadable_axis_panels": [{"panel": "Uptime"}],
                 }
             ]
         }
@@ -310,14 +368,16 @@ class MergeAndGateTests(unittest.TestCase):
         summary = merge_smoke_into_results([result], smoke_report)
 
         self.assertEqual(
-            (summary["null_series"], summary["control_unbound"], summary["control_null_param"]), (1, 2, 1)
+            (summary["null_series"], summary["control_unbound"], summary["control_null_param"],
+             summary["unreadable_axis"]),
+            (1, 2, 1, 1),
         )
         memory, clients, uptime = panels
         self.assertEqual(memory.runtime_rollups, ["null_series", "control_unbound"])
         self.assertEqual(clients.runtime_rollups, ["control_unbound", "control_null_param"])
-        self.assertEqual(uptime.runtime_rollups, [])
+        self.assertEqual(uptime.runtime_rollups, ["unreadable_axis"])
         gates = [_semantic_gate(p, None, [], p.runtime_rollups) for p in panels]
-        self.assertEqual(gates, ["Yellow", "Red", "Green"])
+        self.assertEqual(gates, ["Yellow", "Red", "Yellow"])
 
 
 if __name__ == "__main__":

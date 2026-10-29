@@ -483,6 +483,76 @@ def _all_measures_null(columns, values):
     return all(i >= len(row) or row[i] is None for row in values for i in measure_idx)
 
 
+def _column_max_abs(columns, values):
+    """Largest absolute value per measure column (columns with no value omitted)."""
+    out = {}
+    for i, col in enumerate(columns):
+        if col.get("type") not in _MEASURE_COLUMN_TYPES:
+            continue
+        numbers = [
+            abs(row[i]) for row in values
+            if i < len(row) and isinstance(row[i], int | float) and not isinstance(row[i], bool)
+        ]
+        if numbers:
+            out[col.get("name", "")] = max(numbers)
+    return out
+
+
+# Seconds per Kibana duration-format ``fromUnit``.
+_KIBANA_DURATION_UNIT_SECONDS = {
+    "picoseconds": 1e-12, "nanoseconds": 1e-9, "microseconds": 1e-6, "milliseconds": 1e-3,
+    "seconds": 1.0, "minutes": 60.0, "hours": 3600.0, "days": 86400.0, "weeks": 604800.0,
+}
+
+
+def _panel_duration_formats(panel):
+    """``(field, fromUnit, decimals)`` for each duration-formatted Lens column.
+
+    Read from the stored Lens state, i.e. what Kibana will actually render.
+    Kibana 9.7 stores the Dashboards API ``duration`` (``to: auto``) as
+    ``toUnit: humanizePrecise`` with ``decimals: 0``.
+    """
+    state = (((panel.get("embeddableConfig") or {}).get("attributes") or {}).get("state") or {})
+    found = []
+    for datasource in (state.get("datasourceStates") or {}).values():
+        if not isinstance(datasource, dict):
+            continue
+        layers = datasource.get("layers")
+        for layer in layers.values() if isinstance(layers, dict) else []:
+            columns = layer.get("columns") if isinstance(layer, dict) else None
+            # Text-based (ES|QL) layers list column objects; form-based layers
+            # key them by column id.
+            if isinstance(columns, dict):
+                columns = list(columns.values())
+            for column in columns if isinstance(columns, list) else []:
+                if not isinstance(column, dict):
+                    continue
+                fmt = ((column.get("params") or {}).get("format") or {})
+                if fmt.get("id") != "duration":
+                    continue
+                params = fmt.get("params") or {}
+                found.append((column.get("fieldName", ""), params.get("fromUnit", "seconds"), params.get("decimals")))
+    return found
+
+
+def _unreadable_duration_axes(panel, column_max_abs):
+    """Duration columns whose every value renders identically (#480).
+
+    The duration formatter's smallest output unit is the millisecond, so with
+    ``decimals`` d it cannot tell apart values under 10^-d ms: a 0.2 ms series
+    formatted with ``decimals: 0`` reads "0 ms" on every axis tick.
+    """
+    findings = []
+    for field_name, from_unit, decimals in _panel_duration_formats(panel):
+        factor = _KIBANA_DURATION_UNIT_SECONDS.get(str(from_unit))
+        peak = column_max_abs.get(field_name)
+        if factor is None or not isinstance(decimals, int) or not peak:
+            continue
+        if peak * factor < 1e-3 * 10 ** (-decimals):
+            findings.append({"column": field_name, "peak_seconds": peak * factor, "decimals": decimals})
+    return findings
+
+
 _NULL_VALUES_REASON = (
     "every value the query returned is null; Kibana shows \"No results found\". "
     "For a ratio panel, check whether the divisor metric is 0 or missing "
@@ -529,6 +599,7 @@ def validate_esql(
             "columns": [column.get("name", "") for column in columns],
             "null_columns": _null_dimension_columns(columns, values),
             "null_values": _all_measures_null(columns, values),
+            "column_max_abs": _column_max_abs(columns, values),
             "error": "",
             "materialized_query": materialized_query,
         }
@@ -1421,6 +1492,7 @@ def inspect_dashboard(
             ],
             "empty_panels": [],
             "null_series_panels": [],
+            "unreadable_axis_panels": [],
             "controls": [],
             "empty_controls": [],
             "not_runtime_checked_panels": [],
@@ -1439,6 +1511,7 @@ def inspect_dashboard(
     failing_panels = []
     empty_panels = []
     null_series_panels = []
+    unreadable_axis_panels = []
     not_runtime_checked_panels = []
     lens_by_design_panels = []
     unexpected_runtime_gap_panels = []
@@ -1504,6 +1577,14 @@ def inspect_dashboard(
         }
         if result_status == "empty" and rows:
             result["empty_reason"] = _NULL_VALUES_REASON
+        peaks = {}
+        for item in validations:
+            for name, peak in (item.get("column_max_abs") or {}).items():
+                peaks[name] = max(peak, peaks.get(name, 0))
+        unreadable = _unreadable_duration_axes(panel, peaks) if result_status == "pass" else []
+        if unreadable:
+            result["unreadable_axes"] = unreadable
+            unreadable_axis_panels.append(result)
         if result_status == "null_series":
             result["null_columns"] = null_columns
             hint_query = next(
@@ -1557,6 +1638,7 @@ def inspect_dashboard(
         "failing_panels": failing_panels,
         "empty_panels": empty_panels,
         "null_series_panels": null_series_panels,
+        "unreadable_axis_panels": unreadable_axis_panels,
         "controls": controls,
         "empty_controls": empty_controls,
         "not_runtime_checked_panels": not_runtime_checked_panels,
@@ -1575,6 +1657,8 @@ def inspect_dashboard(
             if not_runtime_checked_panels
             else "has_binding_gaps"
             if null_series_panels or empty_controls
+            else "has_unreadable_axes"
+            if unreadable_axis_panels
             else "has_empty_panels"
             if empty_panels
             else "clean"
@@ -1589,6 +1673,14 @@ def print_panel_findings(dashboard):
     for panel in dashboard.get("empty_panels", []) or []:
         if panel.get("empty_reason"):
             print(f"  empty: {panel['panel']} — {panel['empty_reason']}")
+    for panel in dashboard.get("unreadable_axis_panels", []) or []:
+        for axis in panel.get("unreadable_axes", []) or []:
+            print(
+                f"  unreadable axis: {panel['panel']} — `{axis['column']}` peaks at "
+                f"{axis['peak_seconds']:.3g} s, below what its duration format shows with "
+                f"{axis['decimals']} decimal(s), so every tick reads the same (e.g. \"0 ms\"). "
+                "Re-upload with an ES URL so the format is fitted to the data."
+            )
     for panel in dashboard.get("null_series_panels", []) or []:
         columns = ", ".join(f"`{name}`" for name in panel.get("null_columns", []))
         print(f"  null series: {panel['panel']} — {columns} is null in all {panel['rows']} row(s)")
@@ -1632,6 +1724,7 @@ def build_summary(dashboards):
         "runtime_error_panels": sum(len(item["failing_panels"]) for item in dashboards),
         "empty_panels": sum(len(item["empty_panels"]) for item in dashboards),
         "null_series_panels": sum(len(item.get("null_series_panels", [])) for item in dashboards),
+        "unreadable_axis_panels": sum(len(item.get("unreadable_axis_panels", [])) for item in dashboards),
         "empty_controls": sum(len(item.get("empty_controls", [])) for item in dashboards),
         "dashboards_with_binding_gaps": sum(
             1 for item in dashboards if item.get("null_series_panels") or item.get("empty_controls")
@@ -1787,6 +1880,7 @@ def main(verify: bool | str = True):
         f"Empty panels: {summary['empty_panels']} | "
         f"Null-series panels: {summary['null_series_panels']} | "
         f"Controls without options: {summary['empty_controls']} | "
+        f"Unreadable axes: {summary['unreadable_axis_panels']} | "
         f"Not runtime-checked panels: {summary['not_runtime_checked_panels']}"
     )
     if args.capture_screenshots:

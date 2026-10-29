@@ -65,7 +65,7 @@ def merge_smoke_into_results(
         return {
             "merged": 0, "smoke_failed": 0, "browser_failed": 0, "empty_result": 0,
             "not_runtime_checked": 0, "null_series": 0, "control_unbound": 0,
-            "control_null_param": 0,
+            "control_null_param": 0, "unreadable_axis": 0,
         }
 
     merged = 0
@@ -76,6 +76,7 @@ def merge_smoke_into_results(
     null_series = 0
     control_unbound = 0
     control_null_param = 0
+    unreadable_axis = 0
 
     for result in results:
         smoke_dashboard = _match_smoke_dashboard(result, smoke_by_id, smoke_by_title)
@@ -90,6 +91,9 @@ def merge_smoke_into_results(
             title
             for control in smoke_dashboard.get("empty_controls", []) or []
             for title in control.get("dependent_panels", []) or []
+        }
+        unreadable_titles = {
+            str(panel.get("panel", "")) for panel in smoke_dashboard.get("unreadable_axis_panels", []) or []
         }
         null_param_titles = {
             title
@@ -130,6 +134,10 @@ def merge_smoke_into_results(
                 rollups.append("control_unbound")
                 control_unbound += 1
                 merged += 1
+            if title in unreadable_titles and "unreadable_axis" not in rollups:
+                rollups.append("unreadable_axis")
+                unreadable_axis += 1
+                merged += 1
             if title in null_param_titles and "control_null_param" not in rollups:
                 rollups.append("control_null_param")
                 control_null_param += 1
@@ -160,6 +168,7 @@ def merge_smoke_into_results(
         "null_series": null_series,
         "control_unbound": control_unbound,
         "control_null_param": control_null_param,
+        "unreadable_axis": unreadable_axis,
     }
 
 

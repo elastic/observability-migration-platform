@@ -751,6 +751,7 @@ def _smoke_uploaded_dashboards(
         f"{summary.get('empty_panels', 0)} empty panel(s), "
         f"{summary.get('null_series_panels', 0)} null-series panel(s), "
         f"{summary.get('empty_controls', 0)} control(s) without options, "
+        f"{summary.get('unreadable_axis_panels', 0)} unreadable-axis panel(s), "
         f"{summary.get('not_runtime_checked_panels', 0)} not runtime-checked panel(s), "
         f"{summary.get('dashboards_with_layout_issues', 0)} dashboard(s) with layout issues"
     )
@@ -770,6 +771,7 @@ def _smoke_uploaded_dashboards(
             f"{merge_summary.get('null_series', 0)} null_series, "
             f"{merge_summary.get('control_unbound', 0)} control_unbound, "
             f"{merge_summary.get('control_null_param', 0)} control_null_param, "
+            f"{merge_summary.get('unreadable_axis', 0)} unreadable_axis, "
             f"{merge_summary.get('not_runtime_checked', 0)} not_runtime_checked"
         )
     return {
@@ -2948,7 +2950,8 @@ def main(argv: list[str] | None = None):
                     f"{smoke_merge_summary['empty_result']} empty_result, "
                     f"{smoke_merge_summary['null_series']} null_series, "
                     f"{smoke_merge_summary['control_unbound']} control_unbound, "
-                    f"{smoke_merge_summary['control_null_param']} control_null_param"
+                    f"{smoke_merge_summary['control_null_param']} control_null_param, "
+                    f"{smoke_merge_summary['unreadable_axis']} unreadable_axis"
                 )
 
     verification_payload = annotate_results_with_verification(

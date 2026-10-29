@@ -43,6 +43,8 @@ RUNTIME_WARNING_ROLLUPS = {
     # all-null breakdown series, or a control with no options filtering it.
     "null_series",
     "control_unbound",
+    # Smoke saw a duration axis whose every tick renders the same ("0 ms").
+    "unreadable_axis",
     "not_runtime_checked",
     "source_execution_failed",
     "validation_skipped",
@@ -304,7 +306,7 @@ def build_verification_packet(
             item in runtime_rollups
             for item in (
                 "smoke_failed", "browser_failed", "empty_result", "not_runtime_checked",
-                "null_series", "control_unbound", "control_null_param",
+                "null_series", "control_unbound", "control_null_param", "unreadable_axis",
             )
         )
         else "static_analysis"

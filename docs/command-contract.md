@@ -372,6 +372,14 @@ results found" for it. The usual cause is a ratio with a zero or missing divisor
 (ES|QL returns null for division by zero, e.g. Redis memory % with `maxmemory`
 0).
 
+Smoke also reads each panel's stored Lens duration formats and reports
+`unreadable_axis_panels` when a duration column's values all sit below what its
+format can show: Kibana 9.7+ stores the Dashboards API `duration` with
+`decimals: 0`, so a series peaking at 0.28 ms reads "0 ms" on every axis tick
+(#480). Dashboards with only that finding get status `has_unreadable_axes`; the
+merged `unreadable_axis` rollup turns the verification gate Yellow. Uploading
+with an ES URL fits such series to a readable number format.
+
 Dashboards with either binding finding get status `has_binding_gaps`; the summary adds
 `null_series_panels`, `empty_controls`, and `dashboards_with_binding_gaps`.
 `grafana-validate-uploaded --fail-on-binding-gaps` exits non-zero on them.

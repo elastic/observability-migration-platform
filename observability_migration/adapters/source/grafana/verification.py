@@ -35,6 +35,8 @@ RUNTIME_WARNING_ROLLUPS = {
     # all-null breakdown series, or a control with no options filtering it.
     "null_series",
     "control_unbound",
+    # Smoke saw a duration axis whose every tick renders the same ("0 ms").
+    "unreadable_axis",
     "not_runtime_checked",
     "source_execution_failed",
     "validation_skipped",
@@ -217,6 +219,7 @@ def _runtime_state(
         "fail" if rollups & {"smoke_failed", "control_null_param"}
         else "empty_result" if "empty_result" in rollups
         else "binding_gap" if rollups & {"null_series", "control_unbound"}
+        else "unreadable_axis" if "unreadable_axis" in rollups
         else "not_runtime_checked" if "not_runtime_checked" in rollups
         else "not_run"
     )
