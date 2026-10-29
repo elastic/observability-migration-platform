@@ -3085,3 +3085,163 @@ def test_iter_payload_leaf_panels_returns_only_leaves():
         (section, panel["config"]["title"])
         for section, panel in api.iter_payload_leaf_panels(payload)
     ] == [("", "Top"), ("Section", "Inner")]
+
+
+# --- live duration fitting (#480) -------------------------------------------
+# Kibana 9.6+ draws a ``duration`` format in whole output units, so Grafana 763
+# "Time Spent by Command" (≈0.2 ms values) read "0 ms" on every axis tick.
+
+
+def _duration_xy_panel(title, column, query="TS metrics-* | KEEP t, v", time_range=None):
+    config = {
+        "type": "xy",
+        "title": title,
+        "layers": [
+            {
+                "type": "line",
+                "data_source": {"type": "esql", "query": query},
+                "x": {"column": "time_bucket"},
+                "y": [{"column": column, "format": {"type": "duration", "from": "s", "to": "auto"}}],
+            }
+        ],
+    }
+    if time_range:
+        config["time_range"] = time_range
+    return {"grid": {"x": 0, "y": 0, "w": 24, "h": 8}, "type": "vis", "config": config}
+
+
+def _es_rows(column, values):
+    response = mock.Mock(status_code=200)
+    response.json.return_value = {
+        "columns": [{"name": "time_bucket", "type": "date"}, {"name": column, "type": "double"}],
+        "values": [["2026-10-29T12:00:00Z", value] for value in values],
+    }
+    return response
+
+
+def _fit(payload, *responses, **kwargs):
+    session = mock.Mock()
+    session.post.side_effect = list(responses)
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        changes = api._fit_duration_formats_to_live_data(payload, es_url="https://es", **kwargs)
+    return changes, session
+
+
+def test_sub_millisecond_duration_series_gets_a_readable_number_format():
+    payload = {"panels": [_duration_xy_panel("Time Spent", "v")], "time_range": {"from": "now-24h", "to": "now"}}
+
+    changes, _session = _fit(payload, _es_rows("v", [0.00012, None, -0.00028]))
+
+    y = payload["panels"][0]["config"]["layers"][0]["y"][0]
+    assert y["format"] == {"type": "number", "decimals": 5, "suffix": " s"}
+    assert len(changes) == 1 and "Time Spent" in changes[0] and "under 1 ms" in changes[0]
+
+
+def test_millisecond_and_larger_durations_keep_their_format():
+    payload = {"panels": [_duration_xy_panel("Latency", "v")]}
+
+    changes, _session = _fit(payload, _es_rows("v", [0.0002, 0.006]))
+
+    assert payload["panels"][0]["config"]["layers"][0]["y"][0]["format"]["type"] == "duration"
+    assert changes == []
+
+
+def test_no_live_data_or_no_es_url_changes_nothing():
+    payload = {"panels": [_duration_xy_panel("Latency", "v")]}
+    failed = mock.Mock(status_code=400)
+    assert _fit(payload, failed)[0] == []
+    assert _fit(payload, _es_rows("v", [None, None]))[0] == []
+    assert _fit(payload, _es_rows("v", [0, 0]))[0] == []
+    assert api._fit_duration_formats_to_live_data(payload, es_url="") == []
+    assert payload["panels"][0]["config"]["layers"][0]["y"][0]["format"]["type"] == "duration"
+
+
+def test_sampling_uses_the_panel_window_then_the_dashboard_window_with_bound_controls():
+    payload = {
+        "time_range": {"from": "now-24h", "to": "now"},
+        "panels": [
+            _duration_xy_panel("A", "v", query="TS m | WHERE x == ?instance AND @timestamp >= ?_tstart"),
+            _duration_xy_panel(
+                "B", "v", query="TS m | WHERE @timestamp >= ?_tstart", time_range={"from": "now-1m", "to": "now"}
+            ),
+        ],
+    }
+
+    _changes, session = _fit(
+        payload, _es_rows("v", [0.5]), _es_rows("v", [0.5]), bound_values={"instance": ["a", "b"]},
+    )
+
+    first, second = (call.kwargs["json"]["params"] for call in session.post.call_args_list)
+    first_params = {key: value for param in first for key, value in param.items()}
+    second_params = {key: value for param in second for key, value in param.items()}
+    assert first_params["instance"] == ["a", "b"]
+    start = lambda params: api.datetime.fromisoformat(params["_tstart"].replace("Z", "+00:00"))  # noqa: E731
+    now = api.datetime.now(api.UTC)
+    # A: dashboard default (24h); B: its own "Last 1 minute" override.
+    assert api.timedelta(hours=23) < now - start(first_params) <= api.timedelta(hours=24, minutes=1)
+    assert now - start(second_params) <= api.timedelta(minutes=2)
+
+
+def test_metric_and_gauge_duration_values_are_fitted_too():
+    payload = {
+        "panels": [
+            {
+                "grid": {"x": 0, "y": 0, "w": 8, "h": 8},
+                "type": "vis",
+                "config": {
+                    "type": "metric",
+                    "title": "P99",
+                    "data_source": {"type": "esql", "query": "TS m | KEEP v"},
+                    "metric": {"column": "v", "format": {"type": "duration", "from": "ms", "to": "auto"}},
+                },
+            }
+        ]
+    }
+
+    _fit(payload, _es_rows("v", [0.3]))
+
+    assert payload["panels"][0]["config"]["metric"]["format"] == {"type": "number", "decimals": 2, "suffix": " ms"}
+
+
+def test_readable_sub_millisecond_format_units():
+    fmt = api._readable_sub_millisecond_format
+    assert fmt({"from": "us"}, 120.0) == {"type": "number", "decimals": 1, "suffix": " µs"}
+    assert fmt({"from": "s"}, 0.002) is None
+    # 1e-5 min is 0.6 ms: sub-millisecond whatever the source unit.
+    assert fmt({"from": "min"}, 0.00001) == {"type": "number", "decimals": 6, "suffix": " min"}
+    assert fmt({"from": "unknown"}, 0.00001) is None
+
+
+def test_relative_time_window():
+    assert api._relative_time_window({"from": "now-15m", "to": "now"}) == api.timedelta(minutes=15)
+    assert api._relative_time_window({"from": "2026-01-01T00:00:00Z", "to": "now"}) is None
+    assert api._relative_time_window({"from": "now-1h", "to": "now-5m"}) is None
+    assert api._relative_time_window(None) is None
+
+
+def test_control_hydration_reports_each_seeded_control():
+    payload = {
+        "pinned_panels": [
+            {
+                "type": "esql_control",
+                "config": {
+                    "control_type": "VALUES_FROM_QUERY",
+                    "title": "instance",
+                    "variable_name": "instance",
+                    "variable_type": "multi_values",
+                    "esql_query": "FROM m | KEEP instance",
+                    "selected_options": [],
+                },
+            }
+        ]
+    }
+    response = mock.Mock(status_code=200)
+    response.json.return_value = {"values": [[".*"], ["a"], ["b"]]}
+    session = mock.Mock()
+    session.post.return_value = response
+    changes = []
+    with mock.patch("observability_migration.targets.kibana.dashboards_api._session", return_value=session):
+        bound, _configs = api._hydrate_values_query_control_defaults(payload, es_url="https://es", changes=changes)
+
+    assert bound == {"instance": ["a", "b"]}
+    assert len(changes) == 1 and "control 'instance'" in changes[0] and "2 live value(s)" in changes[0]

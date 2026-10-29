@@ -1267,7 +1267,8 @@ holds the already-derived API payload) or re-run `obs-migrate migrate` with
 different flags.
 
 `native/<stem>.native.json` is uploaded **verbatim** by
-`obs-migrate upload --artifact-dir`. Only the envelope structure (`kind`,
+`obs-migrate upload --artifact-dir` (unless you pass `--es-url`; see
+[fitting to live data](#review-and-upload)). Only the envelope structure (`kind`,
 `version`, `payload` type) is validated; the `payload` content is sent as-is.
 Operator edits made before upload are reflected in Kibana — remove a panel
 from `payload.panels`, rename `payload.title`, or adjust time-range fields.
@@ -1364,6 +1365,28 @@ artifact directory a migration wrote (or directly its `native/` child). Every
 `native/*.native.json` under it is sent to `PUT /api/dashboards/{id}` exactly as
 persisted — no re-mapping, no second renderer. A rejection is reported as-is,
 because there is nothing to silently re-derive the dashboard from.
+
+**Fitting to live data (`--es-url`, opt-in).** With `--es-url` (and
+`--es-api-key`), upload makes two data-driven changes to the payload it sends —
+the same ones `migrate --upload --es-url` already makes — and prints each as
+`live data: …` (also in the upload record's `live_adjustments`). The artifact
+on disk is not modified:
+
+- An ES|QL values control with no default selection gets the live values
+  (multi-select: all; single-select: the first). Without one, Kibana sends the
+  control's `?variable` as null, so native `PROMQL` panels bound to it fail with
+  `Parameter [?var] cannot be null` on Kibana builds that do not substitute an
+  "Any" value (seen on 9.7).
+- A `duration`-formatted series whose largest value in the panel's default time
+  window (panel override first, then the dashboard's) is under 1 ms switches to
+  a `number` format in its source unit with enough decimals (e.g. `0.00028 s`).
+  Kibana 9.6+ draws `duration` in whole output units and the API accepts no
+  `decimals` or sub-millisecond unit for it, so such a series read `0 ms` on
+  every axis tick (#480; upstream
+  [elastic/kibana#301576](https://github.com/elastic/kibana/issues/301576)).
+  Series that reach 1 ms keep `duration`.
+
+Without `--es-url` the reviewed payload is sent byte-for-byte.
 
 Accepted input shapes:
 

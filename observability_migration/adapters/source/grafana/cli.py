@@ -2932,6 +2932,8 @@ def main(argv: list[str] | None = None):
                 )
             for warning in result.upload_warnings:
                 print(f"    warning: {warning}", file=sys.stderr)
+            for adjustment in upload_result.get("live_adjustments") or []:
+                print(f"    live data: {adjustment}")
 
     smoke_merge_summary = {}
     integrated_smoke_output = ""
