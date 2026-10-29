@@ -196,7 +196,7 @@ With an ES URL (`migrate --upload --es-url`, or `obs-migrate upload --es-url`),
 records each change on `UploadResult.live_adjustments`: empty ES|QL values-control
 selections are seeded (`_hydrate_values_query_control_defaults`), then
 `duration` series whose largest value in the panel's default window is under 1 ms
-get a `number` format (`_fit_duration_formats_to_live_data`), because Kibana 9.7+
+get a `number` format (`_fit_duration_formats_to_live_data`), because Kibana 9.6+
 renders `duration` in whole units and they read "0 ms" on every tick (#480).
 Without an ES URL nothing is changed. See
 [Review and Upload](../command-contract.md#review-and-upload).

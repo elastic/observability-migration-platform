@@ -3088,7 +3088,7 @@ def test_iter_payload_leaf_panels_returns_only_leaves():
 
 
 # --- live duration fitting (#480) -------------------------------------------
-# Kibana 9.7+ draws a ``duration`` format in whole output units, so Grafana 763
+# Kibana 9.6+ draws a ``duration`` format in whole output units, so Grafana 763
 # "Time Spent by Command" (≈0.2 ms values) read "0 ms" on every axis tick.
 
 

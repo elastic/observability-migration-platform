@@ -2782,9 +2782,9 @@ def _relative_time_window(time_range: Any) -> timedelta | None:
 def _readable_sub_millisecond_format(fmt: dict[str, Any], max_abs: float) -> dict[str, Any] | None:
     """Number format for a duration whose largest live value is under 1 ms.
 
-    Kibana 9.7+ renders ``duration`` with whole output units only, so a series
+    Kibana 9.6+ renders ``duration`` with whole output units only, so a series
     of 0.2 ms values reads "0 ms" on every axis tick (#480; 9.5 printed "0.25
-    milliseconds"). The transform accepts neither ``decimals`` nor a unit below
+    milliseconds"; upstream elastic/kibana#301576). The transform accepts neither ``decimals`` nor a unit below
     ``ms`` for duration, so such a series keeps its source unit as a number
     with enough decimals for two significant digits of its largest value.
     """
@@ -2883,7 +2883,7 @@ def _fit_duration_formats_to_live_data(
             changes.append(
                 f"{title}: '{column}' peaks at {max_abs:.3g} {holder.get('format', {}).get('suffix', '').strip()} "
                 "(under 1 ms), so it uses a number format instead of duration, which Kibana "
-                "9.7+ would draw as \"0 ms\" on every tick"
+                "9.6+ would draw as \"0 ms\" on every tick"
             )
     return changes
 

@@ -1304,9 +1304,11 @@ on disk is not modified:
 - A `duration`-formatted series whose largest value in the panel's default time
   window (panel override first, then the dashboard's) is under 1 ms switches to
   a `number` format in its source unit with enough decimals (e.g. `0.00028 s`).
-  Kibana 9.7+ draws `duration` in whole output units and the API accepts no
+  Kibana 9.6+ draws `duration` in whole output units and the API accepts no
   `decimals` or sub-millisecond unit for it, so such a series read `0 ms` on
-  every axis tick (#480). Series that reach 1 ms keep `duration`.
+  every axis tick (#480; upstream
+  [elastic/kibana#301576](https://github.com/elastic/kibana/issues/301576)).
+  Series that reach 1 ms keep `duration`.
 
 Without `--es-url` the reviewed payload is sent byte-for-byte.
 
