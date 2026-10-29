@@ -504,9 +504,13 @@ def enrich_yaml_panel_display(
             esql["metric"].setdefault("format", dict(fmt))
         cleaned_title = str(yaml_panel.get("title") or "").strip()
         if chart_type == "gauge" and cleaned_title:
-            esql["metric"].setdefault("label", cleaned_title)
-            if esql["metric"].get("label") == cleaned_title:
-                yaml_panel["hide_title"] = True
+            # Keep the panel title: Kibana draws a gauge's label only beside a
+            # value, so a gauge with no result (e.g. Redis memory % with
+            # maxmemory 0) would otherwise be an untitled "No results found"
+            # tile (#482). Blank the label so a populated gauge does not repeat
+            # the title (verified on Kibana 9.7).
+            if esql["metric"].get("label", cleaned_title) == cleaned_title:
+                esql["metric"]["label"] = ""
 
     if chart_type in ("metric", "gauge") and "titles_and_text" not in esql:
         subtitle = str(grafana_panel.get("description") or "").strip()
