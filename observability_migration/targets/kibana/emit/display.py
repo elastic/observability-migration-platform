@@ -520,10 +520,19 @@ def enrich_yaml_panel_display(
     if chart_type in ("line", "bar", "area"):
         legend = extract_legend_config(grafana_panel)
         if "legend" not in esql:
+            breakdown = esql.get("breakdown") or esql.get("breakdown_by")
+            has_breakdown = isinstance(breakdown, dict) and bool(breakdown.get("field"))
+            multi_metric = len(esql.get("metrics") or []) > 1
             legend_block: dict[str, Any] = {
                 "visible": legend["visible_str"] if legend else "show",
                 "position": legend.get("position", "right") if legend else "right",
-                "truncate_labels": 1,
+                # Kibana names a broken-down series "<breakdown value> - <metric
+                # label>", so with several metrics the part that tells them apart
+                # comes last; a one-line truncation turned Grafana 763's "used,
+                # {{instance}}" / "max, {{instance}}" into two identical
+                # "redis-a:9000 - …" entries. Let those labels wrap in full.
+                # (0 = no truncation in the dashboard schema.)
+                "truncate_labels": 0 if has_breakdown and multi_metric else 1,
             }
             esql["legend"] = legend_block
 

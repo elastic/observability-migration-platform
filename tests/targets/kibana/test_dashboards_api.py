@@ -3085,3 +3085,15 @@ def test_iter_payload_leaf_panels_returns_only_leaves():
         (section, panel["config"]["title"])
         for section, panel in api.iter_payload_leaf_panels(payload)
     ] == [("", "Top"), ("Section", "Inner")]
+
+
+def test_legend_truncate_zero_disables_truncation():
+    # docs/dashboards/schema.json: ``truncate_labels: 0`` disables truncation.
+    assert api._api_legend({"visible": "show", "position": "bottom", "truncate_labels": 0}, "xy") == {
+        "visibility": "visible",
+        "placement": "outside",
+        "position": "bottom",
+        "layout": {"type": "grid", "truncate": {"enabled": False}},
+    }
+    assert api._truncate_config(1) == {"enabled": True, "max_lines": 1}
+    assert api._truncate_config(None) is None
