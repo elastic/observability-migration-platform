@@ -407,7 +407,7 @@ class TestCooccurrenceProbe(unittest.TestCase):
         _, kwargs = mock_post.call_args
         query = kwargs["json"]["query"]
         self.assertIn("`metrics.redis_up` IS NOT NULL", query)
-        self.assertIn("COUNT(`service.instance.id`)", query)
+        self.assertIn("COUNT(CASE(`service.instance.id` IS NOT NULL, 1, NULL))", query)
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_probe_returns_false_when_count_zero(self, mock_post):
@@ -477,8 +477,8 @@ class TestBatchedCooccurrenceProbe(unittest.TestCase):
         query = kwargs["json"]["query"]
         # The metric is scoped once in WHERE; each candidate is counted in STATS.
         self.assertIn("`metrics.redis_up` IS NOT NULL", query)
-        self.assertIn("COUNT(`instance`)", query)
-        self.assertIn("COUNT(`service.instance.id`)", query)
+        self.assertIn("COUNT(CASE(`instance` IS NOT NULL, 1, NULL))", query)
+        self.assertIn("COUNT(CASE(`service.instance.id` IS NOT NULL, 1, NULL))", query)
 
     @patch("observability_migration.adapters.source.grafana.schema.requests.post")
     def test_batch_results_are_cached_per_pair(self, mock_post):
@@ -533,7 +533,7 @@ class TestBatchedCooccurrenceProbe(unittest.TestCase):
         # One query, every candidate counted.
         query = mock_post.call_args.kwargs["json"]["query"]
         for field in ("instance", "service.instance.id", "host.name", "service.name"):
-            self.assertIn(f"COUNT(`{field}`)", query)
+            self.assertIn(f"COUNT(CASE(`{field}` IS NOT NULL, 1, NULL))", query)
         # Resolution now served entirely from the primed cache.
         self.assertEqual(
             resolver.resolve_label("instance", metric_field="metrics.foo"),
@@ -587,10 +587,10 @@ class TestBatchedCooccurrenceProbe(unittest.TestCase):
 
         def per_candidate(*_args, **kwargs):
             query = kwargs["json"]["query"]
-            if "COUNT(`instance`)" in query and "COUNT(`service.instance.id`)" in query:
+            if "COUNT(CASE(`instance` IS NOT NULL, 1, NULL))" in query and "COUNT(CASE(`service.instance.id` IS NOT NULL, 1, NULL))" in query:
                 # The combined batch query fails (one field is incompatible).
                 return batch_400
-            if "COUNT(`service.instance.id`)" in query:
+            if "COUNT(CASE(`service.instance.id` IS NOT NULL, 1, NULL))" in query:
                 return Mock(
                     status_code=200,
                     json=lambda: {
