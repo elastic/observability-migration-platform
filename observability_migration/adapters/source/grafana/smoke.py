@@ -1233,6 +1233,7 @@ def binding_gap_hint(
     # Prometheus spellings first: they are what a Prometheus-shaped target has.
     present.sort(key=lambda name: 0 if "." not in name or name.startswith(("labels.", "prometheus.labels.")) else 1)
     working = []
+    probe_failed = False
     for alternative in present[:_MAX_HINT_PROBES]:
         outcome = validate_esql(
             es_url,
@@ -1246,6 +1247,7 @@ def binding_gap_hint(
             time_window=time_window,
         )
         if outcome["status"] != "pass":
+            probe_failed = True
             continue
         if kind == "control":
             has_values = _control_option_count(outcome.get("values")) > 0
@@ -1253,6 +1255,17 @@ def binding_gap_hint(
             has_values = bool(outcome["rows"]) and alternative not in outcome.get("null_columns", [])
         if has_values:
             working.append(alternative)
+    if not working and probe_failed:
+        # The query still fails with the other spelling (usually because it
+        # also names other missing fields), so nothing was proven either way.
+        hint = (
+            f"`{field_name}` is not on these documents, but {', '.join(f'`{name}`' for name in present)} "
+            f"exist on {index}; the query has other missing fields too. Re-migrate with --es-url "
+            "(and --esql-index) so labels resolve against the target"
+        )
+        if any(name.startswith("labels.") for name in present):
+            hint += ", or with --field-profile prometheus_native"
+        return hint + "."
     if not working:
         checked = f" (checked {', '.join(f'`{name}`' for name in present)})" if present else ""
         return (
@@ -1606,6 +1619,7 @@ def inspect_dashboard(
     unexpected_runtime_gap_panels = []
     non_query_panels = []
     panel_queries = []
+    hint_cache = {}
 
     for panel in panels:
         title = _panel_title(panel)
@@ -1691,6 +1705,28 @@ def inspect_dashboard(
                 )
                 for name in null_columns
             ]
+        if result_status == "fail":
+            # A label bound to a field no stream maps fails outright
+            # ("Unknown column [service.instance.id]") instead of drawing a
+            # (null) series; give it the same evidence-backed hint.
+            missing = sorted({
+                match.group(1)
+                for item in failing
+                for match in _UNKNOWN_COLUMN_RE.finditer(item.get("error") or "")
+            })
+            hints = []
+            for name in missing:
+                key = (name, _query_index(queries[0]))
+                if key not in hint_cache:
+                    hint_cache[key] = binding_gap_hint(
+                        name, failing[0]["materialized_query"], es_url, timeout, kind="panel",
+                        es_api_key=es_api_key, verify=verify, dsl_filter=dashboard_filter,
+                        identifier_params=identifier_params, control_values=control_values,
+                        time_window=panel_window,
+                    )
+                hints.append(hint_cache[key])
+            if hints:
+                result["hints"] = hints
         if len(queries) == 1:
             result["query"] = queries[0]
             result["materialized_query"] = validations[0]["materialized_query"]
@@ -1765,6 +1801,11 @@ def inspect_dashboard(
 def print_panel_findings(dashboard):
     """Print smoke findings that need an explanation: label-binding gaps (with
     their remediation hint) and empty panels whose rows were all null."""
+    for panel in dashboard.get("failing_panels", []) or []:
+        if panel.get("hints"):
+            print(f"  error: {panel['panel']} — {str(panel.get('error') or '').splitlines()[-1][:160]}")
+            for hint in panel["hints"]:
+                print(f"    hint: {hint}")
     for panel in dashboard.get("empty_panels", []) or []:
         if panel.get("empty_reason"):
             print(f"  empty: {panel['panel']} — {panel['empty_reason']}")
