@@ -128,7 +128,7 @@ from .runtime_features import (
     set_runtime_feature,
 )
 from .schema import SchemaResolver
-from .smoke import print_binding_gaps
+from .smoke import print_panel_findings
 from .smoke_integration import load_smoke_report, merge_smoke_into_results
 from .transforms import (
     build_redesign_tasks,
@@ -755,7 +755,7 @@ def _smoke_uploaded_dashboards(
         f"{summary.get('dashboards_with_layout_issues', 0)} dashboard(s) with layout issues"
     )
     for dashboard in smoke_payload.get("dashboards", []) or []:
-        print_binding_gaps(dashboard)
+        print_panel_findings(dashboard)
     if args.browser_audit:
         print(
             "    Browser audit: "

@@ -366,7 +366,13 @@ against the target, or pass the `--field-profile` that matches your ingest.
   spellings of that label: it names the spelling that returns values (and the
   matching `--field-profile`), or says no spelling has values, i.e. a data gap.
 
-Dashboards with either finding get status `has_binding_gaps`; the summary adds
+Separately, a panel whose query returns rows but every value in them is null is
+reported as `empty` (not `pass`) with an `empty_reason`: Kibana shows "No
+results found" for it. The usual cause is a ratio with a zero or missing divisor
+(ES|QL returns null for division by zero, e.g. Redis memory % with `maxmemory`
+0).
+
+Dashboards with either binding finding get status `has_binding_gaps`; the summary adds
 `null_series_panels`, `empty_controls`, and `dashboards_with_binding_gaps`.
 `grafana-validate-uploaded --fail-on-binding-gaps` exits non-zero on them.
 Merged into migration results, `null_series` and `control_unbound` (panel

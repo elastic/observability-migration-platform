@@ -190,6 +190,37 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(smoke._null_dimension_columns(columns, [[_TS, None, None]]), [])
         self.assertEqual(smoke._null_dimension_columns(columns, []), [])
 
+    def test_all_measures_null(self):
+        columns = [{"name": "value", "type": "double"}, {"name": "host", "type": "keyword"}]
+        self.assertTrue(smoke._all_measures_null(columns, [[None, "a"]]))
+        self.assertFalse(smoke._all_measures_null(columns, [[None, "a"], [0.0, "b"]]))
+        self.assertFalse(smoke._all_measures_null(columns, []))
+        self.assertFalse(smoke._all_measures_null([{"name": "host", "type": "keyword"}], [["a"]]))
+
+    def test_rows_of_null_values_are_an_empty_panel_with_a_reason(self):
+        # Grafana 763 "Memory Usage" with Redis maxmemory 0: used / max is null,
+        # Kibana shows "No results found", but the query returns one row (#482).
+        saved = {
+            "id": "d",
+            "attributes": {
+                "title": "D",
+                "panelsJSON": json.dumps(
+                    [_lens_panel(0, "Memory Usage", "TS metrics-* | EVAL value = used / max | KEEP value")]
+                ),
+            },
+        }
+        session = mock.Mock()
+        session.post.return_value = _FakeResponse(
+            {"columns": [{"name": "value", "type": "double"}], "values": [[None]]}
+        )
+        with mock.patch.object(smoke.requests, "Session", return_value=session):
+            result = smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+        self.assertEqual(result["status"], "has_empty_panels")
+        [panel] = result["empty_panels"]
+        self.assertEqual((panel["panel"], panel["rows"]), ("Memory Usage", 1))
+        self.assertIn("division by zero", panel["empty_reason"])
+
     def test_extract_dashboard_controls_reads_both_storage_shapes(self):
         pinned = {"panels": {"a": {"type": "esql_control", "config": {"variable_name": "x", "esql_query": "FROM m"}}}}
         legacy = {"b": {"type": "esqlControl", "explicitInput": {"variableName": "y", "esqlQuery": "FROM n", "title": "Y"}}}

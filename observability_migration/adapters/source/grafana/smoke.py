@@ -470,6 +470,26 @@ def _null_dimension_columns(columns, values):
     ]
 
 
+def _all_measures_null(columns, values):
+    """Rows came back but every measure in them is null.
+
+    Kibana draws "No results found" for this, yet the row count says the query
+    worked. The usual cause is arithmetic on a zero or missing operand: ES|QL
+    returns null for ``x / 0`` (e.g. Redis memory % when ``maxmemory`` is 0).
+    """
+    measure_idx = [i for i, col in enumerate(columns) if col.get("type") in _MEASURE_COLUMN_TYPES]
+    if not values or not measure_idx:
+        return False
+    return all(i >= len(row) or row[i] is None for row in values for i in measure_idx)
+
+
+_NULL_VALUES_REASON = (
+    "every value the query returned is null; Kibana shows \"No results found\". "
+    "For a ratio panel, check whether the divisor metric is 0 or missing "
+    "(ES|QL returns null for division by zero)."
+)
+
+
 def validate_esql(
     es_url,
     query,
@@ -508,6 +528,7 @@ def validate_esql(
             "rows": len(values),
             "columns": [column.get("name", "") for column in columns],
             "null_columns": _null_dimension_columns(columns, values),
+            "null_values": _all_measures_null(columns, values),
             "error": "",
             "materialized_query": materialized_query,
         }
@@ -1455,7 +1476,13 @@ def inspect_dashboard(
         null_columns = list(
             dict.fromkeys(name for item in validations for name in item.get("null_columns", []) or [])
         )
-        result_status = "fail" if failing else "empty" if rows == 0 else "null_series" if null_columns else "pass"
+        null_values = bool(validations) and all(item.get("null_values") for item in validations)
+        result_status = (
+            "fail" if failing
+            else "empty" if rows == 0 or null_values
+            else "null_series" if null_columns
+            else "pass"
+        )
         result = {
             "panel": title,
             "type": panel_type,
@@ -1465,6 +1492,8 @@ def inspect_dashboard(
             "validation_mode": "esql",
             "checked_queries": len(queries),
         }
+        if result_status == "empty" and rows:
+            result["empty_reason"] = _NULL_VALUES_REASON
         if result_status == "null_series":
             result["null_columns"] = null_columns
             hint_query = next(
@@ -1544,8 +1573,12 @@ def inspect_dashboard(
     }
 
 
-def print_binding_gaps(dashboard):
-    """Print each label-binding finding with its remediation hint."""
+def print_panel_findings(dashboard):
+    """Print smoke findings that need an explanation: label-binding gaps (with
+    their remediation hint) and empty panels whose rows were all null."""
+    for panel in dashboard.get("empty_panels", []) or []:
+        if panel.get("empty_reason"):
+            print(f"  empty: {panel['panel']} — {panel['empty_reason']}")
     for panel in dashboard.get("null_series_panels", []) or []:
         columns = ", ".join(f"`{name}`" for name in panel.get("null_columns", []))
         print(f"  null series: {panel['panel']} — {columns} is null in all {panel['rows']} row(s)")
@@ -1770,7 +1803,7 @@ def main(verify: bool | str = True):
             f"screenshot={screenshot_status}, "
             f"browser={browser_status}"
         )
-        print_binding_gaps(dashboard)
+        print_panel_findings(dashboard)
     print(f"Report: {output_path}")
 
     failure_reasons = []
