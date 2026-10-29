@@ -320,6 +320,34 @@ class TestUploadDashboardNativePath(unittest.TestCase):
         self.assertEqual(result["status"], "updated")
         self.assertEqual(result["dashboard_ids"], ["direct-ir"])
 
+    def test_upload_dashboard_reports_live_adjustments(self):
+        # ``migrate --upload --es-url`` prints these; the in-memory upload record
+        # dropped them, so seeded controls / fitted formats went unreported.
+        native_dashboard = NativeDashboard(
+            title="Direct IR",
+            dashboard_id="direct-ir",
+            items=[NativePanel(grid=NativeGrid(), type="vis", config={"type": "metric"})],
+        )
+        uploaded = UploadResult(
+            dashboard="Direct IR", dashboard_id="direct-ir", status="updated", mapped=1,
+            live_adjustments=["control 'instance': selected 2 live value(s)"],
+        )
+        with mock.patch(
+            "observability_migration.targets.kibana.adapter.ensure_migration_data_views",
+            return_value=[{"id": "metrics-*", "title": "metrics-*"}],
+        ), mock.patch(
+            "observability_migration.targets.kibana.adapter.dashboards_api.upload_native_dashboard",
+            return_value=uploaded,
+        ):
+            result = KibanaTargetAdapter().upload_dashboard(
+                kibana_url="https://kibana.example",
+                es_url="https://es.example",
+                native_dashboard=native_dashboard,
+                native_dashboard_stats={"mapped": 1, "unmapped": 0, "reasons": {}},
+            )
+
+        self.assertEqual(result["live_adjustments"], ["control 'instance': selected 2 live value(s)"])
+
     def test_upload_dashboard_passes_resolved_data_view_ids_to_native_upload(self):
         # Regression test for PR #278 review: a data-view-backed control's
         # `data_view_id` must be resolved from the created data view's title

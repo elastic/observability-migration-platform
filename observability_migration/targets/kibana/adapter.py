@@ -778,6 +778,7 @@ class KibanaTargetAdapter(TargetAdapter):
             "panels_accepted": record.get("panels_accepted", 0),
             "dropped_panels": record.get("dropped_panels", []),
             "unresolved_data_views": record.get("unresolved_data_views", []),
+            "live_adjustments": record.get("live_adjustments", []),
         }
 
     def smoke(self, **kwargs: Any) -> dict[str, Any]:
