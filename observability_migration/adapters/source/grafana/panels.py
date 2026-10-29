@@ -4137,6 +4137,14 @@ def _enrich_panel_result(
                 "status": "not_required",
                 "actions": [],
             }
+    # A repeat the translator could not fan out is reported on the panel's
+    # own result (see ``_with_repeat_warning``), not as a separate skipped one.
+    repeat_warnings = panel.get("_repeat_warnings") or []
+    for warning in repeat_warnings:
+        _append_unique(panel_result.reasons, warning)
+    if repeat_warnings and panel_result.status == "migrated":
+        panel_result.status = "migrated_with_warnings"
+        panel_result.confidence = min(panel_result.confidence, 0.8)
     approximation_note = APPROXIMATED_VIS_TYPE_NOTES.get(panel_result.grafana_type)
     if _SKIP_APPROXIMATION_NOTE in (panel_result.notes or []):
         approximation_note = None
@@ -12632,11 +12640,6 @@ def _translate_panel_group(
             metric_series_labels=metric_series_labels,
             section_title=section_title,
         )
-        repeat_warnings = panel.get("_repeat_warnings") or []
-        for warning in repeat_warnings:
-            _append_unique(panel_result.reasons, warning)
-        if repeat_warnings and panel_result.status == "migrated":
-            panel_result.status = "migrated_with_warnings"
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
             panel_result,
