@@ -690,6 +690,9 @@ def save_detailed_report(results, output_path, validation_summary=None, validati
         d = {
             "title": r.dashboard_title,
             "uid": r.dashboard_uid,
+            # Unique within the run, unlike the title: the render audit joins a
+            # Kibana dashboard id to this entry through native/index.json's stem.
+            "artifact_stem": getattr(r, "artifact_stem", "") or "",
             "source_file": r.source_file,
             "folder_title": r.folder_title,
             "runtime_summary": runtime_summary,

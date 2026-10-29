@@ -345,7 +345,12 @@ def fetch_panel_field_caps(
 
 
 def native_dashboard_id_aliases(migration_out: Path) -> dict[str, str]:
-    """``{kibana_dashboard_id: dashboard_title}`` for a run's ``native/`` artifacts.
+    """``{kibana_dashboard_id: artifact stem (else title)}`` for a run's ``native/`` artifacts.
+
+    The stem is preferred because it is unique within the run; two dashboards
+    sharing a title (Grafana 315 and 1621 are both "Kubernetes cluster
+    monitoring (via Prometheus)") made a title alias ambiguous, so neither could
+    be attributed.
 
     ``native/index.json`` is written once per migration run and already records the
     deterministic id (``obs-migrate-<title-slug>``, plus a disambiguator when two
@@ -367,7 +372,7 @@ def native_dashboard_id_aliases(migration_out: Path) -> dict[str, str]:
             return
         dashboard_id = str(blob.get("dashboard_id") or "")
         if dashboard_id:
-            out.setdefault(dashboard_id, str(blob.get("title") or ""))
+            out.setdefault(dashboard_id, str(blob.get("stem") or blob.get("title") or ""))
 
     index_path = native_dir / "index.json"
     if index_path.exists():
