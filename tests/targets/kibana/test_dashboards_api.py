@@ -3097,4 +3097,3 @@ def test_iter_payload_leaf_panels_returns_only_leaves():
         (section, panel["config"]["title"])
         for section, panel in api.iter_payload_leaf_panels(payload)
     ] == [("", "Top"), ("Section", "Inner")]
-
