@@ -116,6 +116,12 @@ CI enforces these checks via `.github/workflows/license-check.yml`:
    / install skill drift from that version, then builds the wheel/sdist and
    attaches them (plus the SBOM) to a GitHub Release.
 
+   Never create a GitHub Release by hand and never tag a commit that has not
+   gone through step 1. If the `Release` workflow run for the tag fails, fix it
+   with a new bump PR and a new tag (do not move the tag): a hand-made release
+   has no wheel, sdist or SBOM, and PyPI will not have the version. Confirm the
+   run is green and the version appears on PyPI before announcing a release.
+
 3. **PyPI Trusted Publishing** (configured; no Elastic PyPI org yet):
 
    Releases publish to
