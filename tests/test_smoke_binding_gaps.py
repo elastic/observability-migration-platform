@@ -202,6 +202,55 @@ class InspectDashboardBindingGapTests(unittest.TestCase):
         self.assertEqual(result["null_series_panels"], [])
 
 
+class FailingPanelHintTests(unittest.TestCase):
+    """Offline guesses against a target where no stream maps the guessed field
+    fail outright; those panels get the same evidence-backed hint."""
+
+    def _target(self, query_has_two_missing=False):
+        target = _RemoteWriteTarget(existing=("instance", "labels.instance"))
+        real_post = target.post
+
+        def post(url, params=None, json=None, **kwargs):
+            query = json["query"]
+            missing = [name for name in ("service.instance.id", "k8s.namespace.name") if name in query]
+            if missing:
+                reason = f"Found {len(missing)} problem\n" + "\n".join(
+                    f"line 1:1: Unknown column [{name}]" for name in missing
+                )
+                return _FakeResponse({"error": {"reason": reason}}, status_code=400)
+            return real_post(url, params=params, json=json, **kwargs)
+
+        target.post = post
+        return target
+
+    def _inspect(self, target, query):
+        saved = {"id": "d", "attributes": {"title": "D", "panelsJSON": json.dumps([_lens_panel(0, "Memory", query)])}}
+        session = mock.Mock()
+        session.post.side_effect = target.post
+        with mock.patch.object(smoke.requests, "Session", return_value=session), \
+                mock.patch.object(smoke.requests, "post", side_effect=target.post), \
+                mock.patch.object(smoke.requests, "get", side_effect=target.get):
+            return smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+    def test_unknown_column_gets_the_working_spelling(self):
+        result = self._inspect(self._target(), _MEMORY_QUERY)
+        [panel] = result["failing_panels"]
+        [hint] = panel["hints"]
+        self.assertIn("`instance`, `labels.instance`", hint)
+        self.assertIn("prometheus_native", hint)
+
+    def test_several_missing_fields_do_not_read_as_a_data_gap(self):
+        query = _MEMORY_QUERY.replace("| KEEP", "| WHERE k8s.namespace.name IS NOT NULL | KEEP")
+        result = self._inspect(self._target(), query)
+        namespace_hint, instance_hint = result["failing_panels"][0]["hints"]
+        # `instance` exists, so the instance field is a mapping error even
+        # though the query still fails on the other missing field...
+        self.assertIn("other missing fields", instance_hint)
+        self.assertNotIn("data gap", instance_hint)
+        # ...while no spelling of namespace exists on this target at all.
+        self.assertIn("data gap", namespace_hint)
+
+
 class HelperTests(unittest.TestCase):
     def test_null_dimension_columns(self):
         columns = [{"name": "t", "type": "date"}, {"name": "host", "type": "keyword"}, {"name": "v", "type": "double"}]
