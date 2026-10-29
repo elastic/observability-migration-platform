@@ -17326,13 +17326,15 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
             f"Expected exactly {panels_mod.L4_REPEAT_EXPANSION_CAP} clones, "
             f"got {len(titles)}: {titles!r}",
         )
-        # A skip result should record the cap-warning for the
-        # operator.
-        cap_warning_titles = [
-            pr.title for pr in result.panel_results
-            if pr.status == "skipped" and "repeat" in (pr.reasons or [""])[0].lower()
+        # The cap warning rides on the first clone's own result; a separate
+        # "skipped" result made one element count twice in the panel totals.
+        cap_warned = [
+            pr for pr in result.panel_results
+            if any("capped expansion" in reason for reason in pr.reasons or [])
         ]
-        self.assertTrue(cap_warning_titles, "expected a skip-result mentioning the repeat cap")
+        self.assertEqual(len(cap_warned), 1)
+        self.assertEqual(cap_warned[0].status, "migrated_with_warnings")
+        self.assertFalse([pr for pr in result.panel_results if pr.status == "skipped"])
 
     def test_unresolvable_query_var_keeps_single_panel_with_warning(self):
         """Query vars without resolved current/options stay as a
@@ -17358,17 +17360,35 @@ class L4RepeatPanelExpansionTests(unittest.TestCase):
         leaves = list(self._walk_leaves(dash.get("panels") or []))
         # Single panel preserved (legacy behaviour for this case)
         self.assertEqual(len(leaves), 1)
-        # A skip warning was recorded
-        unresolvable_warnings = [
-            pr for pr in result.panel_results
-            if pr.status == "skipped"
-            and any("unresolvable" in w.lower() or "could not resolve" in w.lower()
-                    for w in (pr.reasons or []))
-        ]
+        # The warning is on the kept panel's own result, not on a separate
+        # "skipped" twin (which counted the one panel twice).
+        self.assertEqual(len(result.panel_results), 1)
+        [panel_result] = result.panel_results
+        self.assertNotEqual(panel_result.status, "skipped")
         self.assertTrue(
-            unresolvable_warnings,
-            "expected a skipped PanelResult mentioning the unresolvable variable",
+            any("could not resolve" in w.lower() for w in panel_result.reasons or []),
+            "expected the kept panel to carry the unresolvable-variable warning",
         )
+
+    def test_unresolvable_repeat_row_is_counted_once(self):
+        """Redis Enterprise (18405): a repeated ``$bdb`` row with no resolvable
+        values was recorded twice (row + warning twin), so the report showed
+        8 panels for 9 and totals above 100%."""
+        dashboard = {
+            "title": "T", "uid": "rep-row-1", "schemaVersion": 39,
+            "templating": {"list": [{"name": "bdb", "type": "query", "query": "label_values(bdb_up, bdb)"}]},
+            "panels": [
+                {"id": 1, "type": "row", "title": "$bdb", "repeat": "bdb", "collapsed": False,
+                 "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}, "panels": []},
+                {"id": 2, "type": "stat", "title": "Ops", "gridPos": {"x": 0, "y": 1, "w": 8, "h": 4},
+                 "datasource": {"type": "prometheus", "uid": "p"}, "targets": [{"expr": "up", "refId": "A"}]},
+            ],
+        }
+        result, _dash = self._translate(dashboard)
+        rows = [pr for pr in result.panel_results if pr.grafana_type == "row"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(any("could not resolve" in w.lower() for w in rows[0].reasons))
+        self.assertEqual(result.total_panels, len(result.panel_results))
 
     def test_repeat_uses_current_text_when_options_missing(self):
         """For query vars that have a cached ``current`` set
