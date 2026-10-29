@@ -14147,6 +14147,33 @@ class TestDisplayMetadata(unittest.TestCase):
         self.assertEqual(yaml_panel["esql"]["legend"]["position"], "bottom")
         self.assertEqual(yaml_panel["esql"]["dimension"]["label"], "Time")
 
+    def test_enrich_xy_legend_keeps_metric_suffix_for_multi_metric_breakdowns(self):
+        # Kibana names a broken-down series "<value> - <metric>"; one-line
+        # truncation hid the metric, so "used" and "max" looked identical.
+        from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
+        multi = {
+            "title": "Total Memory Usage",
+            "esql": {
+                "type": "area",
+                "query": "FROM metrics-*",
+                "metrics": [{"field": "used"}, {"field": "max"}],
+                "breakdown": {"field": "instance"},
+            },
+        }
+        single = {
+            "title": "Items",
+            "esql": {"type": "area", "query": "FROM metrics-*", "metrics": [{"field": "keys"}], "breakdown": {"field": "db"}},
+        }
+        no_breakdown = {
+            "title": "Network",
+            "esql": {"type": "area", "query": "FROM metrics-*", "metrics": [{"field": "in"}, {"field": "out"}]},
+        }
+        for panel in (multi, single, no_breakdown):
+            enrich_yaml_panel_display(panel, {})
+        self.assertEqual(multi["esql"]["legend"]["truncate_labels"], 0)  # schema: 0 = no truncation
+        self.assertEqual(single["esql"]["legend"]["truncate_labels"], 1)
+        self.assertEqual(no_breakdown["esql"]["legend"]["truncate_labels"], 1)
+
     def test_enrich_metric_panel_adds_format(self):
         from observability_migration.targets.kibana.emit.display import enrich_yaml_panel_display
         yaml_panel = {
