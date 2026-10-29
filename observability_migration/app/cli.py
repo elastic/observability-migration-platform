@@ -348,6 +348,17 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_cmd.add_argument("--kibana-url", required=True)
     upload_cmd.add_argument("--kibana-api-key", default="")
     upload_cmd.add_argument("--space-id", default="")
+    upload_cmd.add_argument(
+        "--es-url",
+        default="",
+        help=(
+            "Fit the payload to live data before sending: seed empty ES|QL control "
+            "selections and switch sub-millisecond duration series to a readable "
+            "number format. Each change is printed; the artifact on disk is not "
+            "modified. Omit to send the reviewed payload byte-for-byte."
+        ),
+    )
+    upload_cmd.add_argument("--es-api-key", default="", help="API key for --es-url")
     _add_tls_arguments(upload_cmd)
 
     cluster_cmd = sub.add_parser("cluster", help="Manage target Kibana cluster")
@@ -1302,13 +1313,18 @@ def _run_upload(args: Any) -> None:
 
     verify = _tls_verify(args)
     adapter = target_registry.get("kibana")()
-    upload_payload = adapter.upload(
-        input_dir,
-        kibana_url=args.kibana_url,
-        kibana_api_key=args.kibana_api_key,
-        space_id=args.space_id,
-        verify=verify,
-    )
+    upload_kwargs: dict[str, Any] = {
+        "kibana_url": args.kibana_url,
+        "kibana_api_key": args.kibana_api_key,
+        "space_id": args.space_id,
+        "verify": verify,
+    }
+    # Only an explicit --es-url fits the payload to live data; otherwise the
+    # reviewed artifact is sent byte-for-byte.
+    if getattr(args, "es_url", ""):
+        upload_kwargs["es_url"] = args.es_url
+        upload_kwargs["es_api_key"] = getattr(args, "es_api_key", "") or ""
+    upload_payload = adapter.upload(input_dir, **upload_kwargs)
     if upload_payload["summary"].get("error") == "no_native_artifacts_found":
         print(
             "No native Dashboard-as-Code artifacts (native/*.native.json) found "
@@ -1333,6 +1349,8 @@ def _run_upload(args: Any) -> None:
         print(f"  [{status}] {item['artifact']}{suffix}")
         if not item["success"]:
             print(f"         {item['output'][:200]}")
+        for adjustment in item.get("live_adjustments") or []:
+            print(f"         live data: {adjustment}")
         # An HTTP 200 that dropped panels is reported as a failure, not a
         # warning: the dashboard exists, looks uploaded, and is incomplete.
         # Naming the panels here is what lets the operator act on it.

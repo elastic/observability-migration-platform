@@ -262,6 +262,9 @@ class TestNativeArtifactUpload(unittest.TestCase):
                 # Controls left pointing at an index pattern no ensured data
                 # view matches; Kibana renders those as "An error occurred".
                 "unresolved_data_views",
+                # Changes fitted from live data before sending (only with an
+                # ES URL): seeded control selections, sub-ms duration formats.
+                "live_adjustments",
                 # The one non-success outcome that is not a defect: the source
                 # dashboard had no panels, so the caller reports a skip rather
                 # than an upload failure.

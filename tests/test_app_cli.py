@@ -904,6 +904,39 @@ class TestUnifiedCliRouting(unittest.TestCase):
         )
         self.assertEqual(kwargs["kibana_url"], "https://kibana.example")
 
+    @patch("observability_migration.app.cli.target_registry.get")
+    def test_run_upload_with_es_url_fits_to_live_data_and_prints_changes(self, mock_get):
+        # #480 / re-upload control defaults: only an explicit --es-url lets the
+        # upload seed controls and fit sub-ms durations, and each change prints.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = self._make_native_artifact_dir(Path(tmpdir))
+            adapter = mock.Mock()
+            adapter.upload.return_value = {
+                "summary": {"uploaded_ok": 1, "total": 1},
+                "records": [
+                    {
+                        "artifact": "dash.native.json",
+                        "success": True,
+                        "output": "",
+                        "live_adjustments": ["control 'instance': selected 2 live value(s)"],
+                    }
+                ],
+            }
+            mock_get.return_value = mock.Mock(return_value=adapter)
+            args = app_cli._build_parser().parse_args(
+                [
+                    "upload", "--artifact-dir", str(artifact_dir), "--kibana-url", "https://kibana.example",
+                    "--es-url", "https://es.example", "--es-api-key", "k",
+                ]
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                app_cli._run_upload(args)
+
+        kwargs = adapter.upload.call_args.kwargs
+        self.assertEqual((kwargs["es_url"], kwargs["es_api_key"]), ("https://es.example", "k"))
+        self.assertIn("live data: control 'instance': selected 2 live value(s)", stdout.getvalue())
+
     def test_upload_help_documents_typed_dashboards_api_only(self):
         parser = app_cli._build_parser()
         stdout = io.StringIO()
