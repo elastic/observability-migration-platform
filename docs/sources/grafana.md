@@ -356,6 +356,23 @@ latency`, `Read size`, `Read latency`) produce a named output column instead of
 `computed_value`. The 24-column source layout scales cleanly to the 48-column
 Kibana grid without gaps.
 
+#### Exporter `untyped` counters on the native remote-write endpoint
+
+Many exporters declare cumulative counters as `untyped`: mysqld_exporter status
+counters (`mysql_global_status_queries`, …), postgres_exporter
+`pg_stat_database_*`, node_exporter vmstat/netstat. Elasticsearch's
+`/_prometheus` remote-write endpoint stores `untyped` as a **gauge**, and ES|QL
+`RATE`/`IRATE`/`INCREASE` reject anything that is not `counter_*`, so a panel that
+keeps `RATE` fails at runtime even when a curated pack pins the metric as a
+counter. With `--es-url`, every emitted `RATE`/`IRATE` over a field the live caps
+type as a non-counter number becomes `(DELTA(field, W) / W_seconds)` and
+`INCREASE` becomes `DELTA` (`W`: the call's own window, else a fixed `TBUCKET`
+width, else 5 minutes). That is how PromQL computes a counter's rate; on the
+native layout it matched Prometheus `rate()` (10.741342 vs 10.74134). Like
+PromQL `delta()` it does not compensate for counter resets, so a restart inside a
+window shows as a negative dip; the panel says so. Offline runs keep `RATE`,
+because nothing proves the target typing.
+
 The Kubernetes App Metrics (1471) pack is a pre-1.16 cAdvisor + app-HTTP mix.
 Heapster labels (`container_name`, `pod_name`, `kubernetes_io_hostname`) and
 HTTP `kubernetes_namespace` rewrite to canonical `container` / `pod` /

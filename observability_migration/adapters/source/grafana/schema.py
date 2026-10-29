@@ -1393,6 +1393,17 @@ class SchemaResolver:
             return False
         return str(self._rule_pack.metric_kinds.get(metric_name, "")).strip().lower() == "gauge"
 
+    def field_refutes_counter(self, field_name):
+        """True when live caps show *field_name* is numeric but not a counter.
+
+        Positive evidence only: offline, or a field the target does not know,
+        is False. Used on emitted ES|QL field names (bare passthrough or
+        ``metrics.*``), unlike :meth:`target_refutes_counter`, which takes a
+        source metric name.
+        """
+        capability = self.field_capability(field_name)
+        return bool(capability) and is_numeric_field(capability) and not is_counter_metric_field(capability)
+
     def target_refutes_counter(self, metric_name):
         """Positive *target* evidence that the resolved field is gauge-typed,
         ignoring any rule-pack ``metric_kinds`` pin.

@@ -78,6 +78,7 @@ from .alerts import (
 )
 from .annotations import build_annotations_summary, translate_annotations
 from .assistant import apply_review_explanations
+from .counter_typing import apply_gauge_typed_counter_rewrites
 from .esql_validate import (
     _query_source_and_index,
     configure_es_auth,
@@ -2737,6 +2738,14 @@ def main(argv: list[str] | None = None):
                 "manual_required": result_tiers.get("manual_required", 0),
                 "by_kind": {},
             }
+
+    # Exporter ``untyped`` counters land as gauges on the /_prometheus endpoint,
+    # where ES|QL RATE/IRATE/INCREASE fail; with live caps, compute those rates
+    # from DELTA instead (counter_typing). No caps, no change.
+    if apply_gauge_typed_counter_rewrites(results, resolver):
+        for r in results:
+            recompute_result_counts(r)
+            sync_result_queries_to_ir(r)
 
     validation_records = []
     validation_summary = {}
