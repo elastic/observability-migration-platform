@@ -161,6 +161,28 @@ class InspectDashboardBindingGapTests(unittest.TestCase):
         [hint] = result["null_series_panels"][0]["hints"]
         self.assertIn("data gap, not a field-mapping error", hint)
 
+    def test_control_whose_options_query_fails_is_reported_with_a_hint(self):
+        # Kibana 9.7 rig: no stream maps the guessed field, so the options query
+        # errors instead of returning nothing; the control is just as unusable.
+        target = _RemoteWriteTarget()
+        real_post = target.post
+
+        def post(url, params=None, json=None, **kwargs):
+            if "MV_APPEND" in json["query"] and "service.instance.id" in json["query"]:
+                return _FakeResponse(
+                    {"error": {"reason": "Found 1 problem\nline 1:46: Unknown column [service.instance.id]"}},
+                    status_code=400,
+                )
+            return real_post(url, params=params, json=json, **kwargs)
+
+        target.post = post
+        result = _inspect(target)
+
+        [control] = result["empty_controls"]
+        self.assertEqual((control["status"], control["field"]), ("fail", "service.instance.id"))
+        self.assertIn("`instance`", control["hint"])
+        self.assertEqual(result["status"], "has_binding_gaps")
+
     def test_correctly_bound_dashboard_is_clean(self):
         target = _RemoteWriteTarget()
         saved = _saved_object()

@@ -934,6 +934,7 @@ def _panel_title(panel):
 
 
 _CONTROL_WILDCARD_OPTIONS = {"", ".*", "*"}
+_UNKNOWN_COLUMN_RE = re.compile(r"Unknown column \[`?([^\]`]+)`?\]")
 
 
 def _as_json(value):
@@ -1155,6 +1156,15 @@ def inspect_controls(
         }
         if outcome["status"] == "fail":
             record.update(status="fail", options=0, error=outcome["error"])
+            # A control whose options query errors has no options either. When
+            # the error names the missing field, probe its other spellings.
+            missing = _UNKNOWN_COLUMN_RE.search(outcome["error"] or "")
+            if missing:
+                record["field"] = missing.group(1)
+                record["hint"] = binding_gap_hint(
+                    missing.group(1), control["query"], es_url, timeout,
+                    kind="control", es_api_key=es_api_key, verify=verify,
+                )
         else:
             options = _control_option_count(outcome.get("values"))
             record.update(status="ok" if options else "no_options", options=options, error="")
@@ -1531,7 +1541,7 @@ def inspect_dashboard(
         es_api_key=es_api_key,
         verify=verify,
     )
-    empty_controls = [control for control in controls if control["status"] == "no_options"]
+    empty_controls = [control for control in controls if control["status"] in {"no_options", "fail"}]
     layout = analyze_layout(panels)
     browser_info = browser_audit or {"status": "not_requested", "path": "", "error": "", "issues": [], "url": ""}
     return {
@@ -1585,7 +1595,8 @@ def print_panel_findings(dashboard):
         for hint in panel.get("hints", []) or []:
             print(f"    hint: {hint}")
     for control in dashboard.get("empty_controls", []) or []:
-        print(f"  control without options: {control['title']} (?{control['variable']})")
+        failed = f" — options query failed: {control['error'].splitlines()[-1]}" if control.get("status") == "fail" else ""
+        print(f"  control without options: {control['title']} (?{control['variable']}){failed}")
         if control.get("hint"):
             print(f"    hint: {control['hint']}")
         if control.get("dependent_panels"):
