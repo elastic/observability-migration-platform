@@ -28,6 +28,7 @@ import observability_migration.adapters.source.grafana.adapter
 import observability_migration.targets.kibana.adapter  # noqa: F401
 from observability_migration.core.cli_contract import (
     ASSET_CHOICES,
+    RecordExplicitAction,
     normalize_requested_assets,
     reject_removed_surfaces,
 )
@@ -217,6 +218,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument(
         "--field-profile",
         default="otel",
+        action=RecordExplicitAction,
         help=(
             "Target field mapping profile. Defaults to 'otel' for all sources; "
             "Grafana supports 'otel', 'prometheus_remote_write' (Fleet "
@@ -228,6 +230,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "profile files (no auto)."
         ),
     )
+    migrate.set_defaults(field_profile_explicit=False)
     migrate.add_argument(
         "--validate", action="store_true",
         help=(
@@ -1103,8 +1106,11 @@ def _run_grafana_migration(args: Any) -> None:
         "--source", args.input_mode,
         "--input-dir", args.input_dir,
         "--output-dir", args.output_dir,
-        "--field-profile", getattr(args, "field_profile", "otel"),
     ]
+    # Forward only an operator-chosen profile, so the Grafana CLI can tell its
+    # otel default (labels mapped by guess) from an explicit otel.
+    if getattr(args, "field_profile_explicit", False):
+        legacy_argv.extend(["--field-profile", args.field_profile])
     if args.data_view:
         legacy_argv[6:6] = ["--data-view", args.data_view]
     requested_assets = getattr(args, "assets", None)

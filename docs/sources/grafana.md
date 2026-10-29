@@ -904,6 +904,16 @@ falls back to these built-in candidate mappings:
 When live `_field_caps` are available, the resolver checks which candidate
 actually exists in the target cluster and picks the first match.
 
+Offline, these candidates are guesses. On a Prometheus remote-write target
+(ES `/_prometheus` → `metrics-generic.prometheus-default`, which stores
+`instance` / `labels.instance`) an offline default run binds `instance` to
+`service.instance.id`: breakdowns render one `(null)` series and the Instance
+control has no options. The migration summary's `Target binding` line reports
+such fields as `guessed` (offline, `--field-profile` omitted) or `missing`
+(live caps lack them), and post-upload smoke flags the resulting null series and
+option-less controls with a proven fix. See
+[Target binding](../command-contract.md#target-binding).
+
 ### Customizing Field Mapping via Rule Packs
 
 Rule packs provide the Grafana-side equivalent of Datadog custom field

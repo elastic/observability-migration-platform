@@ -33,9 +33,16 @@ RUNTIME_ERROR_ROLLUPS = {
     "upload_failed",
     "smoke_failed",
     "browser_failed",
+    # A native PROMQL panel bound to a control with no options: Kibana sends
+    # the unset parameter as null and the query fails to parse.
+    "control_null_param",
 }
 RUNTIME_WARNING_ROLLUPS = {
     "empty_result",
+    # Post-upload smoke saw a label bound to a field the data lacks: an
+    # all-null breakdown series, or a control with no options filtering it.
+    "null_series",
+    "control_unbound",
     "not_runtime_checked",
     "source_execution_failed",
     "validation_skipped",
@@ -293,7 +300,13 @@ def build_verification_packet(
         else "runtime_validation"
         if validation_record
         else "post_upload_smoke"
-        if any(item in runtime_rollups for item in ("smoke_failed", "browser_failed", "empty_result", "not_runtime_checked"))
+        if any(
+            item in runtime_rollups
+            for item in (
+                "smoke_failed", "browser_failed", "empty_result", "not_runtime_checked",
+                "null_series", "control_unbound", "control_null_param",
+            )
+        )
         else "static_analysis"
     )
     return {

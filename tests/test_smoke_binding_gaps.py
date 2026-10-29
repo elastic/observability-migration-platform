@@ -1,0 +1,271 @@
+# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one or more contributor license agreements.
+# SPDX-License-Identifier: Elastic-2.0
+
+"""Post-upload smoke evidence for labels bound to fields the data lacks.
+
+Reproduces the Grafana 763 Redis failure on a Prometheus remote-write target:
+``service.instance.id`` is mapped on ``metrics-*`` (another stream has it) but
+null on the Redis documents, which carry ``instance`` / ``labels.instance``.
+Before, smoke reported such a dashboard ``clean``: queries ran and returned
+rows. Now the all-null breakdown, the option-less control and the native
+PROMQL panels that break on its null parameter are each reported, with a hint
+proven by re-running the query with the working spelling.
+"""
+
+import json
+import re
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+from observability_migration.adapters.source.grafana import smoke
+from observability_migration.adapters.source.grafana.verification import _semantic_gate
+from observability_migration.targets.kibana.smoke_integration import merge_smoke_into_results
+
+_TS = "2026-10-29T11:00:00.000Z"
+_KEYWORD = {"keyword": {"type": "keyword", "searchable": True, "aggregatable": True}}
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.headers = {"content-type": "application/json"}
+
+    def json(self):
+        return self._payload
+
+
+def _label_column(query):
+    """The label field the query groups or keeps, as the fake target sees it."""
+    for name in ("labels.instance", "service.instance.id", "instance"):
+        if re.search(r"(?<![\w.?])`?" + re.escape(name) + r"`?(?![\w.])", query):
+            return name
+    return ""
+
+
+class _RemoteWriteTarget:
+    """Fake ES for the customer layout: ``instance`` has values, the OTel field does not."""
+
+    def __init__(self, existing=("instance", "labels.instance", "service.instance.id")):
+        self.existing = set(existing)
+        self.queries = []
+
+    def post(self, url, params=None, json=None, headers=None, timeout=None, **_kwargs):
+        query = json["query"]
+        self.queries.append(query)
+        label = _label_column(query)
+        value = None if label in ("", "service.instance.id") else "redis-a:9121"
+        if query.lstrip().startswith("PROMQL"):
+            return _FakeResponse({"columns": [{"name": "value", "type": "double"}], "values": [[3.0]]})
+        if "MV_APPEND" in query:  # control options query
+            values = [[".*"]] + ([[value]] if value else [])
+            return _FakeResponse({"columns": [{"name": label, "type": "keyword"}], "values": values})
+        return _FakeResponse(
+            {
+                "columns": [
+                    {"name": "time_bucket", "type": "date"},
+                    {"name": label, "type": "keyword"},
+                    {"name": "used", "type": "double"},
+                ],
+                "values": [[_TS, value, 1048576.0], [_TS, value, 1050000.0]],
+            }
+        )
+
+    def get(self, url, params=None, headers=None, timeout=None, verify=None):
+        requested = params["fields"].split(",")
+        return _FakeResponse({"fields": {name: _KEYWORD for name in requested if name in self.existing}})
+
+
+def _lens_panel(index, title, query):
+    return {
+        "panelIndex": f"p{index}",
+        "type": "lens",
+        # Dashboards API uploads carry the title here, not on the attributes.
+        "embeddableConfig": {"title": title, "attributes": {"state": {"query": {"esql": query}}}},
+        "gridData": {"x": 0, "y": index * 8, "w": 24, "h": 8},
+    }
+
+
+_MEMORY_QUERY = (
+    "TS metrics-* | WHERE (MV_COUNT(?instance) == 0 OR MV_CONTAINS(TO_STRING(?instance), service.instance.id)) "
+    "| STATS used = AVG(LAST_OVER_TIME(redis_memory_used_bytes)) BY time_bucket = TBUCKET(75, ?_tstart, ?_tend), "
+    "service.instance.id | KEEP time_bucket, `service.instance.id`, used"
+)
+_CLIENTS_QUERY = (
+    "PROMQL index=metrics-* start=?_tstart end=?_tend buckets=50 "
+    "value=(sum(redis_connected_clients{instance=~?instance}))"
+)
+_CONTROL_QUERY = (
+    "FROM metrics-* | WHERE redis_up IS NOT NULL AND `service.instance.id` IS NOT NULL "
+    "| STATS count = COUNT(*) BY `service.instance.id` | EVAL options = MV_APPEND(\".*\", `service.instance.id`) "
+    "| MV_EXPAND options | STATS count = COUNT(*) BY options | KEEP options "
+    "| RENAME options AS `service.instance.id`"
+)
+
+
+def _saved_object():
+    return {
+        "id": "redis",
+        "attributes": {
+            "title": "Redis",
+            "panelsJSON": json.dumps(
+                [_lens_panel(0, "Total Memory Usage", _MEMORY_QUERY), _lens_panel(1, "Clients", _CLIENTS_QUERY)]
+            ),
+            "pinned_panels": {
+                "panels": {
+                    "c1": {
+                        "type": "esql_control",
+                        "config": {"title": "instance", "variable_name": "instance", "esql_query": _CONTROL_QUERY},
+                    }
+                }
+            },
+        },
+    }
+
+
+def _inspect(target):
+    session = mock.Mock()
+    session.post.side_effect = target.post
+    with mock.patch.object(smoke.requests, "Session", return_value=session), \
+            mock.patch.object(smoke.requests, "post", side_effect=target.post), \
+            mock.patch.object(smoke.requests, "get", side_effect=target.get):
+        return smoke.inspect_dashboard(_saved_object(), "http://es", timeout=30)
+
+
+class InspectDashboardBindingGapTests(unittest.TestCase):
+    def test_reports_null_series_and_control_without_options(self):
+        result = _inspect(_RemoteWriteTarget())
+
+        self.assertEqual(result["status"], "has_binding_gaps")
+        [memory] = result["null_series_panels"]
+        self.assertEqual(memory["panel"], "Total Memory Usage")
+        self.assertEqual(memory["null_columns"], ["service.instance.id"])
+        [control] = result["empty_controls"]
+        self.assertEqual((control["variable"], control["field"], control["options"]), ("instance", "service.instance.id", 0))
+        self.assertEqual(control["dependent_panels"], ["Total Memory Usage", "Clients"])
+        self.assertEqual(control["native_promql_dependents"], ["Clients"])
+
+    def test_hint_names_only_spellings_proven_to_return_values(self):
+        result = _inspect(_RemoteWriteTarget())
+
+        [hint] = result["null_series_panels"][0]["hints"]
+        self.assertIn("`instance`, `labels.instance`", hint)
+        self.assertIn("--field-profile prometheus_native", hint)
+        self.assertIn("`instance`", result["empty_controls"][0]["hint"])
+
+    def test_hint_reports_a_data_gap_when_no_spelling_has_values(self):
+        # Only the OTel field is mapped: no alternative exists to prove.
+        result = _inspect(_RemoteWriteTarget(existing=("service.instance.id",)))
+
+        [hint] = result["null_series_panels"][0]["hints"]
+        self.assertIn("data gap, not a field-mapping error", hint)
+
+    def test_correctly_bound_dashboard_is_clean(self):
+        target = _RemoteWriteTarget()
+        saved = _saved_object()
+        attrs = saved["attributes"]
+        attrs["panelsJSON"] = attrs["panelsJSON"].replace("service.instance.id", "instance")
+        control = attrs["pinned_panels"]["panels"]["c1"]["config"]
+        control["esql_query"] = control["esql_query"].replace("service.instance.id", "instance")
+        session = mock.Mock()
+        session.post.side_effect = target.post
+        with mock.patch.object(smoke.requests, "Session", return_value=session), \
+                mock.patch.object(smoke.requests, "post", side_effect=target.post), \
+                mock.patch.object(smoke.requests, "get", side_effect=target.get):
+            result = smoke.inspect_dashboard(saved, "http://es", timeout=30)
+
+        self.assertEqual(result["status"], "clean")
+        self.assertEqual(result["controls"][0]["options"], 1)
+        self.assertEqual(result["null_series_panels"], [])
+
+
+class HelperTests(unittest.TestCase):
+    def test_null_dimension_columns(self):
+        columns = [{"name": "t", "type": "date"}, {"name": "host", "type": "keyword"}, {"name": "v", "type": "double"}]
+        self.assertEqual(smoke._null_dimension_columns(columns, [[_TS, None, 1.0], [_TS, None, 2.0]]), ["host"])
+        # Some rows labelled: a real breakdown with a gap, not a binding error.
+        self.assertEqual(smoke._null_dimension_columns(columns, [[_TS, None, 1.0], [_TS, "a", 2.0]]), [])
+        # No measure values: that is an empty panel, reported as such elsewhere.
+        self.assertEqual(smoke._null_dimension_columns(columns, [[_TS, None, None]]), [])
+        self.assertEqual(smoke._null_dimension_columns(columns, []), [])
+
+    def test_extract_dashboard_controls_reads_both_storage_shapes(self):
+        pinned = {"panels": {"a": {"type": "esql_control", "config": {"variable_name": "x", "esql_query": "FROM m"}}}}
+        legacy = {"b": {"type": "esqlControl", "explicitInput": {"variableName": "y", "esqlQuery": "FROM n", "title": "Y"}}}
+        controls = smoke.extract_dashboard_controls(
+            {"pinned_panels": json.dumps(pinned), "controlGroupInput": {"panelsJSON": json.dumps(legacy)}}
+        )
+        self.assertEqual(
+            [(c["variable"], c["title"], c["query"]) for c in controls], [("x", "x", "FROM m"), ("y", "Y", "FROM n")]
+        )
+        self.assertEqual(smoke.extract_dashboard_controls({}), [])
+
+    def test_panel_title_prefers_embeddable_title_over_panel_index(self):
+        self.assertEqual(smoke._panel_title({"panelIndex": "uuid", "embeddableConfig": {"title": "Clients"}}), "Clients")
+        self.assertEqual(smoke._panel_title({"panelIndex": "uuid"}), "uuid")
+
+    def test_panels_binding_variable_ignores_identifier_params(self):
+        bound, native = smoke._panels_binding_variable(
+            "instance",
+            [
+                ("es", ["FROM m | WHERE x == ?instance"]),
+                ("field", ["FROM m | STATS BY ??instance"]),
+                ("promql", ["PROMQL index=m value=(up{instance=~?instance})"]),
+                ("other", ["FROM m | WHERE x == ?instance_name"]),
+            ],
+        )
+        self.assertEqual((bound, native), (["es", "promql"], ["promql"]))
+
+    def test_substitute_field_respects_boundaries(self):
+        query = "FROM m | WHERE MV_CONTAINS(?instance, service.instance.id) | KEEP `service.instance.id`, labels.instance"
+        self.assertEqual(
+            smoke._substitute_field(query, "service.instance.id", "labels.instance"),
+            "FROM m | WHERE MV_CONTAINS(?instance, `labels.instance`) | KEEP `labels.instance`, labels.instance",
+        )
+        self.assertEqual(smoke._substitute_field("BY instance, labels.instance", "instance", "host"), "BY host, labels.instance")
+
+    def test_alternative_label_fields(self):
+        self.assertEqual(
+            smoke._alternative_label_fields("service.instance.id")[:3], ["instance", "labels.instance", "prometheus.labels.instance"]
+        )
+        self.assertIn("instance", smoke._alternative_label_fields("labels.instance"))
+        self.assertIn("service.instance.id", smoke._alternative_label_fields("instance"))
+
+
+class MergeAndGateTests(unittest.TestCase):
+    def test_rollups_reach_the_verification_gate(self):
+        smoke_report = {
+            "dashboards": [
+                {
+                    "id": "redis",
+                    "title": "Redis",
+                    "panels": [
+                        {"panel": "Total Memory Usage", "status": "null_series"},
+                        {"panel": "Clients", "status": "pass"},
+                        {"panel": "Uptime", "status": "pass"},
+                    ],
+                    "empty_controls": [
+                        {"dependent_panels": ["Total Memory Usage", "Clients"], "native_promql_dependents": ["Clients"]}
+                    ],
+                }
+            ]
+        }
+        panels = [SimpleNamespace(title=t, status="migrated", runtime_rollups=[]) for t in ("Total Memory Usage", "Clients", "Uptime")]
+        result = SimpleNamespace(dashboard_title="Redis", kibana_saved_object_id="redis", panel_results=panels)
+
+        summary = merge_smoke_into_results([result], smoke_report)
+
+        self.assertEqual(
+            (summary["null_series"], summary["control_unbound"], summary["control_null_param"]), (1, 2, 1)
+        )
+        memory, clients, uptime = panels
+        self.assertEqual(memory.runtime_rollups, ["null_series", "control_unbound"])
+        self.assertEqual(clients.runtime_rollups, ["control_unbound", "control_null_param"])
+        self.assertEqual(uptime.runtime_rollups, [])
+        gates = [_semantic_gate(p, None, [], p.runtime_rollups) for p in panels]
+        self.assertEqual(gates, ["Yellow", "Red", "Green"])
+
+
+if __name__ == "__main__":
+    unittest.main()

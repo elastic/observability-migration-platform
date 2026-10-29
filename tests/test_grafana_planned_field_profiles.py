@@ -328,6 +328,7 @@ def test_cli_accepts_auto_with_es_url():
 def test_dashboard_resolver_threads_field_profile():
     args = SimpleNamespace(
         field_profile="prometheus_remote_write",
+        field_profile_explicit=True,
         es_url="https://es",
         esql_index="metrics-*",
         data_view="metrics-ui-*",
@@ -349,6 +350,7 @@ def test_dashboard_resolver_threads_field_profile():
         es_api_key="key",
         verify="/tmp/test-ca.pem",
         field_profile="prometheus_remote_write",
+        field_profile_explicit=True,
     )
 
 

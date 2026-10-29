@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from observability_migration.adapters.source.grafana.rules import _append_unique
+from observability_migration.core import target_binding
 from observability_migration.core.assets.operational import OperationalIR
 from observability_migration.core.assets.visual import VisualIR
 from observability_migration.core.reporting.summary_md import (
@@ -58,6 +59,9 @@ class MigrationResult:
     # PanelResult-style tracking of their own, so this is dashboard-scoped
     # rather than per-panel.
     control_warnings: list = field(default_factory=list)
+    # Per-control label provenance, same shape as ``PanelResult.target_binding``
+    # plus the source ``variable`` name.
+    control_bindings: list = field(default_factory=list)
     source_file: str = ""
     folder_title: str = ""
     inventory: dict = field(default_factory=dict)
@@ -143,6 +147,9 @@ class PanelResult:
     applied_transform_indices: list = field(default_factory=list)
     post_validation_action: str = ""
     post_validation_message: str = ""
+    # How the emitted label fields were chosen and whether the target confirmed
+    # them: {"status": <worst field status or "none">, "fields": [...]}.
+    target_binding: dict = field(default_factory=dict)
 
 
 def _panel_query_index(yaml_panel):
@@ -510,6 +517,59 @@ def print_data_readiness(results):
     )
 
 
+def _binding_counts_text(counts):
+    parts = [f"{counts['verified']} verified"]
+    for status in ("asserted", "guessed", "missing"):
+        if counts[status]:
+            parts.append(f"{counts[status]} {status}")
+    if counts["none"]:
+        parts.append(f"{counts['none']} without label fields")
+    return " / ".join(parts)
+
+
+def print_target_binding_summary(results):
+    """Print whether emitted label fields were confirmed by the target.
+
+    Translation status says the query means the same thing; this line says
+    whether its label fields exist in the target data. A ``guessed`` field is a
+    built-in default mapping nobody checked (e.g. ``instance`` →
+    ``service.instance.id``): on a Prometheus-shaped target it renders as a
+    ``(null)`` series and leaves its control without options.
+    """
+    panel_bindings = [
+        pr.target_binding
+        for r in results
+        for pr in r.panel_results
+        if pr.grafana_type != "row" and pr.target_binding
+    ]
+    control_bindings = [
+        binding for r in results for binding in getattr(r, "control_bindings", []) or []
+    ]
+    if not panel_bindings and not control_bindings:
+        return
+    panel_counts = target_binding.count_statuses(panel_bindings)
+    print(f"Target binding:      panels {_binding_counts_text(panel_counts)}")
+    control_counts = target_binding.count_statuses(control_bindings)
+    if control_bindings:
+        print(f"                     controls {_binding_counts_text(control_counts)}")
+    unverified = (
+        panel_counts["guessed"] + panel_counts["missing"]
+        + control_counts["guessed"] + control_counts["missing"]
+    )
+    if not unverified:
+        return
+    examples = target_binding.unverified_examples([*panel_bindings, *control_bindings])
+    print(f"  Unverified label fields, e.g. {'; '.join(examples)}.")
+    if panel_counts["missing"] or control_counts["missing"]:
+        print("  missing = the target's field caps do not have this field: panels show")
+        print("  (null) series or fail, and controls have no options.")
+    if panel_counts["guessed"] or control_counts["guessed"]:
+        print("  guessed = chosen by the default otel profile without seeing your data;")
+        print("  on a Prometheus-shaped target these are (null) series and empty controls.")
+    print("  Fix: re-run with --es-url (and --esql-index) so labels resolve against")
+    print("       the target, or pass the --field-profile that matches your ingest.")
+
+
 def print_report(results, field_discovery=None):
     total_rows = sum(_row_count(r) for r in results)
     # ``total_panels`` on the MigrationResult includes rows (it's the raw count
@@ -567,6 +627,7 @@ def print_report(results, field_discovery=None):
     print(f"  Skipped:           {total_panel_skipped} ({pct(total_panel_skipped, total_panels)})")
     if total_green or total_yellow or total_red:
         print(f"Verification gate:   {total_green} Green / {total_yellow} Yellow / {total_red} Red")
+    print_target_binding_summary(results)
     if upload_attempted:
         print(f"Upload results:      {uploaded_ok}/{upload_attempted} dashboards uploaded successfully")
     print()
@@ -735,12 +796,14 @@ def save_detailed_report(results, output_path, validation_summary=None, validati
                     "runtime_rollups": pr.runtime_rollups,
                     "post_validation_action": pr.post_validation_action,
                     "post_validation_message": pr.post_validation_message,
+                    "target_binding": pr.target_binding,
                 }
                 for pr in r.panel_results
             ],
             "alert_results": getattr(r, "alert_results", []),
             "alert_summary": getattr(r, "alert_summary", {}),
             "control_warnings": getattr(r, "control_warnings", []),
+            "control_bindings": getattr(r, "control_bindings", []),
             "translation_error": r.translation_error,
         }
         report["dashboards"].append(d)

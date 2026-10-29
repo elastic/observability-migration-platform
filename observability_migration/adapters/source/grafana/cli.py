@@ -19,6 +19,7 @@ import requests
 
 from observability_migration.core.cli_contract import (
     ASSET_CHOICES,
+    RecordExplicitAction,
     alert_output_dir,
     dashboard_output_dir,
     normalize_requested_assets,
@@ -127,6 +128,7 @@ from .runtime_features import (
     set_runtime_feature,
 )
 from .schema import SchemaResolver
+from .smoke import print_binding_gaps
 from .smoke_integration import load_smoke_report, merge_smoke_into_results
 from .transforms import (
     build_redesign_tasks,
@@ -211,6 +213,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--field-profile",
         default="otel",
+        action=RecordExplicitAction,
         help=(
             "Target field mapping profile. Grafana supports 'otel', "
             "'prometheus_remote_write', 'prometheus_metrics', "
@@ -569,6 +572,7 @@ def parse_args(argv: list[str] | None = None):
         ),
     )
     add_selection_arguments(parser)
+    parser.set_defaults(field_profile_explicit=False)
     args = parser.parse_args(argv)
     if args.source and args.input_mode and args.source != args.input_mode:
         parser.error("--source and --input-mode must match when both are provided")
@@ -745,9 +749,13 @@ def _smoke_uploaded_dashboards(
         "    Smoke summary: "
         f"{summary.get('runtime_error_panels', 0)} runtime error panel(s), "
         f"{summary.get('empty_panels', 0)} empty panel(s), "
+        f"{summary.get('null_series_panels', 0)} null-series panel(s), "
+        f"{summary.get('empty_controls', 0)} control(s) without options, "
         f"{summary.get('not_runtime_checked_panels', 0)} not runtime-checked panel(s), "
         f"{summary.get('dashboards_with_layout_issues', 0)} dashboard(s) with layout issues"
     )
+    for dashboard in smoke_payload.get("dashboards", []) or []:
+        print_binding_gaps(dashboard)
     if args.browser_audit:
         print(
             "    Browser audit: "
@@ -759,6 +767,9 @@ def _smoke_uploaded_dashboards(
             f"{merge_summary.get('smoke_failed', 0)} smoke_failed, "
             f"{merge_summary.get('browser_failed', 0)} browser_failed, "
             f"{merge_summary.get('empty_result', 0)} empty_result, "
+            f"{merge_summary.get('null_series', 0)} null_series, "
+            f"{merge_summary.get('control_unbound', 0)} control_unbound, "
+            f"{merge_summary.get('control_null_param', 0)} control_null_param, "
             f"{merge_summary.get('not_runtime_checked', 0)} not_runtime_checked"
         )
     return {
@@ -2039,6 +2050,7 @@ def _build_dashboard_schema_resolver(
             es_api_key=args.es_api_key or None,
             verify=verify,
             field_profile=args.field_profile,
+            field_profile_explicit=getattr(args, "field_profile_explicit", False),
         )
     except ValueError as exc:
         _exit_grafana_metric_map_prefix_error(exc)
@@ -2933,7 +2945,10 @@ def main(argv: list[str] | None = None):
                 print(
                     f"  Smoke merge: {smoke_merge_summary['smoke_failed']} smoke_failed, "
                     f"{smoke_merge_summary['browser_failed']} browser_failed, "
-                    f"{smoke_merge_summary['empty_result']} empty_result"
+                    f"{smoke_merge_summary['empty_result']} empty_result, "
+                    f"{smoke_merge_summary['null_series']} null_series, "
+                    f"{smoke_merge_summary['control_unbound']} control_unbound, "
+                    f"{smoke_merge_summary['control_null_param']} control_null_param"
                 )
 
     verification_payload = annotate_results_with_verification(

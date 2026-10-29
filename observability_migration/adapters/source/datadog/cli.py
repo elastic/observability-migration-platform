@@ -1392,6 +1392,12 @@ def _apply_smoke_dashboard_state(
             result.smoke_error = f"{len(smoke_dashboard.get('failing_panels', []) or [])} panel runtime error(s)"
         else:
             result.smoke_error = result.layout_error or "Uploaded dashboard has layout issues."
+    elif status == "has_binding_gaps":
+        result.smoke_status = "binding_gap"
+        result.smoke_error = (
+            f"{len(smoke_dashboard.get('null_series_panels', []) or [])} null-series panel(s), "
+            f"{len(smoke_dashboard.get('empty_controls', []) or [])} control(s) without options"
+        )
     elif status == "has_empty_panels":
         result.smoke_status = "empty_result"
         result.smoke_error = f"{len(smoke_dashboard.get('empty_panels', []) or [])} empty panel(s)"

@@ -260,7 +260,7 @@ class TestUnifiedCliRouting(unittest.TestCase):
 
     @patch("observability_migration.adapters.source.grafana.cli.main")
     def test_run_grafana_migration_forwards_field_profile(self, mock_main):
-        args = self._make_grafana_args()
+        args = self._make_grafana_args(field_profile="otel", field_profile_explicit=True)
         original_argv = list(sys.argv)
 
         try:
@@ -272,6 +272,31 @@ class TestUnifiedCliRouting(unittest.TestCase):
             sys.argv = original_argv
 
         mock_main.assert_called_once_with()
+
+    @patch("observability_migration.adapters.source.grafana.cli.main")
+    def test_run_grafana_migration_does_not_forward_default_field_profile(self, mock_main):
+        # The Grafana CLI must see the otel default as omitted, so labels it maps
+        # without target evidence are reported as guessed, not operator-asserted.
+        args = self._make_grafana_args(field_profile="otel", field_profile_explicit=False)
+        original_argv = list(sys.argv)
+
+        try:
+            app_cli._run_grafana_migration(args)
+
+            self.assertNotIn("--field-profile", sys.argv)
+        finally:
+            sys.argv = original_argv
+
+        mock_main.assert_called_once_with()
+
+    def test_migrate_parser_records_whether_field_profile_was_given(self):
+        parser = app_cli._build_parser()
+
+        omitted = parser.parse_args(["migrate", "--source", "grafana"])
+        given = parser.parse_args(["migrate", "--source", "grafana", "--field-profile", "otel"])
+
+        self.assertEqual((omitted.field_profile, omitted.field_profile_explicit), ("otel", False))
+        self.assertEqual((given.field_profile, given.field_profile_explicit), ("otel", True))
 
     @patch("observability_migration.adapters.source.grafana.cli.main")
     def test_run_grafana_migration_omits_default_data_view(self, mock_main):

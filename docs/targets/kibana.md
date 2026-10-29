@@ -36,7 +36,7 @@ source-specific rewrite logic.
 | Native Dashboards API mapping / upload | `observability_migration/targets/kibana/dashboards_api.py` | `native_dashboard_from_ir`; typed `PUT /api/dashboards/{id}`, no fallback renderer |
 | Native Dashboard-as-Code review artifacts | `observability_migration/targets/kibana/native_artifacts.py` | Persists the exact typed API payload (`native/*.native.json`) and semantic IR (`ir/*.ir.json`) for review before upload |
 | Serverless API helpers | `observability_migration/targets/kibana/serverless.py` | Serverless-safe dashboard listing, data view CRUD, deletion workaround |
-| Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit |
+| Shared smoke validation | `observability_migration/targets/kibana/smoke.py` | Post-upload saved-object validation and browser audit; also flags label bindings the data lacks (all-null breakdown columns, ES\|QL controls with no options) with a query-proven fix — see [Target binding](../command-contract.md#target-binding) |
 | Render audit | `observability_migration/targets/kibana/render_audit*.py` | Default-state panel render truth in real Kibana |
 | Interaction audit | `observability_migration/targets/kibana/interaction_*.py` | Playwright control selection + affected-query evidence (9.5+) |
 | Unified upload / cluster CLI | `observability_migration/app/cli.py` | `obs-migrate upload`, `obs-migrate cluster` (`obs-migrate compile` was removed) |

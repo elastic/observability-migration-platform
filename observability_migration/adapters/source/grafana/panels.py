@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from observability_migration.core import target_binding
 from observability_migration.core.assets.dashboard import DashboardIR
 from observability_migration.core.assets.operational import build_operational_ir
 from observability_migration.core.assets.query import QueryIR, build_query_ir, infer_output_shape
@@ -10211,6 +10212,7 @@ def translate_variables(
     repeat_variable_names=None,
     include_variable_names=False,
     collect_warnings=None,
+    collect_bindings=None,
 ):
     """Translate Grafana template variables into Kibana controls.
 
@@ -10219,6 +10221,10 @@ def translate_variables(
     retained against an absent target field, and unsupported variable shapes
     that cannot emit a Kibana control. Optional and additive so existing
     callers that only want ``controls`` are unaffected.
+
+    ``collect_bindings``, if given a list, receives one entry per emitted
+    control describing how its field was chosen (``target_binding`` shape plus
+    ``variable``).
     """
     rule_pack = rule_pack or RulePackConfig()
     controls = []
@@ -10237,11 +10243,23 @@ def translate_variables(
             query_text=_variable_query_text(var),
             repeat_variable_names=set(repeat_variable_names or ()),
         )
-        VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
+        capturing = collect_bindings is not None and target_binding.begin_capture(resolver)
+        try:
+            VARIABLE_TRANSLATORS.apply(context, stop_when=lambda ctx, _: ctx.handled)
+        finally:
+            captured = target_binding.end_capture(resolver) if capturing else []
         if collect_warnings is not None:
             collect_warnings.extend(context.control_warnings)
         if context.control:
             control = dict(context.control)
+            if capturing:
+                # Only the control's own field: chained scope labels inside its
+                # options query are reported by their own controls.
+                own_field = control.get(_CONTROL_RESOLVED_FIELD_NAME)
+                if own_field:
+                    captured = [entry for entry in captured if entry.get("field") == own_field]
+                binding = target_binding.summarize_binding(captured, json.dumps(control))
+                collect_bindings.append({"variable": var.get("name", ""), **binding})
             if include_variable_names and var.get("name"):
                 control[_CONTROL_SOURCE_VARIABLE_NAME] = var.get("name")
                 if context.source_field:
@@ -12603,6 +12621,25 @@ def _resolve_panel_overlaps(yaml_panels):
     return [panel for _, panel in sorted(placed, key=lambda entry: entry[0])]
 
 
+def _panel_target_binding(panel_result, captured, resolver):
+    """Label provenance for the fields *panel_result*'s final query emits.
+
+    A native PROMQL query keeps source label names (``instance=~?instance``)
+    unless live caps rewrote them, so those labels bind to whatever dimension
+    the target has under that name and are classified separately.
+    """
+    binding = target_binding.summarize_binding(captured, panel_result.esql_query)
+    native_binding = getattr(resolver, "native_promql_label_binding", None)
+    if callable(native_binding) and str(panel_result.esql_query or "").lstrip().startswith("PROMQL"):
+        covered = {entry.get("label") for entry in binding["fields"]}
+        for label in sorted(_promql_label_names(panel_result.promql_expr) - covered):
+            binding["fields"].append(native_binding(label))
+        binding["status"] = target_binding.worst_status(
+            entry.get("status", "") for entry in binding["fields"]
+        )
+    return binding
+
+
 def _translate_panel_group(
     panels,
     *,
@@ -12627,18 +12664,24 @@ def _translate_panel_group(
     sorted_panels = sorted(panels, key=_panel_sort_key)
 
     for panel in sorted_panels:
-        yaml_panel, panel_result = translate_panel(
-            panel,
-            datasource_index=datasource_index,
-            esql_index=esql_index,
-            rule_pack=rule_pack,
-            resolver=resolver,
-            llm_endpoint=llm_endpoint,
-            llm_model=llm_model,
-            llm_api_key=llm_api_key,
-            metric_series_labels=metric_series_labels,
-            section_title=section_title,
-        )
+        capturing = target_binding.begin_capture(resolver)
+        try:
+            yaml_panel, panel_result = translate_panel(
+                panel,
+                datasource_index=datasource_index,
+                esql_index=esql_index,
+                rule_pack=rule_pack,
+                resolver=resolver,
+                llm_endpoint=llm_endpoint,
+                llm_model=llm_model,
+                llm_api_key=llm_api_key,
+                metric_series_labels=metric_series_labels,
+                section_title=section_title,
+            )
+        finally:
+            captured = target_binding.end_capture(resolver) if capturing else []
+        if capturing:
+            panel_result.target_binding = _panel_target_binding(panel_result, captured, resolver)
         result.panel_results.append(panel_result)
         panel_result.operational_ir = build_operational_ir(
             panel_result,
@@ -12886,6 +12929,7 @@ def translate_dashboard(dashboard, datasource_index="metrics-*", esql_index=None
         repeat_variable_names=repeat_variable_names,
         include_variable_names=True,
         collect_warnings=result.control_warnings,
+        collect_bindings=result.control_bindings,
     )
     # Issue #282: bind each emitted ``??var`` grouping identifier to a fields
     # control before the ``?var`` completeness pass so it is not shadowed by a
