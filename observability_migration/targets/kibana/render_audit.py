@@ -1464,14 +1464,18 @@ def _report_dashboard_index(
     A key claimed by two *different* dashboards is removed rather than resolved
     arbitrarily, so an artifact set with no usable dashboard identity yields an
     unmatchable dashboard -- visible as a note -- instead of a confidently wrong
-    attribution. ``id_aliases`` maps a Kibana dashboard id to the dashboard title
-    it was uploaded under; an alias whose title two dashboards share is dropped
-    for the same reason.
+    attribution. ``id_aliases`` maps a Kibana dashboard id to the artifact stem
+    (or, for older artifacts, the title) it was uploaded under; an alias two
+    dashboards share is dropped for the same reason.
     """
     dashboards = [d for d in (report or {}).get("dashboards") or [] if isinstance(d, dict)]
     positions_by_title: dict[str, list[int]] = {}
+    positions_by_stem: dict[str, list[int]] = {}
     for index, dashboard in enumerate(dashboards):
         positions_by_title.setdefault(str(dashboard.get("title") or ""), []).append(index)
+        stem = str(dashboard.get("artifact_stem") or "")
+        if stem:
+            positions_by_stem.setdefault(stem, []).append(index)
 
     keyed: dict[str, int] = {}
     ambiguous: set[str] = set()
@@ -1487,14 +1491,20 @@ def _report_dashboard_index(
     for index, dashboard in enumerate(dashboards):
         for key in dashboard_identity_keys(dashboard):
             claim(key, index)
-    for dashboard_id, title in (id_aliases or {}).items():
-        owners = positions_by_title.get(str(title or ""), [])
-        if len(owners) == 1:
-            claim(str(dashboard_id), owners[0])
-        elif owners:
-            ambiguous.add(str(dashboard_id))
     for key in ambiguous:
         keyed.pop(key, None)
+    # native/index.json records the exact id each dashboard was uploaded under,
+    # so a resolvable alias overrides a derived key: two same-titled dashboards
+    # both derive the plain title slug, which is ambiguous, yet one of them
+    # really owns that id.
+    for dashboard_id, alias in (id_aliases or {}).items():
+        # An alias is an artifact stem (unique in the run) or, for older
+        # artifacts, a title.
+        owners = positions_by_stem.get(str(alias or "")) or positions_by_title.get(str(alias or ""), [])
+        if len(owners) == 1:
+            keyed[str(dashboard_id)] = owners[0]
+        elif owners:
+            keyed.pop(str(dashboard_id), None)
     return dashboards, keyed
 
 

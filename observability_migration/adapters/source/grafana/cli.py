@@ -2648,6 +2648,9 @@ def main(argv: list[str] | None = None):
             results.append(result)
             dashboard_outputs.append((result, None, dashboard))
             continue
+        # The stem is the one identity unique within the run; the report records
+        # it so tools can tell same-titled dashboards apart.
+        result.artifact_stem = output_stem
         # The dashboard id no longer matches the plain title slug, so say so:
         # nothing else in the run output would explain where it went.
         disambiguation_note = dashboard_id_disambiguation_note(result.dashboard_ir)
