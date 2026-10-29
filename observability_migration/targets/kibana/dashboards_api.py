@@ -1809,10 +1809,21 @@ def _stable_dashboard_id_from_ir(dashboard_ir: DashboardIR) -> str:
     therefore byte-identical to the pre-collision-handling id by construction,
     and collisions get distinct ids that match their artifact names.
     """
-    base = _stable_dashboard_id(
-        {"name": str(getattr(dashboard_ir, "title", "") or "")}
+    return dashboard_id_for_title(
+        str(getattr(dashboard_ir, "title", "") or ""),
+        str(getattr(dashboard_ir, "id_disambiguator", "") or ""),
     )
-    suffix = _dashboard_id_slug(getattr(dashboard_ir, "id_disambiguator", "") or "")
+
+
+def dashboard_id_for_title(title: str, disambiguator: str = "") -> str:
+    """The Kibana dashboard id a dashboard titled *title* uploads to.
+
+    Source adapters allocate the disambiguator; they call this to check the id
+    itself is free, because different titles can share a slug
+    ("Kubernetes / Persistent Volumes" and "kubernetes-persistent-volumes").
+    """
+    base = _stable_dashboard_id({"name": title})
+    suffix = _dashboard_id_slug(disambiguator)
     return f"{base}-{suffix}" if suffix else base
 
 
@@ -1831,7 +1842,8 @@ def dashboard_id_disambiguation_note(dashboard_ir: DashboardIR) -> str:
     if resolved == plain:
         return ""
     return (
-        f"'{title}' shares its title with another dashboard in this run, so its "
+        f"'{title}' shares its title, or the dashboard id derived from it, with "
+        "another dashboard in this run, so its "
         f"Kibana dashboard id is disambiguated to '{resolved}' rather than the "
         f"plain title slug '{plain}'."
     )
